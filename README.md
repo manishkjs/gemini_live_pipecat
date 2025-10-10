@@ -2,7 +2,7 @@
 
 ![alt text](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-This project demonstrates a real-time, voice-to-voice AI assistant using Pipecat's WebSocket transport. It features a Python FastAPI backend and a TypeScript/Vite frontend.
+This project demonstrates a real-time, voice-to-voice AI assistant using Google's AI services (both Gemini live API and 3 API approach (STT-LLM-TTS)) & Pipecat's WebSocket transport. It features a Python FastAPI backend and a TypeScript/Vite frontend.
 
 The application captures audio from the user's microphone, streams it to the server for transcription, processes it with a LLM, generates a spoken response with text-to-speech, and streams the audio back to the client for playback—all in real time.
 
