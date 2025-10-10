@@ -10,6 +10,8 @@ Two flows available:
 - Live API flow (with standard voices and cloned voice via Chirp 3 HD TTS)
 - STT + LLM + TTS flow (with standard voices and cloned voice via Chirp3 HD TTS)
 
+Learn about instant custom clone voice here - https://cloud.google.com/text-to-speech/docs/chirp3-instant-custom-voice
+
 **Architecture**
 
 The client-side UI captures microphone audio and establishes a WebSocket connection with the Pipecat server. The server manages the real-time pipeline, integrating with third-party AI services for transcription, language modeling, and speech synthesis.
@@ -74,13 +76,17 @@ The backend server handles the core AI pipeline.
     ```env
     # Example .env file
     GEMINI_API_KEY="your_openai_api_key"
-    GOOGLE_APPLICATION_CREDENTIALS="path_to_service_account_json_file_location"
-
     # Voice IDs from your TTS provider (Chirp3 HD)
     VOICE_ID_FEMALE="path_to_your_female_voice_key"
     VOICE_ID_MALE="path_to_your_male_voice_key"
     ```
+    Finally for local development on your laptop, authenticate to Google cloud using:
+   
+    ```
+    gcloud auth application-default login
 
+    ```
+    
 ### 3. Run the Application
 
 1.  **Start the backend server:**
