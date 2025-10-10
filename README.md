@@ -1,10 +1,14 @@
-**Real-Time Voice-to-Voice AI Assistant built with Google AI services + Pipecat**
+**Real-Time Voice-to-Voice bot using Google's AI & Pipecat orchestration**
 
 ![alt text](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-This project demonstrates a real-time, voice-to-voice AI assistant using Google's AI services (Gemini live API and 3 API approach (STT-LLM-TTS)) with Pipecat's WebSocket transport. It features a Python FastAPI backend and a TypeScript/Vite frontend.
+This project demonstrates a real-time, voice-to-voice AI assistant using Google's AI models with Pipecat's WebSocket transport. It features a Python FastAPI backend and a TypeScript/Vite frontend.
 
 The application captures audio from the user's microphone, streams it to the server for transcription, processes it with a LLM, generates a spoken response with text-to-speech, and streams the audio back to the client for playback—all in real time.
+
+Two flows available:
+- Live API flow (with standard voices and cloned voice via Chirp 3 HD TTS)
+- STT + LLM + TTS flow (with standard voices and cloned voice via Chirp3 HD TTS)
 
 **Architecture**
 
@@ -70,11 +74,11 @@ The backend server handles the core AI pipeline.
     ```env
     # Example .env file
     GEMINI_API_KEY="your_openai_api_key"
-    GOOGLE_APPLICATION_CREDENTIALS="path_to_service_account_json_location"
+    GOOGLE_APPLICATION_CREDENTIALS="path_to_service_account_json_file_location"
 
-    # Voice IDs from your TTS provider (e.g., ElevenLabs)
-    VOICE_ID_FEMALE="path_to_your_female_voice_id"
-    VOICE_ID_MALE="path_to_your_male_voice_id"
+    # Voice IDs from your TTS provider (Chirp3 HD)
+    VOICE_ID_FEMALE="path_to_your_female_voice_key"
+    VOICE_ID_MALE="path_to_your_male_voice_key"
     ```
 
 ### 3. Run the Application
@@ -84,7 +88,7 @@ The backend server handles the core AI pipeline.
     ```bash
     python server.py
     ```
-    The server will start on `http://localhost:7860`.
+    The server will start on `http://localhost:7860`. (Do not OPEN THIS IN BROWSER. This is only running server)
 
 2.  **Run the frontend client:**
     Open a **new terminal window**.
@@ -99,9 +103,10 @@ The backend server handles the core AI pipeline.
 
 This project is configured for easy deployment as a single container on Google Cloud Run. The `Dockerfile` builds the frontend assets and serves them from the Python backend.
 
-### 1. Secret Management (Recommended)
+### 1. Secret Management (Optional but definitely recommended for production workloads)
 
 Do not hardcode your API keys. Use Google Secret Manager to store them securely.
+Note: Pipecat shortly will integrate GCP Vertex AI platform. Post that, use Live API through vertex endpoint only.
 
 ```bash
 # Set your GCP Project ID
@@ -130,11 +135,12 @@ Once deployed, Google Cloud will provide a public URL to access your application
 **Contributing**
 
 Contributions are welcome! Please feel free to submit a pull request or open an issue for bugs, feature requests, or improvements.
+
 Fork the repository.
 - Create your feature branch (git checkout -b feature/AmazingFeature).
 - Commit your changes (git commit -m 'Add some AmazingFeature').
 - Push to the branch (git push origin feature/AmazingFeature).
-- Open a Pull Request.
+- Open a Pull Request. We will review and proceed.
 
 **License**
 
