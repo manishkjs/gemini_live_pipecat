@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google's Voice-to-Voice Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <header class="header">
+        <div class="logo">
+          <div class="logo-icon">
+            <i class="fas fa-robot"></i>
+          </div>
+          <div class="logo-text">
+            <h1>Google's Voice-to-Voice Demo</h1>
+            <p>Powered by Google's AI - Gemini</p>
+          </div>
+        </div>
+        <div class="status-bar">
+          <div class="status">
+            <span id="status-indicator" class="disconnected"></span>
+            <span id="connection-status">Disconnected</span>
+          </div>
+          <div class="controls">
+            <button id="connect-btn">Connect</button>
+          </div>
+        </div>
+      </header>
+      <main class="main-content">
+        <div class="left-panel">
+          <div class="tile voice-controls">
+            <h3><i class="fas fa-microphone-alt"></i> Voice Controls</h3>
+            <div class="voice-status-container">
+              <div class="status-indicator listening" id="listening-indicator">
+                <div class="dot"></div>
+                <span>Listening</span>
+              </div>
+              <div class="status-indicator speaking" id="speaking-indicator">
+                <div class="dot"></div>
+                <span>Speaking</span>
+              </div>
+            </div>
+            <div class="voice-buttons">
+              <button id="listen-btn" class="listen-btn">
+                <i class="fas fa-microphone"></i>
+              </button>
+              <div class="dots-container" id="dots-container">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+              </div>
+              <button id="stop-btn" class="stop-btn" disabled>
+                <i class="fas fa-play"></i>
+              </button>
+            </div>
+            <p class="voice-status">Click to start conversation</p>
+            <p class="active-pipeline">Active: TTS-LLM-STT Pipeline</p>
+          </div>
+          <div class="tile api-configuration">
+            <h3><i class="fas fa-key"></i> API Configuration</h3>
+            <div class="setting">
+              <label for="api-key-input">Google API Key</label>
+              <input type="password" id="api-key-input" placeholder="Enter your Google API key to begin" required>
+            </div>
+          </div>
+          <div class="tile bot-configuration">
+            <h3><i class="fas fa-robot"></i> Bot Configuration</h3>
+            <div class="tabs">
+              <button class="tab-btn active" data-tab="tts-llm-stt">
+                <i class="fas fa-brain"></i> STT-LLM-TTS
+              </button>
+              <button class="tab-btn" data-tab="gemini-live">
+                <i class="fas fa-gem"></i> Gemini Live
+              </button>
+            </div>
+            <div id="tts-llm-stt-panel" class="config-panel active">
+              <div class="tile">
+                <h3><i class="fas fa-cogs"></i> Speech-to-Text (STT)</h3>
+                <div class="setting-group">
+                  <div class="setting">
+                    <label for="stt-model-select">Model</label>
+                    <select id="stt-model-select">
+                      <option value="latest_long">latest_long</option>
+                      <option value="telephony">telephony</option>
+                      <option value="chirp_3" selected>chirp_3</option>
+                    </select>
+                  </div>
+                  <div class="setting">
+                    <label for="stt-language-select">Language</label>
+                    <select id="stt-language-select">
+                      <option value="en-US">en-US</option>
+                      <option value="en-IN" selected>en-IN</option>
+                      <option value="hi-IN">hi-IN</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              <div class="tile">
+                <h3><i class="fas fa-bolt"></i> Large Language Model (LLM)</h3>
+                <div class="setting">
+                  <label for="llm-model-select">Model</label>
+                  <select id="llm-model-select">
+                    <option value="gemini-2.5-flash-lite-preview-06-17" selected>gemini-2.5-flash-lite-preview-06-17</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                    <option value="gemini-flash-lite-latest">gemini-flash-lite-latest</option>
+                    <option value="gemini-flash-latest">gemini-flash-latest</option>
+                  </select>
+                </div>
+              </div>
+              <div class="tile">
+                <h3>
+                  <i class="fas fa-comment-dots"></i> Text-to-Speech (TTS)
+                </h3>
+                <div class="setting">
+                  <label for="tts-voice-select">Voice</label>
+                  <select id="tts-voice-select">
+                    <option value="en-US-Chirp3-HD-Aoede">en-US-Chirp3-HD-Aoede</option>
+                    <option value="en-US-Chirp3-HD-Charon">
+                      en-US-Chirp3-HD-Charon
+                    </option>
+                    <option value="en-IN-Chirp3-HD-Zephyr">
+                      en-IN-Chirp3-HD-Zephyr
+                    </option>
+                    <option value="en-US-Chirp3-HD-Despina">en-US-Chirp3-HD-Despina</option>
+                    <option value="en-US-Chirp3-HD-Gacrux">en-US-Chirp3-HD-Gacrux</option>
+                    <option value="en-US-Chirp3-HD-Leda">en-US-Chirp3-HD-Leda</option>
+                    <option value="en-US-Chirp3-HD-Puck">en-US-Chirp3-HD-Puck</option>
+                    <option value="en-IN-Chirp3-HD-Aoede">en-IN-Chirp3-HD-Aoede</option>
+                    <option value="en-US-News-N">en-US-News-N</option>
+                    <option value="en-US-Wavenet-D">en-US-Wavenet-D</option>
+                    <option value="hi-IN-Chirp3-HD-Achird">hi-IN-Chirp3-HD-Achird</option>
+                    <option value="hi-IN-Chirp3-HD-Sulafat">hi-IN-Chirp3-HD-Sulafat</option>
+                    <option value="hi-IN-Chirp3-HD-Vindemiatrix">hi-IN-Chirp3-HD-Vindemiatrix</option>
+                    <option value="hi-IN-Chirp3-HD-Rasalgethi">hi-IN-Chirp3-HD-Rasalgethi</option>
+                    <option value="Custom-Male">Custom clone voice - Male</option>
+                    <option value="Custom-Female">Custom clone voice - Female</option>
+                  </select>
+                </div>
+                <div class="setting">
+                  <label for="tts-pace-slider">Speaking Rate</label>
+                  <input type="range" id="tts-pace-slider" min="0.25" max="2" step="0.01" value="1.0">
+                  <span id="tts-pace-value">1.0</span>
+                </div>
+                <div class="setting">
+                  <label>Pause</label>
+                  <div class="pause-buttons">
+                    <button id="pause-short-btn">[pause short]</button>
+                    <button id="pause-long-btn">[pause long]</button>
+                  </div>
+                </div>
+              </div>
+              <div class="system-instructions">
+                <h5>System Instructions</h5>
+                <textarea id="tts-llm-stt-system-instructions-textarea" rows="4"></textarea>
+              </div>
+            </div>
+            <div id="gemini-live-panel" class="config-panel">
+              <h4>Gemini Live API Configuration</h4>
+              <div class="setting">
+                <label for="gemini-model-select">Model</label>
+                <select id="gemini-model-select">
+                  <option value="gemini-live-2.5-flash-preview" selected>
+                    gemini-live-2.5-flash-preview
+                  </option>
+                  <option value="gemini-2.5-flash-native-audio-preview-09-2025">
+                    gemini-2.5-flash-native-audio-preview-09-2025
+                  </option>
+                </select>
+              </div>
+              <div class="setting">
+                <label for="gemini-voice-select">Voice</label>
+                <select id="gemini-voice-select">
+                  <option value="Achernar">Achernar (Female)</option>
+                  <option value="Achird">Achird (Male)</option>
+                  <option value="Algenib">Algenib (Male)</option>
+                  <option value="Algieba">Algieba (Male)</option>
+                  <option value="Alnilam">Alnilam (Male)</option>
+                  <option value="Aoede">Aoede (Female)</option>
+                  <option value="Autonoe">Autonoe (Female)</option>
+                  <option value="Callirrhoe">Callirrhoe (Female)</option>
+                  <option value="Charon">Charon (Male)</option>
+                  <option value="Despina">Despina (Female)</option>
+                  <option value="Enceladus">Enceladus (Male)</option>
+                  <option value="Erinome">Erinome (Female)</option>
+                  <option value="Fenrir">Fenrir (Male)</option>
+                  <option value="Gacrux">Gacrux (Female)</option>
+                  <option value="Iapetus">Iapetus (Male)</option>
+                  <option value="Kore">Kore (Female)</option>
+                  <option value="Laomedeia">Laomedeia (Female)</option>
+                  <option value="Leda">Leda (Female)</option>
+                  <option value="Orus">Orus (Male)</option>
+                  <option value="Pulcherrima">Pulcherrima (Female)</option>
+                  <option value="Puck">Puck (Male)</option>
+                  <option value="Rasalgethi">Rasalgethi (Male)</option>
+                  <option value="Sadachbia">Sadachbia (Male)</option>
+                  <option value="Sadaltager">Sadaltager (Male)</option>
+                  <option value="Schedar">Schedar (Male)</option>
+                  <option value="Sulafat">Sulafat (Female)</option>
+                  <option value="Umbriel">Umbriel (Male)</option>
+                  <option value="Vindemiatrix">Vindemiatrix (Female)</option>
+                  <option value="Zephyr">Zephyr (Female)</option>
+                  <option value="Zubenelgenubi">Zubenelgenubi (Male)</option>
+                  <option value="Custom-Male">Custom clone voice - Male</option>
+                  <option value="Custom-Female" selected>Custom clone voice - Female</option>
+                </select>
+                <div id="voice-warning" class="warning" style="display: none; color: red;">
+                  <p>Don't select custom voices when selecting native audio model</p>
+                </div>
+              </div>
+              <div class="setting">
+                <label for="gemini-language-select">Language</label>
+                <select id="gemini-language-select">
+                  <option value="en-US">English (US)</option>
+                  <option value="en-GB">English (UK)</option>
+                  <option value="en-IN">English (India)</option>
+                  <option value="es-ES">Spanish</option>
+                  <option value="fr-FR">French</option>
+                  <option value="hi-IN" selected>Hindi</option>
+                </select>
+              </div>
+              <div class="setting-toggle large-toggle">
+                <label for="tts-toggle">Use TTS for output modality</label>
+                <input type="checkbox" id="tts-toggle" checked />
+              </div>
+              <div id="tts-warning" class="warning" style="display: none; color: red;">
+                <p>Pls un-select TTS for output modality. This model does not support TTS.</p>
+              </div>
+              <div class="setting">
+                <label for="live-tts-pace-slider">Speaking Rate</label>
+                <input type="range" id="live-tts-pace-slider" min="0.25" max="2" step="0.01" value="1.0">
+                <span id="live-tts-pace-value">1.0</span>
+              </div>
+              <div class="advanced-settings">
+                <h5>Advanced Settings</h5>
+                <div class="setting-toggle">
+                  <label for="vad-toggle">Voice Activity Detection</label>
+                  <input type="checkbox" id="vad-toggle" checked />
+                </div>
+                <div class="setting-toggle">
+                  <label for="auto-response-toggle">Auto-response</label>
+                  <input type="checkbox" id="auto-response-toggle" />
+                </div>
+                <div class="setting-toggle">
+                  <label for="interrupt-handling-toggle"
+                    >Interrupt Handling</label
+                  >
+                  <input type="checkbox" id="interrupt-handling-toggle" />
+                </div>
+              </div>
+              <div class="system-instructions">
+                <h5>System Instructions</h5>
+                <textarea id="system-instructions-textarea" rows="4"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="right-panel">
+          <div class="tile debug-container">
+            <h3><i class="fas fa-bug"></i> Debug Info</h3>
+            <div id="debug-log" class="debug-log"></div>
+          </div>
+          <div class="tile system-status">
+            <h3><i class="fas fa-server"></i> System Status</h3>
+            <div class="status-item">
+              <span>Connection</span>
+              <span id="connection-light" class="light inactive">Inactive</span>
+            </div>
+            <div class="status-item">
+              <span>Microphone</span>
+              <span id="mic-light" class="light idle">Idle</span>
+            </div>
+            <div class="status-item">
+              <span>Speaker</span>
+              <span id="speaker-light" class="light silent">Silent</span>
+            </div>
+          </div>
+        </div>
+      </main>
+      <footer class="footer">
+        <p>: built by manishkjs@, feedback welcome.</p>
+      </footer>
+    </div>
+    <script type="module" src="/src/app.ts"></script>
+    <audio id="bot-audio" autoplay playsinline></audio>
+  </body>
+</html>

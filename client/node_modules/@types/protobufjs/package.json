@@ -1,0 +1,14 @@
+{
+    "name": "@types/protobufjs",
+    "version": "6.0.0",
+    "typings": null,
+    "description": "Stub TypeScript definitions entry for ProtoBuf.js, which provides its own types definitions",
+    "main": "",
+    "scripts": {},
+    "author": "",
+    "repository": "https://github.com/dcodeIO/ProtoBuf.js",
+    "license": "MIT",
+    "dependencies": {
+        "protobufjs": "*"
+    }
+}
