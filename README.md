@@ -136,6 +136,10 @@ gcloud run deploy <your-service-name> \
   --set-env-vars="GOOGLE_CLOUD_PROJECT=<your-gcp-project>"
 ```
 
+How to run UI:
+
+![alt text](./bot_UI.jpeg)
+
 Once deployed, Google Cloud will provide a public URL to access your application.
 
 **Contributing**
