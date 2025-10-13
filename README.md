@@ -75,7 +75,7 @@ The backend server handles the core AI pipeline.
     **.env**
     ```env
     # Example .env file
-    GEMINI_API_KEY="your_openai_api_key"
+    GEMINI_API_KEY="your_gemini_api_key"
     # Voice IDs from your TTS provider (Chirp3 HD)
     VOICE_ID_FEMALE="path_to_your_female_voice_key"
     VOICE_ID_MALE="path_to_your_male_voice_key"
