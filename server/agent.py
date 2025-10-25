@@ -12,7 +12,7 @@ from pipecat.services.google.llm import GoogleLLMService
 from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService
-from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams, FastAPIWebsocketTransport
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import Frame, TranscriptionFrame, TextFrame, StartInterruptionFrame, CancelFrame, InterimTranscriptionFrame, TranscriptionUpdateFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor

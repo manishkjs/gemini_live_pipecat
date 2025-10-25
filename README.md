@@ -31,8 +31,9 @@ Features
 
 - Python 3.8+
 - Node.js and npm (v18+)
-- Google Cloud SDK - genai
-- GCP project API keys for AI services including Gemini.
+- Google Cloud SDK (gcloud CLI)
+- GCP project with Vertex AI API enabled
+- Service account with Vertex AI permissions (or Application Default Credentials)
 
 
 Follow these steps to set up and run the project on your local machine.
@@ -70,21 +71,34 @@ The backend server handles the core AI pipeline.
     ```bash
     cp .env.example .env
     ```
-    Now, edit the `.env` file with your credentials. This is where you'll add your API keys and the voice IDs for voice cloning.
+    Now, edit the `.env` file with your credentials. This is where you'll add your Vertex AI configuration and voice cloning keys.
 
     **.env**
     ```env
-    # Example .env file
-    GEMINI_API_KEY="your_gemini_api_key"
-    # Voice IDs from your TTS provider (Chirp3 HD)
-    VOICE_ID_FEMALE="path_to_your_female_voice_key"
-    VOICE_ID_MALE="path_to_your_male_voice_key"
+    # Vertex AI Configuration
+    GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+    GCP_PROJECT_ID="your-gcp-project-id"
+    GCP_LOCATION="us-central1"
+    
+    # Voice Cloning Keys from TTS provider (Chirp3 HD)
+    CLONE_TTS_VOICE_KEY_MALE="/path/to/your/male_voice_key.txt"
+    CLONE_TTS_VOICE_KEY_FEMALE="/path/to/your/female_voice_key.txt"
     ```
-    Finally for local development on your laptop, authenticate to Google cloud using:
-   
-    ```
-    gcloud auth application-default login
+    
+    **Configuration Details:**
+    - `GOOGLE_APPLICATION_CREDENTIALS`: Path to your GCP service account JSON key file
+    - `GCP_PROJECT_ID`: Your Google Cloud Project ID (e.g., "my-project-123")
+    - `GCP_LOCATION`: GCP region for Vertex AI (e.g., "us-central1", "us-east4", "europe-west1")
+    - Voice cloning keys: File paths containing your Chirp3 HD voice cloning keys
 
+    **Setup Service Account:**
+    1. Create a service account in your GCP project with Vertex AI permissions
+    2. Download the JSON key file
+    3. Set the path in `GOOGLE_APPLICATION_CREDENTIALS`
+    
+    Alternatively, for local development, you can authenticate using:
+    ```bash
+    gcloud auth application-default login
     ```
     
 ### 3. Run the Application
@@ -111,8 +125,8 @@ This project is configured for easy deployment as a single container on Google C
 
 ### 1. Secret Management (Optional but definitely recommended for production workloads)
 
-Do not hardcode your API keys. Use Google Secret Manager to store them securely.
-Note: Pipecat shortly will integrate GCP Vertex AI platform. Post that, use Live API through vertex endpoint only.
+Do not hardcode your credentials. Use Google Secret Manager to store them securely.
+**Note:** This application now uses Vertex AI for accessing Gemini Live API, providing better integration with GCP services.
 
 ```bash
 # Set your GCP Project ID

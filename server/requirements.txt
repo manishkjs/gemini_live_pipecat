@@ -49,7 +49,7 @@ onnxruntime==1.20.1
 orjson==3.10.18
 packaging==25.0
 pillow==11.1.0
-pipecat-ai==0.0.89
+pipecat-ai==0.0.91
 propcache==0.3.2
 proto-plus==1.26.1
 protobuf==5.29.5
