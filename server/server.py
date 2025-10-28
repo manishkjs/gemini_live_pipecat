@@ -24,6 +24,7 @@ pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
 
 from agent_live import run_agent_live
 from agent import run_agent
+from agent_phone import run_phone_bot, run_phone_bot_with_tts
 from system_prompt import SYSTEM_PROMPT
 
 @asynccontextmanager
@@ -87,6 +88,101 @@ async def websocket_endpoint(
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")
+
+
+from fastapi.responses import Response
+
+@app.get("/twiml")
+async def twiml_endpoint(request: Request):
+    """
+    HTTP endpoint that returns TwiML to connect Twilio to our WebSocket
+    This is what you configure as the Voice webhook in Twilio Console
+    """
+    # Get only essential query parameters (not all Twilio metadata)
+    api_key = request.query_params.get("api_key", "")
+    bot_type = request.query_params.get("bot_type", "gemini-live")
+    model = request.query_params.get("model", "gemini-2.0-flash-exp")
+    language = request.query_params.get("language", "en-US")
+    voice = request.query_params.get("voice", "Puck")
+    
+    # Build WebSocket URL with minimal parameters
+    is_production = "K_SERVICE" in os.environ
+    
+    if is_production:
+        ws_url = f"wss://{request.url.hostname}/ws/phone"
+    else:
+        # For ngrok, we need to use the ngrok domain
+        host = request.headers.get("host", request.url.hostname)
+        ws_url = f"wss://{host}/ws/phone"
+    
+    # Add only essential parameters (much shorter URL)
+    params = [
+        f"api_key={api_key}",
+        f"bot_type={bot_type}",
+        f"model={model}",
+        f"language={language}",
+        f"voice={voice}",
+    ]
+    ws_url = f"{ws_url}?{'&'.join(params)}"
+    
+    # Escape & characters for valid XML
+    ws_url_escaped = ws_url.replace("&", "&amp;")
+    
+    # Return TwiML that streams audio to our WebSocket
+    twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{ws_url_escaped}" />
+    </Connect>
+</Response>'''
+    
+    print(f"Returning TwiML with Stream URL: {ws_url}")
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.websocket("/ws/phone")
+async def phone_websocket_endpoint(
+    websocket: WebSocket,
+    bot_type: str = "gemini-live",
+    api_key: str = "",
+    model: str = "gemini-2.0-flash-exp",
+    voice: Optional[str] = "Puck",
+    language: str = "en-US",
+    system_instruction: Optional[str] = None,
+):
+    """
+    Telephony websocket endpoint for Twilio/Telnyx
+    This endpoint receives the audio stream from Twilio
+    """
+    await websocket.accept()
+    print("Phone WebSocket connection accepted")
+    print(f"DEBUG - Received parameters:")
+    print(f"  api_key: {api_key[:20]}..." if api_key else "  api_key: EMPTY")
+    print(f"  bot_type: {bot_type}")
+    print(f"  model: {model}")
+    print(f"  voice: {voice}")
+    print(f"  language: {language}")
+    try:
+        if bot_type == "gemini-live":
+            await run_phone_bot(
+                websocket,
+                api_key=api_key,
+                model=model,
+                voice=voice,
+                language=language,
+                system_instruction=system_instruction,
+            )
+        elif bot_type == "tts-llm-stt":
+            await run_phone_bot_with_tts(
+                websocket,
+                api_key=api_key,
+                language=language,
+                system_instruction=system_instruction,
+            )
+    except Exception as e:
+        print(f"Exception in phone bot: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @app.post("/connect")

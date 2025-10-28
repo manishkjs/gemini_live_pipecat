@@ -36,9 +36,14 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         return data
 
 async def get_current_time(params: FunctionCallParams):
+    logger.info("Get current time tool called")
     await params.result_callback(
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
+
+async def post_processing(params: FunctionCallParams):
+    logger.info("Post processing tool called")
+    await params.result_callback({"status": "complete"})
 
 async def run_agent_live(
     websocket: WebSocket,
@@ -55,13 +60,10 @@ async def run_agent_live(
     use_vertex = not tts
     
     if use_vertex:
-        # Validate Vertex AI credentials
-        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable is required for Vertex AI")
-        if not os.getenv("GCP_PROJECT_ID"):
-            raise ValueError("GCP_PROJECT_ID environment variable is required for Vertex AI")
-        if not os.getenv("GCP_LOCATION"):
-            raise ValueError("GCP_LOCATION environment variable is required for Vertex AI")
+        # When using Vertex, we rely on Application Default Credentials.
+        # The project and location can often be inferred from the environment,
+        # so we don't raise an error if they are not explicitly set.
+        pass
     else:
         # Validate AI Studio API key
         if not api_key:
@@ -100,10 +102,17 @@ async def run_agent_live(
         required=[],
     )
 
+    post_processing_function = FunctionSchema(
+        name="post_processing",
+        description="A mock tool for post-processing.",
+        properties={},
+        required=[],
+    )
+
     #search_tool = {"google_search": {}}
 
     tools = ToolsSchema(
-        standard_tools=[time_function],
+        standard_tools=[time_function, post_processing_function],
         #custom_tools={AdapterType.GEMINI: [search_tool]},
     )
 
@@ -158,12 +167,12 @@ async def run_agent_live(
         )
     else:
         # Use Vertex AI for native Gemini voices (AUDIO modality)
-        credentials_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-        project_id = str(os.getenv("GCP_PROJECT_ID"))
-        location = str(os.getenv("GCP_LOCATION"))
-        
+        # Let the service use Application Default Credentials and auto-detect project/location
+        # by passing `None` if the environment variables are not set.
+        project_id = os.getenv("GCP_PROJECT_ID")
+        location = os.getenv("GCP_LOCATION")
+
         llm_params = {
-            "credentials_path": credentials_path,
             "project_id": project_id,
             "location": location,
             "model": f"google/{model}",
@@ -178,6 +187,7 @@ async def run_agent_live(
         tts_service = None
 
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("post_processing", post_processing)
 
     context = OpenAILLMContext(
         [
