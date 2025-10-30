@@ -49,10 +49,8 @@ async def websocket_endpoint(
     bot_type: str = "tts-llm-stt",
     api_key: str = "",
     model: str = "gemini-2.5-flash-native-audio-preview-09-2025",
-    #gemini-2.5-flash-native-audio-preview-09-2025
     voice: Optional[str] = "Puck",
     language: str = "en-US",
-    system_instruction: Optional[str] = None,
     tts: bool = True,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",
     tts_pace: float = 0.80,
@@ -62,6 +60,7 @@ async def websocket_endpoint(
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
+    print(f"Using system prompt from system_prompt.py")
     try:
         if bot_type == "gemini-live":
             await run_agent_live(
@@ -70,7 +69,7 @@ async def websocket_endpoint(
                 model=model,
                 voice=voice,
                 language=language,
-                system_instruction=system_instruction,
+                system_instruction=None,  # Always use SYSTEM_PROMPT from file
                 tts=tts,
                 tts_pace=tts_pace,
             )
@@ -83,7 +82,7 @@ async def websocket_endpoint(
                 llm_model=llm_model,
                 stt_model=stt_model,
                 stt_language=stt_language,
-                system_instruction=system_instruction,
+                system_instruction=None,  # Always use SYSTEM_PROMPT from file
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")

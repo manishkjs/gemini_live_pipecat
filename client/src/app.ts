@@ -87,19 +87,8 @@ class WebsocketClientApp {
       });
     }
 
-    const shortPauseBtn = document.getElementById("pause-short-btn");
-    const longPauseBtn = document.getElementById("pause-long-btn");
-    const systemInstructionsTextarea = document.getElementById(
-      "tts-llm-stt-system-instructions-textarea"
-    ) as HTMLTextAreaElement;
-
-    shortPauseBtn?.addEventListener("click", () => {
-      systemInstructionsTextarea.value += " [pause short]";
-    });
-
-    longPauseBtn?.addEventListener("click", () => {
-      systemInstructionsTextarea.value += " [pause long]";
-    });
+    // System instructions are now managed in server/system_prompt.py
+    // No pause buttons or textarea editing needed in the UI
 
     const geminiModelSelect = document.getElementById("gemini-model-select") as HTMLSelectElement;
     const ttsWarning = document.getElementById("tts-warning") as HTMLDivElement;
@@ -133,27 +122,8 @@ class WebsocketClientApp {
     ttsToggle?.addEventListener("change", handleModelChange);
   }
 
-  public async loadSystemPrompt(): Promise<void> {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/system-prompt`);
-      const data = await response.json();
-      const geminiSystemInstructionsTextarea = document.getElementById(
-        "system-instructions-textarea"
-      ) as HTMLTextAreaElement;
-      if (geminiSystemInstructionsTextarea) {
-        geminiSystemInstructionsTextarea.value = data.system_prompt;
-      }
-
-      const ttsLlmSttSystemInstructionsTextarea = document.getElementById(
-        "tts-llm-stt-system-instructions-textarea"
-      ) as HTMLTextAreaElement;
-      if (ttsLlmSttSystemInstructionsTextarea) {
-        ttsLlmSttSystemInstructionsTextarea.value = data.system_prompt;
-      }
-    } catch (error) {
-      this.log(`Error loading system prompt: ${error}`, "error");
-    }
-  }
+  // System prompt is now managed entirely in server/system_prompt.py
+  // No need to load it into the UI
 
   private switchTab(tab: HTMLButtonElement): void {
     const tabId = tab.dataset.tab;
@@ -346,7 +316,6 @@ class WebsocketClientApp {
       }
 
       let connectUrl = `/connect?bot_type=${this.activeTab}&api_key=${apiKey}`;
-      let systemInstructions = "";
 
       if (this.activeTab === "tts-llm-stt") {
         const ttsVoiceSelect = document.getElementById(
@@ -361,9 +330,6 @@ class WebsocketClientApp {
         const sttLanguageSelect = document.getElementById(
           "stt-language-select"
         ) as HTMLSelectElement;
-        const systemInstructionsTextarea = document.getElementById(
-          "tts-llm-stt-system-instructions-textarea"
-        ) as HTMLTextAreaElement;
         const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
 
         connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
@@ -371,7 +337,6 @@ class WebsocketClientApp {
         connectUrl += `&llm_model=${llmModelSelect.value}`;
         connectUrl += `&stt_model=${sttModelSelect.value}`;
         connectUrl += `&stt_language=${sttLanguageSelect.value}`;
-        systemInstructions = systemInstructionsTextarea.value;
       } else {
         const geminiModelSelect = document.getElementById(
           "gemini-model-select"
@@ -382,9 +347,6 @@ class WebsocketClientApp {
         const geminiLanguageSelect = document.getElementById(
           "gemini-language-select"
         ) as HTMLSelectElement;
-        const geminiSystemInstructionsTextarea = document.getElementById(
-          "system-instructions-textarea"
-        ) as HTMLTextAreaElement;
         const ttsToggle = document.getElementById(
           "tts-toggle"
         ) as HTMLInputElement;
@@ -397,14 +359,10 @@ class WebsocketClientApp {
         connectUrl += `&language=${geminiLanguageSelect.value}`;
         connectUrl += `&tts=${ttsToggle.checked}`;
         connectUrl += `&tts_pace=${livePaceSlider.value}`;
-        systemInstructions = geminiSystemInstructionsTextarea.value;
       }
 
-      if (systemInstructions) {
-        connectUrl += `&system_instruction=${encodeURIComponent(
-          systemInstructions
-        )}`;
-      }
+      // System instruction is always loaded from server/system_prompt.py
+      // No need to send it from the client
 
       const RTVIConfig: RTVIClientOptions = {
         transport,
@@ -499,5 +457,5 @@ declare global {
 window.addEventListener("DOMContentLoaded", () => {
   window.WebsocketClientApp = WebsocketClientApp;
   const app = new WebsocketClientApp();
-  app.loadSystemPrompt();
+  // System prompt is managed server-side, no need to load it
 });

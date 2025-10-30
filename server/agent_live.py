@@ -21,7 +21,6 @@ from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
@@ -36,8 +35,11 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         return data
 
 async def get_current_time(params: FunctionCallParams):
+    """Get the current time"""
+    current_time = datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
+    logger.info(f"get_current_time function called - returning: {current_time}")
     await params.result_callback(
-        {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
+        {"time": current_time}
     )
 
 async def run_agent_live(
@@ -50,23 +52,6 @@ async def run_agent_live(
     tts: bool = True,
     tts_pace: float = 0.80,
 ):
-    # When using external TTS (custom voice cloning), we use AI Studio
-    # When using native Gemini voices, we use Vertex AI
-    use_vertex = not tts
-    
-    if use_vertex:
-        # Validate Vertex AI credentials
-        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable is required for Vertex AI")
-        if not os.getenv("GCP_PROJECT_ID"):
-            raise ValueError("GCP_PROJECT_ID environment variable is required for Vertex AI")
-        if not os.getenv("GCP_LOCATION"):
-            raise ValueError("GCP_LOCATION environment variable is required for Vertex AI")
-    else:
-        # Validate AI Studio API key
-        if not api_key:
-            raise ValueError("Google API key is required for AI Studio (when using external TTS)")
-
     gender = "female"
     if voice == "Custom-Male":
         gender = "male"
@@ -158,12 +143,22 @@ async def run_agent_live(
         )
     else:
         # Use Vertex AI for native Gemini voices (AUDIO modality)
-        credentials_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-        project_id = str(os.getenv("GCP_PROJECT_ID"))
-        location = str(os.getenv("GCP_LOCATION"))
+        # credentials_path is optional - if not set, Vertex AI will use Cloud Run's default credentials
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        project_id = os.getenv("GCP_PROJECT_ID")
+        location = os.getenv("GCP_LOCATION", "us-central1")  # Default location
+        
+        # If project_id not set, try to get it from Cloud Run metadata
+        if not project_id:
+            try:
+                import google.auth
+                _, project_id = google.auth.default()
+                logger.info(f"Auto-detected GCP project: {project_id}")
+            except Exception as e:
+                logger.error(f"Could not auto-detect project ID: {e}")
+                raise ValueError("GCP_PROJECT_ID environment variable not set and could not auto-detect")
         
         llm_params = {
-            "credentials_path": credentials_path,
             "project_id": project_id,
             "location": location,
             "model": f"google/{model}",
@@ -172,6 +167,11 @@ async def run_agent_live(
             "transcribe_model_audio": True,
             "params": InputParams(language=pipecat_language),
         }
+        
+        # Only include credentials_path if explicitly provided (for local dev)
+        # On Cloud Run, omitting this allows automatic use of the service account
+        if credentials_path:
+            llm_params["credentials_path"] = credentials_path
         if voice:
             llm_params["voice_id"] = voice
         llm = GeminiLiveVertexLLMService(**llm_params)
@@ -190,41 +190,8 @@ async def run_agent_live(
 
     context_aggregator = llm.create_context_aggregator(context)
 
-    # Create user idle handler with retry callback
-    async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
-        """Handle user idle with escalating prompts"""
-        logger.info(f"User idle detected, retry count: {retry_count}")
-
-        if retry_count == 1:
-            user_instruction = "ask me if I am able to hear you"
-            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
-            return True  # Continue monitoring
-        elif retry_count == 2:
-            user_instruction = "ask me if I am still here"
-            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
-            return True  # Continue monitoring
-        elif retry_count == 3:
-            # Final attempt: speak the message.
-            user_instruction = "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
-            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
-            return True # Continue monitoring to allow message to be spoken
-        elif retry_count == 4:
-            # Terminate the call after the final message has been spoken.
-            await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
-            return False # Stop monitoring
-        else:
-            logger.info(f"User idle after {retry_count} retries, stopping idle monitoring")
-            return False
-
-    # Create idle processor with 5 second timeout
-    user_idle = UserIdleProcessor(
-        callback=handle_user_idle,
-        timeout=5.0
-    )
-
     pipeline_processors = [
         transport.input(),
-        user_idle,  # Monitor user idle/activity
         context_aggregator.user(),
         llm,  # LLM
     ]

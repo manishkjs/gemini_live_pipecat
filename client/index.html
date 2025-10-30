@@ -160,18 +160,8 @@
                   <input type="range" id="tts-pace-slider" min="0.25" max="2" step="0.01" value="1.0">
                   <span id="tts-pace-value">1.0</span>
                 </div>
-                <div class="setting">
-                  <label>Pause</label>
-                  <div class="pause-buttons">
-                    <button id="pause-short-btn">[pause short]</button>
-                    <button id="pause-long-btn">[pause long]</button>
-                  </div>
-                </div>
               </div>
-              <div class="system-instructions">
-                <h5>System Instructions</h5>
-                <textarea id="tts-llm-stt-system-instructions-textarea" rows="4"></textarea>
-              </div>
+              <!-- System instructions are managed in server/system_prompt.py -->
             </div>
             <div id="gemini-live-panel" class="config-panel">
               <h4>Gemini Live API Configuration</h4>
@@ -272,10 +262,7 @@
                   <input type="checkbox" id="interrupt-handling-toggle" />
                 </div>
               </div>
-              <div class="system-instructions">
-                <h5>System Instructions</h5>
-                <textarea id="system-instructions-textarea" rows="4"></textarea>
-              </div>
+              <!-- System instructions are managed in server/system_prompt.py -->
             </div>
           </div>
         </div>
