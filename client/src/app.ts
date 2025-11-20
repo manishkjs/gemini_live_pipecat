@@ -340,9 +340,7 @@ class WebsocketClientApp {
       const apiKey = apiKeyInput.value;
 
       if (!apiKey) {
-        this.log("API key is required", "error");
-        this.updateStatus("Error");
-        return;
+        this.log("No API key provided, attempting to use server-side credentials (Vertex AI)", "warning");
       }
 
       let connectUrl = `/connect?bot_type=${this.activeTab}&api_key=${apiKey}`;

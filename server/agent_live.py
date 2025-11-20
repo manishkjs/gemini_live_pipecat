@@ -56,12 +56,16 @@ async def run_agent_live(
     
     if use_vertex:
         # Validate Vertex AI credentials
-        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable is required for Vertex AI")
-        if not os.getenv("GCP_PROJECT_ID"):
-            raise ValueError("GCP_PROJECT_ID environment variable is required for Vertex AI")
-        if not os.getenv("GCP_LOCATION"):
-            raise ValueError("GCP_LOCATION environment variable is required for Vertex AI")
+        # On Cloud Run, GOOGLE_APPLICATION_CREDENTIALS is not set (uses ADC)
+        # so we don't strictly check for it.
+        
+        project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION")
+        
+        if not project_id:
+            raise ValueError("GCP_PROJECT_ID or GOOGLE_CLOUD_PROJECT environment variable is required for Vertex AI")
+        if not location:
+            raise ValueError("GCP_LOCATION or GOOGLE_CLOUD_LOCATION environment variable is required for Vertex AI")
     else:
         # Validate AI Studio API key
         if not api_key:
@@ -71,15 +75,47 @@ async def run_agent_live(
     if voice == "Custom-Male":
         gender = "male"
 
-    system_prompt = SYSTEM_PROMPT.replace("female", gender)
+    logger.info(f"Starting agent with language: {language}")
+    
+    if system_instruction:
+        prompt_text = system_instruction
+    else:
+        prompt_text = SYSTEM_PROMPT.replace("female", gender)
+    
+    # Append language instruction to system prompt to ensure model respects the selection
+    prompt_text += f"\n\nIMPORTANT: You must converse in {language} language."
 
     language_map = {
+        "ar-XA": Language.AR,
+        "bn-IN": Language.BN_IN,
+        "cmn-CN": Language.CMN_CN,
+        "de-DE": Language.DE_DE,
         "en-US": Language.EN_US,
         "en-GB": Language.EN_GB,
         "en-IN": Language.EN_IN,
+        "en-AU": Language.EN_AU,
         "es-ES": Language.ES_ES,
+        "es-US": Language.ES_US,
         "fr-FR": Language.FR_FR,
+        "fr-CA": Language.FR_CA,
+        "gu-IN": Language.GU_IN,
         "hi-IN": Language.HI_IN,
+        "id-ID": Language.ID_ID,
+        "it-IT": Language.IT_IT,
+        "ja-JP": Language.JA_JP,
+        "kn-IN": Language.KN_IN,
+        "ko-KR": Language.KO_KR,
+        "ml-IN": Language.ML_IN,
+        "mr-IN": Language.MR_IN,
+        "nl-NL": Language.NL_NL,
+        "pl-PL": Language.PL_PL,
+        "pt-BR": Language.PT_BR,
+        "ru-RU": Language.RU_RU,
+        "ta-IN": Language.TA_IN,
+        "te-IN": Language.TE_IN,
+        "th-TH": Language.TH_TH,
+        "tr-TR": Language.TR_TR,
+        "vi-VN": Language.VI_VN,
     }
     pipecat_language = language_map.get(language, Language.EN_US)
     transport = FastAPIWebsocketTransport(
@@ -107,15 +143,20 @@ async def run_agent_live(
         #custom_tools={AdapterType.GEMINI: [search_tool]},
     )
 
-    if tts:
+    # Determine if we need external TTS
+    # We use external TTS if:
+    # 1. The tts flag is explicitly True
+    # 2. A cloned voice is requested (Custom-Male/Custom-Female)
+    use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
+
+    tts_service = None
+    if use_external_tts:
         if voice == "Custom-Male":
             voice_key_path = os.getenv("CLONE_TTS_VOICE_KEY_MALE")
             if not voice_key_path:
                 raise ValueError("CLONE_TTS_VOICE_KEY_MALE environment variable not set")
             with open(voice_key_path, "r") as f:
                 key = f.read()
-            # For cloned voices, use en-US as the base language code
-            # The voice cloning will handle the accent/style
             tts_service = GoogleTTSService(
                 voice_cloning_key=key,
                 params=GoogleTTSService.InputParams(
@@ -128,8 +169,6 @@ async def run_agent_live(
                 raise ValueError("CLONE_TTS_VOICE_KEY_FEMALE environment variable not set")
             with open(voice_key_path, "r") as f:
                 key = f.read()
-            # For cloned voices, use en-US as the base language code
-            # The voice cloning will handle the accent/style
             tts_service = GoogleTTSService(
                 voice_cloning_key=key,
                 params=GoogleTTSService.InputParams(
@@ -137,45 +176,76 @@ async def run_agent_live(
                 )
             )
         else:
+            # If voice is None or empty, use a default
+            voice_id = voice if voice else "Aoede"
             tts_service = GoogleTTSService(
-                voice_id=f"{language}-Chirp3-HD-{voice}",
+                voice_id=f"{language}-Chirp3-HD-{voice_id}",
                 params=GoogleTTSService.InputParams(
                     language=pipecat_language
                 )
             )
 
-        # Use AI Studio for external TTS (supports TEXT modality cleanly)
+    # Determine LLM modalities based on TTS usage
+    # If using external TTS, we only need TEXT from the LLM
+    # If using native LLM audio, we need AUDIO from the LLM
+    llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
+
+    # Select LLM Service
+    vertex_models = [
+        "gemini-live-2.5-flash",
+        "gemini-2.0-flash-live-preview-04-09",
+        "gemini-live-2.5-flash-preview-native-audio-09-2025"
+    ]
+    
+    if api_key and model not in vertex_models:
+        # Use AI Studio (GeminiLiveLLMService)
         llm = GeminiLiveLLMService(
             api_key=api_key,
             model=f"models/{model}",
-            system_instruction=system_instruction or system_prompt,
+            system_instruction=prompt_text,
             tools=tools,
             transcribe_model_audio=True,
             params=InputParams(
-                language=pipecat_language,
-                modalities=GeminiModalities.TEXT  # Text-only mode for external TTS
+                language=pipecat_language.value,
+                modalities=llm_modalities,
             )
         )
     else:
-        # Use Vertex AI for native Gemini voices (AUDIO modality)
-        credentials_path = str(os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-        project_id = str(os.getenv("GCP_PROJECT_ID"))
-        location = str(os.getenv("GCP_LOCATION"))
+        # Use Vertex AI (GeminiLiveVertexLLMService)
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+        
+        if not project_id:
+            try:
+                import google.auth
+                _, project_id = google.auth.default()
+                logger.info(f"Auto-detected GCP project: {project_id}")
+            except Exception as e:
+                logger.error(f"Could not auto-detect project ID: {e}")
+                raise ValueError("GCP_PROJECT_ID environment variable not set and could not auto-detect")
         
         llm_params = {
-            "credentials_path": credentials_path,
             "project_id": project_id,
             "location": location,
             "model": f"google/{model}",
-            "system_instruction": system_prompt,
+            "system_instruction": prompt_text,
             "tools": tools,
             "transcribe_model_audio": True,
-            "params": InputParams(language=pipecat_language),
+            "params": InputParams(
+                language=pipecat_language.value,
+                modalities=llm_modalities,
+            ),
         }
-        if voice:
+        
+        if credentials_path:
+            llm_params["credentials_path"] = credentials_path
+        
+        # Only pass voice_id if we are NOT using external TTS
+        if not use_external_tts and voice:
             llm_params["voice_id"] = voice
+            
         llm = GeminiLiveVertexLLMService(**llm_params)
-        tts_service = None
 
     llm.register_function("get_current_time", get_current_time)
 
@@ -183,7 +253,7 @@ async def run_agent_live(
         [
             {
                 "role": "user",
-                "content": system_instruction or system_prompt,
+                "content": prompt_text,
             }
         ],
     )
