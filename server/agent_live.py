@@ -61,12 +61,17 @@ class GeminiSessionLoggerMixin:
         # Log Token Usage
         if hasattr(message, 'usage_metadata') and message.usage_metadata:
             usage = message.usage_metadata
+            
+            def format_details(details):
+                if not details: return ""
+                return " (" + ", ".join([f"{d.modality}: {d.token_count}" for d in details]) + ")"
+
             logger.info(
                 f"Turn Token Usage:\n"
-                f"  - Prompt: {getattr(usage, 'prompt_token_count', 0)}\n"
-                f"  - Cached Content: {getattr(usage, 'cached_content_token_count', 0)}\n"
-                f"  - Response: {getattr(usage, 'response_token_count', 0)}\n"
-                f"  - Tool Use Prompt: {getattr(usage, 'tool_use_prompt_token_count', 0)}\n"
+                f"  - Prompt: {getattr(usage, 'prompt_token_count', 0)}{format_details(getattr(usage, 'prompt_tokens_details', []))}\n"
+                f"  - Cached Content: {getattr(usage, 'cached_content_token_count', 0)}{format_details(getattr(usage, 'cache_tokens_details', []))}\n"
+                f"  - Response: {getattr(usage, 'response_token_count', 0)}{format_details(getattr(usage, 'response_tokens_details', []))}\n"
+                f"  - Tool Use Prompt: {getattr(usage, 'tool_use_prompt_token_count', 0)}{format_details(getattr(usage, 'tool_use_prompt_tokens_details', []))}\n"
                 f"  - Thoughts: {getattr(usage, 'thoughts_token_count', 0)}\n"
                 f"  - Total: {getattr(usage, 'total_token_count', 0)}"
             )
