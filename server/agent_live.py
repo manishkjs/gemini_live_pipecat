@@ -1,5 +1,10 @@
 import os
 import websockets
+import json
+import asyncio
+import re
+import google.auth
+from rag_function import search_knowledge_base_schema, search_knowledge_base_handler as rag_search_handler
 from typing import Optional
 from loguru import logger
 from fastapi import WebSocket
@@ -16,8 +21,15 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.frames.frames import (
+    EndTaskFrame,
+    Frame,
+    StartInterruptionFrame,
+    CancelFrame,
+    LLMMessagesAppendFrame,
+    FunctionCallResultFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
@@ -41,6 +53,37 @@ async def get_current_time(params: FunctionCallParams):
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
 
+async def search_knowledge_base_handler(params: FunctionCallParams):
+    """Handle search_knowledge_base function calls using Vertex AI RAG (wrapped for blocking)."""
+
+    # This is a hack to force the function to block until the result is
+    # processed. The base LLMService does not await the function handler, so
+    # for async tool calls, we need to block manually.
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    new_callback = params.result_callback
+
+    async def _result_callback_wrapper(result, *, properties=None):
+        await new_callback(result, properties=properties)
+        
+        # Explicitly send the tool result to the LLM
+        tool_result_message = {
+            "role": "tool",
+            "content": json.dumps(result),
+            "tool_call_id": params.tool_call_id,
+            "tool_call_name": params.function_name,
+        }
+        await params.llm._tool_result(tool_result_message)
+        
+        future.set_result(None)
+
+    params.result_callback = _result_callback_wrapper
+
+    # Call the actual handler from rag_function.py
+    await rag_search_handler(params)
+
+    await future
+
 class GeminiSessionLoggerMixin:
     """Mixin to add session ID logging and token usage tracking."""
 
@@ -50,8 +93,8 @@ class GeminiSessionLoggerMixin:
             session_id = None
             if hasattr(message, 'session_resumption_update') and message.session_resumption_update:
                 session_id = message.session_resumption_update.new_handle
-            elif self._session: # Fallback to session object
-                 session_id = getattr(self._session, 'session_id', None) or getattr(self._session, 'id', None)
+            elif self._session: # type: ignore
+                 session_id = getattr(self._session, 'session_id', None) or getattr(self._session, 'id', None) # type: ignore
             
             if session_id:
                 self._session_id = session_id
@@ -77,51 +120,92 @@ class GeminiSessionLoggerMixin:
             )
 
         # Standard Processing
-        self._check_and_reset_failure_counter()
+        self._check_and_reset_failure_counter() # type: ignore
         
         if message.server_content:
             if message.server_content.model_turn:
-                await self._handle_msg_model_turn(message)
+                await self._handle_msg_model_turn(message) # type: ignore
             
             if message.server_content.turn_complete:
-                await self._handle_msg_turn_complete(message)
+                await self._handle_msg_turn_complete(message) # type: ignore
                 # usage_metadata is often attached to turn_complete message
                 if message.usage_metadata:
-                    await self._handle_msg_usage_metadata(message)
+                    await self._handle_msg_usage_metadata(message) # type: ignore
             
             if message.server_content.input_transcription:
-                await self._handle_msg_input_transcription(message)
+                await self._handle_msg_input_transcription(message) # type: ignore
             
             if message.server_content.output_transcription:
-                await self._handle_msg_output_transcription(message)
+                await self._handle_msg_output_transcription(message) # type: ignore
             
             if message.server_content.grounding_metadata:
-                await self._handle_msg_grounding_metadata(message)
+                await self._handle_msg_grounding_metadata(message) # type: ignore
                 
         elif message.tool_call:
-            await self._handle_msg_tool_call(message)
+            logger.info(f"🔧 [DEBUG] Received tool call: {message.tool_call}")
+            try:
+                await self._handle_msg_tool_call(message) # type: ignore
+                logger.info("✅ [DEBUG] Finished tool call handling (Response sent to Gemini)")
+            except Exception as e:
+                logger.error(f"❌ [DEBUG] Error in tool call handling: {e}")
+                raise e
         elif message.session_resumption_update:
-            self._handle_msg_resumption_update(message)
+            self._handle_msg_resumption_update(message) # type: ignore
 
     async def _connection_task_handler(self, config: LiveConnectConfig):
-        async with self._client.aio.live.connect(model=self._model_name, config=config) as session:
+        async with self._client.aio.live.connect(model=self._model_name, config=config) as session: # type: ignore
             logger.info("Connected to Gemini service")
             self._connection_start_time = time.time()
-            await self._handle_session_ready(session)
+            await self._handle_session_ready(session) # type: ignore
 
             while True:
                 try:
-                    turn = self._session.receive()
+                    turn = self._session.receive() # type: ignore
                     async for message in turn:
                         await self._process_message(message)
                 except Exception as e:
-                    if not self._disconnecting and await self._handle_connection_error(e):
-                        await self._reconnect()
+                    if not self._disconnecting and await self._handle_connection_error(e): # type: ignore
+                        await self._reconnect() # type: ignore
                         return
                     break
 
-class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService): pass
-class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, FunctionCallResultFrame):
+            # The base class doesn't handle this frame, so we do it here.
+            # This is a bit of a hack, but it's the easiest way to get the
+            # tool result back to the model without rewriting a bunch of code.
+            tool_result_message = {
+                "role": "tool",
+                "content": json.dumps(frame.result),
+                "tool_call_id": frame.tool_call_id,
+                "tool_call_name": frame.function_name,
+            }
+            await super()._tool_result(tool_result_message)  # type: ignore
+            return
+        await super().process_frame(frame, direction)
+
+    async def _tool_result(self, message):
+        await super()._tool_result(message)
+
+class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, FunctionCallResultFrame):
+            # The base class doesn't handle this frame, so we do it here.
+            # This is a bit of a hack, but it's the easiest way to get the
+            # tool result back to the model without rewriting a bunch of code.
+            tool_result_message = {
+                "role": "tool",
+                "content": json.dumps(frame.result),
+                "tool_call_id": frame.tool_call_id,
+                "tool_call_name": frame.function_name,
+            }
+            await super()._tool_result(tool_result_message)  # type: ignore
+            return
+        await super().process_frame(frame, direction)
+
+    async def _tool_result(self, message):
+        await super()._tool_result(message)
 
 async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
     use_vertex = not tts
@@ -159,9 +243,18 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
         )
     )
 
-    tools = ToolsSchema(standard_tools=[FunctionSchema(
-        name="get_current_time", description="Get the current time.", properties={}, required=[]
-    )])
+    # RAG via Tool Calling (Function Calling)
+    tools = ToolsSchema(
+        standard_tools=[
+            FunctionSchema(
+                name="get_current_time", 
+                description="Get the current time.", 
+                properties={}, 
+                required=[]
+            ),
+            search_knowledge_base_schema
+        ],
+    )
 
     use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
     tts_service = None
@@ -204,8 +297,9 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("search_knowledge_base", search_knowledge_base_handler)
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext([{"role": "user", "content": prompt_text}]))
-
+    
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
         logger.info(f"User idle detected, retry count: {retry_count}")
         if retry_count < 4:
@@ -221,7 +315,7 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=50.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
