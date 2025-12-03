@@ -37,7 +37,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 
-from google.genai.types import LiveConnectConfig
+from google.genai.types import LiveConnectConfig, FunctionResponse
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
@@ -66,14 +66,8 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
     async def _result_callback_wrapper(result, *, properties=None):
         await new_callback(result, properties=properties)
         
-        # Explicitly send the tool result to the LLM
-        tool_result_message = {
-            "role": "tool",
-            "content": json.dumps(result),
-            "tool_call_id": params.tool_call_id,
-            "tool_call_name": params.function_name,
-        }
-        await params.llm._tool_result(tool_result_message)
+        # The result is now handled by the batched LLM service wrapper
+        # We just need to ensure the future is set to unblock the handler
         
         future.set_result(None)
 
@@ -169,20 +163,71 @@ class GeminiSessionLoggerMixin:
                         return
                     break
 
-class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, FunctionCallResultFrame):
-            # The base class doesn't handle this frame, so we do it here.
-            # This is a bit of a hack, but it's the easiest way to get the
-            # tool result back to the model without rewriting a bunch of code.
+    async def run_function_calls(self, function_calls):
+        # Initialize batch tracking for this set of function calls
+        self._pending_tool_calls = {fc.tool_call_id for fc in function_calls}
+        self._tool_results_buffer = []
+        logger.info(f"⚡ [BATCH] Starting batch of {len(self._pending_tool_calls)} tool calls: {self._pending_tool_calls}")
+        await super().run_function_calls(function_calls)
+
+    def register_function(self, function_name, handler, **kwargs):
+        # Wrap the handler to intercept the result callback for batching
+        async def wrapped_handler(params: FunctionCallParams):
+            original_callback = params.result_callback
+            
+            async def intercepted_callback(result, properties=None):
+                # Call the original callback (pushes frames downstream/upstream)
+                await original_callback(result, properties=properties)
+                # Handle the result for batching
+                await self._handle_tool_result(params.tool_call_id, params.function_name, result)
+            
+            params.result_callback = intercepted_callback
+            await handler(params)
+            
+        super().register_function(function_name, wrapped_handler, **kwargs)
+
+    async def _handle_tool_result(self, tool_call_id, function_name, result):
+        if not hasattr(self, "_pending_tool_calls"):
+            # Fallback if run_function_calls wasn't called (shouldn't happen in normal flow)
+            logger.warning(f"⚠️ [BATCH] _pending_tool_calls not initialized. Sending single result.")
             tool_result_message = {
                 "role": "tool",
-                "content": json.dumps(frame.result),
-                "tool_call_id": frame.tool_call_id,
-                "tool_call_name": frame.function_name,
+                "content": json.dumps(result),
+                "tool_call_id": tool_call_id,
+                "tool_call_name": function_name,
             }
-            await super()._tool_result(tool_result_message)  # type: ignore
+            await self._tool_result(tool_result_message)
             return
+
+        logger.info(f"⚡ [BATCH] Received result for {function_name}:{tool_call_id}")
+        
+        # Add to buffer
+        self._tool_results_buffer.append(
+            FunctionResponse(
+                name=function_name,
+                id=tool_call_id,
+                response={"content": result} if isinstance(result, str) else result
+            )
+        )
+        
+        # Remove from pending
+        if tool_call_id in self._pending_tool_calls:
+            self._pending_tool_calls.remove(tool_call_id)
+        
+        # Check if batch is complete
+        if not self._pending_tool_calls:
+            logger.info(f"⚡ [BATCH] Batch complete. Sending {len(self._tool_results_buffer)} results to Gemini.")
+            try:
+                await self._session.send_tool_response(function_responses=self._tool_results_buffer)
+            except Exception as e:
+                logger.error(f"❌ [BATCH] Error sending tool response: {e}")
+            
+            # Reset buffer
+            self._tool_results_buffer = []
+
+class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        # We no longer need to handle FunctionCallResultFrame here for sending results
         await super().process_frame(frame, direction)
 
     async def _tool_result(self, message):
@@ -190,18 +235,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, FunctionCallResultFrame):
-            # The base class doesn't handle this frame, so we do it here.
-            # This is a bit of a hack, but it's the easiest way to get the
-            # tool result back to the model without rewriting a bunch of code.
-            tool_result_message = {
-                "role": "tool",
-                "content": json.dumps(frame.result),
-                "tool_call_id": frame.tool_call_id,
-                "tool_call_name": frame.function_name,
-            }
-            await super()._tool_result(tool_result_message)  # type: ignore
-            return
+        # We no longer need to handle FunctionCallResultFrame here for sending results
         await super().process_frame(frame, direction)
 
     async def _tool_result(self, message):
