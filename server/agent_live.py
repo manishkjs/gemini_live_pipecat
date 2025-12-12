@@ -233,7 +233,11 @@ class GeminiSessionLoggerMixin:
             # Add tools to configuration, if provided
             if self._tools:
                 logger.debug(f"Setting tools: {self._tools}")
-                config.tools = self._tools.to_google_tools()
+                # Manually convert tools to Google format since ToolsSchema doesn't have to_google_tools
+                # and we don't have easy access to the adapter instance here
+                from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
+                adapter = GeminiLLMAdapter()
+                config.tools = adapter.to_provider_tools_format(self._tools)
 
             self._connection_task = self.create_task(self._connection_task_handler(config))
         except Exception as e:
