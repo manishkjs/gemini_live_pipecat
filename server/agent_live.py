@@ -25,7 +25,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 
-from google.genai.types import LiveConnectConfig
+from google.genai.types import LiveConnectConfig, HttpOptions
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
@@ -124,7 +124,8 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 
 async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
-    use_vertex = not tts
+    vertex_models = ["gemini-live-2.5-flash", "gemini-live-2.5-flash-preview-native-audio-09-2025"]
+    use_vertex = model in vertex_models
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION")
     
@@ -178,12 +179,14 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
             tts_service = GoogleTTSService(voice_id=f"{language}-Chirp3-HD-{voice_id}", params=GoogleTTSService.InputParams(language=pipecat_language))
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
-    vertex_models = ["gemini-live-2.5-flash", "gemini-2.0-flash-live-preview-04-09", "gemini-live-2.5-flash-preview-native-audio-09-2025"]
     
     common_params = {
         "system_instruction": prompt_text, "tools": tools, "transcribe_model_audio": True,
         "params": InputParams(language=pipecat_language, modalities=llm_modalities)
     }
+
+    if model == "gemini-2.5-flash-native-audio-eap-11-2025":
+        common_params["http_options"] = HttpOptions(api_version="v1beta")
 
     if api_key and model not in vertex_models:
         llm = CustomGeminiLiveLLMService(api_key=api_key, model=f"models/{model}", **common_params)
