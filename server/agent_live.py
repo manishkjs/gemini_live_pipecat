@@ -25,7 +25,21 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 
-from google.genai.types import LiveConnectConfig, HttpOptions
+from google.genai.types import (
+    AudioTranscriptionConfig,
+    AutomaticActivityDetection,
+    ContextWindowCompressionConfig,
+    GenerationConfig,
+    LiveConnectConfig,
+    MediaResolution,
+    Modality,
+    RealtimeInputConfig,
+    SessionResumptionConfig,
+    SlidingWindow,
+    SpeechConfig,
+    VoiceConfig,
+    HttpOptions
+)
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
@@ -102,6 +116,129 @@ class GeminiSessionLoggerMixin:
             await self._handle_msg_tool_call(message)
         elif message.session_resumption_update:
             self._handle_msg_resumption_update(message)
+
+    async def _connect(self, session_resumption_handle: Optional[str] = None):
+        """Establish client connection to Gemini Live API."""
+        if self._session:
+            return
+
+        if session_resumption_handle:
+            logger.info(
+                f"Connecting to Gemini service with session_resumption_handle: {session_resumption_handle}"
+            )
+        else:
+            logger.info("Connecting to Gemini service")
+        try:
+            # Assemble basic configuration
+            modalities = self._settings["modalities"]
+            has_audio = modalities == GeminiModalities.AUDIO
+
+            generation_config_params = {
+                "frequency_penalty": self._settings["frequency_penalty"],
+                "max_output_tokens": self._settings["max_tokens"],
+                "presence_penalty": self._settings["presence_penalty"],
+                "temperature": self._settings["temperature"],
+                "top_k": self._settings["top_k"],
+                "top_p": self._settings["top_p"],
+                "response_modalities": [Modality(modalities.value)],
+                "media_resolution": MediaResolution(self._settings["media_resolution"].value),
+            }
+
+            if has_audio:
+                generation_config_params["speech_config"] = SpeechConfig(
+                    voice_config=VoiceConfig(
+                        prebuilt_voice_config={"voice_name": self._voice_id}
+                    ),
+                    language_code=self._settings["language"],
+                )
+
+            config = LiveConnectConfig(
+                generation_config=GenerationConfig(**generation_config_params),
+                input_audio_transcription=AudioTranscriptionConfig(),
+                session_resumption=SessionResumptionConfig(handle=session_resumption_handle),
+            )
+
+            if has_audio:
+                config.output_audio_transcription = AudioTranscriptionConfig()
+
+            # Add context window compression to configuration, if enabled
+            if self._settings.get("context_window_compression", {}).get("enabled", False):
+                compression_config = ContextWindowCompressionConfig()
+
+                # Add sliding window (always true if compression is enabled)
+                compression_config.sliding_window = SlidingWindow()
+
+                # Add trigger_tokens if specified
+                trigger_tokens = self._settings.get("context_window_compression", {}).get(
+                    "trigger_tokens"
+                )
+                if trigger_tokens is not None:
+                    compression_config.trigger_tokens = trigger_tokens
+
+                config.context_window_compression = compression_config
+
+            # Add thinking configuration to configuration, if provided
+            if self._settings.get("thinking"):
+                config.thinking_config = self._settings["thinking"]
+
+            # Add affective dialog setting, if provided
+            if self._settings.get("enable_affective_dialog", False):
+                config.enable_affective_dialog = self._settings["enable_affective_dialog"]
+
+            # Add proactivity configuration to configuration, if provided
+            if self._settings.get("proactivity"):
+                config.proactivity = self._settings["proactivity"]
+
+            # Add VAD configuration to configuration, if provided
+            if self._settings.get("vad"):
+                vad_config = AutomaticActivityDetection()
+                vad_params = self._settings["vad"]
+                has_vad_settings = False
+
+                # Only add parameters that are explicitly set
+                if vad_params.disabled is not None:
+                    vad_config.disabled = vad_params.disabled
+                    has_vad_settings = True
+
+                if vad_params.start_sensitivity:
+                    vad_config.start_of_speech_sensitivity = vad_params.start_sensitivity
+                    has_vad_settings = True
+
+                if vad_params.end_sensitivity:
+                    vad_config.end_of_speech_sensitivity = vad_params.end_sensitivity
+                    has_vad_settings = True
+
+                if vad_params.prefix_padding_ms is not None:
+                    vad_config.prefix_padding_ms = vad_params.prefix_padding_ms
+                    has_vad_settings = True
+
+                if vad_params.silence_duration_ms is not None:
+                    vad_config.silence_duration_ms = vad_params.silence_duration_ms
+                    has_vad_settings = True
+
+                # Only add automatic_activity_detection if we have VAD settings
+                if has_vad_settings:
+                    config.realtime_input_config = RealtimeInputConfig(
+                        automatic_activity_detection=vad_config
+                    )
+
+            # Add system instruction to configuration, if provided
+            system_instruction = self._system_instruction or ""
+            if self._context and hasattr(self._context, "extract_system_instructions"):
+                system_instruction += "\n" + self._context.extract_system_instructions()
+            if system_instruction:
+                logger.debug(f"Setting system instruction: {system_instruction}")
+                config.system_instruction = system_instruction
+
+            # Add tools to configuration, if provided
+            if self._tools:
+                logger.debug(f"Setting tools: {self._tools}")
+                config.tools = self._tools.to_google_tools()
+
+            self._connection_task = self.create_task(self._connection_task_handler(config))
+        except Exception as e:
+            logger.error(f"Error connecting to Gemini service: {e}")
+            raise e
 
     async def _connection_task_handler(self, config: LiveConnectConfig):
         async with self._client.aio.live.connect(model=self._model_name, config=config) as session:
