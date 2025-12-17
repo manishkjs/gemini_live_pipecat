@@ -265,7 +265,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 
 async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
-    vertex_models = ["gemini-live-2.5-flash", "gemini-live-2.5-flash-preview-native-audio-09-2025"]
+    vertex_models = ["gemini-live-2.5-flash", "gemini-live-2.5-flash-preview-native-audio-09-2025", "gemini-live-2.5-flash-native-audio"]
     use_vertex = model in vertex_models
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION")
