@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
-load_dotenv(override=True)
+load_dotenv()
 
 # Monkey-patch pipecat-ai to fix a bug in the library
 # The GeminiMultimodalLiveLLMService uses the 'websockets' library but doesn't import it.

@@ -1,8 +1,8 @@
-1. question Who are the leaders of your organization/company ?
-answer Bhavin Patel and Dipesh Karki are the founders of LenDenClub, followed by the visionary industry veterans Chief Operating Officer Mudit Agarwal, Chief Business Officer Nicky Sehwani, Chief Technology Officer Nilay Kothari, Chief AI Officer VirendraKumar Pal, and Chief Finance Officer Nirav Doshi.
+1. question Who founded your company and in which year?
+answer LenDenClub was founded by Bhavin Patel and Dipesh Karki in 2015.
 
-2. question Who are the leaders at LenDenClub?
-answer Bhavin Patel and Dipesh Karki are the founders of LenDenClub, followed by the visionary industry veterans Chief Operating Officer Mudit Agarwal, Chief Business Officer Nicky Sehwani, Chief Technology Officer Nilay Kothari, Chief AI Officer VirendraKumar Pal, and Chief Finance Officer Nirav Doshi.
+2. question When was your company founded?
+answer LenDenClub was founded in 2015 by Bhavin Patel and Dipesh Karki.
 
-3. question What makes the founder duo unique?
-answer Their hands-on approach, deep tech understanding (especially from Dipesh), and strong business acumen (from Bhavin) make them a balanced founding team driving innovation in India's  peer to peer space.
+3. question How long have both founders been with the company?
+answer Bhavin Patel has been with LenDenClub since September 2014, and Dipesh Karki since July 2015. Both continue to lead the company as of 2025.

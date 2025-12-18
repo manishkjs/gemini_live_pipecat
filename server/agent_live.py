@@ -306,10 +306,16 @@ class GeminiSessionLoggerMixin:
                     break
 
     async def run_function_calls(self, function_calls):
-        # Initialize batch tracking for this set of function calls
-        self._pending_tool_calls = {fc.tool_call_id for fc in function_calls}
-        self._tool_results_buffer = []
-        logger.info(f"⚡ [BATCH] Starting batch of {len(self._pending_tool_calls)} tool calls: {self._pending_tool_calls}")
+        # Initialize batch tracking if not already present
+        if not hasattr(self, "_pending_tool_calls"):
+            self._pending_tool_calls = set()
+            self._tool_results_buffer = []
+            self._batch_timer = None
+        
+        for fc in function_calls:
+            self._pending_tool_calls.add(fc.tool_call_id)
+            
+        logger.info(f"⚡ [BATCH] Added {len(function_calls)} calls to buffer. Pending: {len(self._pending_tool_calls)}")
         await super().run_function_calls(function_calls)
 
     def register_function(self, function_name, handler, **kwargs):
@@ -318,8 +324,17 @@ class GeminiSessionLoggerMixin:
             original_callback = params.result_callback
             
             async def intercepted_callback(result, properties=None):
-                # Call the original callback (pushes frames downstream/upstream)
-                await original_callback(result, properties=properties)
+                # IMPORTANT: specific fix for batching.
+                # Do NOT call original_callback here. 
+                # original_callback sends the result to Gemini immediately, causing a separate model turn.
+                # We want to send ONLY the batched response later.
+                
+                # However, we still might want to push a FunctionCallResultFrame for UI/Metrics if needed.
+                # But typically LLMService handles that. 
+                # For now, we strictly buffer.
+                
+                # await original_callback(result, properties=properties) 
+                
                 # Handle the result for batching
                 await self._handle_tool_result(params.tool_call_id, params.function_name, result)
             
@@ -330,42 +345,105 @@ class GeminiSessionLoggerMixin:
 
     async def _handle_tool_result(self, tool_call_id, function_name, result):
         if not hasattr(self, "_pending_tool_calls"):
-            # Fallback if run_function_calls wasn't called (shouldn't happen in normal flow)
-            logger.warning(f"⚠️ [BATCH] _pending_tool_calls not initialized. Sending single result.")
-            tool_result_message = {
-                "role": "tool",
-                "content": json.dumps(result),
-                "tool_call_id": tool_call_id,
-                "tool_call_name": function_name,
-            }
-            await self._tool_result(tool_result_message)
-            return
+            self._pending_tool_calls = set()
+            self._tool_results_buffer = []
 
         logger.info(f"⚡ [BATCH] Received result for {function_name}:{tool_call_id}")
         
         # Add to buffer
-        self._tool_results_buffer.append(
-            FunctionResponse(
-                name=function_name,
-                id=tool_call_id,
-                response={"content": result} if isinstance(result, str) else result
-            )
-        )
+        self._tool_results_buffer.append({
+            "id": tool_call_id,
+            "name": function_name,
+            "result": result
+        })
         
         # Remove from pending
         if tool_call_id in self._pending_tool_calls:
             self._pending_tool_calls.remove(tool_call_id)
         
-        # Check if batch is complete
-        if not self._pending_tool_calls:
-            logger.info(f"⚡ [BATCH] Batch complete. Sending {len(self._tool_results_buffer)} results to Gemini.")
-            try:
-                await self._session.send_tool_response(function_responses=self._tool_results_buffer)
-            except Exception as e:
-                logger.error(f"❌ [BATCH] Error sending tool response: {e}")
+        # Handle debounced sending
+        if self._batch_timer:
+            self._batch_timer.cancel()
             
-            # Reset buffer
-            self._tool_results_buffer = []
+        async def _send_batch():
+            await asyncio.sleep(0.3) # Wait 300ms to catch sequential calls from Gemini
+            if not self._pending_tool_calls:
+                await self._send_consolidated_results()
+
+        self._batch_timer = asyncio.create_task(_send_batch())
+
+    async def _send_consolidated_results(self):
+        if not self._tool_results_buffer:
+            return
+            
+        logger.info(f"⚡ [CONSOLIDATED] Processing {len(self._tool_results_buffer)} results...")
+        
+        # 1. Consolidate RAG results across all calls in this window
+        rag_results = [r for r in self._tool_results_buffer if r["name"] == "search_knowledge_base"]
+        other_results = [r for r in self._tool_results_buffer if r["name"] != "search_knowledge_base"]
+        
+        master_rag_result = ""
+        if rag_results:
+            combined_content = []
+            for r in rag_results:
+                content = r["result"].get("content", "") if isinstance(r["result"], dict) else str(r["result"])
+                combined_content.append(content)
+            
+            # Deduplicate by lines and keep unique content
+            master_lines = []
+            seen = set()
+            for content in combined_content:
+                for line in content.split("\n"):
+                    clean_line = line.strip()
+                    if clean_line and clean_line not in seen:
+                        master_lines.append(line)
+                        seen.add(clean_line)
+            
+            master_rag_result = "\n".join(master_lines)
+
+        responses = []
+        
+        # 2. Build responses using the 'Last ID gets the payload' strategy
+        # We process all records, but RAG calls are special
+        for i, r in enumerate(self._tool_results_buffer):
+            is_last = (i == len(self._tool_results_buffer) - 1)
+            
+            if r["name"] == "search_knowledge_base":
+                # Only the LAST RAG call in the batch gets the master content
+                # This prevents Gemini from summarizing identical results multiple times
+                if is_last:
+                    responses.append(FunctionResponse(
+                        name=r["name"],
+                        id=r["id"],
+                        response={"content": master_rag_result or "No additional information found."}
+                    ))
+                else:
+                    # Provide an empty response for non-final tool calls.
+                    # This allows the model to focus solely on the final consolidated payload.
+                    responses.append(FunctionResponse(
+                        name=r["name"],
+                        id=r["id"],
+                        response={}
+                    ))
+            else:
+                # Other tools (like time) just get their result
+                responses.append(FunctionResponse(
+                    name=r["name"],
+                    id=r["id"],
+                    response={"content": r["result"]} if isinstance(r["result"], str) else r["result"]
+                ))
+            
+        if responses:
+            logger.info(f"⚡ [CONSOLIDATED] Sending {len(responses)} responses. Master payload on: {responses[-1].id}")
+            try:
+                await self._session.send_tool_response(function_responses=responses)
+            except Exception as e:
+                logger.error(f"❌ [CONSOLIDATED] Error sending: {e}")
+                
+        # Reset everything
+        self._tool_results_buffer = []
+        self._pending_tool_calls = set()
+        self._batch_timer = None
 
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     async def process_frame(self, frame: Frame, direction: FrameDirection):

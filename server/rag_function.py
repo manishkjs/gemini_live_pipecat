@@ -8,32 +8,43 @@ import vertexai
 from vertexai.preview import rag
 import google.auth
 
-# RAG Configuration
-RAG_CORPUS_ID = os.getenv("RAG_CORPUS_RESOURCE_ID")
-PROJECT_ID = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+# RAG Configuration Helpers
+def get_rag_config():
+    """Dynamically fetch RAG configuration."""
+    corpus_id = os.getenv("RAG_CORPUS_RESOURCE_ID")
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    
+    def extract_location(cid):
+        if not cid: return "us-central1"
+        match = re.search(r"locations/([^/]+)/ragCorpora", cid)
+        return match.group(1) if match else "us-central1"
+    
+    location = extract_location(corpus_id)
+    return corpus_id, project_id, location
 
-def get_rag_location(corpus_id):
-    if not corpus_id: 
-        return "us-central1"
-    match = re.search(r"locations/([^/]+)/ragCorpora", corpus_id)
-    return match.group(1) if match else "us-central1"
-
-RAG_LOCATION = get_rag_location(RAG_CORPUS_ID)
-
-# Initialize Vertex AI globally
+# Lazy initialization flag
 _vertex_initialized = False
-try:
-    if PROJECT_ID and RAG_LOCATION:
-        vertexai.init(
-            project=PROJECT_ID,
-            location=RAG_LOCATION,
-        )
-        _vertex_initialized = True
-        logger.info(f"[RAG] Vertex AI initialized - Project: {PROJECT_ID}, Location: {RAG_LOCATION}")
-    else:
-        logger.warning("[RAG] PROJECT_ID or RAG_LOCATION not set. Vertex AI not initialized.")
-except Exception as e:
-    logger.warning(f"Failed to initialize Vertex AI globally: {e}")
+
+def initialize_vertex_if_needed():
+    """Initialize Vertex AI dynamically if not already done."""
+    global _vertex_initialized
+    if _vertex_initialized:
+        return True
+    
+    corpus_id, project_id, location = get_rag_config()
+    
+    try:
+        if project_id and location:
+            vertexai.init(project=project_id, location=location)
+            _vertex_initialized = True
+            logger.info(f"[RAG] Vertex AI initialized - Project: {project_id}, Location: {location}")
+            return True
+        else:
+            logger.warning(f"[RAG] Missing config for init - Project: {project_id}, Location: {location}")
+            return False
+    except Exception as e:
+        logger.error(f"[RAG] Failed to initialize Vertex AI: {e}")
+        return False
 
 # Schema definition
 search_knowledge_base_schema = FunctionSchema(
@@ -80,12 +91,21 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
     query = params.arguments.get("query_for_vector_search", "")
     total_records = params.arguments.get("total_records", 5)
 
-    if not RAG_CORPUS_ID:
+    # Resolve config dynamically
+    corpus_id, project_id, location = get_rag_config()
+
+    if not corpus_id:
         logger.warning("[RAG] RAG_CORPUS_RESOURCE_ID not set")
         await params.result_callback({"content": "Knowledge base not configured."})
         return
 
-    logger.info(f"[RAG] Query: {query}, Records: {total_records}, Location: {RAG_LOCATION}")
+    # Ensure Vertex AI is initialized
+    if not initialize_vertex_if_needed():
+        logger.error("[RAG] Vertex AI initialization failed")
+        await params.result_callback({"content": "Knowledge base service unavailable."})
+        return
+
+    logger.info(f"[RAG] Query: {query}, Records: {total_records}, Location: {location}")
 
     try:
         # Query RAG corpus
@@ -94,7 +114,7 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
         response = await loop.run_in_executor(
             None,
             lambda: rag.retrieval_query(
-                rag_resources=[rag.RagResource(rag_corpus=RAG_CORPUS_ID)],
+                rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
                 text=query,
                 similarity_top_k=total_records,
             )
