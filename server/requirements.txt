@@ -19,10 +19,10 @@ flatbuffers==25.2.10
 frozenlist==1.7.0
 future==1.0.0
 google-api-core==2.25.1
-google-auth==2.40.3
+google-auth==2.46.0
 google-cloud-speech==2.32.0
-google-cloud-texttospeech==2.26.0
-google-genai==1.24.0
+google-cloud-texttospeech==2.31.0
+google-genai==1.57.0
 googleapis-common-protos==1.70.0
 grpcio==1.73.1
 grpcio-status==1.71.2
@@ -49,7 +49,7 @@ onnxruntime==1.20.1
 orjson==3.10.18
 packaging==25.0
 pillow==11.1.0
-pipecat-ai==0.0.91
+pipecat-ai==0.0.95
 propcache==0.3.2
 proto-plus==1.26.1
 protobuf==5.29.5

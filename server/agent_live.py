@@ -223,7 +223,7 @@ class GeminiSessionLoggerMixin:
                     )
 
             # Add system instruction to configuration, if provided
-            system_instruction = self._system_instruction or ""
+            system_instruction = getattr(self, "_system_instruction", None) or ""
             if self._context and hasattr(self._context, "extract_system_instructions"):
                 system_instruction += "\n" + self._context.extract_system_instructions()
             if system_instruction:
@@ -231,13 +231,14 @@ class GeminiSessionLoggerMixin:
                 config.system_instruction = system_instruction
 
             # Add tools to configuration, if provided
-            if self._tools:
-                logger.debug(f"Setting tools: {self._tools}")
+            tools = getattr(self, "_tools", None)
+            if tools:
+                logger.debug(f"Setting tools: {tools}")
                 # Manually convert tools to Google format since ToolsSchema doesn't have to_google_tools
                 # and we don't have easy access to the adapter instance here
                 from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
                 adapter = GeminiLLMAdapter()
-                config.tools = adapter.to_provider_tools_format(self._tools)
+                config.tools = adapter.to_provider_tools_format(tools)
 
             self._connection_task = self.create_task(self._connection_task_handler(config))
         except Exception as e:
@@ -348,7 +349,7 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
-    context_aggregator = llm.create_context_aggregator(OpenAILLMContext([{"role": "user", "content": prompt_text}]))
+    context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
         logger.info(f"User idle detected, retry count: {retry_count}")
@@ -365,7 +366,7 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=15.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),

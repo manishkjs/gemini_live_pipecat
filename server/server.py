@@ -24,7 +24,7 @@ pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
 
 from agent_live import run_agent_live
 from agent import run_agent
-from system_prompt import SYSTEM_PROMPT
+from system_prompt import SYSTEM_PROMPT, tts_prompt
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,6 +55,7 @@ async def websocket_endpoint(
     system_instruction: Optional[str] = None,
     tts: bool = True,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",
+    tts_model: str = "google-tts",
     tts_pace: float = 0.80,
     llm_model: str = "gemini-2.0-flash",
     stt_model: str = "latest_long",
@@ -83,6 +84,7 @@ async def websocket_endpoint(
                 llm_model=llm_model,
                 stt_model=stt_model,
                 stt_language=stt_language,
+                tts_model=tts_model,
                 system_instruction=system_instruction,
             )
     except Exception as e:
