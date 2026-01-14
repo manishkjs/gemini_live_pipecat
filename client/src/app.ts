@@ -32,8 +32,61 @@ class WebsocketClientApp {
   private dotsContainer: HTMLElement | null = null;
   private tabs: NodeListOf<HTMLButtonElement> | null = null;
   private configPanels: NodeListOf<HTMLElement> | null = null;
-  private activeTab: string = "tts-llm-stt";
+  private activeTab: string = "gemini-live";
   private activePipeline: HTMLElement | null = null;
+
+  // Voice Data
+  private readonly GEMINI_VOICES = [
+    { value: "Puck", label: "Puck (Male)" },
+    { value: "Charon", label: "Charon (Male)" },
+    { value: "Kore", label: "Kore (Female)" },
+    { value: "Fenrir", label: "Fenrir (Male)" },
+    { value: "Aoede", label: "Aoede (Female)" },
+    { value: "Zephyr", label: "Zephyr (Female)" },
+    { value: "Leda", label: "Leda (Female)" },
+    { value: "Orus", label: "Orus (Male)" },
+    { value: "Callirhoe", label: "Callirhoe (Female)" },
+    { value: "Autonoe", label: "Autonoe (Female)" },
+    { value: "Enceladus", label: "Enceladus (Male)" },
+    { value: "Iapetus", label: "Iapetus (Male)" },
+    { value: "Umbriel", label: "Umbriel (Male)" },
+    { value: "Algieba", label: "Algieba (Male)" },
+    { value: "Despina", label: "Despina (Female)" },
+    { value: "Erinome", label: "Erinome (Female)" },
+    { value: "Algenib", label: "Algenib (Male)" },
+    { value: "Rasalgethi", label: "Rasalgethi (Male)" },
+    { value: "Laomedeia", label: "Laomedeia (Female)" },
+    { value: "Achernar", label: "Achernar (Female)" },
+    { value: "Alnilam", label: "Alnilam (Male)" },
+    { value: "Schedar", label: "Schedar (Male)" },
+    { value: "Gacrux", label: "Gacrux (Female)" },
+    { value: "Pulcherrima", label: "Pulcherrima (Female)" },
+    { value: "Achird", label: "Achird (Male)" },
+    { value: "Zubenelgenubi", label: "Zubenelgenubi (Male)" },
+    { value: "Vindemiatrix", label: "Vindemiatrix (Female)" },
+    { value: "Sadachbia", label: "Sadachbia (Male)" },
+    { value: "Sadaltager", label: "Sadaltager (Male)" },
+    { value: "Sulafat", label: "Sulafat (Female)" },
+  ];
+
+  private readonly GOOGLE_VOICES = [
+    { value: "en-US-Chirp3-HD-Aoede", label: "en-US-Chirp3-HD-Aoede" },
+    { value: "en-US-Chirp3-HD-Charon", label: "en-US-Chirp3-HD-Charon" },
+    { value: "en-IN-Chirp3-HD-Zephyr", label: "en-IN-Chirp3-HD-Zephyr" },
+    { value: "en-US-Chirp3-HD-Despina", label: "en-US-Chirp3-HD-Despina" },
+    { value: "en-US-Chirp3-HD-Gacrux", label: "en-US-Chirp3-HD-Gacrux" },
+    { value: "en-US-Chirp3-HD-Leda", label: "en-US-Chirp3-HD-Leda" },
+    { value: "en-US-Chirp3-HD-Puck", label: "en-US-Chirp3-HD-Puck" },
+    { value: "en-IN-Chirp3-HD-Aoede", label: "en-IN-Chirp3-HD-Aoede" },
+    { value: "en-US-News-N", label: "en-US-News-N" },
+    { value: "en-US-Wavenet-D", label: "en-US-Wavenet-D" },
+    { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
+    { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
+    { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
+    { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
+    { value: "Custom-Male", label: "Custom clone voice - Male" },
+    { value: "Custom-Female", label: "Custom clone voice - Female" },
+  ];
 
   constructor() {
     this.setupDOMElements();
@@ -131,6 +184,35 @@ class WebsocketClientApp {
     geminiModelSelect?.addEventListener("change", handleModelChange);
     geminiVoiceSelect?.addEventListener("change", handleModelChange);
     ttsToggle?.addEventListener("change", handleModelChange);
+
+    // TTS Model Change Logic
+    const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
+    const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
+
+    const populateVoices = () => {
+      const model = ttsModelSelect.value;
+      ttsVoiceSelect.innerHTML = "";
+
+      let voices: { value: string, label: string }[] = [];
+      if (model.startsWith("gemini")) {
+        voices = this.GEMINI_VOICES;
+      } else {
+        voices = this.GOOGLE_VOICES;
+      }
+
+      voices.forEach(voice => {
+        const option = document.createElement("option");
+        option.value = voice.value;
+        option.textContent = voice.label;
+        ttsVoiceSelect.appendChild(option);
+      });
+    };
+
+    if (ttsModelSelect && ttsVoiceSelect) {
+      ttsModelSelect.addEventListener("change", populateVoices);
+      // Initial population
+      populateVoices();
+    }
   }
 
   public async loadSystemPrompt(): Promise<void> {
@@ -336,19 +418,15 @@ class WebsocketClientApp {
 
       const transport = new WebSocketTransport();
 
-      const apiKeyInput = document.getElementById("api-key-input") as HTMLInputElement;
-      const apiKey = apiKeyInput.value;
-
-      if (!apiKey) {
-        this.log("No API key provided, attempting to use server-side credentials (Vertex AI)", "warning");
-      }
-
-      let connectUrl = `/connect?bot_type=${this.activeTab}&api_key=${apiKey}`;
+      let connectUrl = `/connect?bot_type=${this.activeTab}`;
       let systemInstructions = "";
 
       if (this.activeTab === "tts-llm-stt") {
         const ttsVoiceSelect = document.getElementById(
           "tts-voice-select"
+        ) as HTMLSelectElement;
+        const ttsModelSelect = document.getElementById(
+          "tts-model-select"
         ) as HTMLSelectElement;
         const llmModelSelect = document.getElementById(
           "llm-model-select"
@@ -365,6 +443,7 @@ class WebsocketClientApp {
         const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
 
         connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
+        connectUrl += `&tts_model=${ttsModelSelect.value}`;
         connectUrl += `&tts_pace=${paceSlider.value}`;
         connectUrl += `&llm_model=${llmModelSelect.value}`;
         connectUrl += `&stt_model=${sttModelSelect.value}`;

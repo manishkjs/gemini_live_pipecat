@@ -73,26 +73,19 @@
               </button>
             </div>
             <p class="voice-status">Click to start conversation</p>
-            <p class="active-pipeline">Active: TTS-LLM-STT Pipeline</p>
-          </div>
-          <div class="tile api-configuration">
-            <h3><i class="fas fa-key"></i> API Configuration</h3>
-            <div class="setting">
-              <label for="api-key-input">Google API Key</label>
-              <input type="password" id="api-key-input" placeholder="Enter your Google API key to begin" required>
-            </div>
+            <p class="active-pipeline">Active: Gemini Live Pipeline</p>
           </div>
           <div class="tile bot-configuration">
             <h3><i class="fas fa-robot"></i> Bot Configuration</h3>
             <div class="tabs">
-              <button class="tab-btn active" data-tab="tts-llm-stt">
+              <button class="tab-btn" data-tab="tts-llm-stt">
                 <i class="fas fa-brain"></i> STT-LLM-TTS
               </button>
-              <button class="tab-btn" data-tab="gemini-live">
+              <button class="tab-btn active" data-tab="gemini-live">
                 <i class="fas fa-gem"></i> Gemini Live
               </button>
             </div>
-            <div id="tts-llm-stt-panel" class="config-panel active">
+            <div id="tts-llm-stt-panel" class="config-panel">
               <div class="tile">
                 <h3><i class="fas fa-cogs"></i> Speech-to-Text (STT)</h3>
                 <div class="setting-group">
@@ -120,8 +113,10 @@
                   <label for="llm-model-select">Model</label>
                   <select id="llm-model-select">
                     <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
-                    <option value="gemini-flash-lite-latest">gemini-flash-lite-latest</option>
-                    <option value="gemini-flash-latest">gemini-flash-latest</option>
+                    <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                    <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                    <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
                   </select>
                 </div>
               </div>
@@ -130,28 +125,18 @@
                   <i class="fas fa-comment-dots"></i> Text-to-Speech (TTS)
                 </h3>
                 <div class="setting">
+                  <label for="tts-model-select">Model</label>
+                  <select id="tts-model-select">
+                    <option value="gemini-2.5-flash-lite-preview-tts" selected>gemini-2.5-flash-lite-preview-tts (Gemini)</option>
+                    <option value="gemini-2.5-flash-preview-tts">gemini-2.5-flash-preview-tts (Gemini)</option>
+                    <option value="gemini-2.5-pro-preview-tts">gemini-2.5-pro-preview-tts (Gemini)</option>
+                    <option value="google-tts">Google TTS - Chirp 3 HD</option>
+                  </select>
+                  </div>
+                  <div class="setting">
                   <label for="tts-voice-select">Voice</label>
                   <select id="tts-voice-select">
-                    <option value="en-US-Chirp3-HD-Aoede">en-US-Chirp3-HD-Aoede</option>
-                    <option value="en-US-Chirp3-HD-Charon">
-                      en-US-Chirp3-HD-Charon
-                    </option>
-                    <option value="en-IN-Chirp3-HD-Zephyr">
-                      en-IN-Chirp3-HD-Zephyr
-                    </option>
-                    <option value="en-US-Chirp3-HD-Despina">en-US-Chirp3-HD-Despina</option>
-                    <option value="en-US-Chirp3-HD-Gacrux">en-US-Chirp3-HD-Gacrux</option>
-                    <option value="en-US-Chirp3-HD-Leda">en-US-Chirp3-HD-Leda</option>
-                    <option value="en-US-Chirp3-HD-Puck">en-US-Chirp3-HD-Puck</option>
-                    <option value="en-IN-Chirp3-HD-Aoede">en-IN-Chirp3-HD-Aoede</option>
-                    <option value="en-US-News-N">en-US-News-N</option>
-                    <option value="en-US-Wavenet-D">en-US-Wavenet-D</option>
-                    <option value="hi-IN-Chirp3-HD-Achird">hi-IN-Chirp3-HD-Achird</option>
-                    <option value="hi-IN-Chirp3-HD-Sulafat">hi-IN-Chirp3-HD-Sulafat</option>
-                    <option value="hi-IN-Chirp3-HD-Vindemiatrix">hi-IN-Chirp3-HD-Vindemiatrix</option>
-                    <option value="hi-IN-Chirp3-HD-Rasalgethi">hi-IN-Chirp3-HD-Rasalgethi</option>
-                    <option value="Custom-Male">Custom clone voice - Male</option>
-                    <option value="Custom-Female">Custom clone voice - Female</option>
+                    <!-- Populated dynamically by app.ts -->
                   </select>
                 </div>
                 <div class="setting">
@@ -172,18 +157,15 @@
                 <textarea id="tts-llm-stt-system-instructions-textarea" rows="4"></textarea>
               </div>
             </div>
-            <div id="gemini-live-panel" class="config-panel">
+            <div id="gemini-live-panel" class="config-panel active">
               <h4>Gemini Live API Configuration</h4>
               <div class="setting">
                 <label for="gemini-model-select">Model</label>
                 <select id="gemini-model-select">
-                  <option value="gemini-2.5-flash-native-audio-eap-11-2025">
-                    gemini-2.5-flash-native-audio-eap-11-2025 (AI Studio - native audio)
-                  </option>
-                  <option value="gemini-live-2.5-flash" selected>
+                  <option value="gemini-live-2.5-flash">
                     gemini-live-2.5-flash (Vertex AI - cascaded model)
                   </option>
-                  <option value="gemini-live-2.5-flash-native-audio">
+                  <option value="gemini-live-2.5-flash-native-audio" selected>
                     gemini-live-2.5-flash-native-audio (Vertex AI)
                   </option>
                   <option value="gemini-live-2.5-flash-preview-native-audio-09-2025">
@@ -199,7 +181,7 @@
                   <option value="Algenib">Algenib (Male)</option>
                   <option value="Algieba">Algieba (Male)</option>
                   <option value="Alnilam">Alnilam (Male)</option>
-                  <option value="Aoede">Aoede (Female)</option>
+                  <option value="Aoede" selected>Aoede (Female)</option>
                   <option value="Autonoe">Autonoe (Female)</option>
                   <option value="Callirrhoe">Callirrhoe (Female)</option>
                   <option value="Charon">Charon (Male)</option>
@@ -225,7 +207,7 @@
                   <option value="Zephyr">Zephyr (Female)</option>
                   <option value="Zubenelgenubi">Zubenelgenubi (Male)</option>
                   <option value="Custom-Male">Custom clone voice - Male</option>
-                  <option value="Custom-Female" selected>Custom clone voice - Female</option>
+                  <option value="Custom-Female">Custom clone voice - Female</option>
                 </select>
                 <div id="voice-warning" class="warning" style="display: none; color: red;">
                   <p>Don't select custom voices when selecting native audio model</p>
@@ -268,7 +250,7 @@
               </div>
               <div class="setting-toggle large-toggle">
                 <label for="tts-toggle">Use TTS for output modality</label>
-                <input type="checkbox" id="tts-toggle" checked />
+                <input type="checkbox" id="tts-toggle" />
               </div>
               <div id="tts-warning" class="warning" style="display: none; color: red;">
                 <p>Pls un-select TTS for output modality. This model does not support TTS.</p>

@@ -9,6 +9,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_response import LLMUserContextAggregator, LLMAssistantContextAggregator
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.services.google.llm import GoogleLLMService
+from pipecat.services.google.llm_vertex import GoogleVertexLLMService
 from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
@@ -78,7 +79,6 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
 
 async def run_agent(
     websocket: WebSocket,
-    api_key: str,
     tts_voice: str,
     tts_pace: float,
     llm_model: str,
@@ -88,8 +88,8 @@ async def run_agent(
     tts_voice_prompt: Optional[str] = None,
     system_instruction: Optional[str] = None,
 ):
-    if not api_key:
-        raise ValueError("Google API key is required")
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+    location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     transport = FastAPIWebsocketTransport(
         websocket,
@@ -101,9 +101,9 @@ async def run_agent(
         ),
     )
 
-    stt_location = "us-central1" if "chirp_2" in stt_model else "us"
+    stt_location = location if "chirp_2" in stt_model else "us"
     stt = GoogleSTTService(
-        vertexai_project="deep-clock-339817",
+        vertexai_project=project_id,
         location=stt_location,
         params=GoogleSTTService.InputParams(
             languages=[Language(stt_language)],
@@ -116,19 +116,20 @@ async def run_agent(
     if tts_model.startswith("gemini"):
         final_system_instruction += "\n\n" + GEMINI_LLM_TTS_PROMPT
 
-    llm = GoogleLLMService(
-        api_key=api_key,
-        vertexai_project="deep-clock-339817",
-        vertexai_location="us-central1",
+    llm_location = "global" if "gemini-3" in llm_model else location
+    llm = GoogleVertexLLMService(
+        project_id=project_id,
+        location=llm_location,
         model=llm_model,
         system_instruction=final_system_instruction
     )
 
     if tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
+        tts_location = "global" if "gemini-3" in tts_model else location
         tts = CustomVertexGeminiTTSService(
-            project_id="deep-clock-339817",
-            location="us-central1",
+            project_id=project_id,
+            location=tts_location,
             voice_id=tts_voice,
             model=tts_model, # Use the conditionally passed model
             sample_rate=24000, 
@@ -177,8 +178,8 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()],
         )
 
-    context = OpenAILLMContext()
-    
+    context = OpenAILLMContext(messages=[{"role": "system", "content": final_system_instruction}])
+
     context_aggregator = llm.create_context_aggregator(context)
 
     transcript = TranscriptProcessor()
@@ -206,6 +207,10 @@ async def run_agent(
             audio_in_sample_rate=16000,
         ),
     )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        await task.queue_frames([context_aggregator.user()._get_context_frame()])
 
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)

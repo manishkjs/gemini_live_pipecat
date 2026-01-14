@@ -262,20 +262,11 @@ class GeminiSessionLoggerMixin:
                         return
                     break
 
-class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService): pass
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 
-async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
-    vertex_models = ["gemini-live-2.5-flash", "gemini-live-2.5-flash-preview-native-audio-09-2025", "gemini-live-2.5-flash-native-audio"]
-    use_vertex = model in vertex_models
-    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION")
-    
-    if use_vertex:
-        if not project_id or not location:
-            raise ValueError("GCP_PROJECT_ID and GCP_LOCATION are required for Vertex AI")
-    elif not api_key:
-        raise ValueError("Google API key is required for AI Studio")
+async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+    location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
@@ -330,23 +321,13 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
     if model == "gemini-2.5-flash-native-audio-eap-11-2025":
         common_params["http_options"] = HttpOptions(api_version="v1beta")
 
-    if api_key and model not in vertex_models:
-        llm = CustomGeminiLiveLLMService(api_key=api_key, model=f"models/{model}", **common_params)
-    else:
-        if not project_id:
-            try:
-                import google.auth
-                _, project_id = google.auth.default()
-            except Exception:
-                raise ValueError("GCP_PROJECT_ID not found")
+    vertex_params = {**common_params, "project_id": project_id, "location": location, "model": f"google/{model}"}
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    if not use_external_tts and voice:
+        vertex_params["voice_id"] = voice
         
-        vertex_params = {**common_params, "project_id": project_id, "location": location or "us-central1", "model": f"google/{model}"}
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if not use_external_tts and voice:
-            vertex_params["voice_id"] = voice
-            
-        llm = CustomGeminiLiveVertexLLMService(**vertex_params)
+    llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
@@ -379,7 +360,7 @@ async def run_agent_live(websocket: WebSocket, api_key: str, model: str, voice: 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Pipecat Client connected")
-        await task.queue_frames([context_aggregator.user().get_context_frame()])
+        await task.queue_frames([context_aggregator.user()._get_context_frame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

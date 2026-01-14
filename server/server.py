@@ -47,8 +47,7 @@ app.add_middleware(
 async def websocket_endpoint(
     websocket: WebSocket,
     bot_type: str = "tts-llm-stt",
-    api_key: str = "",
-    model: str = "gemini-2.5-flash-native-audio-preview-09-2025",
+    model: str = "gemini-live-2.5-flash-native-audio",
     #gemini-2.5-flash-native-audio-preview-09-2025
     voice: Optional[str] = "Puck",
     language: str = "en-US",
@@ -57,7 +56,7 @@ async def websocket_endpoint(
     tts_voice: str = "en-US-Chirp3-HD-Aoede",
     tts_model: str = "google-tts",
     tts_pace: float = 0.80,
-    llm_model: str = "gemini-2.0-flash",
+    llm_model: str = "gemini-2.5-flash",
     stt_model: str = "latest_long",
     stt_language: str = "en-US",
 ):
@@ -67,7 +66,6 @@ async def websocket_endpoint(
         if bot_type == "gemini-live":
             await run_agent_live(
                 websocket,
-                api_key=api_key,
                 model=model,
                 voice=voice,
                 language=language,
@@ -78,7 +76,6 @@ async def websocket_endpoint(
         elif bot_type == "tts-llm-stt":
             await run_agent(
                 websocket,
-                api_key=api_key,
                 tts_voice=tts_voice,
                 tts_pace=tts_pace,
                 llm_model=llm_model,
