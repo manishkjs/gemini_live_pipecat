@@ -154,7 +154,14 @@ How to run UI:
 
 ![alt text](./bot_UI.jpeg)
 
-Once deployed, Google Cloud will provide a public URL to access your application.
+1. Select the flow - STT-LLM-TTS or Gemini Live (its default).
+2. Select the model, voice and language. defaults are
+       - gemini-live-2.5-flash-native-audio
+       - Aoede (Female Voice)
+       - Hindi
+3. Update system instruction. You can override it. The default system instruction is for a voice assistant speaking in Indian Hindi accent.
+4. Click on Connect > Click on Mic button (to start conversation.)
+
 
 **Contributing**
 
