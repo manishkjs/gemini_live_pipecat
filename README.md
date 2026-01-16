@@ -154,6 +154,8 @@ How to run UI:
 
 ![alt text](./bot_UI.jpeg)
 
+(API Key is not needed)
+
 1. Select the flow - STT-LLM-TTS or Gemini Live (its default).
 2. Select the model, voice and language. defaults are
        - gemini-live-2.5-flash-native-audio
