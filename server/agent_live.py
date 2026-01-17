@@ -278,6 +278,55 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
         self._tools = kwargs.get("tools")
         self._system_instruction = kwargs.get("system_instruction")
 
+    async def process_frame(self, frame, direction):
+        """
+        Override process_frame to handle LLMMessagesAppendFrame explicitly.
+        Gemini Live SDK expects direct session.send() calls for content, not just frame passing
+        if the base class implementation doesn't support LLM frames.
+        """
+        try:
+            from pipecat.frames.frames import LLMMessagesAppendFrame, LLMMessagesFrame
+            from google.genai import types
+
+            if isinstance(frame, (LLMMessagesAppendFrame, LLMMessagesFrame)):
+                logger.info(f"Processing LLM Frame in Gemini Live: {type(frame)}")
+                
+                # Extract content from the frame
+                # LLMMessagesAppendFrame usually has a list of messages in frame.messages
+                # We need to find the last user message to send to the model if it's an append
+                messages = getattr(frame, 'messages', [])
+                if not messages:
+                    return
+
+                logger.info(f"LLM Frame messages: {messages}")
+
+                # Find the text content to send
+                text_content = ""
+                for msg in messages:
+                    if msg.get('role') == 'user':
+                        text_content += msg.get('content', "") + "\n"
+                
+                if text_content.strip() and self._session:
+                    logger.info(f"Sending LLM Frame text to Gemini: {text_content[:50]}...")
+                    # Send as client_content (User Message)
+                    await self._session.send(
+                        input=types.LiveClientContent(
+                            turns=[
+                                types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=text_content)]
+                                )
+                            ],
+                            turn_complete=True
+                        )
+                    )
+                
+                # We handled the frame, so we stop propagation to base class/downstream
+                return
+        except Exception as e:
+            logger.error(f"Error processing frame in CustomGeminiLiveVertexLLMService: {e}")
+            
+        await super().process_frame(frame, direction)
     async def update_system_instruction(self, instruction: str):
         if not self._session:
             logger.error("Session not started, cannot update system instruction")
@@ -429,22 +478,34 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
+        """Handle user idle with escalating prompts"""
         logger.info(f"User idle detected, retry count: {retry_count}")
-        if retry_count < 4:
-            prompts = {
-                1: "ask me if I am able to hear you",
-                2: "ask me if I am still here",
-                3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
-            }
-            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": prompts[retry_count]}], run_llm=True))
-            return True
-        await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
-        return False
+
+        if retry_count == 1:
+            user_instruction = "ask me if I am able to hear you"
+            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
+            return True  # Continue monitoring
+        elif retry_count == 2:
+            user_instruction = "ask me if I am still here"
+            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
+            return True  # Continue monitoring
+        elif retry_count == 3:
+            # Final attempt: speak the message.
+            user_instruction = "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
+            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": user_instruction}], run_llm=True))
+            return True # Continue monitoring to allow message to be spoken
+        elif retry_count == 4:
+            # Terminate the call after the final message has been spoken.
+            await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+            return False # Stop monitoring
+        else:
+            logger.info(f"User idle after {retry_count} retries, stopping idle monitoring")
+            return False
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=15.0),
         context_aggregator.user(),
+        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
         llm,
         *([tts_service] if tts_service else []),
         transport.output(),
