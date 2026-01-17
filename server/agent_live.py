@@ -23,7 +23,7 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
-from system_prompt import SYSTEM_PROMPT
+from system_prompt import SYSTEM_PROMPT, DEBT_COLLECTION_PROMPT, RESTAURANT_RESERVATION_PROMPT, AI_GIRLFRIEND_PROMPT, ROUTER_PROMPT
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -38,10 +38,12 @@ from google.genai.types import (
     SlidingWindow,
     SpeechConfig,
     VoiceConfig,
-    HttpOptions
+    HttpOptions,
+    Content,
+    Part
 )
 
-SYSTEM_INSTRUCTION = SYSTEM_PROMPT
+SYSTEM_INSTRUCTION = ROUTER_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
@@ -128,6 +130,11 @@ class GeminiSessionLoggerMixin:
             )
         else:
             logger.info("Connecting to Gemini service")
+        
+        # DEBUG: Log raw system instruction and tools
+        logger.info(f"Checking system instruction: {getattr(self, '_system_instruction', 'Not Set')}")
+        logger.info(f"Checking tools: {getattr(self, '_tools', 'Not Set')}")
+
         try:
             # Assemble basic configuration
             modalities = self._settings["modalities"]
@@ -262,7 +269,54 @@ class GeminiSessionLoggerMixin:
                         return
                     break
 
-class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+
+class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Ensure _tools and _system_instruction are available for the mixin's _connect method
+        # The base class might assume different storage or we might be overriding it
+        self._tools = kwargs.get("tools")
+        self._system_instruction = kwargs.get("system_instruction")
+
+    async def update_system_instruction(self, instruction: str):
+        if not self._session:
+            logger.error("Session not started, cannot update system instruction")
+            return
+        try:
+            from google.genai import types
+            
+            logger.info("Updating system instruction via context injection")
+            
+            # Create a context message that instructs the model to adopt new persona
+            # This follows the "Context Injection" pattern since mid-session setup updates are not supported.
+            context_text = f"""[SYSTEM PERSONA UPDATE]
+You must now completely adopt the following new identity and instructions. 
+Forget your previous persona and follow these new instructions exactly:
+
+---
+{instruction}
+---
+
+Seamlessly transition to new persona and ask user how can you help them.
+"""
+            
+            await self._session.send(
+                input=types.LiveClientContent(
+                    turns=[
+                        types.Content(
+                            role="user",
+                            parts=[types.Part(text=context_text)]
+                        )
+                    ],
+                    turn_complete=True
+                )
+            )
+            logger.info("System instruction updated via context injection")
+
+        except Exception as e:
+            logger.error(f"Failed to update system instruction: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
 async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
@@ -271,7 +325,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
     
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + f"\n\nIMPORTANT: You must converse in {language} language."
+    logger.info(f"Starting agent with language: {language}")
+    
+    # Use the ROUTER_PROMPT as the initial system instruction if none provided
+    initial_instruction = system_instruction or ROUTER_PROMPT
+    prompt_text = initial_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     
     language_map = {
         "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
@@ -293,9 +351,26 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         )
     )
 
-    tools = ToolsSchema(standard_tools=[FunctionSchema(
-        name="get_current_time", description="Get the current time.", properties={}, required=[]
-    )])
+    tools = ToolsSchema(standard_tools=[
+        FunctionSchema(
+            name="get_current_time",
+            description="Get the current time.",
+            properties={},
+            required=[]
+        ),
+        FunctionSchema(
+            name="switch_agent",
+            description="Switch the AI agent persona based on user intent.",
+            properties={
+                "agent_name": {
+                    "type": "string",
+                    "description": "The name of the agent to switch to. Options: 'debt_collection', 'restaurant_reservation', 'ai_girlfriend'",
+                    "enum": ["debt_collection", "restaurant_reservation", "ai_girlfriend"]
+                }
+            },
+            required=["agent_name"]
+        )
+    ])
 
     use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
     tts_service = None
@@ -329,7 +404,28 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         
     llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
+    async def switch_agent_handler(function_call_params: FunctionCallParams):
+        agent_name = function_call_params.arguments.get("agent_name")
+        logger.info(f"Switching agent to: {agent_name}")
+        
+        new_prompt = None
+        if agent_name == "debt_collection":
+            new_prompt = DEBT_COLLECTION_PROMPT
+        elif agent_name == "restaurant_reservation":
+            new_prompt = RESTAURANT_RESERVATION_PROMPT
+        elif agent_name == "ai_girlfriend":
+            new_prompt = AI_GIRLFRIEND_PROMPT
+            
+        if new_prompt:
+            # Append language instruction
+            final_prompt = new_prompt + f"\n\nIMPORTANT: You must converse in {language} language."
+            await llm.update_system_instruction(final_prompt)
+            return {"status": "success", "message": f"Switched to {agent_name} agent"}
+        else:
+            return {"status": "error", "message": f"Unknown agent: {agent_name}"}
+
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("switch_agent", switch_agent_handler)
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
