@@ -84,6 +84,9 @@
               <button class="tab-btn active" data-tab="gemini-live">
                 <i class="fas fa-gem"></i> Gemini Live
               </button>
+              <button class="tab-btn" data-tab="observability">
+                <i class="fas fa-chart-line"></i> Observability
+              </button>
             </div>
             <div id="tts-llm-stt-panel" class="config-panel">
               <div class="tile">
@@ -280,6 +283,43 @@
               <div class="system-instructions">
                 <h5>System Instructions</h5>
                 <textarea id="system-instructions-textarea" rows="4"></textarea>
+              </div>
+            </div>
+            <div id="observability-panel" class="config-panel">
+              <h4>Observability Dashboard</h4>
+              
+              <!-- Metrics Dashboard -->
+              <div class="metrics-dashboard">
+                <div class="metric-card">
+                  <div class="metric-title">Turns</div>
+                  <div class="metric-value" id="metric-turn-count">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-title">Interrupts</div>
+                  <div class="metric-value" id="metric-interrupt-count">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-title">Tool Calls</div>
+                  <div class="metric-value" id="metric-tool-call-count">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-title">Tokens</div>
+                  <div class="metric-value" id="metric-token-count">0</div>
+                </div>
+              </div>
+
+              <!-- Tool Editor -->
+              <div class="tool-editor-container">
+                <h5>Dynamic Tool Definitions (JSON)</h5>
+                <textarea id="tool-definitions-textarea" rows="6" placeholder='[{"name": "get_weather", "description": "Get weather", "properties": {"city": {"type": "string"}}, "required": ["city"]}]'></textarea>
+              </div>
+
+              <!-- Chat Window -->
+              <div class="chat-window-container">
+                <h5>Transcription Chat</h5>
+                <div id="chat-window" class="chat-window">
+                  <!-- Chat bubbles will be appended here -->
+                </div>
               </div>
             </div>
           </div>

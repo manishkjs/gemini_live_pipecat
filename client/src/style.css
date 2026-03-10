@@ -715,3 +715,101 @@ input[type="password"]::placeholder {
     opacity: 1;
   }
 }
+
+/* Observability Dashboard */
+.metrics-dashboard {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 15px;
+  margin-bottom: 25px;
+}
+
+.metric-card {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 15px;
+  border-radius: var(--border-radius);
+  border: 1px solid var(--border-color);
+  text-align: center;
+  transition: transform 0.3s ease;
+}
+
+.metric-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--primary-color);
+}
+
+.metric-title {
+  font-size: 0.9rem;
+  color: #aaa;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.metric-value {
+  font-size: 1.8rem;
+  font-weight: bold;
+  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Tool Editor */
+.tool-editor-container {
+  margin-bottom: 25px;
+}
+
+.tool-editor-container textarea {
+  font-family: "Fira Code", monospace;
+  font-size: 0.9rem;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Chat Window */
+.chat-window-container {
+  margin-top: 20px;
+}
+
+.chat-window {
+  height: 300px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--border-radius);
+  padding: 15px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.chat-bubble {
+  max-width: 80%;
+  padding: 10px 15px;
+  border-radius: 18px;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  position: relative;
+  word-wrap: break-word;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--primary-color), #6a2cbf);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-bubble.bot {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-color);
+  border-bottom-left-radius: 4px;
+}
+
+.chat-bubble .timestamp {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-top: 5px;
+  text-align: right;
+  display: block;
+}

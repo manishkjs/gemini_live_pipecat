@@ -59,6 +59,7 @@ async def websocket_endpoint(
     llm_model: str = "gemini-2.5-flash",
     stt_model: str = "latest_long",
     stt_language: str = "en-US",
+    tools: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -72,6 +73,7 @@ async def websocket_endpoint(
                 system_instruction=system_instruction,
                 tts=tts,
                 tts_pace=tts_pace,
+                tools=tools,
             )
         elif bot_type == "tts-llm-stt":
             await run_agent(
@@ -105,6 +107,23 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                     query_params += f"&system_instruction={encoded_instruction}"
                 else:
                     query_params = f"system_instruction={encoded_instruction}"
+            
+            # URL-encode the tools from the body
+            if "tools" in body:
+                import json
+                # Ensure tools is a valid JSON string or object converted to string
+                tools_data = body["tools"]
+                if isinstance(tools_data, (dict, list)):
+                    tools_str = json.dumps(tools_data)
+                else:
+                    tools_str = str(tools_data)
+                
+                encoded_tools = quote(tools_str)
+                if query_params:
+                    query_params += f"&tools={encoded_tools}"
+                else:
+                    query_params = f"tools={encoded_tools}"
+
     except Exception:
         # Body is not JSON or is empty, so we just ignore it
         pass
