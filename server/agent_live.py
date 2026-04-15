@@ -1,6 +1,7 @@
 import os
 import websockets
-from typing import Optional
+import json
+from typing import Optional, List, Dict, Any
 from loguru import logger
 from fastapi import WebSocket
 from datetime import datetime
@@ -16,8 +17,8 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
@@ -38,25 +39,182 @@ from google.genai.types import (
     SlidingWindow,
     SpeechConfig,
     VoiceConfig,
-    HttpOptions
+    HttpOptions,
+    Content,
+    Part
 )
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
-        if isinstance(frame, (StartInterruptionFrame, CancelFrame)):
+        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame, CancelFrame)):
             return None
         data = await super().serialize(frame)
         return data.encode("utf-8") if isinstance(data, str) else data
 
 async def get_current_time(params: FunctionCallParams):
+    is_explicit = params.arguments.get('is_explicit_request')
+    if not is_explicit:
+        await params.result_callback({"error": "Explicit time request required."})
+        return
+
     await params.result_callback(
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
 
+
 class GeminiSessionLoggerMixin:
-    """Mixin to add session ID logging and token usage tracking."""
+    """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
+
+    # ── Repeat-on-filler: intercept at API level ──────────────────────
+
+    async def process_frame(self, frame, direction):
+        """Intercept InterruptionFrame to set filler-pending flag.
+
+        We override process_frame instead of _handle_interruption because
+        _bot_is_responding gets set to False when the API turn_complete arrives,
+        but audio may still be playing from the transport buffer. The
+        InterruptionFrame is only generated when the user actually interrupts
+        ongoing audio playback, so it's a reliable signal.
+        """
+        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
+            if not hasattr(self, '_repeat_on_filler_pending'):
+                self._repeat_on_filler_pending = False
+            self._repeat_on_filler_pending = True
+            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
+            
+            # Metric Streaming: Interruption
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'interruption', 'count': 1}
+                }
+            }))
+
+        await super().process_frame(frame, direction)
+
+    async def _handle_msg_input_transcription(self, message):
+        """Override to detect ≤2-word fillers after an interruption and auto-repeat.
+
+        The API sends transcription in chunks (fragments). We accumulate text
+        in our own buffer and check once a complete sentence is formed (sentence-
+        ending punctuation detected). This avoids false positives from partial
+        chunks like "अच्छा," arriving before the rest of a longer sentence.
+
+        We ALWAYS let the parent handle sentence buffering and TranscriptionFrame
+        emission first, then evaluate the filler logic.
+        """
+        if not message.server_content.input_transcription:
+            return await super()._handle_msg_input_transcription(message)
+
+        text = message.server_content.input_transcription.text
+        if not text:
+            return await super()._handle_msg_input_transcription(message)
+
+        # Accumulate post-interruption text in our own buffer
+        if getattr(self, '_repeat_on_filler_pending', False):
+            if not hasattr(self, '_post_interruption_buffer'):
+                self._post_interruption_buffer = ""
+            self._post_interruption_buffer += text
+            logger.debug(
+                f"[RepeatOnFiller] Accumulating chunk: '{text.strip()}' "
+                f"(buffer: '{self._post_interruption_buffer.strip()}')"
+            )
+
+        # ALWAYS let parent handle normally (sentence buffering, TranscriptionFrame)
+        await super()._handle_msg_input_transcription(message)
+
+        # Send transcription to UI
+        logger.debug(f"[Transcription] User: {text}")
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'transcription',
+                'participant': 'User',
+                'text': text
+            }
+        }))
+
+        # After parent processes, check if our buffer forms a complete sentence
+        if getattr(self, '_repeat_on_filler_pending', False):
+            buffer = getattr(self, '_post_interruption_buffer', '').strip()
+            if not buffer:
+                return
+
+            import re
+            has_sentence_end = bool(re.search(r'[.।!?\n]', buffer))
+            user_stopped = not getattr(self, '_user_is_speaking', True)
+
+            if has_sentence_end or user_stopped:
+                filler_max_words = getattr(self, '_filler_max_words', 2)
+                clean = buffer.rstrip('।.!?\n').strip()
+                word_count = len(clean.split()) if clean else 0
+
+                if word_count <= filler_max_words:
+                    logger.info(
+                        f"[RepeatOnFiller] Filler detected: '{buffer}' "
+                        f"({word_count} word(s)). Sending repeat instruction."
+                    )
+                    self._repeat_on_filler_pending = False
+                    await self.push_frame(OutputTransportMessageFrame(message={
+                        "label": "rtvi-ai",
+                        "type": "server-message",
+                        "data": {
+                            'type': 'transcription',
+                            'participant': 'Bot',
+                            'text': text
+                        }
+                    }))
+                    self._repeat_on_filler_pending = False
+                    self._post_interruption_buffer = ""
+                    await self._send_repeat_instruction(buffer)
+                else:
+                    logger.info(
+                        f"[RepeatOnFiller] Genuine interruption: '{buffer}' "
+                        f"({word_count} words). No repeat needed."
+                    )
+                    self._repeat_on_filler_pending = False
+                    self._post_interruption_buffer = ""
+
+    async def _handle_msg_output_transcription(self, message):
+        await super()._handle_msg_output_transcription(message)
+        if message.server_content.output_transcription and message.server_content.output_transcription.text:
+            text = message.server_content.output_transcription.text
+            logger.debug(f"[Transcription] Bot: {text}")
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'transcription',
+                    'participant': 'Bot',
+                    'text': text
+                }
+            }))
+
+    async def _send_repeat_instruction(self, filler_text: str):
+        """Send a user-role prompt telling the model to repeat itself."""
+        if self._disconnecting or not self._session:
+            return
+        try:
+            await self._create_single_response([{
+                "role": "user",
+                "content": (
+                    f"The user just said '{filler_text}' which is a short "
+                    f"filler/acknowledgment while you were speaking. They did NOT "
+                    f"ask a new question. Please REPEAT your previous response "
+                    f"from the beginning — resume exactly what you were saying "
+                    f"before the interruption."
+                ),
+            }])
+            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
+        except Exception as e:
+            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+
+    # ── Session ID & token usage logging ──────────────────────────────
 
     async def _process_message(self, message):
         # Capture Session ID
@@ -90,20 +248,51 @@ class GeminiSessionLoggerMixin:
                 f"  - Total: {getattr(usage, 'total_token_count', 0)}"
             )
 
+            # Metric Streaming: Token Usage
+            usage_dict = {
+                "prompt_token_count": getattr(usage, 'prompt_token_count', 0),
+                "response_token_count": getattr(usage, 'response_token_count', 0),
+                "total_token_count": getattr(usage, 'total_token_count', 0),
+            }
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'usage', 'usage': usage_dict}
+                }
+            }))
+
         # Standard Processing
         self._check_and_reset_failure_counter()
         
         if message.server_content:
+            if hasattr(message.server_content, "activity_end") and message.server_content.activity_end:
+                logger.info("Activity End received from server (User stopped speaking)")
+                
             if message.server_content.model_turn:
+                logger.info("Model Turn detected")
                 await self._handle_msg_model_turn(message)
             
             if message.server_content.turn_complete:
+                logger.info("Turn Complete received from server")
                 await self._handle_msg_turn_complete(message)
+                # Metric Streaming: Turn Count
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': {'type': 'turn_complete'}
+                    }
+                }))
+
                 # usage_metadata is often attached to turn_complete message
                 if message.usage_metadata:
                     await self._handle_msg_usage_metadata(message)
             
             if message.server_content.input_transcription:
+                logger.debug(f"Input Transcription: {message.server_content.input_transcription.text}")
                 await self._handle_msg_input_transcription(message)
             
             if message.server_content.output_transcription:
@@ -113,6 +302,20 @@ class GeminiSessionLoggerMixin:
                 await self._handle_msg_grounding_metadata(message)
                 
         elif message.tool_call:
+            # Metric Streaming: Tool Call
+            tool_calls = []
+            if hasattr(message.tool_call, 'function_calls'):
+                for fc in message.tool_call.function_calls:
+                     tool_calls.append({"name": fc.name, "args": fc.args})
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'tool_call', 'tool': tool_calls}
+                }
+            }))
+            
             await self._handle_msg_tool_call(message)
         elif message.session_resumption_update:
             self._handle_msg_resumption_update(message)
@@ -263,8 +466,30 @@ class GeminiSessionLoggerMixin:
                     break
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
+    async def _create_initial_response(self):
+        if self._disconnecting:
+            return
+        if not self._session:
+            self._run_llm_when_session_ready = True
+            return
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80):
+        logger.info("Triggering initial response for AI Studio model...")
+        from google.genai.types import Content, Part
+        messages = [Content(
+            parts=[Part.from_text(text="Hello")],
+            role='user'
+        )]
+        await self._session.send_client_content(
+            turns=messages, turn_complete=True
+        )
+
+
+async def dynamic_tool_handler(params: FunctionCallParams):
+    logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
+    await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
+
+async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -293,9 +518,42 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         )
     )
 
-    tools = ToolsSchema(standard_tools=[FunctionSchema(
-        name="get_current_time", description="Get the current time.", properties={}, required=[]
-    )])
+    # Dynamic Tool Registration
+    standard_tools = [FunctionSchema(
+        name="get_current_time",
+        description="Get the current time.",
+        properties={
+            "is_explicit_request": {
+                "type": "boolean",
+                "description": (
+                    "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                    "Return `false` for anything else, including:\n"
+                    "- Explaining schedules or timelines.\n"
+                    "- Mentioning time casually in conversation."
+                )
+            }
+        },
+        required=["is_explicit_request"]
+    )]
+
+    
+    if tools:
+        try:
+            tools_data = json.loads(tools)
+            if isinstance(tools_data, list):
+                for tool in tools_data:
+                    # Basic validation
+                    if "name" in tool:
+                        standard_tools.append(FunctionSchema(
+                            name=tool.get("name"),
+                            description=tool.get("description", ""),
+                            properties=tool.get("properties", {}),
+                            required=tool.get("required", [])
+                        ))
+        except Exception as e:
+            logger.error(f"Failed to parse dynamic tools: {e}")
+
+    tools_schema = ToolsSchema(standard_tools=standard_tools)
 
     use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
     tts_service = None
@@ -314,22 +572,38 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
     
     common_params = {
-        "system_instruction": prompt_text, "tools": tools, "transcribe_model_audio": True,
+        "system_instruction": prompt_text, "tools": tools_schema, "transcribe_model_audio": True,
         "params": InputParams(language=pipecat_language, modalities=llm_modalities)
     }
 
     if model == "gemini-2.5-flash-native-audio-eap-11-2025":
         common_params["http_options"] = HttpOptions(api_version="v1beta")
 
-    vertex_params = {**common_params, "project_id": project_id, "location": location, "model": f"google/{model}"}
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-        vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not use_external_tts and voice:
-        vertex_params["voice_id"] = voice
-        
-    llm = CustomGeminiLiveVertexLLMService(**vertex_params)
+    if model == "gemini-3.1-flash-live-preview":
+        ai_studio_params = {
+            **common_params, 
+            "api_key": os.getenv("GEMINI_API_KEY"), 
+            "model": f"models/{model}"
+        }
+        if not use_external_tts:
+            # Use Zephyr as requested by user for this model
+            ai_studio_params["voice_id"] = "Zephyr"
+        llm = CustomGeminiLiveLLMService(**ai_studio_params)
+    else:
+        vertex_params = {**common_params, "project_id": project_id, "location": location, "model": f"google/{model}"}
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if not use_external_tts and voice:
+            vertex_params["voice_id"] = voice
+        llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
+    
+    # Register generic handler for dynamic tools
+    for tool in standard_tools:
+        if tool.name != "get_current_time":
+            llm.register_function(tool.name, dynamic_tool_handler)
+
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
@@ -340,14 +614,15 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                 2: "ask me if I am still here",
                 3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
             }
-            await processor.push_frame(LLMMessagesAppendFrame([{"role": "user", "content": prompts[retry_count]}], run_llm=True))
+            # Call Gemini Live session directly to trigger a response
+            await llm._create_single_response([{"role": "user", "content": prompts[retry_count]}])
             return True
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=15.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=10.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
@@ -355,7 +630,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         context_aggregator.assistant(),
     ])
 
-    task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True))
+    task = PipelineTask(pipeline, params=PipelineParams(
+        enable_metrics=True,
+        enable_usage_metrics=True,
+    ))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

@@ -35,6 +35,20 @@ class WebsocketClientApp {
   private activeTab: string = "gemini-live";
   private activePipeline: HTMLElement | null = null;
 
+  // Observability UI Elements
+  private toolDefinitionsTextarea: HTMLTextAreaElement | null = null;
+  private chatWindow: HTMLElement | null = null;
+  private metricTurnCount: HTMLElement | null = null;
+  private metricInterruptCount: HTMLElement | null = null;
+  private metricToolCallCount: HTMLElement | null = null;
+  private metricTokenCount: HTMLElement | null = null;
+
+  // Observability State
+  private turnCount = 0;
+  private interruptCount = 0;
+  private toolCallCount = 0;
+  private tokenCount = 0;
+
   // Voice Data
   private readonly GEMINI_VOICES = [
     { value: "Puck", label: "Puck (Male)" },
@@ -114,6 +128,14 @@ class WebsocketClientApp {
     this.tabs = document.querySelectorAll(".tab-btn");
     this.configPanels = document.querySelectorAll(".config-panel");
     this.activePipeline = document.querySelector(".active-pipeline");
+
+    // Observability Elements
+    this.toolDefinitionsTextarea = document.getElementById("tool-definitions-textarea") as HTMLTextAreaElement;
+    this.chatWindow = document.getElementById("chat-window");
+    this.metricTurnCount = document.getElementById("metric-turn-count");
+    this.metricInterruptCount = document.getElementById("metric-interrupt-count");
+    this.metricToolCallCount = document.getElementById("metric-tool-call-count");
+    this.metricTokenCount = document.getElementById("metric-token-count");
   }
 
   private setupEventListeners(): void {
@@ -217,7 +239,7 @@ class WebsocketClientApp {
 
   public async loadSystemPrompt(): Promise<void> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/system-prompt`);
+      const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt`);
       const data = await response.json();
       const geminiSystemInstructionsTextarea = document.getElementById(
         "system-instructions-textarea"
@@ -240,6 +262,35 @@ class WebsocketClientApp {
   private switchTab(tab: HTMLButtonElement): void {
     const tabId = tab.dataset.tab;
     if (!tabId) return;
+
+    // Don't change activeTab if it's observability, unless we want to use it for config?
+    // The user wants Observability as a separate tab.
+    // If the user clicks "Observability", we show that panel.
+    // But connection parameters depend on "gemini-live" or "tts-llm-stt".
+    // So "Observability" is just a view, not a bot type.
+    // I'll keep activeTab as the bot type, but show the Observability panel.
+    // Wait, the connect logic uses this.activeTab to determine bot_type.
+    // If activeTab is "observability", connect logic might break.
+    // So "Observability" should probably NOT change activeTab if it's used for connection type.
+    // OR, I should separate "View Tab" from "Bot Type".
+    // For now, I'll assume Observability is just a view and doesn't change the underlying bot config type.
+    // But visually, the "Gemini Live" tab becomes inactive.
+    
+    // Let's modify: if tab is observability, just show panel, don't change this.activeTab used for connection.
+    
+    if (tabId === "observability") {
+        this.tabs?.forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        
+        this.configPanels?.forEach((panel) => {
+            if (panel.id === "observability-panel") {
+                panel.classList.add("active");
+            } else {
+                panel.classList.remove("active");
+            }
+        });
+        return;
+    }
 
     this.activeTab = tabId;
 
@@ -264,7 +315,9 @@ class WebsocketClientApp {
   }
 
   private log(message: string, level: LogLevel = "info"): void {
-    if (!this.debugLog) return;
+    console.log(`[${level.toUpperCase()}] ${message}`);
+    
+    if (!this.debugLog || level === "info") return;
 
     const entry = document.createElement("div");
     entry.classList.add("log-entry");
@@ -287,8 +340,135 @@ class WebsocketClientApp {
 
     this.debugLog.appendChild(entry);
     this.debugLog.scrollTop = this.debugLog.scrollHeight;
-    console.log(`[${level.toUpperCase()}] ${message}`);
   }
+
+  // --- Observability Helpers ---
+
+  private resetMetrics() {
+      this.turnCount = 0;
+      this.interruptCount = 0;
+      this.toolCallCount = 0;
+      this.tokenCount = 0;
+      this.updateMetricDisplay();
+      if (this.chatWindow) this.chatWindow.innerHTML = "";
+  }
+
+  private updateMetricDisplay() {
+      if (this.metricTurnCount) this.metricTurnCount.textContent = this.turnCount.toString();
+      if (this.metricInterruptCount) this.metricInterruptCount.textContent = this.interruptCount.toString();
+      if (this.metricToolCallCount) this.metricToolCallCount.textContent = this.toolCallCount.toString();
+      if (this.metricTokenCount) this.metricTokenCount.textContent = this.tokenCount.toString();
+  }
+
+  private appendChatMessage(role: "user" | "bot", text: string) {
+    if (!this.chatWindow) return;
+    
+    const lastBubble = this.chatWindow.lastElementChild;
+    if (lastBubble && lastBubble.classList.contains(role)) {
+      const timestamp = lastBubble.querySelector(".timestamp");
+      if (timestamp) {
+        timestamp.before(document.createTextNode(text));
+      } else {
+        lastBubble.textContent += text;
+      }
+      this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+      return;
+    }
+
+    const bubble = document.createElement("div");
+    bubble.classList.add("chat-bubble", role);
+    bubble.textContent = text;
+    
+    const timestamp = document.createElement("span");
+    timestamp.classList.add("timestamp");
+    timestamp.textContent = new Date().toLocaleTimeString();
+    bubble.appendChild(timestamp);
+
+    this.chatWindow.appendChild(bubble);
+    this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+  }
+
+  private handleServerMessage(message: any) {
+      // Handle Transcription
+      if (message.type === "transcription") {
+          const { participant, text } = message;
+          // Pipecat usually sends "User" or "Assistant" or similar.
+          // Map participant to role
+          const role = (participant === "User" || participant === "user") ? "user" : "bot";
+          this.appendChatMessage(role, text);
+      }
+
+      // Handle Metrics
+      // Case 1: OutputTransportMessageFrame format
+      if (message.type === "metrics") {
+          const payload = message.payload;
+          if (!payload) return;
+          
+          switch (payload.type) {
+              case "interruption":
+                  this.interruptCount += (payload.count || 1);
+                  break;
+              case "turn_complete":
+                  this.turnCount++;
+                  break;
+              case "tool_call":
+                  this.toolCallCount++;
+                  // Optionally log tool details to chat or debug
+                  this.log(`Tool Call: ${JSON.stringify(payload.tool)}`, "info");
+                  break;
+              case "usage":
+                  if (payload.usage && payload.usage.total_token_count) {
+                      // Is this cumulative or per turn? Usually per turn.
+                      // But we want total for the session.
+                      // Wait, API usage is per turn. So I should accumulate.
+                      this.tokenCount += payload.usage.total_token_count;
+                  }
+                  break;
+          }
+          this.updateMetricDisplay();
+          return;
+      }
+
+      // Handle JSON Metrics (sent as TextFrame) - Legacy/Fallback
+      let jsonText = "";
+      if (message.type === "text" && message.text.startsWith("JSON:")) {
+          jsonText = message.text.substring(5);
+      } else if (typeof message === "string" && message.startsWith("JSON:")) {
+          jsonText = message.substring(5);
+      }
+
+      if (jsonText) {
+          try {
+              const data = JSON.parse(jsonText);
+              switch (data.type) {
+                  case "interruption":
+                      this.interruptCount += (data.count || 1);
+                      break;
+                  case "turn_complete":
+                      this.turnCount++;
+                      break;
+                  case "tool_call":
+                      this.toolCallCount++;
+                      // Optionally log tool details to chat or debug
+                      this.log(`Tool Call: ${JSON.stringify(data.tool)}`, "info");
+                      break;
+                  case "usage":
+                      if (data.usage && data.usage.total_token_count) {
+                          // Is this cumulative or per turn? Usually per turn.
+                          // But we want total for the session.
+                          // Wait, API usage is per turn. So I should accumulate.
+                          this.tokenCount += data.usage.total_token_count;
+                      }
+                      break;
+              }
+              this.updateMetricDisplay();
+          } catch (e) {
+              console.error("Failed to parse JSON metric:", e);
+          }
+      }
+  }
+
+  // -----------------------------
 
   private updateStatus(status: string): void {
     if (this.statusSpan) {
@@ -415,6 +595,7 @@ class WebsocketClientApp {
       this.audioContext = new AudioContext();
       this.audioContext.resume();
       this.updateStatus("Connecting");
+      this.resetMetrics(); // Reset metrics on connect
 
       const transport = new WebSocketTransport();
 
@@ -483,6 +664,20 @@ class WebsocketClientApp {
         )}`;
       }
 
+      // Handle Dynamic Tools
+      let tools = null;
+      if (this.toolDefinitionsTextarea && this.toolDefinitionsTextarea.value.trim()) {
+          try {
+              tools = JSON.parse(this.toolDefinitionsTextarea.value);
+              this.log("Loaded dynamic tools from configuration", "info");
+          } catch(e) {
+              this.log("Invalid JSON in Tool Definitions", "error");
+              // Continue without tools or abort? Aborting seems safer if config is wrong.
+              this.updateStatus("Error: Invalid Tool JSON");
+              return;
+          }
+      }
+
       const RTVIConfig: RTVIClientOptions = {
         transport,
         params: {
@@ -490,6 +685,8 @@ class WebsocketClientApp {
           endpoints: {
             connect: connectUrl,
           },
+          // Send tools in params, hoping client sends it in body
+          tools: tools
         },
         enableMic: true,
         enableCam: false,
@@ -511,11 +708,12 @@ class WebsocketClientApp {
             this.log(`Bot ready: ${JSON.stringify(data)}`);
             this.setupMediaTracks();
           },
-          onGenericMessage: (message: any) => {
-            this.log(`Generic message: ${JSON.stringify(message)}`);
-            if (message.type === "transcription") {
-              const { participant, text } = message;
-              this.log(`[${participant}] ${text}`, "info");
+          onServerMessage: (message: any) => {
+            this.log(`Server message: ${JSON.stringify(message)}`, "info");
+            if (message.type === "server-message" && message.data) {
+                this.handleServerMessage(message.data);
+            } else {
+                this.handleServerMessage(message);
             }
           },
           onMessageError: (error) =>

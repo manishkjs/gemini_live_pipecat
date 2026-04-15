@@ -119,6 +119,37 @@ The backend server handles the core AI pipeline.
     ```
     The client will be accessible at the URL provided by Vite (usually `http://localhost:5173`). Open this URL in your browser to start using the voice assistant.
 
+### 4. Writing Tools for Gemini Live
+You can register custom tools to expand the capabilities of the voice assistant. To prevent the model from hallucinating tool calls in casual conversation, follow this structured approach using explicit Boolean parameter constraints:
+
+#### Best Practice Tool Structure
+Define tools in `FunctionSchema` by incorporating boolean intent guards. The model evaluates conversational checks, ensuring it doesn’t invoke actions without explicit intent. 
+
+Example for an actions tool:
+```python
+FunctionSchema(
+    name="execute_action",
+    description="Executes a specific action requested by the user.",
+    properties={
+        "action_name": {"type": "string", "description": "Name of the action"},
+        "is_explicit_intent": {
+            "type": "boolean",
+            "description": (
+                "Return `true` ONLY if the user explicitly requests to run this action now.\n"
+                "Return `false` for casual mentions or theoretical discussions."
+            )
+        }
+    },
+    required=["action_name", "is_explicit_intent"]
+)
+```
+
+In the tool handler implementation, fail gracefully if the constraint resolves to `false`:
+```python
+if not params.arguments.get("is_explicit_intent"):
+    return await params.result_callback({"error": "Explicit intent validation required."})
+```
+
 ## Deployment to Google Cloud Run
 
 This project is configured for easy deployment as a single container on Google Cloud Run. The `Dockerfile` builds the frontend assets and serves them from the Python backend.
