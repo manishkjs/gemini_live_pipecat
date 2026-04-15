@@ -771,7 +771,7 @@ input[type="password"]::placeholder {
 }
 
 .chat-window {
-  height: 300px;
+  height: 500px;
   overflow-y: auto;
   background: rgba(0, 0, 0, 0.2);
   border-radius: var(--border-radius);

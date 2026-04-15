@@ -143,14 +143,14 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     return {"ws_url": ws_url}
 
 
+@app.get("/connect/system-prompt")
+async def get_system_prompt():
+    return {"system_prompt": SYSTEM_PROMPT}
+
 # Mount the static files directory
 if os.path.exists("client/dist"):
     app.mount("/assets", StaticFiles(directory="client/dist/assets"), name="assets")
     
-    @app.get("/system-prompt")
-    async def get_system_prompt():
-        return {"system_prompt": SYSTEM_PROMPT}
-
     @app.get("/{catch_all:path}")
     async def read_index(catch_all: str):
         return FileResponse('client/dist/index.html')

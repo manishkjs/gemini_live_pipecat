@@ -239,7 +239,7 @@ class WebsocketClientApp {
 
   public async loadSystemPrompt(): Promise<void> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/system-prompt`);
+      const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt`);
       const data = await response.json();
       const geminiSystemInstructionsTextarea = document.getElementById(
         "system-instructions-textarea"
@@ -315,7 +315,9 @@ class WebsocketClientApp {
   }
 
   private log(message: string, level: LogLevel = "info"): void {
-    if (!this.debugLog) return;
+    console.log(`[${level.toUpperCase()}] ${message}`);
+    
+    if (!this.debugLog || level === "info") return;
 
     const entry = document.createElement("div");
     entry.classList.add("log-entry");
@@ -338,7 +340,6 @@ class WebsocketClientApp {
 
     this.debugLog.appendChild(entry);
     this.debugLog.scrollTop = this.debugLog.scrollHeight;
-    console.log(`[${level.toUpperCase()}] ${message}`);
   }
 
   // --- Observability Helpers ---
@@ -360,18 +361,31 @@ class WebsocketClientApp {
   }
 
   private appendChatMessage(role: "user" | "bot", text: string) {
-      if (!this.chatWindow) return;
-      const bubble = document.createElement("div");
-      bubble.classList.add("chat-bubble", role);
-      bubble.textContent = text;
-      
-      const timestamp = document.createElement("span");
-      timestamp.classList.add("timestamp");
-      timestamp.textContent = new Date().toLocaleTimeString();
-      bubble.appendChild(timestamp);
-
-      this.chatWindow.appendChild(bubble);
+    if (!this.chatWindow) return;
+    
+    const lastBubble = this.chatWindow.lastElementChild;
+    if (lastBubble && lastBubble.classList.contains(role)) {
+      const timestamp = lastBubble.querySelector(".timestamp");
+      if (timestamp) {
+        timestamp.before(document.createTextNode(text));
+      } else {
+        lastBubble.textContent += text;
+      }
       this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+      return;
+    }
+
+    const bubble = document.createElement("div");
+    bubble.classList.add("chat-bubble", role);
+    bubble.textContent = text;
+    
+    const timestamp = document.createElement("span");
+    timestamp.classList.add("timestamp");
+    timestamp.textContent = new Date().toLocaleTimeString();
+    bubble.appendChild(timestamp);
+
+    this.chatWindow.appendChild(bubble);
+    this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
   }
 
   private handleServerMessage(message: any) {
@@ -694,9 +708,13 @@ class WebsocketClientApp {
             this.log(`Bot ready: ${JSON.stringify(data)}`);
             this.setupMediaTracks();
           },
-          onGenericMessage: (message: any) => {
-            this.log(`Generic message: ${JSON.stringify(message)}`, "info");
-            this.handleServerMessage(message);
+          onServerMessage: (message: any) => {
+            this.log(`Server message: ${JSON.stringify(message)}`, "info");
+            if (message.type === "server-message" && message.data) {
+                this.handleServerMessage(message.data);
+            } else {
+                this.handleServerMessage(message);
+            }
           },
           onMessageError: (error) =>
             this.log(`Message error: ${error}`, "error"),
