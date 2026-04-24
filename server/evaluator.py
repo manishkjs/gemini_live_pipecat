@@ -55,6 +55,8 @@ class VoiceEvaluatorProcessor(FrameProcessor):
                      self._user_utterance = ""
                      self._bot_utterance = ""
 
+        await self.push_frame(frame, direction)
+
     def _log_ttfb(self, ttfb: float):
         logger.info(f"====== EVALUATION METRIC ======")
         logger.info(f"TTFB (Time to First Byte): {ttfb:.3f} seconds")
