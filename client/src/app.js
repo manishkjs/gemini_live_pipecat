@@ -24,8 +24,73 @@ class WebsocketClientApp {
     dotsContainer = null;
     tabs = null;
     configPanels = null;
-    activeTab = "tts-llm-stt";
+    activeTab = "gemini-live";
     activePipeline = null;
+    // Observability UI Elements
+    toolDefinitionsTextarea = null;
+    chatWindow = null;
+    metricTurnCount = null;
+    metricInterruptCount = null;
+    metricToolCallCount = null;
+    metricTokenCount = null;
+    // Observability State
+    turnCount = 0;
+    interruptCount = 0;
+    toolCallCount = 0;
+    tokenCount = 0;
+    lastLLMLatency = null;
+    lastTTSLatency = null;
+    // Voice Data
+    GEMINI_VOICES = [
+        { value: "Puck", label: "Puck (Male)" },
+        { value: "Charon", label: "Charon (Male)" },
+        { value: "Kore", label: "Kore (Female)" },
+        { value: "Fenrir", label: "Fenrir (Male)" },
+        { value: "Aoede", label: "Aoede (Female)" },
+        { value: "Zephyr", label: "Zephyr (Female)" },
+        { value: "Leda", label: "Leda (Female)" },
+        { value: "Orus", label: "Orus (Male)" },
+        { value: "Callirhoe", label: "Callirhoe (Female)" },
+        { value: "Autonoe", label: "Autonoe (Female)" },
+        { value: "Enceladus", label: "Enceladus (Male)" },
+        { value: "Iapetus", label: "Iapetus (Male)" },
+        { value: "Umbriel", label: "Umbriel (Male)" },
+        { value: "Algieba", label: "Algieba (Male)" },
+        { value: "Despina", label: "Despina (Female)" },
+        { value: "Erinome", label: "Erinome (Female)" },
+        { value: "Algenib", label: "Algenib (Male)" },
+        { value: "Rasalgethi", label: "Rasalgethi (Male)" },
+        { value: "Laomedeia", label: "Laomedeia (Female)" },
+        { value: "Achernar", label: "Achernar (Female)" },
+        { value: "Alnilam", label: "Alnilam (Male)" },
+        { value: "Schedar", label: "Schedar (Male)" },
+        { value: "Gacrux", label: "Gacrux (Female)" },
+        { value: "Pulcherrima", label: "Pulcherrima (Female)" },
+        { value: "Achird", label: "Achird (Male)" },
+        { value: "Zubenelgenubi", label: "Zubenelgenubi (Male)" },
+        { value: "Vindemiatrix", label: "Vindemiatrix (Female)" },
+        { value: "Sadachbia", label: "Sadachbia (Male)" },
+        { value: "Sadaltager", label: "Sadaltager (Male)" },
+        { value: "Sulafat", label: "Sulafat (Female)" },
+    ];
+    GOOGLE_VOICES = [
+        { value: "en-US-Chirp3-HD-Aoede", label: "en-US-Chirp3-HD-Aoede" },
+        { value: "en-US-Chirp3-HD-Charon", label: "en-US-Chirp3-HD-Charon" },
+        { value: "en-IN-Chirp3-HD-Zephyr", label: "en-IN-Chirp3-HD-Zephyr" },
+        { value: "en-US-Chirp3-HD-Despina", label: "en-US-Chirp3-HD-Despina" },
+        { value: "en-US-Chirp3-HD-Gacrux", label: "en-US-Chirp3-HD-Gacrux" },
+        { value: "en-US-Chirp3-HD-Leda", label: "en-US-Chirp3-HD-Leda" },
+        { value: "en-US-Chirp3-HD-Puck", label: "en-US-Chirp3-HD-Puck" },
+        { value: "en-IN-Chirp3-HD-Aoede", label: "en-IN-Chirp3-HD-Aoede" },
+        { value: "en-US-News-N", label: "en-US-News-N" },
+        { value: "en-US-Wavenet-D", label: "en-US-Wavenet-D" },
+        { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
+        { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
+        { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
+        { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
+        { value: "Custom-Male", label: "Custom clone voice - Male" },
+        { value: "Custom-Female", label: "Custom clone voice - Female" },
+    ];
     constructor() {
         this.setupDOMElements();
         this.setupEventListeners();
@@ -47,6 +112,13 @@ class WebsocketClientApp {
         this.tabs = document.querySelectorAll(".tab-btn");
         this.configPanels = document.querySelectorAll(".config-panel");
         this.activePipeline = document.querySelector(".active-pipeline");
+        // Observability Elements
+        this.toolDefinitionsTextarea = document.getElementById("tool-definitions-textarea");
+        this.chatWindow = document.getElementById("chat-window");
+        this.metricTurnCount = document.getElementById("metric-turn-count");
+        this.metricInterruptCount = document.getElementById("metric-interrupt-count");
+        this.metricToolCallCount = document.getElementById("metric-tool-call-count");
+        this.metricTokenCount = document.getElementById("metric-token-count");
     }
     setupEventListeners() {
         this.connectBtn?.addEventListener("click", () => this.toggleConnection());
@@ -108,10 +180,35 @@ class WebsocketClientApp {
         geminiModelSelect?.addEventListener("change", handleModelChange);
         geminiVoiceSelect?.addEventListener("change", handleModelChange);
         ttsToggle?.addEventListener("change", handleModelChange);
+        // TTS Model Change Logic
+        const ttsModelSelect = document.getElementById("tts-model-select");
+        const ttsVoiceSelect = document.getElementById("tts-voice-select");
+        const populateVoices = () => {
+            const model = ttsModelSelect.value;
+            ttsVoiceSelect.innerHTML = "";
+            let voices = [];
+            if (model.startsWith("gemini")) {
+                voices = this.GEMINI_VOICES;
+            }
+            else {
+                voices = this.GOOGLE_VOICES;
+            }
+            voices.forEach(voice => {
+                const option = document.createElement("option");
+                option.value = voice.value;
+                option.textContent = voice.label;
+                ttsVoiceSelect.appendChild(option);
+            });
+        };
+        if (ttsModelSelect && ttsVoiceSelect) {
+            ttsModelSelect.addEventListener("change", populateVoices);
+            // Initial population
+            populateVoices();
+        }
     }
     async loadSystemPrompt() {
         try {
-            const response = await fetch(`${getApiBaseUrl()}/system-prompt`);
+            const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt`);
             const data = await response.json();
             const geminiSystemInstructionsTextarea = document.getElementById("system-instructions-textarea");
             if (geminiSystemInstructionsTextarea) {
@@ -130,6 +227,32 @@ class WebsocketClientApp {
         const tabId = tab.dataset.tab;
         if (!tabId)
             return;
+        // Don't change activeTab if it's observability, unless we want to use it for config?
+        // The user wants Observability as a separate tab.
+        // If the user clicks "Observability", we show that panel.
+        // But connection parameters depend on "gemini-live" or "tts-llm-stt".
+        // So "Observability" is just a view, not a bot type.
+        // I'll keep activeTab as the bot type, but show the Observability panel.
+        // Wait, the connect logic uses this.activeTab to determine bot_type.
+        // If activeTab is "observability", connect logic might break.
+        // So "Observability" should probably NOT change activeTab if it's used for connection type.
+        // OR, I should separate "View Tab" from "Bot Type".
+        // For now, I'll assume Observability is just a view and doesn't change the underlying bot config type.
+        // But visually, the "Gemini Live" tab becomes inactive.
+        // Let's modify: if tab is observability, just show panel, don't change this.activeTab used for connection.
+        if (tabId === "observability") {
+            this.tabs?.forEach((t) => t.classList.remove("active"));
+            tab.classList.add("active");
+            this.configPanels?.forEach((panel) => {
+                if (panel.id === "observability-panel") {
+                    panel.classList.add("active");
+                }
+                else {
+                    panel.classList.remove("active");
+                }
+            });
+            return;
+        }
         this.activeTab = tabId;
         this.tabs?.forEach((t) => t.classList.remove("active"));
         tab.classList.add("active");
@@ -151,7 +274,8 @@ class WebsocketClientApp {
         }
     }
     log(message, level = "info") {
-        if (!this.debugLog)
+        console.log(`[${level.toUpperCase()}] ${message}`);
+        if (!this.debugLog || level === "info")
             return;
         const entry = document.createElement("div");
         entry.classList.add("log-entry");
@@ -169,8 +293,186 @@ class WebsocketClientApp {
         entry.appendChild(messageEl);
         this.debugLog.appendChild(entry);
         this.debugLog.scrollTop = this.debugLog.scrollHeight;
-        console.log(`[${level.toUpperCase()}] ${message}`);
     }
+    // --- Observability Helpers ---
+    resetMetrics() {
+        this.turnCount = 0;
+        this.interruptCount = 0;
+        this.toolCallCount = 0;
+        this.tokenCount = 0;
+        this.updateMetricDisplay();
+        if (this.chatWindow)
+            this.chatWindow.innerHTML = "";
+    }
+    updateMetricDisplay() {
+        if (this.metricTurnCount)
+            this.metricTurnCount.textContent = this.turnCount.toString();
+        if (this.metricInterruptCount)
+            this.metricInterruptCount.textContent = this.interruptCount.toString();
+        if (this.metricToolCallCount)
+            this.metricToolCallCount.textContent = this.toolCallCount.toString();
+        if (this.metricTokenCount)
+            this.metricTokenCount.textContent = this.tokenCount.toString();
+    }
+    appendChatMessage(role, text, ttft) {
+        if (!this.chatWindow)
+            return;
+        const lastBubble = this.chatWindow.lastElementChild;
+        if (lastBubble && lastBubble.classList.contains(role)) {
+            const timestamp = lastBubble.querySelector(".timestamp");
+            if (timestamp) {
+                timestamp.before(document.createTextNode(text));
+            }
+            else {
+                lastBubble.textContent += text;
+            }
+            if (ttft !== undefined && !lastBubble.querySelector(".ttft-latency")) {
+                const ttftEl = document.createElement("div");
+                ttftEl.classList.add("ttft-latency");
+                ttftEl.style.fontStyle = "italic";
+                ttftEl.style.fontSize = "0.8em";
+                ttftEl.style.opacity = "0.7";
+                ttftEl.style.marginTop = "4px";
+                ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
+                lastBubble.appendChild(ttftEl);
+            }
+            this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+            return;
+        }
+        const bubble = document.createElement("div");
+        bubble.classList.add("chat-bubble", role);
+        bubble.textContent = text;
+        const timestamp = document.createElement("span");
+        timestamp.classList.add("timestamp");
+        timestamp.textContent = new Date().toLocaleTimeString();
+        bubble.appendChild(timestamp);
+        if (ttft !== undefined) {
+            const ttftEl = document.createElement("div");
+            ttftEl.classList.add("ttft-latency");
+            ttftEl.style.fontStyle = "italic";
+            ttftEl.style.fontSize = "0.8em";
+            ttftEl.style.opacity = "0.7";
+            ttftEl.style.marginTop = "4px";
+            ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
+            bubble.appendChild(ttftEl);
+        }
+        this.chatWindow.appendChild(bubble);
+        this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+    }
+    tryUpdateBubbleLatencies() {
+        if (!this.chatWindow)
+            return;
+        const lastBubble = this.chatWindow.lastElementChild;
+        if (lastBubble && lastBubble.classList.contains("bot")) {
+            let latencyEl = lastBubble.querySelector(".loop-latencies");
+            if (!latencyEl) {
+                latencyEl = document.createElement("div");
+                latencyEl.classList.add("loop-latencies");
+                latencyEl.style.fontStyle = "italic";
+                latencyEl.style.fontSize = "0.8em";
+                latencyEl.style.opacity = "0.7";
+                latencyEl.style.marginTop = "4px";
+                lastBubble.appendChild(latencyEl);
+            }
+            const parts = [];
+            if (this.lastLLMLatency !== null)
+                parts.push(`LLM: ${Math.round(this.lastLLMLatency * 1000)}ms`);
+            if (this.lastTTSLatency !== null)
+                parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
+            if (parts.length > 0) {
+                latencyEl.textContent = parts.join(" | ");
+            }
+        }
+    }
+    handleServerMessage(message) {
+        // Handle Transcription
+        if (message.type === "transcription") {
+            const { participant, text, ttft } = message;
+            const role = (participant === "User" || participant === "user") ? "user" : "bot";
+            if (role === "user") {
+                this.lastLLMLatency = null;
+                this.lastTTSLatency = null;
+            }
+            this.appendChatMessage(role, text, ttft);
+        }
+        // Handle Metrics
+        // Case 1: OutputTransportMessageFrame format
+        if (message.type === "metrics") {
+            const payload = message.payload;
+            if (!payload)
+                return;
+            switch (payload.type) {
+                case "interruption":
+                    this.interruptCount += (payload.count || 1);
+                    break;
+                case "turn_complete":
+                    this.turnCount++;
+                    break;
+                case "tool_call":
+                    this.toolCallCount++;
+                    // Optionally log tool details to chat or debug
+                    this.log(`Tool Call: ${JSON.stringify(payload.tool)}`, "info");
+                    break;
+                case "usage":
+                    if (payload.usage && payload.usage.total_token_count) {
+                        // Is this cumulative or per turn? Usually per turn.
+                        // But we want total for the session.
+                        // Wait, API usage is per turn. So I should accumulate.
+                        this.tokenCount += payload.usage.total_token_count;
+                    }
+                    break;
+                case "llm_latency":
+                    this.lastLLMLatency = payload.value;
+                    this.tryUpdateBubbleLatencies();
+                    break;
+                case "tts_latency":
+                    this.lastTTSLatency = payload.value;
+                    this.tryUpdateBubbleLatencies();
+                    break;
+            }
+            this.updateMetricDisplay();
+            return;
+        }
+        // Handle JSON Metrics (sent as TextFrame) - Legacy/Fallback
+        let jsonText = "";
+        if (message.type === "text" && message.text.startsWith("JSON:")) {
+            jsonText = message.text.substring(5);
+        }
+        else if (typeof message === "string" && message.startsWith("JSON:")) {
+            jsonText = message.substring(5);
+        }
+        if (jsonText) {
+            try {
+                const data = JSON.parse(jsonText);
+                switch (data.type) {
+                    case "interruption":
+                        this.interruptCount += (data.count || 1);
+                        break;
+                    case "turn_complete":
+                        this.turnCount++;
+                        break;
+                    case "tool_call":
+                        this.toolCallCount++;
+                        // Optionally log tool details to chat or debug
+                        this.log(`Tool Call: ${JSON.stringify(data.tool)}`, "info");
+                        break;
+                    case "usage":
+                        if (data.usage && data.usage.total_token_count) {
+                            // Is this cumulative or per turn? Usually per turn.
+                            // But we want total for the session.
+                            // Wait, API usage is per turn. So I should accumulate.
+                            this.tokenCount += data.usage.total_token_count;
+                        }
+                        break;
+                }
+                this.updateMetricDisplay();
+            }
+            catch (e) {
+                console.error("Failed to parse JSON metric:", e);
+            }
+        }
+    }
+    // -----------------------------
     updateStatus(status) {
         if (this.statusSpan) {
             this.statusSpan.textContent = status;
@@ -284,22 +586,20 @@ class WebsocketClientApp {
             this.audioContext = new AudioContext();
             this.audioContext.resume();
             this.updateStatus("Connecting");
+            this.resetMetrics(); // Reset metrics on connect
             const transport = new WebSocketTransport();
-            const apiKeyInput = document.getElementById("api-key-input");
-            const apiKey = apiKeyInput.value;
-            if (!apiKey) {
-                this.log("No API key provided, attempting to use server-side credentials (Vertex AI)", "warning");
-            }
-            let connectUrl = `/connect?bot_type=${this.activeTab}&api_key=${apiKey}`;
+            let connectUrl = `/connect?bot_type=${this.activeTab}`;
             let systemInstructions = "";
             if (this.activeTab === "tts-llm-stt") {
                 const ttsVoiceSelect = document.getElementById("tts-voice-select");
+                const ttsModelSelect = document.getElementById("tts-model-select");
                 const llmModelSelect = document.getElementById("llm-model-select");
                 const sttModelSelect = document.getElementById("stt-model-select");
                 const sttLanguageSelect = document.getElementById("stt-language-select");
                 const systemInstructionsTextarea = document.getElementById("tts-llm-stt-system-instructions-textarea");
                 const paceSlider = document.getElementById("tts-pace-slider");
                 connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
+                connectUrl += `&tts_model=${ttsModelSelect.value}`;
                 connectUrl += `&tts_pace=${paceSlider.value}`;
                 connectUrl += `&llm_model=${llmModelSelect.value}`;
                 connectUrl += `&stt_model=${sttModelSelect.value}`;
@@ -323,6 +623,20 @@ class WebsocketClientApp {
             if (systemInstructions) {
                 connectUrl += `&system_instruction=${encodeURIComponent(systemInstructions)}`;
             }
+            // Handle Dynamic Tools
+            let tools = null;
+            if (this.toolDefinitionsTextarea && this.toolDefinitionsTextarea.value.trim()) {
+                try {
+                    tools = JSON.parse(this.toolDefinitionsTextarea.value);
+                    this.log("Loaded dynamic tools from configuration", "info");
+                }
+                catch (e) {
+                    this.log("Invalid JSON in Tool Definitions", "error");
+                    // Continue without tools or abort? Aborting seems safer if config is wrong.
+                    this.updateStatus("Error: Invalid Tool JSON");
+                    return;
+                }
+            }
             const RTVIConfig = {
                 transport,
                 params: {
@@ -330,6 +644,8 @@ class WebsocketClientApp {
                     endpoints: {
                         connect: connectUrl,
                     },
+                    // Send tools in params, hoping client sends it in body
+                    tools: tools
                 },
                 enableMic: true,
                 enableCam: false,
@@ -356,11 +672,13 @@ class WebsocketClientApp {
                         this.log(`Bot ready: ${JSON.stringify(data)}`);
                         this.setupMediaTracks();
                     },
-                    onGenericMessage: (message) => {
-                        this.log(`Generic message: ${JSON.stringify(message)}`);
-                        if (message.type === "transcription") {
-                            const { participant, text } = message;
-                            this.log(`[${participant}] ${text}`, "info");
+                    onServerMessage: (message) => {
+                        this.log(`Server message: ${JSON.stringify(message)}`, "info");
+                        if (message.type === "server-message" && message.data) {
+                            this.handleServerMessage(message.data);
+                        }
+                        else {
+                            this.handleServerMessage(message);
                         }
                     },
                     onMessageError: (error) => this.log(`Message error: ${error}`, "error"),

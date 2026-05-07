@@ -89,7 +89,7 @@
               </button>
             </div>
             <div id="tts-llm-stt-panel" class="config-panel">
-              <div class="tile">
+              <div class="tile" id="stt-tile">
                 <h3><i class="fas fa-cogs"></i> Speech-to-Text (STT)</h3>
                 <div class="setting-group">
                   <div class="setting">
@@ -101,12 +101,31 @@
                     </select>
                   </div>
                   <div class="setting">
-                    <label for="stt-language-select">Language</label>
-                    <select id="stt-language-select">
-                      <option value="en-US">en-US</option>
-                      <option value="en-IN" selected>en-IN</option>
-                      <option value="hi-IN">hi-IN</option>
-                    </select>
+                    <label>Language</label>
+                    <div class="custom-multiselect" id="stt-language-multiselect">
+                      <div class="select-box" id="stt-language-trigger">
+                        <div class="selected-options" id="stt-language-display">en-IN, hi-IN</div>
+                        <div class="arrow"><i class="fas fa-chevron-down"></i></div>
+                      </div>
+                      <div class="options-container" id="stt-language-container">
+                        <label><input type="checkbox" value="en-US"> en-US</label>
+                        <label><input type="checkbox" value="en-IN" checked> en-IN</label>
+                        <label><input type="checkbox" value="hi-IN" checked> hi-IN</label>
+                        <label><input type="checkbox" value="bn-IN"> bn-IN</label>
+                        <label><input type="checkbox" value="te-IN"> te-IN</label>
+                        <label><input type="checkbox" value="mr-IN"> mr-IN</label>
+                        <label><input type="checkbox" value="ta-IN"> ta-IN</label>
+                        <label><input type="checkbox" value="gu-IN"> gu-IN</label>
+                        <label><input type="checkbox" value="kn-IN"> kn-IN</label>
+                        <label><input type="checkbox" value="ml-IN"> ml-IN</label>
+                        <label><input type="checkbox" value="pa-IN"> pa-IN</label>
+                        <label><input type="checkbox" value="ur-IN"> ur-IN</label>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="setting-toggle">
+                    <label for="skip-stt-toggle">Skip STT (Send Audio Directly to LLM)</label>
+                    <input type="checkbox" id="skip-stt-toggle" />
                   </div>
                 </div>
               </div>
@@ -120,6 +139,7 @@
                     <option value="gemini-2.5-pro">gemini-2.5-pro</option>
                     <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
                     <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
+                    <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview</option>
                   </select>
                 </div>
               </div>
@@ -310,6 +330,7 @@
                   <div class="metric-title">Tokens</div>
                   <div class="metric-value" id="metric-token-count">0</div>
                 </div>
+
               </div>
 
 

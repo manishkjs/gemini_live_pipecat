@@ -1,14 +1,14 @@
 # Dependencies
-/node_modules
-/.pnp
+node_modules/
+.pnp
 .pnp.js
 
 # Testing
-/coverage
+coverage/
 
 # Production
-/build
-/dist
+build/
+dist/
 .DS_Store
 
 # Misc
@@ -23,7 +23,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Python
-/server/venv/
+venv/
 __pycache__/
 *.pyc
 server/voice_cloning_key_f.txt

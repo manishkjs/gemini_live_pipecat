@@ -22,6 +22,51 @@ load_dotenv(override=True)
 import pipecat.services.gemini_multimodal_live.gemini
 pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
 
+# Monkey-patch for google-genai BaseApiClient to fix AttributeError in aclose
+from google.genai._api_client import BaseApiClient
+
+async def patched_aclose(self):
+    if hasattr(self, '_async_httpx_client') and self._async_httpx_client:
+        try:
+            await self._async_httpx_client.aclose()
+        except Exception:
+            pass
+    if hasattr(self, '_aiohttp_session') and self._aiohttp_session:
+        try:
+            await self._aiohttp_session.close()
+        except Exception:
+            pass
+
+BaseApiClient.aclose = patched_aclose
+
+# Monkey-patch for Pipecat FrameProcessor to fix bug when frames arrive before StartFrame
+from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.frames.frames import SystemFrame
+
+# Fix for missing attribute fallback
+FrameProcessor._FrameProcessor__process_queue = None
+
+async def patched_input_frame_task_handler(self):
+    while True:
+        (frame, direction, callback) = await self._FrameProcessor__input_queue.get()
+
+        if self._FrameProcessor__should_block_system_frames and self._FrameProcessor__input_event:
+            await self._FrameProcessor__input_event.wait()
+            self._FrameProcessor__input_event.clear()
+            self._FrameProcessor__should_block_system_frames = False
+
+        if isinstance(frame, SystemFrame):
+            await self._FrameProcessor__process_frame(frame, direction, callback)
+        elif hasattr(self, '_FrameProcessor__process_queue') and self._FrameProcessor__process_queue:
+            await self._FrameProcessor__process_queue.put((frame, direction, callback))
+        else:
+            # Ignore frames before start instead of crashing
+            pass
+
+        self._FrameProcessor__input_queue.task_done()
+
+FrameProcessor._FrameProcessor__input_frame_task_handler = patched_input_frame_task_handler
+
 from agent_live import run_agent_live
 from agent import run_agent
 from system_prompt import SYSTEM_PROMPT, tts_prompt
@@ -60,6 +105,7 @@ async def websocket_endpoint(
     stt_model: str = "latest_long",
     stt_language: str = "en-US",
     tools: Optional[str] = None,
+    skip_stt: bool = False,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -85,6 +131,7 @@ async def websocket_endpoint(
                 stt_language=stt_language,
                 tts_model=tts_model,
                 system_instruction=system_instruction,
+                skip_stt=skip_stt,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")

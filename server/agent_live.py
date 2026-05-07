@@ -16,6 +16,8 @@ from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputP
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.filters.aic_filter import AICFilter
+from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -68,6 +70,18 @@ class GeminiSessionLoggerMixin:
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
 
     # ── Repeat-on-filler: intercept at API level ──────────────────────
+
+    async def start_ttfb_metrics(self):
+        self._my_ttfb_start = time.time()
+        await super().start_ttfb_metrics()
+        
+    async def stop_ttfb_metrics(self):
+        await super().stop_ttfb_metrics()
+        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+            self._current_turn_ttft = time.time() - self._my_ttfb_start
+            logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
+            self._my_ttfb_start = None
+
 
     async def process_frame(self, frame, direction):
         """Intercept InterruptionFrame to set filler-pending flag.
@@ -185,14 +199,20 @@ class GeminiSessionLoggerMixin:
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
             text = message.server_content.output_transcription.text
             logger.debug(f"[Transcription] Bot: {text}")
+            ttft = getattr(self, '_current_turn_ttft', None)
+            message_data = {
+                'type': 'transcription',
+                'participant': 'Bot',
+                'text': text
+            }
+            if ttft is not None:
+                message_data['ttft'] = ttft
+                self._current_turn_ttft = None
+                
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
-                "data": {
-                    'type': 'transcription',
-                    'participant': 'Bot',
-                    'text': text
-                }
+                "data": message_data
             }))
 
     async def _send_repeat_instruction(self, filler_text: str):
@@ -217,6 +237,7 @@ class GeminiSessionLoggerMixin:
     # ── Session ID & token usage logging ──────────────────────────────
 
     async def _process_message(self, message):
+
         # Capture Session ID
         if not getattr(self, '_session_id_logged', False):
             session_id = None
@@ -358,7 +379,7 @@ class GeminiSessionLoggerMixin:
             config = LiveConnectConfig(
                 generation_config=GenerationConfig(**generation_config_params),
                 input_audio_transcription=AudioTranscriptionConfig(),
-                session_resumption=SessionResumptionConfig(handle=session_resumption_handle),
+                # session_resumption=SessionResumptionConfig(handle=session_resumption_handle),
             )
 
             if has_audio:
@@ -467,6 +488,23 @@ class GeminiSessionLoggerMixin:
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
+    def create_client(self):
+        """Create the Gemini API client instance forcing AI Studio mode."""
+        import os
+        from google.genai import Client
+        
+        # Temporarily unset Vertex env vars to force AI Studio mode
+        project = os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
+        creds = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+        
+        logger.info("Creating Client forcing AI Studio mode (unsetting project/creds temporarily)...")
+        try:
+            self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
+        finally:
+            # Restore them
+            if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
+            if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
+
     async def _create_initial_response(self):
         if self._disconnecting:
             return
@@ -474,15 +512,17 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
             self._run_llm_when_session_ready = True
             return
 
-        logger.info("Triggering initial response for AI Studio model...")
+        logger.info("Triggering initial response in Hindi for AI Studio model...")
         from google.genai.types import Content, Part
         messages = [Content(
-            parts=[Part.from_text(text="Hello")],
+            parts=[Part.from_text(text="नमस्ते! बातचीत शुरू करें।")],
             role='user'
         )]
         await self._session.send_client_content(
             turns=messages, turn_complete=True
         )
+
+
 
 
 async def dynamic_tool_handler(params: FunctionCallParams):
@@ -515,6 +555,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
+            audio_filter=AICFilter(),
         )
     )
 
@@ -583,7 +624,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         ai_studio_params = {
             **common_params, 
             "api_key": os.getenv("GEMINI_API_KEY"), 
-            "model": f"models/{model}"
+            "model": f"models/{model}",
+            "http_options": HttpOptions(api_version="v1beta")
         }
         if not use_external_tts:
             # Use Zephyr as requested by user for this model
@@ -634,6 +676,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         enable_metrics=True,
         enable_usage_metrics=True,
     ))
+    
+    task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

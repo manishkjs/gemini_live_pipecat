@@ -43,11 +43,14 @@ class WebsocketClientApp {
   private metricToolCallCount: HTMLElement | null = null;
   private metricTokenCount: HTMLElement | null = null;
 
+
   // Observability State
   private turnCount = 0;
   private interruptCount = 0;
   private toolCallCount = 0;
   private tokenCount = 0;
+  private lastLLMLatency: number | null = null;
+  private lastTTSLatency: number | null = null;
 
   // Voice Data
   private readonly GEMINI_VOICES = [
@@ -136,6 +139,7 @@ class WebsocketClientApp {
     this.metricInterruptCount = document.getElementById("metric-interrupt-count");
     this.metricToolCallCount = document.getElementById("metric-tool-call-count");
     this.metricTokenCount = document.getElementById("metric-token-count");
+
   }
 
   private setupEventListeners(): void {
@@ -144,6 +148,38 @@ class WebsocketClientApp {
     this.stopBtn?.addEventListener("click", () => this.stopListening());
     this.tabs?.forEach((tab) => {
       tab.addEventListener("click", () => this.switchTab(tab));
+    });
+
+    const sttTrigger = document.getElementById("stt-language-trigger");
+    const sttOptions = document.getElementById("stt-language-container");
+    const sttDisplay = document.getElementById("stt-language-display");
+
+    sttTrigger?.addEventListener("click", () => {
+      sttOptions?.classList.toggle("active");
+    });
+
+    document.addEventListener("click", (e) => {
+      if (sttTrigger && !sttTrigger.contains(e.target as Node) && sttOptions && !sttOptions.contains(e.target as Node)) {
+        sttOptions.classList.remove("active");
+      }
+    });
+
+    const checkboxes = sttOptions?.querySelectorAll('input[type="checkbox"]');
+    checkboxes?.forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const checked = Array.from(sttOptions?.querySelectorAll('input[type="checkbox"]:checked') || [])
+          .map((c: any) => c.value);
+        if (sttDisplay) {
+          sttDisplay.textContent = checked.length > 0 ? checked.join(", ") : "Select Languages";
+        }
+      });
+    });
+
+    const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement;
+    const sttTile = document.getElementById("stt-tile");
+
+    skipSttToggle?.addEventListener("change", () => {
+      sttTile?.classList.toggle("grayed-out", skipSttToggle.checked);
     });
 
     const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
@@ -360,42 +396,127 @@ class WebsocketClientApp {
       if (this.metricTokenCount) this.metricTokenCount.textContent = this.tokenCount.toString();
   }
 
-  private appendChatMessage(role: "user" | "bot", text: string) {
+  private appendChatMessage(role: "user" | "bot", text: string, ttft?: number) {
     if (!this.chatWindow) return;
     
     const lastBubble = this.chatWindow.lastElementChild;
     if (lastBubble && lastBubble.classList.contains(role)) {
       const timestamp = lastBubble.querySelector(".timestamp");
       if (timestamp) {
-        timestamp.before(document.createTextNode(text));
+        const fullText = (lastBubble.getAttribute('data-text') || '') + text;
+        lastBubble.setAttribute('data-text', fullText);
+        
+        const cleanText = fullText.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
+        const textNode = timestamp.previousSibling;
+        if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+            textNode.textContent = cleanText;
+        } else {
+            timestamp.before(document.createTextNode(cleanText));
+        }
       } else {
-        lastBubble.textContent += text;
+        const currentText = lastBubble.textContent || '';
+        lastBubble.textContent = (currentText + text).replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
       }
+      
+      if (ttft !== undefined && !lastBubble.querySelector(".ttft-latency")) {
+        const ttftEl = document.createElement("div");
+        ttftEl.classList.add("ttft-latency");
+        ttftEl.style.fontStyle = "italic";
+        ttftEl.style.fontSize = "0.8em";
+        ttftEl.style.opacity = "0.7";
+        ttftEl.style.marginTop = "4px";
+        ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
+        lastBubble.appendChild(ttftEl);
+      }
+      
       this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
       return;
     }
 
     const bubble = document.createElement("div");
     bubble.classList.add("chat-bubble", role);
-    bubble.textContent = text;
+    bubble.setAttribute('data-text', text);
+    bubble.textContent = text.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
     
     const timestamp = document.createElement("span");
     timestamp.classList.add("timestamp");
     timestamp.textContent = new Date().toLocaleTimeString();
     bubble.appendChild(timestamp);
 
+    if (ttft !== undefined) {
+        const ttftEl = document.createElement("div");
+        ttftEl.classList.add("ttft-latency");
+        ttftEl.style.fontStyle = "italic";
+        ttftEl.style.fontSize = "0.8em";
+        ttftEl.style.opacity = "0.7";
+        ttftEl.style.marginTop = "4px";
+        ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
+        bubble.appendChild(ttftEl);
+    }
+
     this.chatWindow.appendChild(bubble);
     this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+  }
+
+  private replaceChatMessage(role: "user" | "bot", text: string) {
+    if (!this.chatWindow) return;
+    const bubbles = this.chatWindow.querySelectorAll(`.chat-bubble.${role}`);
+    if (bubbles.length === 0) return;
+    const lastBubble = bubbles[bubbles.length - 1];
+    lastBubble.setAttribute('data-text', text);
+    const timestamp = lastBubble.querySelector(".timestamp");
+    if (timestamp) {
+      const textNode = timestamp.previousSibling;
+      if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+        textNode.textContent = text;
+      } else {
+        timestamp.before(document.createTextNode(text));
+      }
+    }
+  }
+
+  private tryUpdateBubbleLatencies() {
+      if (!this.chatWindow) return;
+      const lastBubble = this.chatWindow.lastElementChild;
+      if (lastBubble && lastBubble.classList.contains("bot")) {
+          let latencyEl = lastBubble.querySelector(".loop-latencies") as HTMLElement;
+          if (!latencyEl) {
+              latencyEl = document.createElement("div");
+              latencyEl.classList.add("loop-latencies");
+              latencyEl.style.fontStyle = "italic";
+              latencyEl.style.fontSize = "0.8em";
+              latencyEl.style.opacity = "0.7";
+              latencyEl.style.marginTop = "4px";
+              lastBubble.appendChild(latencyEl);
+          }
+          
+          const parts = [];
+          if (this.lastLLMLatency !== null) parts.push(`LLM: ${Math.round(this.lastLLMLatency * 1000)}ms`);
+          if (this.lastTTSLatency !== null) parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
+          
+          if (parts.length > 0) {
+              latencyEl.textContent = parts.join(" | ");
+          }
+      }
   }
 
   private handleServerMessage(message: any) {
       // Handle Transcription
       if (message.type === "transcription") {
-          const { participant, text } = message;
-          // Pipecat usually sends "User" or "Assistant" or similar.
-          // Map participant to role
+          const { participant, text, ttft } = message;
           const role = (participant === "User" || participant === "user") ? "user" : "bot";
-          this.appendChatMessage(role, text);
+          if (role === "user") {
+              this.lastLLMLatency = null;
+              this.lastTTSLatency = null;
+          }
+          this.appendChatMessage(role, text, ttft);
+      }
+
+      // Handle Transcription Replace (parallel STT updates the placeholder)
+      if (message.type === "transcription_replace") {
+          const { participant, text } = message;
+          const role = (participant === "User" || participant === "user") ? "user" : "bot";
+          this.replaceChatMessage(role, text);
       }
 
       // Handle Metrics
@@ -423,6 +544,14 @@ class WebsocketClientApp {
                       // Wait, API usage is per turn. So I should accumulate.
                       this.tokenCount += payload.usage.total_token_count;
                   }
+                  break;
+              case "llm_latency":
+                  this.lastLLMLatency = payload.value;
+                  this.tryUpdateBubbleLatencies();
+                  break;
+              case "tts_latency":
+                  this.lastTTSLatency = payload.value;
+                  this.tryUpdateBubbleLatencies();
                   break;
           }
           this.updateMetricDisplay();
@@ -615,20 +744,25 @@ class WebsocketClientApp {
         const sttModelSelect = document.getElementById(
           "stt-model-select"
         ) as HTMLSelectElement;
-        const sttLanguageSelect = document.getElementById(
-          "stt-language-select"
-        ) as HTMLSelectElement;
+        const sttLanguageContainer = document.getElementById(
+          "stt-language-container"
+        ) as HTMLElement;
         const systemInstructionsTextarea = document.getElementById(
           "tts-llm-stt-system-instructions-textarea"
         ) as HTMLTextAreaElement;
         const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
+        const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement;
 
         connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
         connectUrl += `&tts_model=${ttsModelSelect.value}`;
         connectUrl += `&tts_pace=${paceSlider.value}`;
         connectUrl += `&llm_model=${llmModelSelect.value}`;
         connectUrl += `&stt_model=${sttModelSelect.value}`;
-        connectUrl += `&stt_language=${sttLanguageSelect.value}`;
+        connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
+        
+        const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
+            .map((cb: any) => cb.value);
+        connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
         systemInstructions = systemInstructionsTextarea.value;
       } else {
         const geminiModelSelect = document.getElementById(
