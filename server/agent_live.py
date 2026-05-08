@@ -19,6 +19,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.filters.aic_filter import AICFilter
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
+from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
@@ -84,20 +85,8 @@ class GeminiSessionLoggerMixin:
 
 
     async def process_frame(self, frame, direction):
-        """Intercept InterruptionFrame to set filler-pending flag.
-
-        We override process_frame instead of _handle_interruption because
-        _bot_is_responding gets set to False when the API turn_complete arrives,
-        but audio may still be playing from the transport buffer. The
-        InterruptionFrame is only generated when the user actually interrupts
-        ongoing audio playback, so it's a reliable signal.
-        """
+        """Intercept InterruptionFrame for metrics."""
         if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
-            if not hasattr(self, '_repeat_on_filler_pending'):
-                self._repeat_on_filler_pending = False
-            self._repeat_on_filler_pending = True
-            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
-            
             # Metric Streaming: Interruption
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
@@ -111,32 +100,13 @@ class GeminiSessionLoggerMixin:
         await super().process_frame(frame, direction)
 
     async def _handle_msg_input_transcription(self, message):
-        """Override to detect ≤2-word fillers after an interruption and auto-repeat.
-
-        The API sends transcription in chunks (fragments). We accumulate text
-        in our own buffer and check once a complete sentence is formed (sentence-
-        ending punctuation detected). This avoids false positives from partial
-        chunks like "अच्छा," arriving before the rest of a longer sentence.
-
-        We ALWAYS let the parent handle sentence buffering and TranscriptionFrame
-        emission first, then evaluate the filler logic.
-        """
+        """Override to handle transcription normally."""
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
         text = message.server_content.input_transcription.text
         if not text:
             return await super()._handle_msg_input_transcription(message)
-
-        # Accumulate post-interruption text in our own buffer
-        if getattr(self, '_repeat_on_filler_pending', False):
-            if not hasattr(self, '_post_interruption_buffer'):
-                self._post_interruption_buffer = ""
-            self._post_interruption_buffer += text
-            logger.debug(
-                f"[RepeatOnFiller] Accumulating chunk: '{text.strip()}' "
-                f"(buffer: '{self._post_interruption_buffer.strip()}')"
-            )
 
         # ALWAYS let parent handle normally (sentence buffering, TranscriptionFrame)
         await super()._handle_msg_input_transcription(message)
@@ -152,47 +122,6 @@ class GeminiSessionLoggerMixin:
                 'text': text
             }
         }))
-
-        # After parent processes, check if our buffer forms a complete sentence
-        if getattr(self, '_repeat_on_filler_pending', False):
-            buffer = getattr(self, '_post_interruption_buffer', '').strip()
-            if not buffer:
-                return
-
-            import re
-            has_sentence_end = bool(re.search(r'[.।!?\n]', buffer))
-            user_stopped = not getattr(self, '_user_is_speaking', True)
-
-            if has_sentence_end or user_stopped:
-                filler_max_words = getattr(self, '_filler_max_words', 2)
-                clean = buffer.rstrip('।.!?\n').strip()
-                word_count = len(clean.split()) if clean else 0
-
-                if word_count <= filler_max_words:
-                    logger.info(
-                        f"[RepeatOnFiller] Filler detected: '{buffer}' "
-                        f"({word_count} word(s)). Sending repeat instruction."
-                    )
-                    self._repeat_on_filler_pending = False
-                    await self.push_frame(OutputTransportMessageFrame(message={
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {
-                            'type': 'transcription',
-                            'participant': 'Bot',
-                            'text': text
-                        }
-                    }))
-                    self._repeat_on_filler_pending = False
-                    self._post_interruption_buffer = ""
-                    await self._send_repeat_instruction(buffer)
-                else:
-                    logger.info(
-                        f"[RepeatOnFiller] Genuine interruption: '{buffer}' "
-                        f"({word_count} words). No repeat needed."
-                    )
-                    self._repeat_on_filler_pending = False
-                    self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
         await super()._handle_msg_output_transcription(message)
@@ -215,24 +144,7 @@ class GeminiSessionLoggerMixin:
                 "data": message_data
             }))
 
-    async def _send_repeat_instruction(self, filler_text: str):
-        """Send a user-role prompt telling the model to repeat itself."""
-        if self._disconnecting or not self._session:
-            return
-        try:
-            await self._create_single_response([{
-                "role": "user",
-                "content": (
-                    f"The user just said '{filler_text}' which is a short "
-                    f"filler/acknowledgment while you were speaking. They did NOT "
-                    f"ask a new question. Please REPEAT your previous response "
-                    f"from the beginning — resume exactly what you were saying "
-                    f"before the interruption."
-                ),
-            }])
-            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
-        except Exception as e:
-            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+
 
     # ── Session ID & token usage logging ──────────────────────────────
 
@@ -687,6 +599,118 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Pipecat Client disconnected")
+        await task.cancel()
+
+    await PipelineRunner(handle_sigint=False).run(task)
+
+
+async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruction: Optional[str] = None, use_silero_vad: Optional[bool] = None):
+    """Runs the Gemini Live agent with Twilio integration."""
+    if use_silero_vad is None:
+        use_silero_vad = os.getenv("GEMINI_VAD_MODE", "silero").lower() == "silero"
+
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+    location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+
+    logger.info(f"Starting Twilio agent for stream {stream_sid} (VAD: {'Silero' if use_silero_vad else 'Native'})")
+    
+    prompt_text = system_instruction or SYSTEM_PROMPT
+    
+    transport = FastAPIWebsocketTransport(
+        websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True, 
+            audio_out_enabled=True, 
+            add_wav_header=False,
+            vad_analyzer=SileroVADAnalyzer() if use_silero_vad else None,
+            serializer=TwilioFrameSerializer(
+                stream_sid=stream_sid,
+                params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
+            ),
+            audio_filter=AICFilter(),
+        )
+    )
+
+    # We use standard tools for now
+    standard_tools = [FunctionSchema(
+        name="get_current_time",
+        description="Get the current time.",
+        properties={
+            "is_explicit_request": {
+                "type": "boolean",
+                "description": "Return `true` ONLY if the user explicitly asks for the current time."
+            }
+        },
+        required=["is_explicit_request"]
+    )]
+    tools_schema = ToolsSchema(standard_tools=standard_tools)
+
+    common_params = {
+        "system_instruction": prompt_text, 
+        "tools": tools_schema, 
+        "transcribe_model_audio": True,
+        "params": InputParams(language=Language.HI_IN, modalities=GeminiModalities.AUDIO)
+    }
+
+    vertex_params = {
+        **common_params, 
+        "project_id": project_id, 
+        "location": location, 
+        "model": "google/gemini-live-2.5-flash-native-audio",
+        "http_options": HttpOptions(api_version="v1alpha")
+    }
+    
+    # Subclass to inject Native VAD config and Proactivity
+    class TwilioGeminiService(CustomGeminiLiveVertexLLMService):
+        async def _connection_task_handler(self, config):
+            if not use_silero_vad:
+                from google.genai.types import RealtimeInputConfig, AutomaticActivityDetection
+                logger.info("Enabling Native VAD for Twilio")
+                vad_config = AutomaticActivityDetection(
+                    start_of_speech_sensitivity="START_SENSITIVITY_LOW",
+                    end_of_speech_sensitivity="END_SENSITIVITY_LOW",
+                    prefix_padding_ms=200,
+                    silence_duration_ms=500
+                )
+                config.realtime_input_config = RealtimeInputConfig(
+                    automatic_activity_detection=vad_config
+                )
+            
+            # Enable Proactivity
+            logger.info("Enabling Proactivity for Twilio")
+            config.proactivity = {"proactive_audio": True}
+            
+            await super()._connection_task_handler(config)
+
+    # Use the custom service
+    llm = TwilioGeminiService(**vertex_params)
+    llm.register_function("get_current_time", get_current_time)
+
+    context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
+
+    pipeline = Pipeline([
+        transport.input(),
+        context_aggregator.user(),
+        llm,
+        transport.output(),
+        context_aggregator.assistant(),
+    ])
+
+    task = PipelineTask(pipeline, params=PipelineParams(
+        enable_metrics=True,
+        enable_usage_metrics=True,
+    ))
+    
+    task.add_observer(WhiskerObserver(pipeline))
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(transport, client):
+        logger.info("Twilio Client connected")
+        await task.queue_frames([context_aggregator.user()._get_context_frame()])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        logger.info("Twilio Client disconnected")
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

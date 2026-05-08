@@ -27,7 +27,7 @@ from fastapi import WebSocket
 from google import genai
 from google.genai import types
 
-from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
+from system_prompt import SYSTEM_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
@@ -244,8 +244,7 @@ async def run_agent(
         )
 
     final_system_instruction = system_instruction or SYSTEM_PROMPT
-    if tts_model.startswith("gemini"):
-        final_system_instruction += "\n\n" + GEMINI_LLM_TTS_PROMPT
+
 
     if skip_stt:
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."

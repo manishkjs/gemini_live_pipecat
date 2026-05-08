@@ -69,7 +69,7 @@ FrameProcessor._FrameProcessor__input_frame_task_handler = patched_input_frame_t
 
 from agent_live import run_agent_live
 from agent import run_agent
-from system_prompt import SYSTEM_PROMPT, tts_prompt
+from system_prompt import SYSTEM_PROMPT
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -193,6 +193,53 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 @app.get("/connect/system-prompt")
 async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
+
+
+from fastapi.responses import Response
+
+@app.post("/twilio/voice")
+async def twilio_voice(request: Request):
+    """Webhook endpoint for Twilio to fetch TwiML."""
+    host = request.url.hostname
+    scheme = "wss" if request.url.scheme == "https" else "ws"
+    
+    # If running locally without https, use ws and port 7860
+    if not "K_SERVICE" in os.environ and request.url.scheme != "https":
+        ws_url = f"ws://{host}:7860/ws/twilio"
+    else:
+        ws_url = f"wss://{host}/ws/twilio"
+        
+    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect>
+        <Stream url="{ws_url}" />
+    </Connect>
+</Response>"""
+    return Response(content=twiml, media_type="application/xml")
+
+
+from agent_live import run_agent_twilio
+
+import json
+
+@app.websocket("/ws/twilio")
+async def websocket_twilio(websocket: WebSocket):
+    """WebSocket endpoint for Twilio Media Streams."""
+    await websocket.accept()
+    print("Twilio WebSocket connection accepted")
+    try:
+        # Read messages until we find 'start' event
+        while True:
+            message = await websocket.receive_text()
+            data = json.loads(message)
+            print(f"Received Twilio event: {data.get('event')}")
+            if data.get("event") == "start":
+                stream_sid = data.get("streamSid")
+                print(f"Received streamSid: {stream_sid}")
+                await run_agent_twilio(websocket, stream_sid=stream_sid)
+                break
+    except Exception as e:
+        print(f"Exception in websocket_twilio: {e}")
 
 # Mount the static files directory
 if os.path.exists("client/dist"):
