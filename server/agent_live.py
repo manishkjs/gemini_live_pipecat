@@ -27,6 +27,7 @@ from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
+from tools.computer_use.agent import get_tool_schema, execute_computer_task
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -455,14 +456,11 @@ class GeminiSessionLoggerMixin:
                 config.system_instruction = system_instruction
 
             # Add tools to configuration, if provided
-            tools = getattr(self, "_tools", None)
+            tools = getattr(self, "_tools_from_init", None)
             if tools:
                 logger.debug(f"Setting tools: {tools}")
-                # Manually convert tools to Google format since ToolsSchema doesn't have to_google_tools
-                # and we don't have easy access to the adapter instance here
-                from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
-                adapter = GeminiLLMAdapter()
-                config.tools = adapter.to_provider_tools_format(tools)
+                adapter = self.get_llm_adapter()
+                config.tools = adapter.from_standard_tools(tools)
 
             self._connection_task = self.create_task(self._connection_task_handler(config))
         except Exception as e:
@@ -560,22 +558,25 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     )
 
     # Dynamic Tool Registration
-    standard_tools = [FunctionSchema(
-        name="get_current_time",
-        description="Get the current time.",
-        properties={
-            "is_explicit_request": {
-                "type": "boolean",
-                "description": (
-                    "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                    "Return `false` for anything else, including:\n"
-                    "- Explaining schedules or timelines.\n"
-                    "- Mentioning time casually in conversation."
-                )
-            }
-        },
-        required=["is_explicit_request"]
-    )]
+    standard_tools = [
+        FunctionSchema(
+            name="get_current_time",
+            description="Get the current time.",
+            properties={
+                "is_explicit_request": {
+                    "type": "boolean",
+                    "description": (
+                        "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                        "Return `false` for anything else, including:\n"
+                        "- Explaining schedules or timelines.\n"
+                        "- Mentioning time casually in conversation."
+                    )
+                }
+            },
+            required=["is_explicit_request"]
+        ),
+        get_tool_schema()
+    ]
 
     
     if tools:
@@ -641,9 +642,25 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm.register_function("get_current_time", get_current_time)
     
+    async def send_to_client(message_type: str, payload: dict):
+        await transport.output().push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': message_type,
+                **payload
+            }
+        }))
+
+    async def handle_computer_use(params: FunctionCallParams):
+        return await execute_computer_task(params, send_to_client_fn=send_to_client)
+
+    llm.register_function("execute_computer_task", handle_computer_use)
+    
     # Register generic handler for dynamic tools
+    registered = {"get_current_time", "execute_computer_task"}
     for tool in standard_tools:
-        if tool.name != "get_current_time":
+        if tool.name not in registered:
             llm.register_function(tool.name, dynamic_tool_handler)
 
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())

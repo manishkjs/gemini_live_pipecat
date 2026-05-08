@@ -519,6 +519,13 @@ class WebsocketClientApp {
           this.replaceChatMessage(role, text);
       }
 
+    // Handle Computer Use Action
+    if (message.type === "computer_use_action") {
+      const { action, args } = message;
+      this.log(`Received computer use action: ${action} with args: ${JSON.stringify(args)}`, "info");
+      this.executeComputerAction(action, args);
+    }
+
       // Handle Metrics
       // Case 1: OutputTransportMessageFrame format
       if (message.type === "metrics") {
@@ -595,6 +602,23 @@ class WebsocketClientApp {
               console.error("Failed to parse JSON metric:", e);
           }
       }
+  }
+
+  private executeComputerAction(action: string, args: any) {
+    this.log(`Executing action: ${action}`, "info");
+    this.appendChatMessage("bot", `🤖 [Executing Action: ${action}]`);
+
+    if (action === "navigate") {
+      const url = args.url;
+      if (url) {
+        this.log(`Navigating to ${url}`, "info");
+        window.open(url, '_blank');
+      }
+    } else if (action === "open_web_browser") {
+      this.log(`Opening web browser`, "info");
+      window.open('https://www.google.com', '_blank');
+    }
+    // Add more browser-side actions if possible
   }
 
   // -----------------------------
