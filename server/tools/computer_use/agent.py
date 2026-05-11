@@ -124,7 +124,7 @@ class ComputerUseAgent:
                     )
                 )
             ],
-            max_output_tokens=8192 # Optimization 6: Increased to 8192
+            max_output_tokens=8192
         )
         
         contents = [task_description]
@@ -136,24 +136,10 @@ class ComputerUseAgent:
         while turn < max_turns:
             turn += 1
             
-            # Take screenshot for the turn
-            logger.info("Capturing Playwright screenshot...")
-            screenshot_bytes = await self.page.screenshot(type="png")
-            
-            # Prune old screenshots to save context space
-            image_count = 0
-            for content in reversed(contents):
-                if not isinstance(content, types.Content):
-                    continue
-                for part in content.parts:
-                    if part.inline_data and part.inline_data.mime_type == 'image/png':
-                        image_count += 1
-                        if image_count > MAX_RECENT_SCREENSHOTS:
-                            # Replace image part with text placeholder
-                            content.parts[content.parts.index(part)] = types.Part.from_text(text="[Screenshot removed to save space]")
-            
-            # Append screenshot for the first turn or if last turn was model
-            if turn == 1 or contents[-1].role != "model":
+            # Optimization 5: Only take screenshot on the first turn at the top of the loop
+            if turn == 1:
+                logger.info("Capturing initial Playwright screenshot...")
+                screenshot_bytes = await self.page.screenshot(type="png")
                 contents.append(
                     types.Content(
                         role="user",
@@ -166,22 +152,42 @@ class ComputerUseAgent:
                     )
                 )
             
+            # Optimization 4: Prune old screenshots without mutating list during iteration
+            image_count = 0
+            for content in reversed(contents):
+                if not isinstance(content, types.Content):
+                    continue
+                new_parts = []
+                for part in content.parts:
+                    if part.inline_data and part.inline_data.mime_type == 'image/png':
+                        image_count += 1
+                        if image_count > MAX_RECENT_SCREENSHOTS:
+                            new_parts.append(types.Part.from_text(text="[Screenshot removed to save space]"))
+                        else:
+                            new_parts.append(part)
+                    else:
+                        new_parts.append(part)
+                content.parts = new_parts
+            
             logger.debug(f"Sending request to Gemini 3 Flash Preview (Turn {turn})...")
             
-            # Retry logic with backoff and executor
+            # Optimization 2: Retry logic with backoff, executor, AND timeout
             max_retries = 5
             base_delay_s = 1
             response = None
             
             for attempt in range(max_retries):
                 try:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: self.client.models.generate_content(
-                            model=self.model,
-                            contents=contents,
-                            config=generate_content_config,
-                        )
+                    response = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: self.client.models.generate_content(
+                                model=self.model,
+                                contents=contents,
+                                config=generate_content_config,
+                            )
+                        ),
+                        timeout=60.0
                     )
                     break
                 except Exception as e:
@@ -189,7 +195,7 @@ class ComputerUseAgent:
                         logger.error(f"API call failed after {max_retries} attempts: {e}")
                         raise e
                     delay = base_delay_s * (2**attempt)
-                    logger.warning(f"API call failed: {e}. Retrying in {delay}s...")
+                    logger.warning(f"API call failed or timed out: {e}. Retrying in {delay}s...")
                     await asyncio.sleep(delay)
             
             if response.text and speak_callback:
@@ -210,48 +216,37 @@ class ComputerUseAgent:
                 logger.info("Task completed or no function calls returned.")
                 return response.text
                 
-            # Append model response to history
             contents.append(response.candidates[0].content)
             
             function_responses = []
             for function_call in response.function_calls:
                 logger.info(f"Model requested action: {function_call.name} with args {function_call.args}")
-                
                 result = await self.execute_action(function_call.name, function_call.args)
                 
-                # Optimization 1: Take FRESH screenshot after action
-                logger.info("Capturing fresh screenshot after action...")
-                fresh_screenshot_bytes = await self.page.screenshot(type="png")
-                
-                # Attempt to embed screenshot in FunctionResponse
-                try:
-                    function_responses.append(
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=function_call.name,
-                                response=result,
-                                parts=[types.FunctionResponsePart(
-                                    inline_data=types.FunctionResponseBlob(mime_type="image/png", data=fresh_screenshot_bytes)
-                                )]
-                            )
+                function_responses.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=function_call.name,
+                            response=result
                         )
                     )
-                except AttributeError:
-                    # Fallback to standard FunctionResponse if types are missing
-                    function_responses.append(
-                        types.Part(
-                            function_response=types.FunctionResponse(
-                                name=function_call.name,
-                                response=result
-                            )
-                        )
-                    )
+                )
                 
-            # Append function responses to history
+            # Optimization 3: Take fresh screenshot after actions and append with responses
+            logger.info("Capturing fresh screenshot after actions...")
+            fresh_screenshot_bytes = await self.page.screenshot(type="png")
+            
+            parts = function_responses + [
+                types.Part.from_bytes(
+                    data=fresh_screenshot_bytes,
+                    mime_type='image/png'
+                )
+            ]
+            
             contents.append(
                 types.Content(
                     role="user",
-                    parts=function_responses
+                    parts=parts
                 )
             )
             
@@ -304,7 +299,6 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "scroll_document":
-                # Optimization 5: Handle all directions
                 direction = args.get("direction", "down")
                 if direction == "down":
                     await self.page.evaluate("window.scrollBy(0, 500)")
@@ -317,7 +311,6 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "scroll_at":
-                # Optimization 5: Handle all directions
                 x, y = await self.denormalize_coords(args.get("x"), args.get("y"))
                 direction = args.get("direction", "down")
                 await self.page.mouse.move(x, y)
@@ -340,12 +333,10 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "search":
-                # Optimization 3: Just navigate to homepage
                 await self.page.goto("https://www.google.com")
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "key_combination":
-                # Optimization 4: Proper modifier handling
                 keys = args.get("keys", "")
                 parts = keys.split("+")
                 modifiers = []
@@ -377,7 +368,6 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "drag_and_drop":
-                # Optimization 2: Correct arg names
                 source_x, source_y = await self.denormalize_coords(args.get("x"), args.get("y"))
                 target_x, target_y = await self.denormalize_coords(args.get("destination_x"), args.get("destination_y"))
                 await self.page.mouse.move(source_x, source_y)
