@@ -575,7 +575,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                 logger.info(f"Speaking update: {text}")
                 await llm._create_single_response([{
                     "role": "user",
-                    "content": f"You are performing a computer task. Please tell the user this update naturally in Hindi: {text}. DO NOT call any tools in response to this message."
+                    "content": f"You are performing a computer task. Please tell the user this update naturally in the session language ({language}): {text}. DO NOT call any tools in response to this message."
                 }])
 
             try:
@@ -584,16 +584,24 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                 # Speak the result back to the user
                 await llm._create_single_response([{
                     "role": "user",
-                    "content": f"Computer task finished. Result: {result}. Please tell the user the result in Hindi naturally. DO NOT call the execute_computer_task tool again in response to this message."
+                    "content": f"Computer task finished. Result: {result}. Please tell the user the result naturally in the session language ({language}). DO NOT call the execute_computer_task tool again in response to this message."
                 }])
             except Exception as e:
                 logger.error(f"Error in background computer task: {e}")
                 await llm._create_single_response([{
                     "role": "user",
-                    "content": "Computer task failed with an error. Please tell the user in Hindi that you encountered an error and couldn't finish the task."
+                    "content": f"Computer task failed with an error. Please tell the user naturally in the session language ({language}) that you encountered an error and couldn't finish the task."
                 }])
 
-        asyncio.create_task(run_in_bg())
+        bg_task = asyncio.create_task(run_in_bg())
+        def handle_task_result(t):
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Background computer task failed: {e}")
+        bg_task.add_done_callback(handle_task_result)
 
     llm.register_function("execute_computer_task", handle_computer_use)
     
