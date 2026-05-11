@@ -236,6 +236,10 @@ class ComputerUseAgent:
                 logger.info(f"Model requested action: {function_call.name} with args {function_call.args}")
                 result = await self.execute_action(function_call.name, function_call.args)
                 
+                if result.get("status") == "error" and "closed" in result.get("message", "").lower():
+                    logger.error("Browser was closed. Aborting task.")
+                    return "Browser was closed."
+                
                 function_responses.append(
                     types.Part(
                         function_response=types.FunctionResponse(
