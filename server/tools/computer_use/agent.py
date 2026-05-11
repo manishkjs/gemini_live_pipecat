@@ -11,6 +11,29 @@ from typing import Optional
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
+PLAYWRIGHT_KEY_MAP = {
+    "backspace": "Backspace",
+    "tab": "Tab",
+    "return": "Enter",
+    "enter": "Enter",
+    "shift": "Shift",
+    "control": "ControlOrMeta",
+    "alt": "Alt",
+    "escape": "Escape",
+    "space": "Space",
+    "pageup": "PageUp",
+    "pagedown": "PageDown",
+    "end": "End",
+    "home": "Home",
+    "left": "ArrowLeft",
+    "up": "ArrowUp",
+    "right": "ArrowRight",
+    "down": "ArrowDown",
+    "insert": "Insert",
+    "delete": "Delete",
+    "command": "Meta",
+}
+
 class ComputerUseAgent:
     def __init__(self, project_id: str = None, location: str = "us-central1"):
         self.project_id = project_id or os.getenv("GCP_PROJECT_ID")
@@ -79,7 +102,7 @@ class ComputerUseAgent:
                     )
                 )
             ],
-            max_output_tokens=2048
+            max_output_tokens=8192 # Optimization 6: Increased to 8192
         )
         
         contents = [task_description]
@@ -91,7 +114,7 @@ class ComputerUseAgent:
         while turn < max_turns:
             turn += 1
             
-            # Take screenshot
+            # Take screenshot for the turn
             logger.info("Capturing Playwright screenshot...")
             screenshot_bytes = await self.page.screenshot(type="png")
             
@@ -174,6 +197,10 @@ class ComputerUseAgent:
                 
                 result = await self.execute_action(function_call.name, function_call.args)
                 
+                # Optimization 1: Take FRESH screenshot after action
+                logger.info("Capturing fresh screenshot after action...")
+                fresh_screenshot_bytes = await self.page.screenshot(type="png")
+                
                 # Attempt to embed screenshot in FunctionResponse
                 try:
                     function_responses.append(
@@ -182,7 +209,7 @@ class ComputerUseAgent:
                                 name=function_call.name,
                                 response=result,
                                 parts=[types.FunctionResponsePart(
-                                    inline_data=types.FunctionResponseBlob(mime_type="image/png", data=screenshot_bytes)
+                                    inline_data=types.FunctionResponseBlob(mime_type="image/png", data=fresh_screenshot_bytes)
                                 )]
                             )
                         )
@@ -255,21 +282,31 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "scroll_document":
+                # Optimization 5: Handle all directions
                 direction = args.get("direction", "down")
                 if direction == "down":
                     await self.page.evaluate("window.scrollBy(0, 500)")
-                else:
+                elif direction == "up":
                     await self.page.evaluate("window.scrollBy(0, -500)")
+                elif direction == "left":
+                    await self.page.evaluate("window.scrollBy(-500, 0)")
+                elif direction == "right":
+                    await self.page.evaluate("window.scrollBy(500, 0)")
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "scroll_at":
+                # Optimization 5: Handle all directions
                 x, y = await self.denormalize_coords(args.get("x"), args.get("y"))
                 direction = args.get("direction", "down")
                 await self.page.mouse.move(x, y)
                 if direction == "down":
                     await self.page.mouse.wheel(0, 500)
-                else:
+                elif direction == "up":
                     await self.page.mouse.wheel(0, -500)
+                elif direction == "left":
+                    await self.page.mouse.wheel(-500, 0)
+                elif direction == "right":
+                    await self.page.mouse.wheel(500, 0)
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "go_back":
@@ -281,18 +318,46 @@ class ComputerUseAgent:
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "search":
-                query = args.get("query")
-                await self.page.goto(f"https://www.google.com/search?q={query}")
+                # Optimization 3: Just navigate to homepage
+                await self.page.goto("https://www.google.com")
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "key_combination":
-                keys = args.get("keys")
-                await self.page.keyboard.press(keys)
+                # Optimization 4: Proper modifier handling
+                keys = args.get("keys", "")
+                parts = keys.split("+")
+                modifiers = []
+                key_to_press = None
+                
+                for p in parts:
+                    p_clean = p.strip().lower()
+                    if p_clean in ["control", "ctrl", "alt", "shift", "command", "cmd", "meta"]:
+                        if p_clean in ["control", "ctrl"]:
+                            modifiers.append("ControlOrMeta")
+                        elif p_clean in ["command", "cmd", "meta"]:
+                            modifiers.append("Meta")
+                        elif p_clean == "alt":
+                            modifiers.append("Alt")
+                        elif p_clean == "shift":
+                            modifiers.append("Shift")
+                    else:
+                        key_to_press = PLAYWRIGHT_KEY_MAP.get(p_clean, p_clean)
+                        
+                for mod in modifiers:
+                    await self.page.keyboard.down(mod)
+                    
+                if key_to_press:
+                    await self.page.keyboard.press(key_to_press)
+                    
+                for mod in reversed(modifiers):
+                    await self.page.keyboard.up(mod)
+                    
                 return {"status": "success", "url": self.page.url}
                 
             elif name == "drag_and_drop":
-                source_x, source_y = await self.denormalize_coords(args.get("source_x"), args.get("source_y"))
-                target_x, target_y = await self.denormalize_coords(args.get("target_x"), args.get("target_y"))
+                # Optimization 2: Correct arg names
+                source_x, source_y = await self.denormalize_coords(args.get("x"), args.get("y"))
+                target_x, target_y = await self.denormalize_coords(args.get("destination_x"), args.get("destination_y"))
                 await self.page.mouse.move(source_x, source_y)
                 await self.page.mouse.down()
                 await self.page.mouse.move(target_x, target_y)
