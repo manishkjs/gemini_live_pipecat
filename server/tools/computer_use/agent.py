@@ -49,16 +49,33 @@ class ComputerUseAgent:
         if not self.browser:
             logger.info("Starting Playwright...")
             self.playwright = await async_playwright().start()
-            logger.info("Launching Playwright browser using system Chrome...")
-            # Launch headed browser using system Chrome to avoid Santa blocks
-            self.browser = await self.playwright.chromium.launch(headless=False, channel="chrome")
-            self.page = await self.browser.new_page()
             
-            # Set viewport size to 1000x1000 to match Gemini's grid
+            cdp_url = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
+            
+            try:
+                logger.info(f"Connecting to existing Chrome via CDP: {cdp_url}")
+                self.browser = await asyncio.wait_for(
+                    self.playwright.chromium.connect_over_cdp(cdp_url),
+                    timeout=5.0
+                )
+                
+                # Use existing context (has all cookies, sessions, extensions)
+                contexts = self.browser.contexts
+                if contexts:
+                    context = contexts[0]
+                    pages = context.pages
+                    self.page = pages[0] if pages else await context.new_page()
+                else:
+                    context = await self.browser.new_context()
+                    self.page = await context.new_page()
+            except Exception as e:
+                logger.warning(f"CDP connection failed ({e}), falling back to launch")
+                # Launch headed browser using system Chrome to avoid Santa blocks
+                self.browser = await self.playwright.chromium.launch(headless=False, channel="chrome")
+                self.page = await self.browser.new_page()
+                await self.page.goto("https://www.google.com")
+                
             await self.page.set_viewport_size({"width": 1000, "height": 1000})
-            
-            # Initial navigation to avoid blank page
-            await self.page.goto("https://www.google.com")
 
             # Handle new pages/tabs by redirecting to the main page
             async def handle_popup(popup_page):
@@ -73,8 +90,13 @@ class ComputerUseAgent:
     async def close(self):
         """Closes the browser and stops Playwright."""
         if self.browser:
-            logger.info("Closing Playwright browser...")
-            await self.browser.close()
+            # Don't close if connected via CDP — it would kill the user's browser
+            if not os.getenv("CHROME_CDP_URL"):
+                logger.info("Closing Playwright browser...")
+                await self.browser.close()
+            else:
+                logger.info("Disconnecting from CDP (browser stays open)")
+                await self.browser.close() # disconnect only, doesn't kill Chrome via CDP
         if self.playwright:
             await self.playwright.stop()
             logger.info("Playwright stopped.")
