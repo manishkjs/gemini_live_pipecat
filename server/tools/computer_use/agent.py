@@ -5,8 +5,8 @@ import time
 from loguru import logger
 import platform
 import io
-import subprocess
-from PIL import ImageGrab
+from playwright.async_api import async_playwright, Playwright, Page
+from typing import Optional
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
@@ -16,11 +16,51 @@ class ComputerUseAgent:
         self.location = location or os.getenv("GCP_LOCATION") or "us-central1"
         self.client = genai.Client(vertexai=True, project=self.project_id, location="global")
         self.model = "gemini-3-flash-preview"
+        self.playwright: Optional[Playwright] = None
+        self.browser = None
+        self.page: Optional[Page] = None
 
-    async def execute_task(self, task_description: str, get_screenshot_callback, execute_action_callback):
+    async def ensure_browser(self):
+        """Ensures the Playwright browser is launched and a page is available."""
+        if not self.browser:
+            logger.info("Starting Playwright...")
+            self.playwright = await async_playwright().start()
+            logger.info("Launching Playwright browser using system Chrome...")
+            # Launch headed browser using system Chrome to avoid Santa blocks
+            self.browser = await self.playwright.chromium.launch(headless=False, channel="chrome")
+            self.page = await self.browser.new_page()
+            
+            # Set viewport size to 1000x1000 to match Gemini's grid
+            await self.page.set_viewport_size({"width": 1000, "height": 1000})
+            
+            # Initial navigation to avoid blank page
+            await self.page.goto("https://www.google.com")
+
+            # Handle new pages/tabs by redirecting to the main page
+            async def handle_popup(popup_page):
+                url = popup_page.url
+                logger.info(f"Popup/New tab detected: {url}. Redirecting main page.")
+                await popup_page.close()
+                if self.page:
+                    await self.page.goto(url)
+
+            self.page.on("popup", handle_popup)
+
+    async def close(self):
+        """Closes the browser and stops Playwright."""
+        if self.browser:
+            logger.info("Closing Playwright browser...")
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
+            logger.info("Playwright stopped.")
+
+    async def execute_task(self, task_description: str):
         """
-        Executes a computer use task in a loop.
+        Executes a computer use task in a loop using Playwright.
         """
+        await self.ensure_browser()
+        
         logger.info(f"Starting Computer Use task: {task_description}")
         
         generate_content_config = types.GenerateContentConfig(
@@ -30,14 +70,35 @@ class ComputerUseAgent:
                         environment=types.Environment.ENVIRONMENT_BROWSER,
                     )
                 )
-            ]
+            ],
+            max_output_tokens=300
         )
         
         contents = [task_description]
         
-        # Initial screenshot
-        screenshot_bytes = await get_screenshot_callback()
-        if screenshot_bytes:
+        max_turns = 10
+        turn = 0
+        MAX_RECENT_SCREENSHOTS = 3
+        
+        while turn < max_turns:
+            turn += 1
+            
+            # Take screenshot
+            logger.info("Capturing Playwright screenshot...")
+            screenshot_bytes = await self.page.screenshot(type="png")
+            
+            # Prune old screenshots to save context space
+            image_count = 0
+            for content in reversed(contents):
+                if not isinstance(content, types.Content):
+                    continue
+                for part in content.parts:
+                    if part.inline_data and part.inline_data.mime_type == 'image/png':
+                        image_count += 1
+                        if image_count > MAX_RECENT_SCREENSHOTS:
+                            # Replace image part with text placeholder
+                            content.parts[content.parts.index(part)] = types.Part.from_text(text="[Screenshot removed to save space]")
+            
             contents.append(
                 types.Content(
                     role="user",
@@ -50,11 +111,6 @@ class ComputerUseAgent:
                 )
             )
             
-        max_turns = 10
-        turn = 0
-        
-        while turn < max_turns:
-            turn += 1
             logger.debug(f"Sending request to Gemini 3 Flash Preview (Turn {turn})...")
             response = self.client.models.generate_content(
                 model=self.model,
@@ -73,13 +129,7 @@ class ComputerUseAgent:
             for function_call in response.function_calls:
                 logger.info(f"Model requested action: {function_call.name} with args {function_call.args}")
                 
-                # Call the callback to execute the action
-                result = await execute_action_callback(function_call.name, function_call.args)
-                
-                # Handle safety confirmation request
-                if result.get("status") == "require_confirmation":
-                    logger.info("Action requires user confirmation. Returning control to main agent.")
-                    return f"Action requires user confirmation: {result.get('message')}. Please ask the user for confirmation."
+                result = await self.execute_action(function_call.name, function_call.args)
                 
                 function_responses.append(
                     types.Part(
@@ -98,146 +148,49 @@ class ComputerUseAgent:
                 )
             )
             
-            # Take new screenshot and append
-            screenshot_bytes = await get_screenshot_callback()
-            if screenshot_bytes:
-                contents[-1].parts.append(
-                    types.Part.from_bytes(
-                        data=screenshot_bytes,
-                        mime_type='image/png'
-                    )
-                )
-                
             time.sleep(1) # Give UI time to settle
             
         return "Task exceeded maximum turns."
 
-def execute_action_locally(name: str, args: dict) -> dict:
-    """Executes UI actions locally on macOS using AppleScript."""
-    logger.info(f"Executing local Mac action: {name} with {args}")
-    
-    # Check for safety decision requiring confirmation
-    safety_decision = args.get('safety_decision')
-    if safety_decision and safety_decision.get('decision') == 'require_confirmation':
-        explanation = safety_decision.get('explanation')
-        logger.warning(f"Action requires confirmation: {explanation}")
-        return {"status": "require_confirmation", "message": explanation}
-    
-    # Get screen size for coordinate mapping
-    try:
-        img = ImageGrab.grab()
-        screen_width, screen_height = img.size
-    except Exception as e:
-        logger.error(f"Failed to get screen size: {e}")
-        return {"status": "error", "message": "Failed to get screen size"}
-    
-    def map_coords(x, y):
-        # Model uses 1000x1000 grid
-        actual_x = int((x / 1000.0) * screen_width)
-        actual_y = int((y / 1000.0) * screen_height)
-        return actual_x, actual_y
-
-    try:
-        # Computer Use requires returning a URL in the response for browser environment
-        default_url = "https://www.google.com"
+    async def execute_action(self, name: str, args: dict) -> dict:
+        """Executes UI actions using Playwright."""
+        logger.info(f"Executing Playwright action: {name} with {args}")
         
-        if name == "open_web_browser":
-            subprocess.run(["open", "-a", "Safari"])
-            return {"status": "success", "url": default_url}
-            
-        elif name == "navigate":
-            url = args.get("url") or default_url
-            script = f'tell application "Safari" to set URL of current tab of window 1 to "{url}"'
-            subprocess.run(["osascript", "-e", script])
-            return {"status": "success", "url": url}
-            
-        elif name == "click_at":
-            x, y = map_coords(args.get("x"), args.get("y"))
-            script = f'tell application "System Events" to click at {{{x}, {y}}}'
-            subprocess.run(["osascript", "-e", script])
-            return {"status": "success", "url": default_url} # Stub URL as required by API
-            
-        elif name == "type_text_at":
-            x, y = map_coords(args.get("x"), args.get("y"))
-            text = args.get("text")
-            script_click = f'tell application "System Events" to click at {{{x}, {y}}}'
-            subprocess.run(["osascript", "-e", script_click])
-            time.sleep(0.5)
-            script_type = f'tell application "System Events" to keystroke "{text}"'
-            subprocess.run(["osascript", "-e", script_type])
-            if args.get("press_enter", True):
-                subprocess.run(["osascript", "-e", 'tell application "System Events" to keystroke return'])
-            return {"status": "success", "url": default_url} # Stub URL
-            
-        elif name == "wait_5_seconds":
-            time.sleep(5)
-            return {"status": "success", "url": default_url} # Stub URL
-            
-        elif name == "key_combination":
-            keys = args.get("keys")
-            if keys.lower() == "enter":
-                subprocess.run(["osascript", "-e", 'tell application "System Events" to keystroke return'])
-            else:
-                logger.warning(f"Key combination {keys} not fully supported in stub.")
-                return {"status": "warning", "message": f"Key combination {keys} not fully supported", "url": default_url}
-            return {"status": "success", "url": default_url}
-            
-        logger.warning(f"Action {name} not supported locally yet.")
-        return {"status": "unsupported", "message": f"Action {name} not supported locally", "url": default_url}
-        
-    except Exception as e:
-        logger.error(f"Error executing local action: {e}")
-        return {"status": "error", "message": str(e), "url": default_url}
-
-async def get_screenshot():
-    """Captures a screenshot if running locally on supported OS."""
-    if platform.system() in ["Darwin", "Windows"]:
         try:
-            logger.info("Capturing local screenshot...")
-            img = ImageGrab.grab()
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            return img_byte_arr.getvalue()
-        except Exception as e:
-            logger.error(f"Failed to capture local screenshot: {e}")
-            return None
-    else:
-        logger.warning("Local screenshot not supported on this OS or remote execution requested.")
-        return None
-
-async def execute_computer_task(params: FunctionCallParams, *, send_to_client_fn=None):
-    """Handler for the execute_computer_task tool."""
-    is_explicit = params.arguments.get('is_explicit_intent')
-    if not is_explicit:
-        await params.result_callback({"error": "Explicit intent validation required."})
-        return
-
-    task = params.arguments.get('task_description')
-    logger.info(f"Executing computer task: {task}")
-    
-    agent = ComputerUseAgent()
-    
-    async def action_callback(name, args):
-        # Decide execution path
-        if platform.system() == "Darwin":
-            return execute_action_locally(name, args)
-        elif send_to_client_fn:
-            logger.info(f"Sending action to client: {name}")
-            await send_to_client_fn("computer_use_action", {"action": name, "args": args})
-            # Computer Use requires returning a URL in the response.
-            # We provide the target URL if it was a navigate command, or a default one.
-            url = args.get("url") or "https://www.google.com"
-            return {"status": "sent_to_client", "message": f"Action {name} sent to client.", "url": url}
-        else:
-            logger.warning("Remote execution requested but no sender function provided.")
-            return {"status": "error", "message": "Remote execution bridge not configured"}
+            if name == "open_web_browser":
+                return {"status": "success", "url": self.page.url}
+                
+            elif name == "navigate":
+                url = args.get("url")
+                await self.page.goto(url)
+                return {"status": "success", "url": self.page.url}
+                
+            elif name == "click_at":
+                x = args.get("x")
+                y = args.get("y")
+                await self.page.mouse.click(x, y)
+                return {"status": "success", "url": self.page.url}
+                
+            elif name == "type_text_at":
+                x = args.get("x")
+                y = args.get("y")
+                text = args.get("text")
+                await self.page.mouse.click(x, y)
+                await self.page.keyboard.type(text)
+                if args.get("press_enter", True):
+                    await self.page.keyboard.press("Enter")
+                return {"status": "success", "url": self.page.url}
+                
+            elif name == "wait_5_seconds":
+                await self.page.wait_for_timeout(5000)
+                return {"status": "success", "url": self.page.url}
+                
+            logger.warning(f"Action {name} not supported yet.")
+            return {"status": "unsupported", "message": f"Action {name} not supported", "url": self.page.url}
             
-    try:
-        result = await agent.execute_task(task, get_screenshot, action_callback)
-        await params.result_callback({"status": "success", "result": result})
-    except Exception as e:
-        logger.error(f"Error in execute_computer_task: {e}")
-        await params.result_callback({"status": "error", "message": str(e)})
+        except Exception as e:
+            logger.error(f"Error executing action {name}: {e}")
+            return {"status": "error", "message": str(e), "url": self.page.url}
 
 def get_tool_schema() -> FunctionSchema:
     """Returns the FunctionSchema for the execute_computer_task tool."""

@@ -27,7 +27,7 @@ from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
-from tools.computer_use.agent import get_tool_schema, execute_computer_task
+from tools.computer_use.agent import get_tool_schema, ComputerUseAgent
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -85,20 +85,8 @@ class GeminiSessionLoggerMixin:
 
 
     async def process_frame(self, frame, direction):
-        """Intercept InterruptionFrame to set filler-pending flag.
-
-        We override process_frame instead of _handle_interruption because
-        _bot_is_responding gets set to False when the API turn_complete arrives,
-        but audio may still be playing from the transport buffer. The
-        InterruptionFrame is only generated when the user actually interrupts
-        ongoing audio playback, so it's a reliable signal.
-        """
+        """Intercept InterruptionFrame for metrics."""
         if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
-            if not hasattr(self, '_repeat_on_filler_pending'):
-                self._repeat_on_filler_pending = False
-            self._repeat_on_filler_pending = True
-            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
-            
             # Metric Streaming: Interruption
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
@@ -112,16 +100,7 @@ class GeminiSessionLoggerMixin:
         await super().process_frame(frame, direction)
 
     async def _handle_msg_input_transcription(self, message):
-        """Override to detect ≤2-word fillers after an interruption and auto-repeat.
-
-        The API sends transcription in chunks (fragments). We accumulate text
-        in our own buffer and check once a complete sentence is formed (sentence-
-        ending punctuation detected). This avoids false positives from partial
-        chunks like "अच्छा," arriving before the rest of a longer sentence.
-
-        We ALWAYS let the parent handle sentence buffering and TranscriptionFrame
-        emission first, then evaluate the filler logic.
-        """
+        """Send transcription to UI."""
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
@@ -129,17 +108,6 @@ class GeminiSessionLoggerMixin:
         if not text:
             return await super()._handle_msg_input_transcription(message)
 
-        # Accumulate post-interruption text in our own buffer
-        if getattr(self, '_repeat_on_filler_pending', False):
-            if not hasattr(self, '_post_interruption_buffer'):
-                self._post_interruption_buffer = ""
-            self._post_interruption_buffer += text
-            logger.debug(
-                f"[RepeatOnFiller] Accumulating chunk: '{text.strip()}' "
-                f"(buffer: '{self._post_interruption_buffer.strip()}')"
-            )
-
-        # ALWAYS let parent handle normally (sentence buffering, TranscriptionFrame)
         await super()._handle_msg_input_transcription(message)
 
         # Send transcription to UI
@@ -153,47 +121,6 @@ class GeminiSessionLoggerMixin:
                 'text': text
             }
         }))
-
-        # After parent processes, check if our buffer forms a complete sentence
-        if getattr(self, '_repeat_on_filler_pending', False):
-            buffer = getattr(self, '_post_interruption_buffer', '').strip()
-            if not buffer:
-                return
-
-            import re
-            has_sentence_end = bool(re.search(r'[.।!?\n]', buffer))
-            user_stopped = not getattr(self, '_user_is_speaking', True)
-
-            if has_sentence_end or user_stopped:
-                filler_max_words = getattr(self, '_filler_max_words', 2)
-                clean = buffer.rstrip('।.!?\n').strip()
-                word_count = len(clean.split()) if clean else 0
-
-                if word_count <= filler_max_words:
-                    logger.info(
-                        f"[RepeatOnFiller] Filler detected: '{buffer}' "
-                        f"({word_count} word(s)). Sending repeat instruction."
-                    )
-                    self._repeat_on_filler_pending = False
-                    await self.push_frame(OutputTransportMessageFrame(message={
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {
-                            'type': 'transcription',
-                            'participant': 'Bot',
-                            'text': text
-                        }
-                    }))
-                    self._repeat_on_filler_pending = False
-                    self._post_interruption_buffer = ""
-                    await self._send_repeat_instruction(buffer)
-                else:
-                    logger.info(
-                        f"[RepeatOnFiller] Genuine interruption: '{buffer}' "
-                        f"({word_count} words). No repeat needed."
-                    )
-                    self._repeat_on_filler_pending = False
-                    self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
         await super()._handle_msg_output_transcription(message)
@@ -216,24 +143,7 @@ class GeminiSessionLoggerMixin:
                 "data": message_data
             }))
 
-    async def _send_repeat_instruction(self, filler_text: str):
-        """Send a user-role prompt telling the model to repeat itself."""
-        if self._disconnecting or not self._session:
-            return
-        try:
-            await self._create_single_response([{
-                "role": "user",
-                "content": (
-                    f"The user just said '{filler_text}' which is a short "
-                    f"filler/acknowledgment while you were speaking. They did NOT "
-                    f"ask a new question. Please REPEAT your previous response "
-                    f"from the beginning — resume exactly what you were saying "
-                    f"before the interruption."
-                ),
-            }])
-            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
-        except Exception as e:
-            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+
 
     # ── Session ID & token usage logging ──────────────────────────────
 
@@ -652,8 +562,38 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             }
         }))
 
+    computer_agent = ComputerUseAgent()
+    
     async def handle_computer_use(params: FunctionCallParams):
-        return await execute_computer_task(params, send_to_client_fn=send_to_client)
+        import asyncio
+        task_description = params.arguments.get('task_description')
+        # Acknowledge immediately to Gemini so it doesn't block
+        await params.result_callback({"status": "success", "message": "Task started."})
+
+        async def run_in_bg():
+            async def speak_update(text):
+                logger.info(f"Speaking update: {text}")
+                await llm._create_single_response([{
+                    "role": "user",
+                    "content": f"You are performing a computer task. Please tell the user this update naturally in Hindi: {text}. DO NOT call any tools in response to this message."
+                }])
+
+            try:
+                result = await computer_agent.execute_task(task_description, speak_callback=speak_update)
+                logger.info(f"Background computer task finished: {result}")
+                # Speak the result back to the user
+                await llm._create_single_response([{
+                    "role": "user",
+                    "content": f"Computer task finished. Result: {result}. Please tell the user the result in Hindi naturally. DO NOT call the execute_computer_task tool again in response to this message."
+                }])
+            except Exception as e:
+                logger.error(f"Error in background computer task: {e}")
+                await llm._create_single_response([{
+                    "role": "user",
+                    "content": "Computer task failed with an error. Please tell the user in Hindi that you encountered an error and couldn't finish the task."
+                }])
+
+        asyncio.create_task(run_in_bg())
 
     llm.register_function("execute_computer_task", handle_computer_use)
     
@@ -681,7 +621,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=10.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
@@ -705,5 +645,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     async def on_client_disconnected(transport, client):
         logger.info("Pipecat Client disconnected")
         await task.cancel()
+        await computer_agent.close()
 
     await PipelineRunner(handle_sigint=False).run(task)

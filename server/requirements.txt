@@ -88,3 +88,4 @@ uvloop==0.21.0
 watchfiles==1.1.0
 websockets==13.1
 yarl==1.20.1
+playwright==1.59.0
