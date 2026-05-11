@@ -553,7 +553,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     llm.register_function("get_current_time", get_current_time)
     
     async def send_to_client(message_type: str, payload: dict):
-        await transport.output().push_frame(OutputTransportMessageFrame(message={
+        await llm.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
             "data": {

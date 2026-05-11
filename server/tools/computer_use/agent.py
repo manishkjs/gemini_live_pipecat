@@ -69,11 +69,24 @@ class ComputerUseAgent:
                     context = await self.browser.new_context()
                     self.page = await context.new_page()
             except Exception as e:
-                logger.warning(f"CDP connection failed ({e}), falling back to launch")
-                # Launch headed browser using system Chrome to avoid Santa blocks
-                self.browser = await self.playwright.chromium.launch(headless=False, channel="chrome")
-                self.page = await self.browser.new_page()
-                await self.page.goto("https://www.google.com")
+                logger.warning(f"CDP connection failed ({e}), falling back to launch_persistent_context")
+                import pathlib
+                chrome_profile = os.getenv("CHROME_USER_DATA_DIR", os.path.expanduser("~/.config/google-chrome"))
+                logger.info(f"Launching Chrome with existing profile: {chrome_profile}")
+                try:
+                    context = await self.playwright.chromium.launch_persistent_context(
+                        chrome_profile,
+                        headless=False,
+                        channel="chrome",
+                        viewport={"width": 1000, "height": 1000}
+                    )
+                    self.page = context.pages[0] if context.pages else await context.new_page()
+                    self.browser = context # Store context as browser
+                except Exception as e2:
+                    logger.warning(f"Fallback to persistent context failed ({e2}), trying clean launch")
+                    self.browser = await self.playwright.chromium.launch(headless=False, channel="chrome")
+                    self.page = await self.browser.new_page()
+                    await self.page.goto("https://www.google.com")
                 
             await self.page.set_viewport_size({"width": 1000, "height": 1000})
 
