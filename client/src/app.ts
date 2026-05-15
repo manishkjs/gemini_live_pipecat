@@ -243,6 +243,14 @@ class WebsocketClientApp {
     geminiVoiceSelect?.addEventListener("change", handleModelChange);
     ttsToggle?.addEventListener("change", handleModelChange);
 
+    const contextCompressionToggle = document.getElementById("context-compression-toggle") as HTMLInputElement;
+    const compressionTokensSetting = document.getElementById("compression-tokens-setting");
+    contextCompressionToggle?.addEventListener("change", () => {
+        if (compressionTokensSetting) {
+            compressionTokensSetting.style.display = contextCompressionToggle.checked ? "flex" : "none";
+        }
+    });
+
     // TTS Model Change Logic
     const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
     const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
@@ -783,12 +791,22 @@ class WebsocketClientApp {
         const livePaceSlider = document.getElementById(
           "live-tts-pace-slider"
         ) as HTMLInputElement;
+        const contextCompressionToggle = document.getElementById(
+            "context-compression-toggle"
+        ) as HTMLInputElement;
+        const compressionTokensInput = document.getElementById(
+            "compression-tokens-input"
+        ) as HTMLInputElement;
 
         connectUrl += `&model=${geminiModelSelect.value}`;
         connectUrl += `&voice=${geminiVoiceSelect.value}`;
         connectUrl += `&language=${geminiLanguageSelect.value}`;
         connectUrl += `&tts=${ttsToggle.checked}`;
         connectUrl += `&tts_pace=${livePaceSlider.value}`;
+        connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
+        if (contextCompressionToggle?.checked && compressionTokensInput?.value) {
+            connectUrl += `&context_compression_trigger_tokens=${compressionTokensInput.value}`;
+        }
         systemInstructions = geminiSystemInstructionsTextarea.value;
       }
 

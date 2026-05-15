@@ -287,6 +287,14 @@
                 <input type="range" id="live-tts-pace-slider" min="0.25" max="2" step="0.01" value="1.0">
                 <span id="live-tts-pace-value">1.0</span>
               </div>
+              <div class="setting-toggle">
+                <label for="context-compression-toggle">Enable Context Compression</label>
+                <input type="checkbox" id="context-compression-toggle" />
+              </div>
+              <div class="setting" id="compression-tokens-setting" style="display: none;">
+                <label for="compression-tokens-input">Trigger Tokens</label>
+                <input type="number" id="compression-tokens-input" value="1000" min="100" step="100">
+              </div>
               <div class="advanced-settings">
                 <h5>Advanced Settings</h5>
                 <div class="setting-toggle">
