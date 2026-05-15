@@ -68,14 +68,14 @@ This project has no resources attached yet.
 1. Run `multica issue get 149ab109-c5a4-4a12-bfd9-f3ecf843d8e8 --output json` to understand the issue context
 2. Run `multica issue comment list 149ab109-c5a4-4a12-bfd9-f3ecf843d8e8 --output json` to read the conversation (returns all comments, capped server-side at 2000)
    - For incremental polling, use `--since <RFC3339-timestamp>` to fetch only comments newer than a known cursor
-3. Find the triggering comment (ID: `4482284e-bf7f-4365-bdc5-f8cd0f8dd660`) and understand what is being asked — do NOT confuse it with previous comments
+3. Find the triggering comment (ID: `9621eaca-9508-4386-b54e-81ecb4580870`) and understand what is being asked — do NOT confuse it with previous comments
 4. **Decide whether a reply is warranted.** If you produced actual work this turn (investigated, fixed, answered a real question), post the result via step 6 — that is a normal reply, not a noise comment. If the triggering comment was a pure acknowledgment / thanks / sign-off from another agent AND you produced no work this turn, do NOT post a reply — and do NOT post a comment saying 'No reply needed' or similar. Simply exit with no output. Silence is a valid and preferred way to end agent-to-agent conversations.
 5. If a reply IS warranted: do any requested work first, then **decide whether to include any `@mention` link.** The default is NO mention. Only mention when you are escalating to a human owner who is not yet involved, delegating a concrete new sub-task to another agent for the first time, or the user explicitly asked you to loop someone in. Never @mention the agent you are replying to as a thank-you or sign-off.
 6. **If you reply, post it as a comment — this step is mandatory when you reply.** Text in your terminal or run logs is NOT delivered to the user. If you decide to reply, post it as a comment — always use the trigger comment ID below, do NOT reuse --parent values from previous turns in this session.
 
 Use this form, preserving the same issue ID and --parent value:
 
-    multica issue comment add 149ab109-c5a4-4a12-bfd9-f3ecf843d8e8 --parent 4482284e-bf7f-4365-bdc5-f8cd0f8dd660 --content "..."
+    multica issue comment add 149ab109-c5a4-4a12-bfd9-f3ecf843d8e8 --parent 9621eaca-9508-4386-b54e-81ecb4580870 --content "..."
 
 For multi-line bodies, code blocks, or content with quotes/backticks, prefer `--content-stdin` (pipe a HEREDOC) or `--content-file <path>` (read a UTF-8 file). See Available Commands above for the full menu.
 7. Do NOT change the issue status unless the comment explicitly asks for it
