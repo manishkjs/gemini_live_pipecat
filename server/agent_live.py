@@ -486,8 +486,22 @@ class GeminiSessionLoggerMixin:
                         return
                     break
 
-class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
+    def __init__(self, *args, **kwargs):
+        # Ensure context_window_compression is in _settings if provided
+        context_compression = kwargs.pop("context_window_compression", None)
+        super().__init__(*args, **kwargs)
+        if context_compression:
+            self._settings["context_window_compression"] = context_compression
+
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
+    def __init__(self, *args, **kwargs):
+        # Ensure context_window_compression is in _settings if provided
+        context_compression = kwargs.pop("context_window_compression", None)
+        super().__init__(*args, **kwargs)
+        if context_compression:
+            self._settings["context_window_compression"] = context_compression
+
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
         import os
@@ -529,7 +543,7 @@ async def dynamic_tool_handler(params: FunctionCallParams):
     logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
     await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
+async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = False, context_compression_trigger_tokens: Optional[int] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -575,6 +589,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             }
         },
         required=["is_explicit_request"]
+    ), FunctionSchema(
+        name="end_call",
+        description="Disconnect the call. Use this when the conversation is finished or the user wants to hang up.",
+        properties={},
+        required=[]
     )]
 
     
@@ -617,6 +636,12 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "params": InputParams(language=pipecat_language, modalities=llm_modalities)
     }
 
+    if context_compression:
+        compression_settings = {"enabled": True}
+        if context_compression_trigger_tokens:
+            compression_settings["trigger_tokens"] = context_compression_trigger_tokens
+        common_params["context_window_compression"] = compression_settings
+
     if model == "gemini-2.5-flash-native-audio-eap-11-2025":
         common_params["http_options"] = HttpOptions(api_version="v1beta")
 
@@ -639,11 +664,17 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             vertex_params["voice_id"] = voice
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
+    async def end_call_handler(params: FunctionCallParams):
+        logger.info("End call tool triggered.")
+        await params.result_callback({"status": "success", "message": "Disconnecting the call."})
+        await llm.push_frame(EndTaskFrame())
+
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("end_call", end_call_handler)
     
     # Register generic handler for dynamic tools
     for tool in standard_tools:
-        if tool.name != "get_current_time":
+        if tool.name not in ["get_current_time", "end_call"]:
             llm.register_function(tool.name, dynamic_tool_handler)
 
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
