@@ -569,7 +569,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
-            audio_filter=AICFilter(),
+            audio_filter=KrispVivaFilter(model_path=os.getenv("KRISP_VIVA_MODEL_PATH", "path/to/model.kef")),
         )
     )
 
