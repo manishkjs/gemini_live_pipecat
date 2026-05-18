@@ -28,6 +28,8 @@ from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
+from tools.projects import search_projects
+
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -627,22 +629,46 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                 stream_sid=stream_sid,
                 params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
             ),
-            audio_filter=AICFilter(),
+            audio_filter=None, # Disabled for Twilio (8kHz) to prevent sample rate distortion
         )
     )
 
-    # We use standard tools for now
-    standard_tools = [FunctionSchema(
-        name="get_current_time",
-        description="Get the current time.",
-        properties={
-            "is_explicit_request": {
-                "type": "boolean",
-                "description": "Return `true` ONLY if the user explicitly asks for the current time."
-            }
-        },
-        required=["is_explicit_request"]
-    )]
+    # Register standard and domain-specific tools
+    standard_tools = [
+        FunctionSchema(
+            name="get_current_time",
+            description="Get the current time.",
+            properties={
+                "is_explicit_request": {
+                    "type": "boolean",
+                    "description": "Return `true` ONLY if the user explicitly asks for the current time."
+                }
+            },
+            required=["is_explicit_request"]
+        ),
+        FunctionSchema(
+            name="project_search",
+            description="Search Noida/Greater Noida projects by query keywords (e.g. Noida, budget, 4 BHK).",
+            properties={
+                "query": {
+                    "type": "string",
+                    "description": "Search keywords (e.g. location, budget, configuration)"
+                }
+            },
+            required=["query"]
+        ),
+        FunctionSchema(
+            name="handle_other_client_queries",
+            description="Handle miscellaneous user queries outside of project pitches.",
+            properties={
+                "query": {
+                    "type": "string",
+                    "description": "The user's query"
+                }
+            },
+            required=["query"]
+        )
+    ]
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
     common_params = {
@@ -682,9 +708,27 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
             
             await super()._connection_task_handler(config)
 
+    # Tool Handlers
+    async def project_search_handler(params: FunctionCallParams):
+        query = params.arguments.get("query", "")
+        logger.info(f"project_search called with query: {query}")
+        result = search_projects(query)
+        await params.result_callback({"status": "success", "result": result})
+
+    async def other_queries_handler(params: FunctionCallParams):
+        query = params.arguments.get("query", "")
+        logger.info(f"handle_other_client_queries called with query: {query}")
+        # Fallback mock response to prevent crash
+        await params.result_callback({
+            "status": "success", 
+            "result": "I have noted your query. I am mainly focused on Noida project assistance, but I will pass this to our team."
+        })
+
     # Use the custom service
     llm = TwilioGeminiService(**vertex_params)
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("project_search", project_search_handler)
+    llm.register_function("handle_other_client_queries", other_queries_handler)
 
     context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
 
