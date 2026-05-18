@@ -16,7 +16,7 @@ async def main():
         vertexai=True,
         project=project_id,
         location=location,
-        http_options=HttpOptions(api_version="v1alpha")
+        http_options=HttpOptions(api_version="v1beta")
     )
     
     from pipecat.adapters.schemas.function_schema import FunctionSchema
