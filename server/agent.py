@@ -8,16 +8,16 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_response import LLMUserContextAggregator, LLMAssistantContextAggregator
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.google.llm import GoogleLLMService
-from pipecat.services.google.llm_vertex import GoogleVertexLLMService
-from pipecat.processors.transcript_processor import TranscriptProcessor
+from pipecat.services.google.vertex.llm import GoogleVertexLLMService
+# from pipecat.processors.transcript_processor import TranscriptProcessor
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, StartInterruptionFrame, CancelFrame,
+from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, CancelFrame,
                                    TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
@@ -31,7 +31,7 @@ from system_prompt import SYSTEM_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        if isinstance(frame, (StartInterruptionFrame, CancelFrame)):
+        if isinstance(frame, CancelFrame):
             return None  # Don't serialize these frames
         return await super().serialize(frame)
 
@@ -198,9 +198,9 @@ class ContextLogger(FrameProcessor):
         self.logger_name = logger_name
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
-        if isinstance(frame, OpenAILLMContextFrame):
-            logger.info(f"ContextLogger [{self.logger_name}]: Received OpenAILLMContextFrame")
+        from pipecat.frames.frames import LLMContextFrame
+        if isinstance(frame, LLMContextFrame):
+            logger.info(f"ContextLogger [{self.logger_name}]: Received LLMContextFrame")
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
 
@@ -328,7 +328,7 @@ async def run_agent(
         from pipecat.services.google.llm import GoogleLLMContext
         from processors.audio_accumulator import AudioAccumulator
         from pipecat.frames.frames import LLMContextFrame
-        context = GoogleLLMContext()
+        context = LLMContext()
         context.set_messages([{"role": "system", "content": final_system_instruction}])
         stt_languages = [lang.strip() for lang in stt_language.split(',')] if stt_language else ["en-US"]
         accumulator = AudioAccumulator(
@@ -336,7 +336,7 @@ async def run_agent(
             project_id=project_id,
             stt_languages=stt_languages,
         )
-        context_aggregator = llm.create_context_aggregator(context)
+        context_aggregator = LLMContextAggregatorPair(context)
 
         pipeline_elements = [
             transport.input(),
@@ -348,21 +348,17 @@ async def run_agent(
             transport.output()
         ]
     else:
-        context = OpenAILLMContext(messages=[{"role": "system", "content": final_system_instruction}])
-        context_aggregator = llm.create_context_aggregator(context)
-        transcript = TranscriptProcessor()
-        
+        context = LLMContext(messages=[{"role": "system", "content": final_system_instruction}])
+        context_aggregator = LLMContextAggregatorPair(context)
         pipeline_elements = [
             transport.input(),
             stt,
             TranscriptionBroadcaster(participant="User"),
-            transcript.user(),
             context_aggregator.user(),
             ContextLogger(logger_name="UserToLLM"),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
-            transcript.assistant(),
             context_aggregator.assistant(),
             transport.output()
         ]

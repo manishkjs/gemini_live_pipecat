@@ -16,11 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 # Load environment variables
 load_dotenv(override=True)
 
-# Monkey-patch pipecat-ai to fix a bug in the library
-# The GeminiMultimodalLiveLLMService uses the 'websockets' library but doesn't import it.
-# This patch injects the websockets module into the library's namespace.
-import pipecat.services.gemini_multimodal_live.gemini
-pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
 
 # Monkey-patch for google-genai BaseApiClient to fix AttributeError in aclose
 from google.genai._api_client import BaseApiClient

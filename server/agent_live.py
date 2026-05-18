@@ -10,8 +10,9 @@ import time
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
@@ -20,13 +21,13 @@ from pipecat.audio.filters.aic_filter import AICFilter
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
+from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.processors.user_idle_processor import UserIdleProcessor
+# from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 from tools.projects import search_projects
 
@@ -53,7 +54,7 @@ SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
-        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame, CancelFrame)):
+        if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None
         data = await super().serialize(frame)
         return data.encode("utf-8") if isinstance(data, str) else data
@@ -88,7 +89,7 @@ class GeminiSessionLoggerMixin:
 
     async def process_frame(self, frame, direction):
         """Intercept InterruptionFrame for metrics."""
-        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
+        if isinstance(frame, InterruptionFrame):
             # Metric Streaming: Interruption
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
@@ -560,25 +561,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if tool.name != "get_current_time":
             llm.register_function(tool.name, dynamic_tool_handler)
 
-    context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
-
-    async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
-        logger.info(f"User idle detected, retry count: {retry_count}")
-        if retry_count < 4:
-            prompts = {
-                1: "ask me if I am able to hear you",
-                2: "ask me if I am still here",
-                3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
-            }
-            # Call Gemini Live session directly to trigger a response
-            await llm._create_single_response([{"role": "user", "content": prompts[retry_count]}])
-            return True
-        await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
-        return False
+    context = LLMContext()
+    context_aggregator = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline([
         transport.input(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=10.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
@@ -730,7 +717,8 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     llm.register_function("project_search", project_search_handler)
     llm.register_function("handle_other_client_queries", other_queries_handler)
 
-    context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
+    context = LLMContext()
+    context_aggregator = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline([
         transport.input(),
