@@ -592,7 +592,7 @@ class LoggingSileroVADAnalyzer(SileroVADAnalyzer):
             confidence_val = float(confidence)
         except Exception:
             confidence_val = 0.0
-        logger.debug(f"VAD Check: confidence={confidence_val:.3f}, volume={volume:.3f}")
+        # logger.debug(f"VAD Check: confidence={confidence_val:.3f}, volume={volume:.3f}")
         return confidence
 
 class FrameLogger(FrameProcessor):
