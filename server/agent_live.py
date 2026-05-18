@@ -17,7 +17,6 @@ from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputP
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.filters.aic_filter import AICFilter
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
@@ -257,7 +256,32 @@ class GeminiSessionLoggerMixin:
             self._handle_msg_resumption_update(message)
 
 
-class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
+    async def _tool_result(
+        self, tool_call_id: str, tool_name: str, tool_result_message: dict[str, Any]
+    ):
+        """Send tool result back to the API, omitting 'id' field for Vertex AI compatibility."""
+        if self._disconnecting or not self._session:
+            return
+
+        logger.debug(
+            f"Sending tool result to Gemini Live for tool_call_id={tool_call_id}, tool_result_message={tool_result_message}"
+        )
+
+        if self._supports_non_blocking_tools and self._function_is_async(tool_name):
+            response_payload = {**tool_result_message, "scheduling": "WHEN_IDLE"}
+        else:
+            response_payload = tool_result_message
+
+        from google.genai.types import FunctionResponse
+
+        # Omit the 'id' field to prevent Vertex AI "Unknown name 'id'" error
+        response = FunctionResponse(name=tool_name, response=response_payload)
+
+        try:
+            await self._session.send_tool_response(function_responses=response)
+        except Exception as e:
+            await self._handle_send_error(e)
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
@@ -326,7 +350,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
-            audio_filter=AICFilter(),
+            audio_filter=None,
         )
     )
 
@@ -567,6 +591,13 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                     config.realtime_input_config = RealtimeInputConfig(
                         automatic_activity_detection=vad_config
                     )
+                
+                proactive_mode = os.getenv("GEMINI_PROACTIVE_MODE", "no").lower() in ["yes", "true", "1"]
+                if proactive_mode:
+                    from google.genai.types import ProactivityConfig
+                    logger.info("Enabling Proactivity for Twilio")
+                    config.proactivity = ProactivityConfig(proactive_audio=True)
+                
                 await super()._connection_task_handler(config)
         
         llm_params = ai_studio_params
@@ -594,6 +625,13 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                     config.realtime_input_config = RealtimeInputConfig(
                         automatic_activity_detection=vad_config
                     )
+                
+                proactive_mode = os.getenv("GEMINI_PROACTIVE_MODE", "no").lower() in ["yes", "true", "1"]
+                if proactive_mode:
+                    from google.genai.types import ProactivityConfig
+                    logger.info("Enabling Proactivity for Twilio")
+                    config.proactivity = ProactivityConfig(proactive_audio=True)
+                
                 await super()._connection_task_handler(config)
                 
         llm_params = vertex_params
