@@ -18,7 +18,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat_whisker import WhiskerObserver
+# from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame
@@ -496,7 +496,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         enable_usage_metrics=True,
     ))
     
-    task.add_observer(WhiskerObserver(pipeline))
+    # task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
@@ -735,7 +735,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         enable_usage_metrics=True,
     ))
     
-    task.add_observer(WhiskerObserver(pipeline))
+    # task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
