@@ -200,14 +200,9 @@ from fastapi.responses import Response
 @app.post("/twilio/voice")
 async def twilio_voice(request: Request):
     """Webhook endpoint for Twilio to fetch TwiML."""
-    host = request.url.hostname
-    scheme = "wss" if request.url.scheme == "https" else "ws"
-    
-    # If running locally without https, use ws and port 7860
-    if not "K_SERVICE" in os.environ and request.url.scheme != "https":
-        ws_url = f"ws://{host}:7860/ws/twilio"
-    else:
-        ws_url = f"wss://{host}/ws/twilio"
+    # Use netloc to preserve the incoming port (e.g. :7860 or standard 80/443)
+    scheme = "wss" if request.url.scheme == "https" or "K_SERVICE" in os.environ else "ws"
+    ws_url = f"{scheme}://{request.url.netloc}/ws/twilio"
         
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
