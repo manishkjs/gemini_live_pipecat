@@ -508,6 +508,13 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     await PipelineRunner(handle_sigint=False).run(task)
 
 
+class LoggingSileroVADAnalyzer(SileroVADAnalyzer):
+    def voice_confidence(self, buffer) -> float:
+        confidence = super().voice_confidence(buffer)
+        volume = self._get_smoothed_volume(buffer)
+        logger.debug(f"VAD Check: confidence={confidence:.3f}, volume={volume:.3f}")
+        return confidence
+
 async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruction: Optional[str] = None, use_silero_vad: Optional[bool] = None):
     """Runs the Gemini Live agent with Twilio integration."""
     if use_silero_vad is None:
@@ -526,7 +533,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
             audio_in_enabled=True, 
             audio_out_enabled=True, 
             add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(min_volume=0.0)) if use_silero_vad else None,
+            vad_analyzer=LoggingSileroVADAnalyzer(params=VADParams(min_volume=0.0)) if use_silero_vad else None,
             serializer=TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
