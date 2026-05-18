@@ -17,6 +17,7 @@ from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputP
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
@@ -527,7 +528,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
             audio_out_enabled=True, 
             audio_out_sample_rate=8000,
             add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer() if use_silero_vad else None,
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(min_volume=0.0)) if use_silero_vad else None,
             serializer=TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
