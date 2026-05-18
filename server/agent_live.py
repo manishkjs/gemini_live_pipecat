@@ -11,7 +11,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities, GeminiVADParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
@@ -714,9 +714,11 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         stop=[VADOnlyUserTurnStopStrategy(user_speech_timeout=0.5)]
     ) if use_silero_vad else None
     
+    user_params = LLMUserAggregatorParams(user_turn_strategies=user_turn_strategies) if use_silero_vad else None
+    
     context_aggregator = LLMContextAggregatorPair(
         context,
-        user_turn_strategies=user_turn_strategies
+        user_params=user_params
     )
 
     pipeline = Pipeline([
