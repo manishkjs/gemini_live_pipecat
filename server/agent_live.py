@@ -282,6 +282,23 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
             await self._session.send_tool_response(function_responses=response)
         except Exception as e:
             await self._handle_send_error(e)
+
+    async def _create_initial_response(self, for_reconnect: bool = False):
+        if self._disconnecting:
+            return
+        if not self._session:
+            self._run_llm_when_session_ready = True
+            return
+
+        logger.info("Triggering initial response in Hindi for Vertex Live model...")
+        from google.genai.types import Content, Part
+        messages = [Content(
+            parts=[Part.from_text(text="नमस्ते! बातचीत शुरू करें।")],
+            role='user'
+        )]
+        await self._session.send_client_content(
+            turns=messages, turn_complete=True
+        )
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
