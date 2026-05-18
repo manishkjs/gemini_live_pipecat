@@ -21,13 +21,16 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
+from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
 from system_prompt import SYSTEM_PROMPT
 from tools.projects import search_projects
 
@@ -523,6 +526,13 @@ class FrameLogger(FrameProcessor):
             logger.debug(f"FrameLogger: {frame}")
         await self.push_frame(frame, direction)
 
+class VADOnlyUserTurnStopStrategy(SpeechTimeoutUserTurnStopStrategy):
+    async def _maybe_trigger_user_turn_stopped(self):
+        if self._vad_user_speaking:
+            return
+        if self._user_speech_wait_done and self._stt_wait_done:
+            await self.trigger_user_turn_stopped()
+
 async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruction: Optional[str] = None, use_silero_vad: Optional[bool] = None):
     """Runs the Gemini Live agent with Twilio integration."""
     if use_silero_vad is None:
@@ -696,7 +706,18 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     llm.register_function("handle_other_client_queries", other_queries_handler)
 
     context = LLMContext()
-    context_aggregator = LLMContextAggregatorPair(context)
+    
+    # Configure VAD-only user turn strategies to bypass LLMContextAggregator's default strategy,
+    # which deadlocks when there is no external STT service (no TranscriptionFrame)
+    user_turn_strategies = UserTurnStrategies(
+        start=[VADUserTurnStartStrategy()],
+        stop=[VADOnlyUserTurnStopStrategy(user_speech_timeout=0.5)]
+    ) if use_silero_vad else None
+    
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_turn_strategies=user_turn_strategies
+    )
 
     pipeline = Pipeline([
         transport.input(),
