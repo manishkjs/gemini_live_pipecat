@@ -480,7 +480,19 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             llm.register_function(tool.name, dynamic_tool_handler)
 
     context = LLMContext()
-    context_aggregator = LLMContextAggregatorPair(context)
+    
+    # Configure VAD-only user turn strategies to prevent the deadlock caused by the absence of an STT service
+    user_turn_strategies = UserTurnStrategies(
+        start=[VADUserTurnStartStrategy()],
+        stop=[VADOnlyUserTurnStopStrategy(user_speech_timeout=0.5)]
+    )
+    
+    user_params = LLMUserAggregatorParams(user_turn_strategies=user_turn_strategies)
+    
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=user_params
+    )
 
     pipeline = Pipeline([
         transport.input(),
