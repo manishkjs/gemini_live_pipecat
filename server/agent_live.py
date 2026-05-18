@@ -389,15 +389,16 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     }
 
     # Transparently map Vertex model to AI Studio model to bypass Vertex AI 503 errors
-    if model == "gemini-live-2.5-flash-native-audio":
-        model = "gemini-2.5-flash-native-audio-preview-09-2025"
+    # (Disabled to keep using Vertex AI as requested by user)
+    # if model == "gemini-live-2.5-flash-native-audio":
+    #     model = "gemini-2.5-flash-native-audio-preview-09-2025"
 
     if model == "gemini-2.5-flash-native-audio-preview-09-2025" or model == "gemini-2.5-flash-native-audio-eap-11-2025":
         common_params["http_options"] = HttpOptions(api_version="v1beta")
 
     aistudio_models = (
         "gemini-3.1-flash-live-preview",
-        "gemini-2.5-flash-native-audio-preview-09-2025"
+        # "gemini-2.5-flash-native-audio-preview-09-2025" (removed to force Vertex)
     )
 
     if model in aistudio_models:
@@ -412,7 +413,14 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             ai_studio_params["voice_id"] = "Zephyr"
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
-        vertex_params = {**common_params, "project_id": project_id, "location": location, "model": f"google/{model}"}
+        base_url = f"https://{location}-aiplatform.googleapis.com"
+        vertex_params = {
+            **common_params, 
+            "project_id": project_id, 
+            "location": location, 
+            "model": f"google/{model}",
+            "http_options": HttpOptions(api_version="v1", base_url=base_url)
+        }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if not use_external_tts and voice:
@@ -531,7 +539,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     }
 
     # FORCE AI Studio mode to bypass Vertex AI 503 capacity/handshake errors
-    use_ai_studio = True
+    use_ai_studio = False
     
     if use_ai_studio:
         ai_studio_params = {
@@ -563,12 +571,13 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         
         llm_params = ai_studio_params
     else:
+        base_url = f"https://{location}-aiplatform.googleapis.com"
         vertex_params = {
             **common_params, 
             "project_id": project_id, 
             "location": location, 
-            "model": "gemini-2.0-flash-exp",
-            "http_options": HttpOptions(api_version="v1beta")
+            "model": "gemini-live-2.5-flash-native-audio",
+            "http_options": HttpOptions(api_version="v1", base_url=base_url)
         }
         
         class TwilioGeminiService(CustomGeminiLiveVertexLLMService):
