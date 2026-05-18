@@ -61,7 +61,7 @@ pydantic-extra-types==2.10.5
 pydantic-settings==2.10.1
 pydantic_core==2.27.2
 Pygments==2.19.2
-pyloudnorm==0.1.1
+pyloudnorm>=0.1.1
 python-dotenv==1.1.1
 python-multipart==0.0.20
 PyYAML==6.0.2
