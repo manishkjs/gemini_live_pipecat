@@ -21,13 +21,14 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 # from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame
+from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame, LLMRunFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
@@ -297,12 +298,13 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
         logger.info("Triggering initial response in Hindi for Vertex Live model...")
         from google.genai.types import Content, Part
         messages = [Content(
-            parts=[Part.from_text(text="नमस्ते! बातचीत शुरू करें।")],
+            parts=[Part.from_text(text="नमस्ते! आप कौन हैं?")],
             role='user'
         )]
         await self._session.send_client_content(
             turns=messages, turn_complete=True
         )
+        self._ready_for_realtime_input = True
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
@@ -321,7 +323,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
             if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
             if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
 
-    async def _create_initial_response(self):
+    async def _create_initial_response(self, for_reconnect: bool = False):
         if self._disconnecting:
             return
         if not self._session:
@@ -331,12 +333,13 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
         logger.info("Triggering initial response in Hindi for AI Studio model...")
         from google.genai.types import Content, Part
         messages = [Content(
-            parts=[Part.from_text(text="नमस्ते! बातचीत शुरू करें।")],
+            parts=[Part.from_text(text="नमस्ते! आप कौन हैं?")],
             role='user'
         )]
         await self._session.send_client_content(
             turns=messages, turn_complete=True
         )
+        self._ready_for_realtime_input = True
 
 
 
@@ -344,6 +347,21 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 async def dynamic_tool_handler(params: FunctionCallParams):
     logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
     await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
+
+async def project_search_handler(params: FunctionCallParams):
+    query = params.arguments.get("query", "")
+    logger.info(f"project_search called with query: {query}")
+    result = search_projects(query)
+    await params.result_callback({"status": "success", "result": result})
+
+async def other_queries_handler(params: FunctionCallParams):
+    query = params.arguments.get("query", "")
+    logger.info(f"handle_other_client_queries called with query: {query}")
+    # Fallback mock response to prevent crash
+    await params.result_callback({
+        "status": "success", 
+        "result": "I have noted your query. I am mainly focused on Noida project assistance, but I will pass this to our team."
+    })
 
 async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
@@ -366,32 +384,54 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     }
     pipecat_language = language_map.get(language, Language.EN_US)
     
+    # Instantiate Silero VAD analyzer
+    vad_analyzer = LoggingSileroVADAnalyzer(params=VADParams(min_volume=0.0))
+
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
+            vad_analyzer=vad_analyzer, serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
 
     # Dynamic Tool Registration
-    standard_tools = [FunctionSchema(
-        name="get_current_time",
-        description="Get the current time.",
-        properties={
-            "is_explicit_request": {
-                "type": "boolean",
-                "description": (
-                    "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                    "Return `false` for anything else, including:\n"
-                    "- Explaining schedules or timelines.\n"
-                    "- Mentioning time casually in conversation."
-                )
-            }
-        },
-        required=["is_explicit_request"]
-    )]
+    standard_tools = [
+        FunctionSchema(
+            name="get_current_time",
+            description="Get the current time.",
+            properties={
+                "is_explicit_request": {
+                    "type": "boolean",
+                    "description": "Return `true` ONLY if the user explicitly asks for the current time."
+                }
+            },
+            required=["is_explicit_request"]
+        ),
+        FunctionSchema(
+            name="project_search",
+            description="Search Noida/Greater Noida projects by query keywords (e.g. Noida, budget, 4 BHK).",
+            properties={
+                "query": {
+                    "type": "string",
+                    "description": "Search keywords (e.g. location, budget, configuration)"
+                }
+            },
+            required=["query"]
+        ),
+        FunctionSchema(
+            name="handle_other_client_queries",
+            description="Handle miscellaneous user queries outside of project pitches.",
+            properties={
+                "query": {
+                    "type": "string",
+                    "description": "The user's query"
+                }
+            },
+            required=["query"]
+        )
+    ]
 
     
     if tools:
@@ -430,7 +470,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     
     common_params = {
         "system_instruction": prompt_text, "tools": tools_schema, "transcribe_model_audio": True,
-        "params": InputParams(language=pipecat_language, modalities=llm_modalities)
+        "params": InputParams(
+            language=pipecat_language, 
+            modalities=llm_modalities,
+            vad=GeminiVADParams(disabled=True)
+        )
     }
 
     # Transparently map Vertex model to AI Studio model to bypass Vertex AI 503 errors
@@ -473,24 +517,26 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("project_search", project_search_handler)
+    llm.register_function("handle_other_client_queries", other_queries_handler)
     
     # Register generic handler for dynamic tools
     for tool in standard_tools:
-        if tool.name != "get_current_time":
+        if tool.name not in ["get_current_time", "project_search", "handle_other_client_queries"]:
             llm.register_function(tool.name, dynamic_tool_handler)
 
-    context = LLMContext()
-    
-    # Configure VAD-only user turn strategies to prevent the deadlock caused by the absence of an STT service
+    # Configure VAD-only user turn strategies to prevent deadlock when no STT service is present
     user_turn_strategies = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
         stop=[VADOnlyUserTurnStopStrategy(user_speech_timeout=0.5)]
     )
-    
-    user_params = LLMUserAggregatorParams(user_turn_strategies=user_turn_strategies)
-    
+
+    user_params = LLMUserAggregatorParams(
+        vad_analyzer=vad_analyzer,
+        user_turn_strategies=user_turn_strategies
+    )
     context_aggregator = LLMContextAggregatorPair(
-        context,
+        LLMContext(),
         user_params=user_params
     )
 
@@ -513,7 +559,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Pipecat Client connected")
-        await task.queue_frames([context_aggregator.user()._get_context_frame()])
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -527,7 +573,11 @@ class LoggingSileroVADAnalyzer(SileroVADAnalyzer):
     def voice_confidence(self, buffer) -> float:
         confidence = super().voice_confidence(buffer)
         volume = self._get_smoothed_volume(buffer)
-        logger.debug(f"VAD Check: confidence={confidence:.3f}, volume={volume:.3f}")
+        try:
+            confidence_val = float(confidence)
+        except Exception:
+            confidence_val = 0.0
+        logger.debug(f"VAD Check: confidence={confidence_val:.3f}, volume={volume:.3f}")
         return confidence
 
 class FrameLogger(FrameProcessor):
@@ -536,7 +586,7 @@ class FrameLogger(FrameProcessor):
             logger.debug(f"FrameLogger: InputAudioRawFrame ({len(frame.audio)} bytes, sample_rate={frame.sample_rate})")
         else:
             logger.debug(f"FrameLogger: {frame}")
-        await self.push_frame(frame, direction)
+        await super().process_frame(frame, direction)
 
 class VADOnlyUserTurnStopStrategy(SpeechTimeoutUserTurnStopStrategy):
     async def _maybe_trigger_user_turn_stopped(self):
@@ -549,6 +599,8 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     """Runs the Gemini Live agent with Twilio integration."""
     if use_silero_vad is None:
         use_silero_vad = os.getenv("GEMINI_VAD_MODE", "silero").lower() == "silero"
+
+    vad_analyzer = LoggingSileroVADAnalyzer(params=VADParams(min_volume=0.0)) if use_silero_vad else None
 
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -563,7 +615,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
             audio_in_enabled=True, 
             audio_out_enabled=True, 
             add_wav_header=False,
-            vad_analyzer=LoggingSileroVADAnalyzer(params=VADParams(min_volume=0.0)) if use_silero_vad else None,
+            vad_analyzer=vad_analyzer,
             serializer=TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
@@ -617,7 +669,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "params": InputParams(
             language=Language.EN_IN,
             modalities=GeminiModalities.AUDIO,
-            vad=GeminiVADParams(disabled=True)
+            vad=GeminiVADParams(disabled=use_silero_vad)
         )
     }
 
@@ -695,21 +747,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                 
         llm_params = vertex_params
 
-    # Tool Handlers
-    async def project_search_handler(params: FunctionCallParams):
-        query = params.arguments.get("query", "")
-        logger.info(f"project_search called with query: {query}")
-        result = search_projects(query)
-        await params.result_callback({"status": "success", "result": result})
 
-    async def other_queries_handler(params: FunctionCallParams):
-        query = params.arguments.get("query", "")
-        logger.info(f"handle_other_client_queries called with query: {query}")
-        # Fallback mock response to prevent crash
-        await params.result_callback({
-            "status": "success", 
-            "result": "I have noted your query. I am mainly focused on Noida project assistance, but I will pass this to our team."
-        })
 
     # Use the custom service
     llm = TwilioGeminiService(**llm_params)
@@ -717,25 +755,23 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     llm.register_function("project_search", project_search_handler)
     llm.register_function("handle_other_client_queries", other_queries_handler)
 
-    context = LLMContext()
-    
-    # Configure VAD-only user turn strategies to bypass LLMContextAggregator's default strategy,
-    # which deadlocks when there is no external STT service (no TranscriptionFrame)
     user_turn_strategies = UserTurnStrategies(
         start=[VADUserTurnStartStrategy()],
         stop=[VADOnlyUserTurnStopStrategy(user_speech_timeout=0.5)]
     ) if use_silero_vad else None
-    
-    user_params = LLMUserAggregatorParams(user_turn_strategies=user_turn_strategies) if use_silero_vad else None
-    
+
+    user_params = LLMUserAggregatorParams(
+        vad_analyzer=vad_analyzer,
+        user_turn_strategies=user_turn_strategies
+    ) if use_silero_vad else None
+
     context_aggregator = LLMContextAggregatorPair(
-        context,
+        LLMContext(),
         user_params=user_params
     )
 
     pipeline = Pipeline([
         transport.input(),
-        FrameLogger(),
         context_aggregator.user(),
         llm,
         transport.output(),
@@ -752,7 +788,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Twilio Client connected")
-        await task.queue_frames([context_aggregator.user()._get_context_frame()])
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
