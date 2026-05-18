@@ -526,7 +526,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "project_id": project_id, 
         "location": location, 
         "model": "google/gemini-live-2.5-flash-native-audio",
-        "http_options": HttpOptions(api_version="v1alpha")
+        "http_options": HttpOptions(api_version="v1beta")
     }
     
     # Subclass to inject Native VAD config and Proactivity
