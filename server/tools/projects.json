@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Gulshan Dynasty",
+    "location": "Sector 144, Noida",
+    "status": "Ready To Move (Completed Feb 2024)",
+    "advertiser": "Realty HQ",
+    "config": "4 BHK Apartment",
+    "price": "10.9 Cr to 11.0 Cr",
+    "area": "2783 to 2784 sq ft (Carpet)",
+    "amenities": ["Swimming Pool", "Gym", "Club House", "Terrace Garden"],
+    "usp": "Low density (204 apts in 5.8 acres), Contactless homes, 76% green area."
+  },
+  {
+    "name": "Gaur Aero Suites",
+    "location": "Sector-19 Yamuna Expressway, Greater Noida",
+    "status": "Under Construction (Possession Oct 2025)",
+    "advertiser": "Dhrti Management Pvt. Ltd.",
+    "config": "1 BHK Studio",
+    "price": "50.0 L",
+    "area": "485 sq ft (Super)",
+    "amenities": ["Swimming Pool", "Gym", "Club House", "Park", "Badminton Court"],
+    "usp": "8-10 km from upcoming Noida International Airport, 250-acre township."
+  },
+  {
+    "name": "ATS Kingston Heath",
+    "location": "Sector 150, Noida",
+    "status": "Under Construction (Possession Aug 2026)",
+    "advertiser": "ATS Infrastructure Limited",
+    "config": "3 BHK (4.2 Cr) & 4 BHK (5.9 Cr)",
+    "area": "2350 to 3300 sq ft (Super)",
+    "amenities": ["Swimming Pool", "Gym", "Club House", "Golf Course"],
+    "usp": "Health inspired homes, low-AQI sector with 80% green cover, 17 units/acre."
+  }
+]
