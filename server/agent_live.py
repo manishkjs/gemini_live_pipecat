@@ -579,7 +579,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "tools": tools_schema, 
         "transcribe_model_audio": True,
         "params": InputParams(
-            language=Language.HI_IN,
+            language=Language.EN_IN,
             modalities=GeminiModalities.AUDIO,
             vad=GeminiVADParams(disabled=True)
         )
