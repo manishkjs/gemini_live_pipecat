@@ -18,7 +18,7 @@ fastapi-cli==0.0.7
 flatbuffers==25.2.10
 frozenlist==1.7.0
 future==1.0.0
-google-api-core==2.25.1
+google-api-core>=2.25.1
 google-auth==2.46.0
 google-cloud-speech==2.32.0
 google-cloud-texttospeech==2.31.0
