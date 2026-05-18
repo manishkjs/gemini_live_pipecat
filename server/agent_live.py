@@ -523,7 +523,9 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, 
+            audio_in_sample_rate=8000,
             audio_out_enabled=True, 
+            audio_out_sample_rate=8000,
             add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer() if use_silero_vad else None,
             serializer=TwilioFrameSerializer(
