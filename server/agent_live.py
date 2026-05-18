@@ -515,6 +515,14 @@ class LoggingSileroVADAnalyzer(SileroVADAnalyzer):
         logger.debug(f"VAD Check: confidence={confidence:.3f}, volume={volume:.3f}")
         return confidence
 
+class FrameLogger(FrameProcessor):
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, InputAudioRawFrame):
+            logger.debug(f"FrameLogger: InputAudioRawFrame ({len(frame.audio)} bytes, sample_rate={frame.sample_rate})")
+        else:
+            logger.debug(f"FrameLogger: {frame}")
+        await self.push_frame(frame, direction)
+
 async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruction: Optional[str] = None, use_silero_vad: Optional[bool] = None):
     """Runs the Gemini Live agent with Twilio integration."""
     if use_silero_vad is None:
@@ -692,6 +700,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
 
     pipeline = Pipeline([
         transport.input(),
+        FrameLogger(),
         context_aggregator.user(),
         llm,
         transport.output(),
