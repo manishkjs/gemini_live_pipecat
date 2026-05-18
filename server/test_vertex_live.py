@@ -10,8 +10,14 @@ async def main():
     project_id = os.getenv("GCP_PROJECT_ID") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or "us-central1"
     
+    from google.genai.types import HttpOptions
     print(f"Attempting connection with project={project_id}, location={location}")
-    client = Client(vertexai=True, project=project_id, location=location)
+    client = Client(
+        vertexai=True,
+        project=project_id,
+        location=location,
+        http_options=HttpOptions(api_version="v1alpha")
+    )
     
     from pipecat.adapters.schemas.function_schema import FunctionSchema
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
