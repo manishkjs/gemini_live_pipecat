@@ -127,6 +127,32 @@ class WebsocketClientApp {
         this.tabs?.forEach((tab) => {
             tab.addEventListener("click", () => this.switchTab(tab));
         });
+        const sttTrigger = document.getElementById("stt-language-trigger");
+        const sttOptions = document.getElementById("stt-language-container");
+        const sttDisplay = document.getElementById("stt-language-display");
+        sttTrigger?.addEventListener("click", () => {
+            sttOptions?.classList.toggle("active");
+        });
+        document.addEventListener("click", (e) => {
+            if (sttTrigger && !sttTrigger.contains(e.target) && sttOptions && !sttOptions.contains(e.target)) {
+                sttOptions.classList.remove("active");
+            }
+        });
+        const checkboxes = sttOptions?.querySelectorAll('input[type="checkbox"]');
+        checkboxes?.forEach((cb) => {
+            cb.addEventListener("change", () => {
+                const checked = Array.from(sttOptions?.querySelectorAll('input[type="checkbox"]:checked') || [])
+                    .map((c) => c.value);
+                if (sttDisplay) {
+                    sttDisplay.textContent = checked.length > 0 ? checked.join(", ") : "Select Languages";
+                }
+            });
+        });
+        const skipSttToggle = document.getElementById("skip-stt-toggle");
+        const sttTile = document.getElementById("stt-tile");
+        skipSttToggle?.addEventListener("change", () => {
+            sttTile?.classList.toggle("grayed-out", skipSttToggle.checked);
+        });
         const paceSlider = document.getElementById("tts-pace-slider");
         const paceValue = document.getElementById("tts-pace-value");
         if (paceSlider && paceValue) {
@@ -180,6 +206,10 @@ class WebsocketClientApp {
         geminiModelSelect?.addEventListener("change", handleModelChange);
         geminiVoiceSelect?.addEventListener("change", handleModelChange);
         ttsToggle?.addEventListener("change", handleModelChange);
+        const geminiLanguageSelect = document.getElementById("gemini-language-select");
+        geminiLanguageSelect?.addEventListener("change", () => {
+            this.loadSystemPrompt(geminiLanguageSelect.value);
+        });
         // TTS Model Change Logic
         const ttsModelSelect = document.getElementById("tts-model-select");
         const ttsVoiceSelect = document.getElementById("tts-voice-select");
@@ -206,9 +236,9 @@ class WebsocketClientApp {
             populateVoices();
         }
     }
-    async loadSystemPrompt() {
+    async loadSystemPrompt(language = "hi-IN") {
         try {
-            const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt`);
+            const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt?language=${language}`);
             const data = await response.json();
             const geminiSystemInstructionsTextarea = document.getElementById("system-instructions-textarea");
             if (geminiSystemInstructionsTextarea) {
@@ -321,10 +351,20 @@ class WebsocketClientApp {
         if (lastBubble && lastBubble.classList.contains(role)) {
             const timestamp = lastBubble.querySelector(".timestamp");
             if (timestamp) {
-                timestamp.before(document.createTextNode(text));
+                const fullText = (lastBubble.getAttribute('data-text') || '') + text;
+                lastBubble.setAttribute('data-text', fullText);
+                const cleanText = fullText.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
+                const textNode = timestamp.previousSibling;
+                if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                    textNode.textContent = cleanText;
+                }
+                else {
+                    timestamp.before(document.createTextNode(cleanText));
+                }
             }
             else {
-                lastBubble.textContent += text;
+                const currentText = lastBubble.textContent || '';
+                lastBubble.textContent = (currentText + text).replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
             }
             if (ttft !== undefined && !lastBubble.querySelector(".ttft-latency")) {
                 const ttftEl = document.createElement("div");
@@ -341,7 +381,8 @@ class WebsocketClientApp {
         }
         const bubble = document.createElement("div");
         bubble.classList.add("chat-bubble", role);
-        bubble.textContent = text;
+        bubble.setAttribute('data-text', text);
+        bubble.textContent = text.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
         const timestamp = document.createElement("span");
         timestamp.classList.add("timestamp");
         timestamp.textContent = new Date().toLocaleTimeString();
@@ -358,6 +399,25 @@ class WebsocketClientApp {
         }
         this.chatWindow.appendChild(bubble);
         this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
+    }
+    replaceChatMessage(role, text) {
+        if (!this.chatWindow)
+            return;
+        const bubbles = this.chatWindow.querySelectorAll(`.chat-bubble.${role}`);
+        if (bubbles.length === 0)
+            return;
+        const lastBubble = bubbles[bubbles.length - 1];
+        lastBubble.setAttribute('data-text', text);
+        const timestamp = lastBubble.querySelector(".timestamp");
+        if (timestamp) {
+            const textNode = timestamp.previousSibling;
+            if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                textNode.textContent = text;
+            }
+            else {
+                timestamp.before(document.createTextNode(text));
+            }
+        }
     }
     tryUpdateBubbleLatencies() {
         if (!this.chatWindow)
@@ -394,6 +454,12 @@ class WebsocketClientApp {
                 this.lastTTSLatency = null;
             }
             this.appendChatMessage(role, text, ttft);
+        }
+        // Handle Transcription Replace (parallel STT updates the placeholder)
+        if (message.type === "transcription_replace") {
+            const { participant, text } = message;
+            const role = (participant === "User" || participant === "user") ? "user" : "bot";
+            this.replaceChatMessage(role, text);
         }
         // Handle Metrics
         // Case 1: OutputTransportMessageFrame format
@@ -595,15 +661,19 @@ class WebsocketClientApp {
                 const ttsModelSelect = document.getElementById("tts-model-select");
                 const llmModelSelect = document.getElementById("llm-model-select");
                 const sttModelSelect = document.getElementById("stt-model-select");
-                const sttLanguageSelect = document.getElementById("stt-language-select");
+                const sttLanguageContainer = document.getElementById("stt-language-container");
                 const systemInstructionsTextarea = document.getElementById("tts-llm-stt-system-instructions-textarea");
                 const paceSlider = document.getElementById("tts-pace-slider");
+                const skipSttToggle = document.getElementById("skip-stt-toggle");
                 connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
                 connectUrl += `&tts_model=${ttsModelSelect.value}`;
                 connectUrl += `&tts_pace=${paceSlider.value}`;
                 connectUrl += `&llm_model=${llmModelSelect.value}`;
                 connectUrl += `&stt_model=${sttModelSelect.value}`;
-                connectUrl += `&stt_language=${sttLanguageSelect.value}`;
+                connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
+                const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
+                    .map((cb) => cb.value);
+                connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
                 systemInstructions = systemInstructionsTextarea.value;
             }
             else {

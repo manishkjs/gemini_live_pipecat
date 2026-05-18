@@ -243,6 +243,11 @@ class WebsocketClientApp {
     geminiVoiceSelect?.addEventListener("change", handleModelChange);
     ttsToggle?.addEventListener("change", handleModelChange);
 
+    const geminiLanguageSelect = document.getElementById("gemini-language-select") as HTMLSelectElement;
+    geminiLanguageSelect?.addEventListener("change", () => {
+      this.loadSystemPrompt(geminiLanguageSelect.value);
+    });
+
     // TTS Model Change Logic
     const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
     const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
@@ -273,9 +278,9 @@ class WebsocketClientApp {
     }
   }
 
-  public async loadSystemPrompt(): Promise<void> {
+  public async loadSystemPrompt(language: string = "hi-IN"): Promise<void> {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt`);
+      const response = await fetch(`${getApiBaseUrl()}/connect/system-prompt?language=${language}`);
       const data = await response.json();
       const geminiSystemInstructionsTextarea = document.getElementById(
         "system-instructions-textarea"

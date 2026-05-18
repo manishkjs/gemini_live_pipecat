@@ -77,6 +77,15 @@ async def get_current_time(params: FunctionCallParams):
 class GeminiSessionLoggerMixin:
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
 
+    async def _connection_task_handler(self, config):
+        # Set transcription language to match the session's configured language
+        from google.genai.types import AudioTranscriptionConfig
+        lang_code = getattr(self, "_language_code", "en-US")
+        config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
+        config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
+        
+        await super()._connection_task_handler(config)
+
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
     async def start_ttfb_metrics(self):
@@ -370,7 +379,13 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
     
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + f"\n\nIMPORTANT: You must converse in {language} language."
+    language_names = {
+        "hi-IN": "HINDI", "es-ES": "SPANISH", "fr-FR": "FRENCH", "de-DE": "GERMAN",
+        "it-IT": "ITALIAN", "ja-JP": "JAPANESE", "ko-KR": "KOREAN", "pt-BR": "PORTUGUESE",
+        "ru-RU": "RUSSIAN", "zh-CN": "CHINESE", "ar-XA": "ARABIC", "bn-IN": "BENGALI",
+    }
+    lang_name = language_names.get(language, "ENGLISH")
+    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + f"\n\nRESPOND IN {lang_name}. YOU MUST RESPOND UNMISTAKABLY IN {lang_name}."
     
     language_map = {
         "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,

@@ -186,8 +186,9 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 
 
 @app.get("/connect/system-prompt")
-async def get_system_prompt():
-    return {"system_prompt": SYSTEM_PROMPT}
+async def get_system_prompt(language: str = "hi-IN"):
+    from system_prompt import get_customized_prompt
+    return {"system_prompt": get_customized_prompt(language)}
 
 
 from fastapi.responses import Response
