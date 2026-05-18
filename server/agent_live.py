@@ -13,7 +13,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities, GeminiVADParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -559,7 +559,11 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "system_instruction": prompt_text, 
         "tools": tools_schema, 
         "transcribe_model_audio": True,
-        "params": InputParams(language=Language.HI_IN, modalities=GeminiModalities.AUDIO)
+        "params": InputParams(
+            language=Language.HI_IN,
+            modalities=GeminiModalities.AUDIO,
+            vad=GeminiVADParams(disabled=True)
+        )
     }
 
     # FORCE AI Studio mode to bypass Vertex AI 503 capacity/handshake errors
