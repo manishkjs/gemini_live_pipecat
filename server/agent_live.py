@@ -545,10 +545,10 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                     automatic_activity_detection=vad_config
                 )
             
-            # Enable Proactivity
-            from google.genai.types import ProactivityConfig
-            logger.info("Enabling Proactivity for Twilio")
-            config.proactivity = ProactivityConfig(proactive_audio=True)
+            # Enable Proactivity (Disabled for debugging)
+            # from google.genai.types import ProactivityConfig
+            # logger.info("Enabling Proactivity for Twilio")
+            # config.proactivity = ProactivityConfig(proactive_audio=True)
             
             await super()._connection_task_handler(config)
 
