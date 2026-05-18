@@ -388,10 +388,19 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "params": InputParams(language=pipecat_language, modalities=llm_modalities)
     }
 
-    if model == "gemini-2.5-flash-native-audio-eap-11-2025":
+    # Transparently map Vertex model to AI Studio model to bypass Vertex AI 503 errors
+    if model == "gemini-live-2.5-flash-native-audio":
+        model = "gemini-2.5-flash-native-audio-preview-09-2025"
+
+    if model == "gemini-2.5-flash-native-audio-preview-09-2025" or model == "gemini-2.5-flash-native-audio-eap-11-2025":
         common_params["http_options"] = HttpOptions(api_version="v1beta")
 
-    if model == "gemini-3.1-flash-live-preview":
+    aistudio_models = (
+        "gemini-3.1-flash-live-preview",
+        "gemini-2.5-flash-native-audio-preview-09-2025"
+    )
+
+    if model in aistudio_models:
         ai_studio_params = {
             **common_params, 
             "api_key": os.getenv("GEMINI_API_KEY"), 
@@ -399,7 +408,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             "http_options": HttpOptions(api_version="v1beta")
         }
         if not use_external_tts:
-            # Use Zephyr as requested by user for this model
+            # Use Zephyr as standard voice for native audio on AI Studio
             ai_studio_params["voice_id"] = "Zephyr"
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
@@ -521,36 +530,64 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "params": InputParams(language=Language.HI_IN, modalities=GeminiModalities.AUDIO)
     }
 
-    vertex_params = {
-        **common_params, 
-        "project_id": project_id, 
-        "location": location, 
-        "model": "gemini-live-2.5-flash-native-audio",
-        "http_options": HttpOptions(api_version="v1beta")
-    }
+    # FORCE AI Studio mode to bypass Vertex AI 503 capacity/handshake errors
+    use_ai_studio = True
     
-    # Subclass to inject Native VAD config and Proactivity
-    class TwilioGeminiService(CustomGeminiLiveVertexLLMService):
-        async def _connection_task_handler(self, config):
-            if not use_silero_vad:
-                from google.genai.types import RealtimeInputConfig, AutomaticActivityDetection
-                logger.info("Enabling Native VAD for Twilio")
-                vad_config = AutomaticActivityDetection(
-                    start_of_speech_sensitivity="START_SENSITIVITY_LOW",
-                    end_of_speech_sensitivity="END_SENSITIVITY_LOW",
-                    prefix_padding_ms=200,
-                    silence_duration_ms=500
-                )
-                config.realtime_input_config = RealtimeInputConfig(
-                    automatic_activity_detection=vad_config
-                )
-            
-            # Enable Proactivity (Disabled as it is unsupported under Vertex v1beta)
-            # from google.genai.types import ProactivityConfig
-            # logger.info("Enabling Proactivity for Twilio")
-            # config.proactivity = ProactivityConfig(proactive_audio=True)
-            
-            await super()._connection_task_handler(config)
+    if use_ai_studio:
+        ai_studio_params = {
+            **common_params,
+            "api_key": os.getenv("GEMINI_API_KEY"),
+            "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+            "http_options": HttpOptions(api_version="v1beta")
+        }
+        # Use Zephyr as standard voice for native audio on AI Studio
+        ai_studio_params["voice_id"] = "Zephyr"
+        
+        logger.info("Configuring Twilio Gemini Service using AI Studio (gemini-2.5-flash-native-audio-preview-09-2025)")
+        
+        class TwilioGeminiService(CustomGeminiLiveLLMService):
+            async def _connection_task_handler(self, config):
+                if not use_silero_vad:
+                    from google.genai.types import RealtimeInputConfig, AutomaticActivityDetection
+                    logger.info("Enabling Native VAD for Twilio")
+                    vad_config = AutomaticActivityDetection(
+                        start_of_speech_sensitivity="START_SENSITIVITY_LOW",
+                        end_of_speech_sensitivity="END_SENSITIVITY_LOW",
+                        prefix_padding_ms=200,
+                        silence_duration_ms=500
+                    )
+                    config.realtime_input_config = RealtimeInputConfig(
+                        automatic_activity_detection=vad_config
+                    )
+                await super()._connection_task_handler(config)
+        
+        llm_params = ai_studio_params
+    else:
+        vertex_params = {
+            **common_params, 
+            "project_id": project_id, 
+            "location": location, 
+            "model": "gemini-2.0-flash-exp",
+            "http_options": HttpOptions(api_version="v1beta")
+        }
+        
+        class TwilioGeminiService(CustomGeminiLiveVertexLLMService):
+            async def _connection_task_handler(self, config):
+                if not use_silero_vad:
+                    from google.genai.types import RealtimeInputConfig, AutomaticActivityDetection
+                    logger.info("Enabling Native VAD for Twilio")
+                    vad_config = AutomaticActivityDetection(
+                        start_of_speech_sensitivity="START_SENSITIVITY_LOW",
+                        end_of_speech_sensitivity="END_SENSITIVITY_LOW",
+                        prefix_padding_ms=200,
+                        silence_duration_ms=500
+                    )
+                    config.realtime_input_config = RealtimeInputConfig(
+                        automatic_activity_detection=vad_config
+                    )
+                await super()._connection_task_handler(config)
+                
+        llm_params = vertex_params
 
     # Tool Handlers
     async def project_search_handler(params: FunctionCallParams):
@@ -569,7 +606,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         })
 
     # Use the custom service
-    llm = TwilioGeminiService(**vertex_params)
+    llm = TwilioGeminiService(**llm_params)
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("project_search", project_search_handler)
     llm.register_function("handle_other_client_queries", other_queries_handler)

@@ -69,7 +69,7 @@ async def main():
     
     try:
         async with client.aio.live.connect(
-            model="gemini-live-2.5-flash-native-audio",
+            model="gemini-2.5-flash-native-audio-preview-09-2025",
             config=config
         ) as session:
             print("SUCCESS: Connected to Gemini Live on Vertex AI!")
