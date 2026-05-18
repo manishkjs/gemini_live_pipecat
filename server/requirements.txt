@@ -22,7 +22,7 @@ google-api-core==2.25.1
 google-auth==2.46.0
 google-cloud-speech==2.32.0
 google-cloud-texttospeech==2.31.0
-google-genai==1.57.0
+google-genai>=2.4.0
 googleapis-common-protos==1.70.0
 grpcio==1.73.1
 grpcio-status==1.71.2
