@@ -526,7 +526,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "project_id": project_id, 
         "location": location, 
         "model": "google/gemini-live-2.5-flash-native-audio",
-        "http_options": HttpOptions(api_version="v1beta")
+        "http_options": HttpOptions(api_version="v1alpha")
     }
     
     # Subclass to inject Native VAD config and Proactivity
@@ -545,10 +545,10 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                     automatic_activity_detection=vad_config
                 )
             
-            # Enable Proactivity (Disabled for debugging)
-            # from google.genai.types import ProactivityConfig
-            # logger.info("Enabling Proactivity for Twilio")
-            # config.proactivity = ProactivityConfig(proactive_audio=True)
+            # Enable Proactivity
+            from google.genai.types import ProactivityConfig
+            logger.info("Enabling Proactivity for Twilio")
+            config.proactivity = ProactivityConfig(proactive_audio=True)
             
             await super()._connection_task_handler(config)
 
