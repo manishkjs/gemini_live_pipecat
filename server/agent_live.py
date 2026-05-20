@@ -684,7 +684,8 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
                 stream_sid=stream_sid,
                 params=TwilioFrameSerializer.InputParams(auto_hang_up=False)
             ),
-            audio_filter=None, # Disabled for Twilio (8kHz) to prevent sample rate distortion
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=16000,
         )
     )
 
@@ -731,7 +732,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         "tools": tools_schema, 
         "transcribe_model_audio": True,
         "params": InputParams(
-            language=Language.EN_IN,
+            language=Language.HI_IN,
             modalities=GeminiModalities.AUDIO,
             vad=GeminiVADParams(disabled=use_silero_vad)
         )
@@ -830,7 +831,7 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
     ) if use_silero_vad else None
 
     context_aggregator = LLMContextAggregatorPair(
-        LLMContext(),
+        LLMContext(messages=[{"role": "user", "content": "नमस्ते! आप कौन हैं?"}]),
         user_params=user_params
     )
 
