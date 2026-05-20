@@ -7,6 +7,8 @@ from fastapi import WebSocket
 from datetime import datetime
 import time
 
+import asyncio
+
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -21,7 +23,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 # from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame, LLMRunFrame
+from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame, InputAudioRawFrame, LLMRunFrame, TranscriptionFrame, OutputAudioRawFrame, StartFrame, EndFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, BotStartedSpeakingFrame, BotStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -297,23 +299,7 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
         except Exception as e:
             await self._handle_send_error(e)
 
-    async def _create_initial_response(self, for_reconnect: bool = False):
-        if self._disconnecting:
-            return
-        if not self._session:
-            self._run_llm_when_session_ready = True
-            return
 
-        logger.info("Triggering initial response in Hindi for Vertex Live model...")
-        from google.genai.types import Content, Part
-        messages = [Content(
-            parts=[Part.from_text(text="नमस्ते! आप कौन हैं?")],
-            role='user'
-        )]
-        await self._session.send_client_content(
-            turns=messages, turn_complete=True
-        )
-        self._ready_for_realtime_input = True
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
@@ -332,23 +318,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
             if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
             if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
 
-    async def _create_initial_response(self, for_reconnect: bool = False):
-        if self._disconnecting:
-            return
-        if not self._session:
-            self._run_llm_when_session_ready = True
-            return
 
-        logger.info("Triggering initial response in Hindi for AI Studio model...")
-        from google.genai.types import Content, Part
-        messages = [Content(
-            parts=[Part.from_text(text="नमस्ते! आप कौन हैं?")],
-            role='user'
-        )]
-        await self._session.send_client_content(
-            turns=messages, turn_complete=True
-        )
-        self._ready_for_realtime_input = True
 
 
 
@@ -555,8 +525,23 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         user_params=user_params
     )
 
+    async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
+        logger.info(f"[UserIdleProcessor] User idle detected, retry count: {retry_count}")
+        if retry_count < 4:
+            prompts = {
+                1: "ask me if I am able to hear you",
+                2: "ask me if I am still here",
+                3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
+            }
+            # Call Gemini Live session directly to trigger a response
+            await llm._create_single_response([{"role": "user", "content": prompts[retry_count]}])
+            return True
+        await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+        return False
+
     pipeline = Pipeline([
         transport.input(),
+        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
@@ -583,6 +568,70 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     await PipelineRunner(handle_sigint=False).run(task)
 
+
+class UserIdleProcessor(FrameProcessor):
+    def __init__(self, callback, timeout: float = 10.0):
+        super().__init__()
+        self.callback = callback
+        self.timeout = timeout
+        self.retry_count = 0
+        self.timer_task = None
+        self.last_activity = time.monotonic()
+        self._bot_speaking = False
+
+    async def _idle_timer(self):
+        try:
+            while True:
+                await asyncio.sleep(0.2) # tick faster for sub-second precision
+                if self._bot_speaking:
+                    self.last_activity = time.monotonic()
+                    continue
+                if time.monotonic() - self.last_activity >= self.timeout:
+                    self.retry_count += 1
+                    logger.info(f"[UserIdleProcessor] Idle timeout fired, retry_count={self.retry_count}")
+                    should_continue = await self.callback(self, self.retry_count)
+                    if not should_continue:
+                        break
+                    self.last_activity = time.monotonic()
+        except asyncio.CancelledError:
+            pass
+
+    async def start_timer(self):
+        self.cancel_timer()
+        self.last_activity = time.monotonic()
+        self.timer_task = asyncio.create_task(self._idle_timer())
+
+    def cancel_timer(self):
+        if self.timer_task:
+            self.timer_task.cancel()
+            self.timer_task = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, StartFrame):
+            await self.start_timer()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            self.cancel_timer()
+
+        # Handle bot speaking status boundaries to suspend/resume silence timer
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+            self.last_activity = time.monotonic()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self.last_activity = time.monotonic()
+            logger.info(f"[UserIdleProcessor] Bot finished speaking. Starting 5-second silence countdown.")
+
+        # Reset timer ONLY on active speech activity (VAD or transcription/text frames)
+        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame)):
+            self.last_activity = time.monotonic()
+            # Reset the idle retry counter back to 0 if the user confirms they are active
+            if isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame)):
+                if self.retry_count > 0:
+                    logger.info(f"[UserIdleProcessor] User speech activity detected ({frame.name}). Resetting idle retry counter from {self.retry_count} to 0.")
+                self.retry_count = 0
+
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
 
 class LoggingSileroVADAnalyzer(SileroVADAnalyzer):
     def voice_confidence(self, buffer) -> float:
@@ -785,8 +834,23 @@ async def run_agent_twilio(websocket: WebSocket, stream_sid: str, system_instruc
         user_params=user_params
     )
 
+    async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
+        logger.info(f"[UserIdleProcessor] User idle detected, retry count: {retry_count}")
+        if retry_count < 4:
+            prompts = {
+                1: "ask me if I am able to hear you",
+                2: "ask me if I am still here",
+                3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
+            }
+            # Call Gemini Live session directly to trigger a response
+            await llm._create_single_response([{"role": "user", "content": prompts[retry_count]}])
+            return True
+        await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+        return False
+
     pipeline = Pipeline([
         transport.input(),
+        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
         context_aggregator.user(),
         llm,
         transport.output(),
