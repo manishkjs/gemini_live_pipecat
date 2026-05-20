@@ -251,7 +251,7 @@ async def run_agent(
 
     llm_location = "global" if "gemini-3" in llm_model else location
     llm_params = None
-    if llm_model in ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"]:
+    if llm_model in ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]:
         llm_params = GoogleVertexLLMService.InputParams(
             max_tokens=4096,
             extra={
