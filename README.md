@@ -178,8 +178,11 @@ gcloud run deploy <your-service-name> \
   --platform managed \
   --region <your-region> \
   --allow-unauthenticated \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=<your-gcp-project>"
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=<your-gcp-project>,GEMINI_API_KEY=<your-gemini-api-key>"
 ```
+
+> [!IMPORTANT]
+> In order for **Gemini Live 3.1 (AI Studio)** models to authenticate and connect successfully, you **must** pass your `GEMINI_API_KEY` inside the `--set-env-vars` parameter of the deploy command as shown above.
 
 How to run UI:
 
