@@ -1,6 +1,7 @@
 import os
 import websockets
 import json
+import asyncio
 from typing import Optional, List, Dict, Any
 from loguru import logger
 from fastapi import WebSocket
@@ -10,22 +11,39 @@ import time
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.filters.aic_filter import AICFilter
+
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import EndTaskFrame, Frame, InterruptionFrame, StartInterruptionFrame, CancelFrame, LLMMessagesAppendFrame, TextFrame, OutputTransportMessageFrame
+from pipecat.frames.frames import (
+    EndTaskFrame,
+    Frame,
+    InterruptionFrame,
+    CancelFrame,
+    LLMMessagesAppendFrame,
+    TextFrame,
+    OutputTransportMessageFrame,
+    StartFrame,
+    EndFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    TranscriptionFrame,
+    LLMRunFrame
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.processors.user_idle_processor import UserIdleProcessor
+# from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
 
 from google.genai.types import (
@@ -50,7 +68,7 @@ SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
-        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame, CancelFrame)):
+        if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None
         data = await super().serialize(frame)
         return data.encode("utf-8") if isinstance(data, str) else data
@@ -92,7 +110,7 @@ class GeminiSessionLoggerMixin:
         InterruptionFrame is only generated when the user actually interrupts
         ongoing audio playback, so it's a reliable signal.
         """
-        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
+        if isinstance(frame, InterruptionFrame):
             if not hasattr(self, '_repeat_on_filler_pending'):
                 self._repeat_on_filler_pending = False
             self._repeat_on_filler_pending = True
@@ -236,255 +254,106 @@ class GeminiSessionLoggerMixin:
 
     # ── Session ID & token usage logging ──────────────────────────────
 
-    async def _process_message(self, message):
+    async def _handle_session_ready(self, session):
+        await super()._handle_session_ready(session)
+        session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
+        if session_id:
+            logger.info(f"Session ID Established: {session_id}")
 
-        # Capture Session ID
-        if not getattr(self, '_session_id_logged', False):
-            session_id = None
-            if hasattr(message, 'session_resumption_update') and message.session_resumption_update:
-                session_id = message.session_resumption_update.new_handle
-            elif self._session: # Fallback to session object
-                 session_id = getattr(self._session, 'session_id', None) or getattr(self._session, 'id', None)
-            
-            if session_id:
-                self._session_id = session_id
-                logger.info(f"Session ID Established: {session_id}")
-                self._session_id_logged = True
-
-        # Log Token Usage
-        if hasattr(message, 'usage_metadata') and message.usage_metadata:
-            usage = message.usage_metadata
-            
-            def format_details(details):
-                if not details: return ""
-                return " (" + ", ".join([f"{d.modality}: {d.token_count}" for d in details]) + ")"
-
-            logger.info(
-                f"Turn Token Usage:\n"
-                f"  - Prompt: {getattr(usage, 'prompt_token_count', 0)}{format_details(getattr(usage, 'prompt_tokens_details', []))}\n"
-                f"  - Cached Content: {getattr(usage, 'cached_content_token_count', 0)}{format_details(getattr(usage, 'cache_tokens_details', []))}\n"
-                f"  - Response: {getattr(usage, 'response_token_count', 0)}{format_details(getattr(usage, 'response_tokens_details', []))}\n"
-                f"  - Tool Use Prompt: {getattr(usage, 'tool_use_prompt_token_count', 0)}{format_details(getattr(usage, 'tool_use_prompt_tokens_details', []))}\n"
-                f"  - Thoughts: {getattr(usage, 'thoughts_token_count', 0)}\n"
-                f"  - Total: {getattr(usage, 'total_token_count', 0)}"
-            )
-
-            # Metric Streaming: Token Usage
-            usage_dict = {
-                "prompt_token_count": getattr(usage, 'prompt_token_count', 0),
-                "response_token_count": getattr(usage, 'response_token_count', 0),
-                "total_token_count": getattr(usage, 'total_token_count', 0),
-            }
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'usage', 'usage': usage_dict}
-                }
-            }))
-
-        # Standard Processing
-        self._check_and_reset_failure_counter()
+    async def _handle_msg_usage_metadata(self, message):
+        await super()._handle_msg_usage_metadata(message)
         
-        if message.server_content:
-            if hasattr(message.server_content, "activity_end") and message.server_content.activity_end:
-                logger.info("Activity End received from server (User stopped speaking)")
-                
-            if message.server_content.model_turn:
-                logger.info("Model Turn detected")
-                await self._handle_msg_model_turn(message)
-            
-            if message.server_content.turn_complete:
-                logger.info("Turn Complete received from server")
-                await self._handle_msg_turn_complete(message)
-                # Metric Streaming: Turn Count
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'turn_complete'}
-                    }
-                }))
-
-                # usage_metadata is often attached to turn_complete message
-                if message.usage_metadata:
-                    await self._handle_msg_usage_metadata(message)
-            
-            if message.server_content.input_transcription:
-                logger.debug(f"Input Transcription: {message.server_content.input_transcription.text}")
-                await self._handle_msg_input_transcription(message)
-            
-            if message.server_content.output_transcription:
-                await self._handle_msg_output_transcription(message)
-            
-            if message.server_content.grounding_metadata:
-                await self._handle_msg_grounding_metadata(message)
-                
-        elif message.tool_call:
-            # Metric Streaming: Tool Call
-            tool_calls = []
-            if hasattr(message.tool_call, 'function_calls'):
-                for fc in message.tool_call.function_calls:
-                     tool_calls.append({"name": fc.name, "args": fc.args})
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'tool_call', 'tool': tool_calls}
-                }
-            }))
-            
-            await self._handle_msg_tool_call(message)
-        elif message.session_resumption_update:
-            self._handle_msg_resumption_update(message)
-
-    async def _connect(self, session_resumption_handle: Optional[str] = None):
-        """Establish client connection to Gemini Live API."""
-        if self._session:
+        if not message.usage_metadata:
             return
+            
+        usage = message.usage_metadata
+        
+        # Log token usage in logs
+        def format_details(details):
+            if not details: return ""
+            return " (" + ", ".join([f"{d.modality}: {d.token_count}" for d in details]) + ")"
 
-        if session_resumption_handle:
-            logger.info(
-                f"Connecting to Gemini service with session_resumption_handle: {session_resumption_handle}"
-            )
-        else:
-            logger.info("Connecting to Gemini service")
-        try:
-            # Assemble basic configuration
-            modalities = self._settings["modalities"]
-            has_audio = modalities == GeminiModalities.AUDIO
+        logger.info(
+            f"Turn Token Usage:\n"
+            f"  - Prompt: {getattr(usage, 'prompt_token_count', 0)}{format_details(getattr(usage, 'prompt_tokens_details', []))}\n"
+            f"  - Cached Content: {getattr(usage, 'cached_content_token_count', 0)}{format_details(getattr(usage, 'cache_tokens_details', []))}\n"
+            f"  - Response: {getattr(usage, 'response_token_count', 0)}{format_details(getattr(usage, 'response_tokens_details', []))}\n"
+            f"  - Tool Use Prompt: {getattr(usage, 'tool_use_prompt_token_count', 0)}{format_details(getattr(usage, 'tool_use_prompt_tokens_details', []))}\n"
+            f"  - Thoughts: {getattr(usage, 'thoughts_token_count', 0)}\n"
+            f"  - Total: {getattr(usage, 'total_token_count', 0)}"
+        )
 
-            generation_config_params = {
-                "frequency_penalty": self._settings["frequency_penalty"],
-                "max_output_tokens": self._settings["max_tokens"],
-                "presence_penalty": self._settings["presence_penalty"],
-                "temperature": self._settings["temperature"],
-                "top_k": self._settings["top_k"],
-                "top_p": self._settings["top_p"],
-                "response_modalities": [Modality(modalities.value)],
-                "media_resolution": MediaResolution(self._settings["media_resolution"].value),
+        # Stream token usage downstream to client
+        prompt_details = {}
+        if hasattr(usage, 'prompt_tokens_details') and usage.prompt_tokens_details:
+            for d in usage.prompt_tokens_details:
+                prompt_details[d.modality.lower()] = d.token_count
+
+        response_details = {}
+        if hasattr(usage, 'response_tokens_details') and usage.response_tokens_details:
+            for d in usage.response_tokens_details:
+                response_details[d.modality.lower()] = d.token_count
+
+        usage_dict = {
+            "prompt_token_count": getattr(usage, 'prompt_token_count', 0),
+            "response_token_count": getattr(usage, 'response_token_count', 0),
+            "total_token_count": getattr(usage, 'total_token_count', 0),
+            "prompt_details": prompt_details,
+            "response_details": response_details
+        }
+        
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {
+                    'type': 'usage',
+                    'usage': usage_dict
+                }
             }
+        }))
 
-            if has_audio:
-                generation_config_params["speech_config"] = SpeechConfig(
-                    voice_config=VoiceConfig(
-                        prebuilt_voice_config={"voice_name": self._voice_id}
-                    ),
-                    language_code=self._settings["language"],
-                )
+    async def _handle_msg_turn_complete(self, message):
+        await super()._handle_msg_turn_complete(message)
+        
+        # Metric Streaming: Turn Complete
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'turn_complete'}
+            }
+        }))
 
-            config = LiveConnectConfig(
-                generation_config=GenerationConfig(**generation_config_params),
-                input_audio_transcription=AudioTranscriptionConfig(),
-                # session_resumption=SessionResumptionConfig(handle=session_resumption_handle),
-            )
+    async def _handle_msg_tool_call(self, message):
+        # Metric Streaming: Tool Call
+        tool_calls = []
+        if hasattr(message.tool_call, 'function_calls'):
+            for fc in message.tool_call.function_calls:
+                 tool_calls.append({"name": fc.name, "args": fc.args})
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'tool_call', 'tool': tool_calls}
+            }
+        }))
+        
+        await super()._handle_msg_tool_call(message)
 
-            if has_audio:
-                config.output_audio_transcription = AudioTranscriptionConfig()
-
-            # Add context window compression to configuration, if enabled
-            if self._settings.get("context_window_compression", {}).get("enabled", False):
-                compression_config = ContextWindowCompressionConfig()
-
-                # Add sliding window (always true if compression is enabled)
-                compression_config.sliding_window = SlidingWindow()
-
-                # Add trigger_tokens if specified
-                trigger_tokens = self._settings.get("context_window_compression", {}).get(
-                    "trigger_tokens"
-                )
-                if trigger_tokens is not None:
-                    compression_config.trigger_tokens = trigger_tokens
-
-                config.context_window_compression = compression_config
-
-            # Add thinking configuration to configuration, if provided
-            if self._settings.get("thinking"):
-                config.thinking_config = self._settings["thinking"]
-
-            # Add affective dialog setting, if provided
-            if self._settings.get("enable_affective_dialog", False):
-                config.enable_affective_dialog = self._settings["enable_affective_dialog"]
-
-            # Add proactivity configuration to configuration, if provided
-            if self._settings.get("proactivity"):
-                config.proactivity = self._settings["proactivity"]
-
-            # Add VAD configuration to configuration, if provided
-            if self._settings.get("vad"):
-                vad_config = AutomaticActivityDetection()
-                vad_params = self._settings["vad"]
-                has_vad_settings = False
-
-                # Only add parameters that are explicitly set
-                if vad_params.disabled is not None:
-                    vad_config.disabled = vad_params.disabled
-                    has_vad_settings = True
-
-                if vad_params.start_sensitivity:
-                    vad_config.start_of_speech_sensitivity = vad_params.start_sensitivity
-                    has_vad_settings = True
-
-                if vad_params.end_sensitivity:
-                    vad_config.end_of_speech_sensitivity = vad_params.end_sensitivity
-                    has_vad_settings = True
-
-                if vad_params.prefix_padding_ms is not None:
-                    vad_config.prefix_padding_ms = vad_params.prefix_padding_ms
-                    has_vad_settings = True
-
-                if vad_params.silence_duration_ms is not None:
-                    vad_config.silence_duration_ms = vad_params.silence_duration_ms
-                    has_vad_settings = True
-
-                # Only add automatic_activity_detection if we have VAD settings
-                if has_vad_settings:
-                    config.realtime_input_config = RealtimeInputConfig(
-                        automatic_activity_detection=vad_config
-                    )
-
-            # Add system instruction to configuration, if provided
-            system_instruction = getattr(self, "_system_instruction", None) or ""
-            if self._context and hasattr(self._context, "extract_system_instructions"):
-                system_instruction += "\n" + self._context.extract_system_instructions()
-            if system_instruction:
-                logger.debug(f"Setting system instruction: {system_instruction}")
-                config.system_instruction = system_instruction
-
-            # Add tools to configuration, if provided
-            tools = getattr(self, "_tools", None)
-            if tools:
-                logger.debug(f"Setting tools: {tools}")
-                # Manually convert tools to Google format since ToolsSchema doesn't have to_google_tools
-                # and we don't have easy access to the adapter instance here
-                from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
-                adapter = GeminiLLMAdapter()
-                config.tools = adapter.to_provider_tools_format(tools)
-
-            self._connection_task = self.create_task(self._connection_task_handler(config))
-        except Exception as e:
-            logger.error(f"Error connecting to Gemini service: {e}")
-            raise e
-
-    async def _connection_task_handler(self, config: LiveConnectConfig):
-        async with self._client.aio.live.connect(model=self._model_name, config=config) as session:
-            logger.info("Connected to Gemini service")
-            self._connection_start_time = time.time()
-            await self._handle_session_ready(session)
-
-            while True:
-                try:
-                    turn = self._session.receive()
-                    async for message in turn:
-                        await self._process_message(message)
-                except Exception as e:
-                    if not self._disconnecting and await self._handle_connection_error(e):
-                        await self._reconnect()
-                        return
-                    break
+    async def _connection_task_handler(self, config):
+        from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+        if isinstance(self, GeminiLiveVertexLLMService):
+            # Set transcription language to match the session's configured language (Vertex AI Enterprise only)
+            from google.genai.types import AudioTranscriptionConfig
+            lang_code = getattr(self, "_language_code", "en-US")
+            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
+            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
+        
+        await super()._connection_task_handler(config)
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
@@ -505,22 +374,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
             if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
             if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
 
-    async def _create_initial_response(self):
-        if self._disconnecting:
-            return
-        if not self._session:
-            self._run_llm_when_session_ready = True
-            return
 
-        logger.info("Triggering initial response in Hindi for AI Studio model...")
-        from google.genai.types import Content, Part
-        messages = [Content(
-            parts=[Part.from_text(text="नमस्ते! बातचीत शुरू करें।")],
-            role='user'
-        )]
-        await self._session.send_client_content(
-            turns=messages, turn_complete=True
-        )
 
 
 
@@ -528,6 +382,70 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 async def dynamic_tool_handler(params: FunctionCallParams):
     logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
     await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
+
+class UserIdleProcessor(FrameProcessor):
+    def __init__(self, callback, timeout: float = 10.0):
+        super().__init__()
+        self.callback = callback
+        self.timeout = timeout
+        self.retry_count = 0
+        self.timer_task = None
+        self.last_activity = time.monotonic()
+        self._bot_speaking = False
+
+    async def _idle_timer(self):
+        try:
+            while True:
+                await asyncio.sleep(0.2) # tick faster for sub-second precision
+                if self._bot_speaking:
+                    self.last_activity = time.monotonic()
+                    continue
+                if time.monotonic() - self.last_activity >= self.timeout:
+                    self.retry_count += 1
+                    logger.info(f"[UserIdleProcessor] Idle timeout fired, retry_count={self.retry_count}")
+                    should_continue = await self.callback(self, self.retry_count)
+                    if not should_continue:
+                        break
+                    self.last_activity = time.monotonic()
+        except asyncio.CancelledError:
+            pass
+
+    async def start_timer(self):
+        self.cancel_timer()
+        self.last_activity = time.monotonic()
+        self.timer_task = asyncio.create_task(self._idle_timer())
+
+    def cancel_timer(self):
+        if self.timer_task:
+            self.timer_task.cancel()
+            self.timer_task = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, StartFrame):
+            await self.start_timer()
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            self.cancel_timer()
+
+        # Handle bot speaking status boundaries to suspend/resume silence timer
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+            self.last_activity = time.monotonic()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self.last_activity = time.monotonic()
+            logger.info(f"[UserIdleProcessor] Bot finished speaking. Starting silence countdown.")
+
+        # Reset timer ONLY on active speech activity (VAD or transcription/text frames)
+        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame)):
+            self.last_activity = time.monotonic()
+            # Reset the idle retry counter back to 0 if the user confirms they are active
+            if isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame)):
+                if self.retry_count > 0:
+                    logger.info(f"[UserIdleProcessor] User speech activity detected ({frame.name}). Resetting idle retry counter from {self.retry_count} to 0.")
+                self.retry_count = 0
+
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
 
 async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
@@ -555,7 +473,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
-            audio_filter=AICFilter(),
+            audio_filter=None,
         )
     )
 
@@ -612,31 +530,43 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
     
-    common_params = {
-        "system_instruction": prompt_text, "tools": tools_schema, "transcribe_model_audio": True,
-        "params": InputParams(language=pipecat_language, modalities=llm_modalities)
-    }
-
-    if model == "gemini-2.5-flash-native-audio-eap-11-2025":
-        common_params["http_options"] = HttpOptions(api_version="v1beta")
+    voice_name = "Zephyr" if (model == "gemini-3.1-flash-live-preview" and not use_external_tts) else (voice if not use_external_tts else None)
 
     if model == "gemini-3.1-flash-live-preview":
+        settings = GeminiLiveLLMService.Settings(
+            model=f"models/{model}",
+            system_instruction=prompt_text,
+            voice=voice_name,
+            language=pipecat_language,
+            modalities=llm_modalities
+        )
         ai_studio_params = {
-            **common_params, 
-            "api_key": os.getenv("GEMINI_API_KEY"), 
-            "model": f"models/{model}",
+            "api_key": os.getenv("GEMINI_API_KEY"),
+            "tools": tools_schema,
+            "transcribe_model_audio": True,
+            "settings": settings,
             "http_options": HttpOptions(api_version="v1beta")
         }
-        if not use_external_tts:
-            # Use Zephyr as requested by user for this model
-            ai_studio_params["voice_id"] = "Zephyr"
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
-        vertex_params = {**common_params, "project_id": project_id, "location": location, "model": f"google/{model}"}
+        settings = GeminiLiveVertexLLMService.Settings(
+            model=f"google/{model}",
+            system_instruction=prompt_text,
+            voice=voice_name,
+            language=pipecat_language,
+            modalities=llm_modalities
+        )
+        vertex_params = {
+            "project_id": project_id,
+            "location": location,
+            "tools": tools_schema,
+            "transcribe_model_audio": True,
+            "settings": settings
+        }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if not use_external_tts and voice:
-            vertex_params["voice_id"] = voice
+        if model == "gemini-2.5-flash-native-audio-eap-11-2025":
+            vertex_params["http_options"] = HttpOptions(api_version="v1beta")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
@@ -646,7 +576,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if tool.name != "get_current_time":
             llm.register_function(tool.name, dynamic_tool_handler)
 
-    context_aggregator = llm.create_context_aggregator(OpenAILLMContext())
+    initial_greeting = "नमस्ते!" if language == "hi-IN" else "Hello!"
+    context_aggregator = LLMContextAggregatorPair(LLMContext(messages=[{"role": "user", "content": initial_greeting}]))
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
         logger.info(f"User idle detected, retry count: {retry_count}")
@@ -682,7 +613,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Pipecat Client connected")
-        await task.queue_frames([context_aggregator.user()._get_context_frame()])
+        await task.queue_frames([context_aggregator.user()._get_context_frame(), LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

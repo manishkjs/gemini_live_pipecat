@@ -4,7 +4,6 @@ from pipecat.frames.frames import (
     Frame,
     TextFrame,
     InterruptionFrame,
-    StartInterruptionFrame,
     LLMMessagesAppendFrame,
     LLMFullResponseEndFrame,
     TranscriptionFrame,
@@ -35,7 +34,7 @@ class RepeatOnInterruptionProcessor(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Detect interruption BEFORE super() cancels the task queue
-        if isinstance(frame, (InterruptionFrame, StartInterruptionFrame)):
+        if isinstance(frame, InterruptionFrame):
             if self._current_response:
                 self._was_interrupted = True
                 logger.info(

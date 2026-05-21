@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 from typing import Optional
 import re
 from loguru import logger
@@ -8,17 +9,18 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_response import LLMUserContextAggregator, LLMAssistantContextAggregator
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+# Obsolete context aggregator imports removed
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.google.llm import GoogleLLMService
-from pipecat.services.google.llm_vertex import GoogleVertexLLMService
-from pipecat.processors.transcript_processor import TranscriptProcessor
+from pipecat.services.google.vertex.llm import GoogleVertexLLMService
+
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, StartInterruptionFrame, CancelFrame,
-                                   TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame)
+from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
+                                   TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.transcriptions.language import Language
@@ -31,7 +33,7 @@ from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        if isinstance(frame, (StartInterruptionFrame, CancelFrame)):
+        if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None  # Don't serialize these frames
         return await super().serialize(frame)
 
@@ -39,7 +41,13 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
 class CustomVertexGeminiTTSService(GeminiTTSService):
     def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-2.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
         # Pass a dummy API key since we're using Vertex.
-        super().__init__(api_key="dummy", voice_id=voice_id, model=model, **kwargs)
+        settings = GeminiTTSService.Settings(
+            voice=voice_id,
+            model=model,
+            prompt=voice_prompt,
+            language=language_code or "en-US"
+        )
+        super().__init__(api_key="dummy", settings=settings, **kwargs)
         self._client = genai.Client(vertexai=True, project=project_id, location=location)
         self._voice_prompt = voice_prompt
         self._language_code = language_code
@@ -63,13 +71,13 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
             }))
             self._my_ttfb_start = None
 
-    async def run_tts(self, text: str):
+    async def run_tts(self, text: str, context_id: str):
         logger.debug(f"{self}: Generating TTS [{text}]")
         try:
             await self.start_ttfb_metrics()
 
             speech_config = types.SpeechConfig(
-                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._voice_id)),
+                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),
                 language_code=self._language_code
             )
             generate_content_config = types.GenerateContentConfig(
@@ -100,7 +108,7 @@ Aria is a professional and empathetic voice assistant designed to sound like a r
 """
 
             async for chunk in await self._client.aio.models.generate_content_stream(
-                model=self._model, contents=structured_prompt, config=generate_content_config,
+                model=self._settings.model, contents=structured_prompt, config=generate_content_config,
             ):
                 if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
                     continue
@@ -160,6 +168,33 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
             }))
             self._my_ttfb_start = None
 
+    async def start_llm_usage_metrics(self, metrics):
+        await super().start_llm_usage_metrics(metrics)
+        
+        prompt_tokens = getattr(metrics, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(metrics, "completion_tokens", 0) or 0
+        total_tokens = getattr(metrics, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+        
+        logger.info(f"LLM Token Usage: Prompt: {prompt_tokens}, Response: {completion_tokens}, Total: {total_tokens}")
+        
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {
+                    'type': 'usage',
+                    'usage': {
+                        "prompt_token_count": prompt_tokens,
+                        "response_token_count": completion_tokens,
+                        "total_token_count": total_tokens,
+                        "prompt_details": {"text": prompt_tokens},
+                        "response_details": {"text": completion_tokens}
+                    }
+                }
+            }
+        }))
+
 
 class TranscriptionBroadcaster(FrameProcessor):
     def __init__(self, participant: str):
@@ -198,9 +233,9 @@ class ContextLogger(FrameProcessor):
         self.logger_name = logger_name
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
-        if isinstance(frame, OpenAILLMContextFrame):
-            logger.info(f"ContextLogger [{self.logger_name}]: Received OpenAILLMContextFrame")
+        from pipecat.frames.frames import LLMContextFrame
+        if isinstance(frame, LLMContextFrame):
+            logger.info(f"ContextLogger [{self.logger_name}]: Received LLMContextFrame")
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
 
@@ -236,7 +271,7 @@ async def run_agent(
         stt = GoogleSTTService(
             vertexai_project=project_id,
             location=stt_location,
-            params=GoogleSTTService.InputParams(
+            settings=GoogleSTTService.Settings(
                 languages=[Language(lang) for lang in stt_language.split(',')] if stt_language else [Language("en-US")],
                 model=stt_model,
                 enable_interim_results=True,
@@ -251,23 +286,20 @@ async def run_agent(
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
 
     llm_location = "global" if "gemini-3" in llm_model else location
-    llm_params = None
+    
+    thinking_config = None
     if llm_model in ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]:
-        llm_params = GoogleVertexLLMService.InputParams(
-            max_tokens=4096,
-            extra={
-                "thinking_config": {
-                    "thinking_level": "minimal"
-                }
-            }
-        )
+        thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
 
     llm = CustomGoogleVertexLLMService(
         project_id=project_id,
         location=llm_location,
-        model=llm_model,
-        system_instruction=final_system_instruction,
-        params=llm_params
+        settings=GoogleVertexLLMService.Settings(
+            model=llm_model,
+            system_instruction=final_system_instruction,
+            max_tokens=1024 if thinking_config else 4096,
+            thinking=thinking_config
+        )
     )
 
     if tts_model.startswith("gemini"):
@@ -280,7 +312,8 @@ async def run_agent(
             model=tts_model, # Use the conditionally passed model
             sample_rate=24000, 
             voice_prompt=tts_voice_prompt,
-            language_code=stt_language.lower() if stt_language else None
+            language_code=stt_language.lower() if stt_language else None,
+            text_filters=[MarkdownTextFilter()]
         )
     elif tts_voice in ["Custom-Male", "Custom-Female"]:
         # For cloned voices, use en-US as the base language code
@@ -330,14 +363,18 @@ async def run_agent(
         from processors.audio_accumulator import AudioAccumulator
         from pipecat.frames.frames import LLMContextFrame
         context = GoogleLLMContext()
-        context.set_messages([{"role": "system", "content": final_system_instruction}])
+        initial_greeting = "नमस्ते!" if stt_language and "hi-IN" in stt_language else "Hello!"
+        context.set_messages([
+            {"role": "system", "content": final_system_instruction},
+            {"role": "user", "content": initial_greeting}
+        ])
         stt_languages = [lang.strip() for lang in stt_language.split(',')] if stt_language else ["en-US"]
         accumulator = AudioAccumulator(
             context,
             project_id=project_id,
             stt_languages=stt_languages,
         )
-        context_aggregator = llm.create_context_aggregator(context)
+        context_aggregator = LLMContextAggregatorPair(context)
 
         pipeline_elements = [
             transport.input(),
@@ -349,21 +386,21 @@ async def run_agent(
             transport.output()
         ]
     else:
-        context = OpenAILLMContext(messages=[{"role": "system", "content": final_system_instruction}])
-        context_aggregator = llm.create_context_aggregator(context)
-        transcript = TranscriptProcessor()
-        
+        initial_greeting = "नमस्ते!" if stt_language and "hi-IN" in stt_language else "Hello!"
+        context = LLMContext(messages=[
+            {"role": "system", "content": final_system_instruction},
+            {"role": "user", "content": initial_greeting}
+        ])
+        context_aggregator = LLMContextAggregatorPair(context)
         pipeline_elements = [
             transport.input(),
             stt,
             TranscriptionBroadcaster(participant="User"),
-            transcript.user(),
             context_aggregator.user(),
             ContextLogger(logger_name="UserToLLM"),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
-            transcript.assistant(),
             context_aggregator.assistant(),
             transport.output()
         ]
@@ -383,9 +420,9 @@ async def run_agent(
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         if skip_stt:
-            await task.queue_frames([LLMContextFrame(context)])
+            await task.queue_frames([LLMContextFrame(context), LLMRunFrame()])
         else:
-            await task.queue_frames([context_aggregator.user()._get_context_frame()])
+            await task.queue_frames([context_aggregator.user()._get_context_frame(), LLMRunFrame()])
 
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
