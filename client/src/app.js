@@ -1,4 +1,4 @@
-import { RTVIClient, RTVIEvent, } from "@pipecat-ai/client-js";
+import { RTVIClient, RTVIEvent, RTVIMessage, } from "@pipecat-ai/client-js";
 import { WebSocketTransport } from "@pipecat-ai/websocket-transport";
 const getApiBaseUrl = () => {
     const host = window.location.hostname;
@@ -40,6 +40,7 @@ class WebsocketClientApp {
     tokenCount = 0;
     lastLLMLatency = null;
     lastTTSLatency = null;
+    lastTurnUsage = null;
     // Voice Data
     GEMINI_VOICES = [
         { value: "Puck", label: "Puck (Male)" },
@@ -127,6 +128,32 @@ class WebsocketClientApp {
         this.tabs?.forEach((tab) => {
             tab.addEventListener("click", () => this.switchTab(tab));
         });
+        const sttTrigger = document.getElementById("stt-language-trigger");
+        const sttOptions = document.getElementById("stt-language-container");
+        const sttDisplay = document.getElementById("stt-language-display");
+        sttTrigger?.addEventListener("click", () => {
+            sttOptions?.classList.toggle("active");
+        });
+        document.addEventListener("click", (e) => {
+            if (sttTrigger && !sttTrigger.contains(e.target) && sttOptions && !sttOptions.contains(e.target)) {
+                sttOptions.classList.remove("active");
+            }
+        });
+        const checkboxes = sttOptions?.querySelectorAll('input[type="checkbox"]');
+        checkboxes?.forEach((cb) => {
+            cb.addEventListener("change", () => {
+                const checked = Array.from(sttOptions?.querySelectorAll('input[type="checkbox"]:checked') || [])
+                    .map((c) => c.value);
+                if (sttDisplay) {
+                    sttDisplay.textContent = checked.length > 0 ? checked.join(", ") : "Select Languages";
+                }
+            });
+        });
+        const skipSttToggle = document.getElementById("skip-stt-toggle");
+        const sttTile = document.getElementById("stt-tile");
+        skipSttToggle?.addEventListener("change", () => {
+            sttTile?.classList.toggle("grayed-out", skipSttToggle.checked);
+        });
         const paceSlider = document.getElementById("tts-pace-slider");
         const paceValue = document.getElementById("tts-pace-value");
         if (paceSlider && paceValue) {
@@ -197,6 +224,9 @@ class WebsocketClientApp {
                 const option = document.createElement("option");
                 option.value = voice.value;
                 option.textContent = voice.label;
+                if (model.startsWith("gemini") && voice.value === "Kore") {
+                    option.selected = true;
+                }
                 ttsVoiceSelect.appendChild(option);
             });
         };
@@ -321,10 +351,20 @@ class WebsocketClientApp {
         if (lastBubble && lastBubble.classList.contains(role)) {
             const timestamp = lastBubble.querySelector(".timestamp");
             if (timestamp) {
-                timestamp.before(document.createTextNode(text));
+                const fullText = (lastBubble.getAttribute('data-text') || '') + text;
+                lastBubble.setAttribute('data-text', fullText);
+                const cleanText = fullText.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
+                const textNode = timestamp.previousSibling;
+                if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                    textNode.textContent = cleanText;
+                }
+                else {
+                    timestamp.before(document.createTextNode(cleanText));
+                }
             }
             else {
-                lastBubble.textContent += text;
+                const currentText = lastBubble.textContent || '';
+                lastBubble.textContent = (currentText + text).replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
             }
             if (ttft !== undefined && !lastBubble.querySelector(".ttft-latency")) {
                 const ttftEl = document.createElement("div");
@@ -341,7 +381,8 @@ class WebsocketClientApp {
         }
         const bubble = document.createElement("div");
         bubble.classList.add("chat-bubble", role);
-        bubble.textContent = text;
+        bubble.setAttribute('data-text', text);
+        bubble.textContent = text.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
         const timestamp = document.createElement("span");
         timestamp.classList.add("timestamp");
         timestamp.textContent = new Date().toLocaleTimeString();
@@ -359,29 +400,65 @@ class WebsocketClientApp {
         this.chatWindow.appendChild(bubble);
         this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
     }
+    replaceChatMessage(role, text) {
+        if (!this.chatWindow)
+            return;
+        const bubbles = this.chatWindow.querySelectorAll(`.chat-bubble.${role}`);
+        if (bubbles.length === 0)
+            return;
+        const lastBubble = bubbles[bubbles.length - 1];
+        lastBubble.setAttribute('data-text', text);
+        const timestamp = lastBubble.querySelector(".timestamp");
+        if (timestamp) {
+            const textNode = timestamp.previousSibling;
+            if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                textNode.textContent = text;
+            }
+            else {
+                timestamp.before(document.createTextNode(text));
+            }
+        }
+    }
     tryUpdateBubbleLatencies() {
         if (!this.chatWindow)
             return;
-        const lastBubble = this.chatWindow.lastElementChild;
-        if (lastBubble && lastBubble.classList.contains("bot")) {
-            let latencyEl = lastBubble.querySelector(".loop-latencies");
-            if (!latencyEl) {
-                latencyEl = document.createElement("div");
-                latencyEl.classList.add("loop-latencies");
-                latencyEl.style.fontStyle = "italic";
-                latencyEl.style.fontSize = "0.8em";
-                latencyEl.style.opacity = "0.7";
-                latencyEl.style.marginTop = "4px";
-                lastBubble.appendChild(latencyEl);
-            }
-            const parts = [];
-            if (this.lastLLMLatency !== null)
-                parts.push(`LLM: ${Math.round(this.lastLLMLatency * 1000)}ms`);
-            if (this.lastTTSLatency !== null)
-                parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
-            if (parts.length > 0) {
-                latencyEl.textContent = parts.join(" | ");
-            }
+        const botBubbles = this.chatWindow.querySelectorAll(".chat-bubble.bot");
+        if (botBubbles.length === 0)
+            return;
+        const lastBubble = botBubbles[botBubbles.length - 1];
+        let latencyEl = lastBubble.querySelector(".loop-latencies");
+        if (!latencyEl) {
+            latencyEl = document.createElement("div");
+            latencyEl.classList.add("loop-latencies");
+            latencyEl.style.fontStyle = "italic";
+            latencyEl.style.fontSize = "0.8em";
+            latencyEl.style.opacity = "0.7";
+            latencyEl.style.marginTop = "4px";
+            lastBubble.appendChild(latencyEl);
+        }
+        const parts = [];
+        if (this.lastLLMLatency !== null)
+            parts.push(`LLM: ${Math.round(this.lastLLMLatency * 1000)}ms`);
+        if (this.lastTTSLatency !== null)
+            parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
+        if (this.lastTurnUsage !== null) {
+            let detailsStr = `Tokens: ${this.lastTurnUsage.total_token_count}`;
+            const formatModality = (details) => {
+                if (!details)
+                    return "";
+                const list = [];
+                if (details.text)
+                    list.push(`Text: ${details.text}`);
+                if (details.audio)
+                    list.push(`Audio: ${details.audio}`);
+                return list.length > 0 ? ` (${list.join(", ")})` : "";
+            };
+            const promptStr = `Input: ${this.lastTurnUsage.prompt_token_count}${formatModality(this.lastTurnUsage.prompt_details)}`;
+            const responseStr = `Output: ${this.lastTurnUsage.response_token_count}${formatModality(this.lastTurnUsage.response_details)}`;
+            parts.push(`${detailsStr} [${promptStr} | ${responseStr}]`);
+        }
+        if (parts.length > 0) {
+            latencyEl.textContent = parts.join(" | ");
         }
     }
     handleServerMessage(message) {
@@ -392,8 +469,15 @@ class WebsocketClientApp {
             if (role === "user") {
                 this.lastLLMLatency = null;
                 this.lastTTSLatency = null;
+                this.lastTurnUsage = null;
             }
             this.appendChatMessage(role, text, ttft);
+        }
+        // Handle Transcription Replace (parallel STT updates the placeholder)
+        if (message.type === "transcription_replace") {
+            const { participant, text } = message;
+            const role = (participant === "User" || participant === "user") ? "user" : "bot";
+            this.replaceChatMessage(role, text);
         }
         // Handle Metrics
         // Case 1: OutputTransportMessageFrame format
@@ -414,11 +498,12 @@ class WebsocketClientApp {
                     this.log(`Tool Call: ${JSON.stringify(payload.tool)}`, "info");
                     break;
                 case "usage":
-                    if (payload.usage && payload.usage.total_token_count) {
-                        // Is this cumulative or per turn? Usually per turn.
-                        // But we want total for the session.
-                        // Wait, API usage is per turn. So I should accumulate.
-                        this.tokenCount += payload.usage.total_token_count;
+                    if (payload.usage) {
+                        this.lastTurnUsage = payload.usage;
+                        if (payload.usage.total_token_count) {
+                            this.tokenCount += payload.usage.total_token_count;
+                        }
+                        this.tryUpdateBubbleLatencies();
                     }
                     break;
                 case "llm_latency":
@@ -457,11 +542,12 @@ class WebsocketClientApp {
                         this.log(`Tool Call: ${JSON.stringify(data.tool)}`, "info");
                         break;
                     case "usage":
-                        if (data.usage && data.usage.total_token_count) {
-                            // Is this cumulative or per turn? Usually per turn.
-                            // But we want total for the session.
-                            // Wait, API usage is per turn. So I should accumulate.
-                            this.tokenCount += data.usage.total_token_count;
+                        if (data.usage) {
+                            this.lastTurnUsage = data.usage;
+                            if (data.usage.total_token_count) {
+                                this.tokenCount += data.usage.total_token_count;
+                            }
+                            this.tryUpdateBubbleLatencies();
                         }
                         break;
                 }
@@ -534,6 +620,8 @@ class WebsocketClientApp {
             this.updateMicStatus("active");
             this.listenBtn.disabled = true;
             this.stopBtn.disabled = false;
+            // Send the start trigger to start the bot greeting turn
+            this.rtviClient.sendMessage(new RTVIMessage("start_trigger", {}));
         }
     }
     stopListening() {
@@ -595,15 +683,19 @@ class WebsocketClientApp {
                 const ttsModelSelect = document.getElementById("tts-model-select");
                 const llmModelSelect = document.getElementById("llm-model-select");
                 const sttModelSelect = document.getElementById("stt-model-select");
-                const sttLanguageSelect = document.getElementById("stt-language-select");
+                const sttLanguageContainer = document.getElementById("stt-language-container");
                 const systemInstructionsTextarea = document.getElementById("tts-llm-stt-system-instructions-textarea");
                 const paceSlider = document.getElementById("tts-pace-slider");
+                const skipSttToggle = document.getElementById("skip-stt-toggle");
                 connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
                 connectUrl += `&tts_model=${ttsModelSelect.value}`;
                 connectUrl += `&tts_pace=${paceSlider.value}`;
                 connectUrl += `&llm_model=${llmModelSelect.value}`;
                 connectUrl += `&stt_model=${sttModelSelect.value}`;
-                connectUrl += `&stt_language=${sttLanguageSelect.value}`;
+                connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
+                const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
+                    .map((cb) => cb.value);
+                connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
                 systemInstructions = systemInstructionsTextarea.value;
             }
             else {
@@ -726,8 +818,10 @@ class WebsocketClientApp {
         }
     }
 }
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
     window.WebsocketClientApp = WebsocketClientApp;
     const app = new WebsocketClientApp();
-    app.loadSystemPrompt();
+    await app.loadSystemPrompt();
+    // Auto-connect to backend on page load
+    await app.connect();
 });

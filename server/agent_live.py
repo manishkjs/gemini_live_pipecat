@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
     LLMMessagesAppendFrame,
     TextFrame,
     OutputTransportMessageFrame,
+    InputTransportMessageFrame,
     StartFrame,
     EndFrame,
     UserStartedSpeakingFrame,
@@ -447,6 +448,26 @@ class UserIdleProcessor(FrameProcessor):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
 
+
+class StartTriggerProcessor(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self.triggered = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, InputTransportMessageFrame):
+            message = frame.message
+            if isinstance(message, dict) and message.get("type") == "start_trigger":
+                if not self.triggered:
+                    self.triggered = True
+                    logger.info("[StartTriggerProcessor] start_trigger received. Queueing greeting turn.")
+                    await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": "Hello!"}]))
+                    await self.push_frame(LLMRunFrame())
+                return
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+
 async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -595,6 +616,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     pipeline = Pipeline([
         transport.input(),
+        StartTriggerProcessor(),
         UserIdleProcessor(callback=handle_user_idle, timeout=10.0),
         context_aggregator.user(),
         llm,
@@ -613,7 +635,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Pipecat Client connected")
-        await task.queue_frames([context_aggregator.user()._get_context_frame(), LLMRunFrame()])
+        # Defer greeting until start_trigger message is received
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

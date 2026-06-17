@@ -2,6 +2,7 @@ import {
   RTVIClient,
   RTVIClientOptions,
   RTVIEvent,
+  RTVIMessage,
 } from "@pipecat-ai/client-js";
 import { WebSocketTransport } from "@pipecat-ai/websocket-transport";
 
@@ -690,6 +691,9 @@ class WebsocketClientApp {
       this.updateMicStatus("active");
       this.listenBtn!.disabled = true;
       this.stopBtn!.disabled = false;
+      
+      // Send the start trigger to start the bot greeting turn
+      this.rtviClient.sendMessage(new RTVIMessage("start_trigger", {}));
     }
   }
 
@@ -930,8 +934,11 @@ declare global {
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
   window.WebsocketClientApp = WebsocketClientApp;
   const app = new WebsocketClientApp();
-  app.loadSystemPrompt();
+  await app.loadSystemPrompt();
+  
+  // Auto-connect to backend on page load
+  await app.connect();
 });
