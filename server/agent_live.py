@@ -468,7 +468,7 @@ class StartTriggerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None):
+async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = False, context_compression_trigger_tokens: Optional[int] = None):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -553,13 +553,20 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     
     voice_name = "Zephyr" if (model == "gemini-3.1-flash-live-preview" and not use_external_tts) else (voice if not use_external_tts else None)
 
+    cwc = {}
+    if context_compression:
+        cwc["enabled"] = True
+        if context_compression_trigger_tokens is not None:
+            cwc["trigger_tokens"] = context_compression_trigger_tokens
+
     if model == "gemini-3.1-flash-live-preview":
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{model}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
-            modalities=llm_modalities
+            modalities=llm_modalities,
+            context_window_compression=cwc
         )
         ai_studio_params = {
             "api_key": os.getenv("GEMINI_API_KEY"),
@@ -575,7 +582,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
-            modalities=llm_modalities
+            modalities=llm_modalities,
+            context_window_compression=cwc
         )
         vertex_params = {
             "project_id": project_id,

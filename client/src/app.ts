@@ -184,6 +184,15 @@ class WebsocketClientApp {
       sttTile?.classList.toggle("grayed-out", skipSttToggle.checked);
     });
 
+    const contextCompressionToggle = document.getElementById("context-compression-toggle") as HTMLInputElement;
+    const compressionTokensContainer = document.getElementById("compression-tokens-container");
+
+    contextCompressionToggle?.addEventListener("change", () => {
+      if (compressionTokensContainer) {
+        compressionTokensContainer.style.display = contextCompressionToggle.checked ? "block" : "none";
+      }
+    });
+
     const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
     const paceValue = document.getElementById("tts-pace-value");
     if (paceSlider && paceValue) {
@@ -813,11 +822,22 @@ class WebsocketClientApp {
           "live-tts-pace-slider"
         ) as HTMLInputElement;
 
+        const contextCompressionToggle = document.getElementById(
+          "context-compression-toggle"
+        ) as HTMLInputElement;
+        const compressionTokensInput = document.getElementById(
+          "compression-tokens-input"
+        ) as HTMLInputElement;
+
         connectUrl += `&model=${geminiModelSelect.value}`;
         connectUrl += `&voice=${geminiVoiceSelect.value}`;
         connectUrl += `&language=${geminiLanguageSelect.value}`;
         connectUrl += `&tts=${ttsToggle.checked}`;
         connectUrl += `&tts_pace=${livePaceSlider.value}`;
+        connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
+        if (contextCompressionToggle?.checked && compressionTokensInput?.value.trim()) {
+          connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
+        }
         systemInstructions = geminiSystemInstructionsTextarea.value;
       }
 

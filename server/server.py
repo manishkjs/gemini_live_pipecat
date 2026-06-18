@@ -104,6 +104,8 @@ async def websocket_endpoint(
     stt_language: str = "en-US",
     tools: Optional[str] = None,
     skip_stt: bool = False,
+    context_compression: bool = False,
+    context_compression_trigger_tokens: Optional[int] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -118,6 +120,8 @@ async def websocket_endpoint(
                 tts=tts,
                 tts_pace=tts_pace,
                 tools=tools,
+                context_compression=context_compression,
+                context_compression_trigger_tokens=context_compression_trigger_tokens,
             )
         elif bot_type == "tts-llm-stt":
             await run_agent(
@@ -168,6 +172,20 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                     query_params += f"&tools={encoded_tools}"
                 else:
                     query_params = f"tools={encoded_tools}"
+
+            if "context_compression" in body:
+                val = "true" if body["context_compression"] else "false"
+                if query_params:
+                    query_params += f"&context_compression={val}"
+                else:
+                    query_params = f"context_compression={val}"
+
+            if "context_compression_trigger_tokens" in body:
+                val = str(body["context_compression_trigger_tokens"])
+                if query_params:
+                    query_params += f"&context_compression_trigger_tokens={val}"
+                else:
+                    query_params = f"context_compression_trigger_tokens={val}"
 
     except Exception:
         # Body is not JSON or is empty, so we just ignore it

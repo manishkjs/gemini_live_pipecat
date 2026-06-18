@@ -154,6 +154,13 @@ class WebsocketClientApp {
         skipSttToggle?.addEventListener("change", () => {
             sttTile?.classList.toggle("grayed-out", skipSttToggle.checked);
         });
+        const contextCompressionToggle = document.getElementById("context-compression-toggle");
+        const compressionTokensContainer = document.getElementById("compression-tokens-container");
+        contextCompressionToggle?.addEventListener("change", () => {
+            if (compressionTokensContainer) {
+                compressionTokensContainer.style.display = contextCompressionToggle.checked ? "block" : "none";
+            }
+        });
         const paceSlider = document.getElementById("tts-pace-slider");
         const paceValue = document.getElementById("tts-pace-value");
         if (paceSlider && paceValue) {
@@ -705,11 +712,17 @@ class WebsocketClientApp {
                 const geminiSystemInstructionsTextarea = document.getElementById("system-instructions-textarea");
                 const ttsToggle = document.getElementById("tts-toggle");
                 const livePaceSlider = document.getElementById("live-tts-pace-slider");
+                const contextCompressionToggle = document.getElementById("context-compression-toggle");
+                const compressionTokensInput = document.getElementById("compression-tokens-input");
                 connectUrl += `&model=${geminiModelSelect.value}`;
                 connectUrl += `&voice=${geminiVoiceSelect.value}`;
                 connectUrl += `&language=${geminiLanguageSelect.value}`;
                 connectUrl += `&tts=${ttsToggle.checked}`;
                 connectUrl += `&tts_pace=${livePaceSlider.value}`;
+                connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
+                if (contextCompressionToggle?.checked && compressionTokensInput?.value.trim()) {
+                    connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
+                }
                 systemInstructions = geminiSystemInstructionsTextarea.value;
             }
             if (systemInstructions) {
