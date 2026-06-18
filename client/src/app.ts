@@ -53,6 +53,7 @@ class WebsocketClientApp {
   private lastLLMLatency: number | null = null;
   private lastTTSLatency: number | null = null;
   private lastTurnUsage: any = null;
+  private lastPromptTokenCount = 0;
 
   // Voice Data
   private readonly GEMINI_VOICES = [
@@ -399,6 +400,7 @@ class WebsocketClientApp {
       this.interruptCount = 0;
       this.toolCallCount = 0;
       this.tokenCount = 0;
+      this.lastPromptTokenCount = 0;
       this.updateMetricDisplay();
       if (this.chatWindow) this.chatWindow.innerHTML = "";
   }
@@ -573,6 +575,14 @@ class WebsocketClientApp {
               case "usage":
                   if (payload.usage) {
                       this.lastTurnUsage = payload.usage;
+                      const promptTokens = payload.usage.prompt_token_count || 0;
+                      if (this.lastPromptTokenCount > 0 && promptTokens < this.lastPromptTokenCount) {
+                          const diff = this.lastPromptTokenCount - promptTokens;
+                          this.log(`Context compression triggered! Prompt tokens reduced by ${diff} (from ${this.lastPromptTokenCount} to ${promptTokens}).`, "warning");
+                          this.appendChatMessage("bot", `[System Notice: Context window compressed! History reduced by ${diff} tokens to optimize performance.]`);
+                      }
+                      this.lastPromptTokenCount = promptTokens;
+
                       if (payload.usage.total_token_count) {
                           this.tokenCount += payload.usage.total_token_count;
                       }
@@ -618,6 +628,14 @@ class WebsocketClientApp {
                   case "usage":
                       if (data.usage) {
                           this.lastTurnUsage = data.usage;
+                          const promptTokens = data.usage.prompt_token_count || 0;
+                          if (this.lastPromptTokenCount > 0 && promptTokens < this.lastPromptTokenCount) {
+                              const diff = this.lastPromptTokenCount - promptTokens;
+                              this.log(`Context compression triggered (fallback)! Prompt tokens reduced by ${diff} (from ${this.lastPromptTokenCount} to ${promptTokens}).`, "warning");
+                              this.appendChatMessage("bot", `[System Notice: Context window compressed! History reduced by ${diff} tokens to optimize performance.]`);
+                          }
+                          this.lastPromptTokenCount = promptTokens;
+
                           if (data.usage.total_token_count) {
                               this.tokenCount += data.usage.total_token_count;
                           }
