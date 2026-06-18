@@ -104,7 +104,7 @@ async def websocket_endpoint(
     stt_language: str = "en-US",
     tools: Optional[str] = None,
     skip_stt: bool = False,
-    context_compression: bool = False,
+    context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = None,
 ):
     await websocket.accept()
