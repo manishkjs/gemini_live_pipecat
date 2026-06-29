@@ -25,6 +25,11 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.transcriptions.language import Language
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.filters.krisp_viva_filter import KrispVivaFilter
+from pipecat.audio.turn.krisp_viva_turn import KrispVivaTurn
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.processors.aggregators.llm_context import LLMUserAggregatorParams
 from fastapi import WebSocket
 from google import genai
 from google.genai import types
@@ -262,6 +267,7 @@ async def run_agent(
             audio_out_enabled=True,
             vad_analyzer=SileroVADAnalyzer(),
             serializer=CustomProtobufSerializer(),
+            audio_filter=KrispVivaFilter(),
         ),
     )
 
@@ -374,7 +380,17 @@ async def run_agent(
             project_id=project_id,
             stt_languages=stt_languages,
         )
-        context_aggregator = LLMContextAggregatorPair(context)
+        context_aggregator = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[TurnAnalyzerUserTurnStopStrategy(
+                        turn_analyzer=KrispVivaTurn()
+                    )]
+                ),
+                vad_analyzer=SileroVADAnalyzer()
+            )
+        )
 
         pipeline_elements = [
             transport.input(),
@@ -391,7 +407,17 @@ async def run_agent(
             {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
         ])
-        context_aggregator = LLMContextAggregatorPair(context)
+        context_aggregator = LLMContextAggregatorPair(
+            context,
+            user_params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[TurnAnalyzerUserTurnStopStrategy(
+                        turn_analyzer=KrispVivaTurn()
+                    )]
+                ),
+                vad_analyzer=SileroVADAnalyzer()
+            )
+        )
         pipeline_elements = [
             transport.input(),
             stt,

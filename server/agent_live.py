@@ -18,6 +18,11 @@ from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputP
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.filters.krisp_viva_filter import KrispVivaFilter
+from pipecat.audio.turn.krisp_viva_turn import KrispVivaTurn
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.processors.aggregators.llm_context import LLMUserAggregatorParams
 
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
@@ -494,7 +499,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
             vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
-            audio_filter=None,
+            audio_filter=KrispVivaFilter(),
         )
     )
 
@@ -606,7 +611,18 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             llm.register_function(tool.name, dynamic_tool_handler)
 
     initial_greeting = "नमस्ते!" if language == "hi-IN" else "Hello!"
-    context_aggregator = LLMContextAggregatorPair(LLMContext(messages=[{"role": "user", "content": initial_greeting}]))
+    context = LLMContext(messages=[{"role": "user", "content": initial_greeting}])
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                stop=[TurnAnalyzerUserTurnStopStrategy(
+                    turn_analyzer=KrispVivaTurn()
+                )]
+            ),
+            vad_analyzer=SileroVADAnalyzer()
+        )
+    )
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
         logger.info(f"User idle detected, retry count: {retry_count}")

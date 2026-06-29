@@ -30,6 +30,14 @@ COPY server/voice_cloning_key_f.txt /app/voice_cloning_key_f.txt
 ENV CLONE_TTS_VOICE_KEY_MALE="/app/voice_cloning_key_m.txt"
 ENV CLONE_TTS_VOICE_KEY_FEMALE="/app/voice_cloning_key_f.txt"
 
+# Copy Krisp SDK wheel and models
+COPY server/dep/ /app/dep/
+RUN pip install /app/dep/krisp_audio-*.whl
+
+# Set Krisp environment variables
+ENV KRISP_VIVA_FILTER_MODEL_PATH="/app/dep/krisp-viva-tel-v2.kef"
+ENV KRISP_VIVA_TURN_MODEL_PATH="/app/dep/krisp-viva-tt-v2.kef"
+
 # Expose the port the app runs on
 EXPOSE 7860
 
