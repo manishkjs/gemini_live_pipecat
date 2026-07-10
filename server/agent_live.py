@@ -361,14 +361,25 @@ class GeminiSessionLoggerMixin:
         
         await super()._connection_task_handler(config)
 
-    async def _tool_result(self, frame):
-        result_dict = frame.result if isinstance(frame.result, dict) else {}
+    async def _tool_result(self, *args, **kwargs):
+        if len(args) == 1 and hasattr(args[0], "result"):
+            frame = args[0]
+            result_dict = frame.result if isinstance(frame.result, dict) else {}
+            tool_call_id = getattr(frame, "tool_call_id", "")
+        elif len(args) >= 3:
+            tool_call_id = args[0]
+            tool_name = args[1]
+            result_dict = args[2] if isinstance(args[2], dict) else {}
+        else:
+            result_dict = kwargs.get("tool_result_message", {})
+            tool_call_id = kwargs.get("tool_call_id", "")
+
         scheduling = result_dict.get("scheduling", "SILENT") if isinstance(result_dict, dict) else "SILENT"
         
         if hasattr(super(), "_tool_result"):
-            await super()._tool_result(frame)
+            await super()._tool_result(*args, **kwargs)
         elif getattr(self, "_session", None) and hasattr(self._session, "send"):
-            payload = {"tool_response": {"function_responses": [{"response": result_dict, "id": getattr(frame, "tool_call_id", "")}]}, "scheduling": scheduling}
+            payload = {"tool_response": {"function_responses": [{"response": result_dict, "id": tool_call_id}]}, "scheduling": scheduling}
             await self._session.send(payload)
 
     async def _handle_server_message(self, message):
@@ -390,6 +401,17 @@ class GeminiSessionLoggerMixin:
                 await super()._buffer_or_send_audio(frame)
             elif hasattr(self, "_send_user_audio"):
                 await self._send_user_audio(frame)
+
+    async def _handle_session_ready(self, session):
+        if hasattr(super(), "_handle_session_ready"):
+            await super()._handle_session_ready(session)
+        self._session = session
+        if hasattr(self, "_audio_buffer") and self._audio_buffer:
+            logger.info(f"[GeminiSessionLoggerMixin] Flushing {len(self._audio_buffer)} buffered audio frames...")
+            for frame in list(self._audio_buffer):
+                if hasattr(self, "_send_user_audio"):
+                    await self._send_user_audio(frame)
+            self._audio_buffer.clear()
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
