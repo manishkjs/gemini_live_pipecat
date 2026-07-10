@@ -31,7 +31,7 @@ class TestAgentLiveRefinements(unittest.IsolatedAsyncioTestCase):
         """Test that _tool_result pops scheduling from response dict to top-level FunctionResponse."""
         mixin = agent_live.GeminiSessionLoggerMixin()
         # Mocking required attributes for _tool_result
-        mixin._session = MagicMock()
+        mixin._session = MagicMock(spec=["send"])
         mixin._session.send = AsyncMock()
         
         result_frame = FunctionCallResultFrame(
