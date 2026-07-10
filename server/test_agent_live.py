@@ -85,5 +85,48 @@ class TestAgentLiveRefinements(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(mixin._audio_buffer), 1)
         self.assertEqual(mixin._audio_buffer[0], audio_frame)
 
+    async def test_custom_service_tool_result_compatibility(self):
+        """Test that CustomGeminiLiveLLMService._tool_result is compatible with 3-arg call from parent."""
+        with patch("google.genai.Client") as mock_client:
+            service = agent_live.CustomGeminiLiveLLMService(api_key="dummy")
+            service._session = MagicMock()
+            service._session.send = AsyncMock()
+            
+            # Simulate a 3-argument call that would be made by GeminiLiveLLMService internally
+            # e.g., in _process_completed_function_calls:
+            # await self._tool_result(tool_call_id, tool_name, response_dict)
+            try:
+                await service._tool_result("call_123", "test_tool", {"status": "success"})
+            except TypeError as e:
+                self.fail(f"_tool_result signature mismatch: {e}")
+
+    async def test_reconnect_audio_flushing(self):
+        """Test that buffered audio frames are flushed when session is ready."""
+        frame1 = MagicMock()
+        frame2 = MagicMock()
+        with patch("google.genai.Client") as mock_client:
+            service = agent_live.CustomGeminiLiveLLMService(api_key="dummy")
+            service._session = None
+            service._audio_buffer = []
+            
+            await service._buffer_or_send_audio(frame1)
+            await service._buffer_or_send_audio(frame2)
+            self.assertEqual(len(service._audio_buffer), 2)
+            
+            # Now session becomes ready
+            mock_session = MagicMock()
+            service._send_user_audio = AsyncMock()
+            
+            await service._handle_session_ready(mock_session)
+            
+            # Verify that _send_user_audio was called for both frames
+            self.assertEqual(service._send_user_audio.call_count, 2)
+            service._send_user_audio.assert_has_calls([
+                unittest.mock.call(frame1),
+                unittest.mock.call(frame2)
+            ])
+            # Verify buffer is cleared
+            self.assertEqual(len(service._audio_buffer), 0)
+
 if __name__ == "__main__":
     unittest.main()
