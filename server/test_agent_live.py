@@ -151,5 +151,23 @@ class TestAgentLiveRefinements(unittest.IsolatedAsyncioTestCase):
             
             self.assertEqual(response.scheduling, "SILENT")
 
+    async def test_start_trigger_processor(self):
+        """Test that StartTriggerProcessor queues a greeting on start_trigger."""
+        processor = agent_live.StartTriggerProcessor()
+        processor.push_frame = AsyncMock()
+        
+        # Create an InputTransportMessageFrame with start_trigger
+        frame = agent_live.InputTransportMessageFrame(message={"type": "start_trigger"})
+        await processor.process_frame(frame)
+        
+        # Verify push_frame was called with LLMMessagesAppendFrame and LLMRunFrame
+        self.assertEqual(processor.push_frame.call_count, 2)
+        call1 = processor.push_frame.call_args_list[0][0][0]
+        self.assertIsInstance(call1, agent_live.LLMMessagesAppendFrame)
+        self.assertEqual(call1.messages, [{"role": "user", "content": "Hello!"}])
+        
+        call2 = processor.push_frame.call_args_list[1][0][0]
+        self.assertIsInstance(call2, agent_live.LLMRunFrame)
+
 if __name__ == "__main__":
     unittest.main()
