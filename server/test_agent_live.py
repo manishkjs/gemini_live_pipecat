@@ -128,5 +128,28 @@ class TestAgentLiveRefinements(unittest.IsolatedAsyncioTestCase):
             # Verify buffer is cleared
             self.assertEqual(len(service._audio_buffer), 0)
 
+    async def test_custom_service_tool_result_scheduling(self):
+        """Test that CustomGeminiLiveLLMService._tool_result preserves scheduling: SILENT when calling parent."""
+        with patch("google.genai.Client") as mock_client:
+            service = agent_live.CustomGeminiLiveLLMService(api_key="dummy")
+            service._session = MagicMock()
+            service._session.send_tool_response = AsyncMock()
+            
+            # We must mock _function_is_async to return True if we want to test scheduling?
+            # Actually, if we pass scheduling in dict, we want it to be extracted.
+            # Let's see if we need to mock it.
+            service._function_is_async = MagicMock(return_value=True)
+            # _supports_non_blocking_tools is True by default for non-Gemini 3 models.
+            # Let's force it to True.
+            service._settings.model = "gemini-2.5-flash" 
+            
+            await service._tool_result("call_123", "test_tool", {"status": "success", "scheduling": "SILENT"})
+            
+            service._session.send_tool_response.assert_called_once()
+            kwargs = service._session.send_tool_response.call_args[1]
+            response = kwargs["function_responses"]
+            
+            self.assertEqual(response.scheduling, "SILENT")
+
 if __name__ == "__main__":
     unittest.main()
