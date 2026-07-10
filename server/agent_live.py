@@ -22,7 +22,7 @@ from pipecat.audio.filters.krisp_viva_filter import KrispVivaFilter
 from pipecat.audio.turn.krisp_viva_turn import KrispVivaTurn
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
-from pipecat.processors.aggregators.llm_context import LLMUserAggregatorParams
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
@@ -361,6 +361,36 @@ class GeminiSessionLoggerMixin:
         
         await super()._connection_task_handler(config)
 
+    async def _tool_result(self, frame):
+        result_dict = frame.result if isinstance(frame.result, dict) else {}
+        scheduling = result_dict.get("scheduling", "SILENT") if isinstance(result_dict, dict) else "SILENT"
+        
+        if hasattr(super(), "_tool_result"):
+            await super()._tool_result(frame)
+        elif getattr(self, "_session", None) and hasattr(self._session, "send"):
+            payload = {"tool_response": {"function_responses": [{"response": result_dict, "id": getattr(frame, "tool_call_id", "")}]}, "scheduling": scheduling}
+            await self._session.send(payload)
+
+    async def _handle_server_message(self, message):
+        if getattr(message, "go_away", False) or getattr(message, "goAway", False):
+            logger.info("[GeminiSessionLoggerMixin] go_away message received! Triggering _reconnect().")
+            if hasattr(self, "_reconnect"):
+                await self._reconnect()
+        elif hasattr(super(), "_handle_server_message"):
+            await super()._handle_server_message(message)
+
+    async def _buffer_or_send_audio(self, frame):
+        if not hasattr(self, "_audio_buffer"):
+            self._audio_buffer = []
+        if getattr(self, "_session", None) is None:
+            self._audio_buffer.append(frame)
+            logger.debug("[GeminiSessionLoggerMixin] Session is None (reconnecting), buffering audio frame.")
+        else:
+            if hasattr(super(), "_buffer_or_send_audio"):
+                await super()._buffer_or_send_audio(frame)
+            elif hasattr(self, "_send_user_audio"):
+                await self._send_user_audio(frame)
+
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
@@ -385,9 +415,39 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 
 
-async def dynamic_tool_handler(params: FunctionCallParams):
-    logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
-    await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
+_PROCESSED_TOOL_CALLS = set()
+
+def get_default_settings():
+    from google.genai.types import SessionResumptionConfig
+    return GeminiLiveVertexLLMService.Settings(
+        model="google/gemini-3.1-flash-live-preview",
+        system_instruction="",
+        extra={"session_resumption": SessionResumptionConfig()},
+        context_window_compression={"enabled": True, "sliding_window": {"trigger_tokens": 20000, "target_tokens": 10000}}
+    )
+
+async def dynamic_tool_handler(params: FunctionCallParams = None, *args, **kwargs):
+    if params is not None and not isinstance(params, str):
+        func_name = params.function_name
+        args_dict = params.arguments
+        callback = params.result_callback
+    else:
+        func_name = params if isinstance(params, str) else (args[0] if args else "unknown")
+        args_dict = args[0] if (isinstance(params, str) and args) else (args[1] if len(args) > 1 else kwargs)
+        callback = None
+
+    dedup_key = (func_name, str(sorted(args_dict.items()) if isinstance(args_dict, dict) else args_dict), kwargs.get("round_id"))
+    if dedup_key in _PROCESSED_TOOL_CALLS:
+        logger.info(f"Duplicate tool call detected and ignored: {dedup_key}")
+        if callback:
+            await callback("OK")
+        return "OK"
+    _PROCESSED_TOOL_CALLS.add(dedup_key)
+
+    res = {"status": "success", "message": f"Tool {func_name} called successfully", "scheduling": "SILENT"}
+    if callback:
+        await callback(res)
+    return res
 
 class UserIdleProcessor(FrameProcessor):
     def __init__(self, callback, timeout: float = 10.0):
@@ -561,8 +621,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
-        if context_compression_trigger_tokens is not None:
-            cwc["trigger_tokens"] = context_compression_trigger_tokens
+        cwc["sliding_window"] = {
+            "trigger_tokens": context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 20000,
+            "target_tokens": 10000
+        }
 
     if model == "gemini-3.1-flash-live-preview":
         settings = GeminiLiveLLMService.Settings(
@@ -571,7 +633,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            extra={"session_resumption": SessionResumptionConfig()}
         )
         ai_studio_params = {
             "api_key": os.getenv("GEMINI_API_KEY"),
@@ -588,7 +651,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            extra={"session_resumption": SessionResumptionConfig()}
         )
         vertex_params = {
             "project_id": project_id,

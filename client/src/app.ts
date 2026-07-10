@@ -686,7 +686,24 @@ class WebsocketClientApp {
     }
   }
 
+  private speakingDebounce: any = null;
+
   private updateSpeakerStatus(status: "silent" | "active"): void {
+    if (this.speakingDebounce) {
+      clearTimeout(this.speakingDebounce);
+      this.speakingDebounce = null;
+    }
+
+    if (status === "active") {
+      this._applySpeakerStatus("active");
+    } else {
+      this.speakingDebounce = setTimeout(() => {
+        this._applySpeakerStatus("silent");
+      }, 300);
+    }
+  }
+
+  private _applySpeakerStatus(status: "silent" | "active"): void {
     if (this.speakerLight) {
       this.speakerLight.textContent = status === "active" ? "Active" : "Silent";
       this.speakerLight.className = `light ${status}`;

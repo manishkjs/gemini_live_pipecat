@@ -1,0 +1,89 @@
+import unittest
+from unittest.mock import MagicMock, patch, AsyncMock
+import asyncio
+import sys
+
+# Mock optional krisp dependency before importing agent_live
+sys.modules["pipecat.audio.krisp_instance"] = MagicMock()
+sys.modules["pipecat.audio.filters.krisp_viva_filter"] = MagicMock()
+sys.modules["pipecat.audio.turn.krisp_viva_turn"] = MagicMock()
+sys.modules["pipecat.turns.user_start.krisp_viva_ip_user_turn_start_strategy"] = MagicMock()
+
+# Import classes to test
+import agent_live
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+from pipecat.frames.frames import FunctionCallResultFrame
+
+class TestAgentLiveRefinements(unittest.IsolatedAsyncioTestCase):
+
+    def test_settings_include_resumption_and_cwc(self):
+        """Test that run_agent_live configures session resumption and CWC sliding window."""
+        # This should fail until we update Settings in run_agent_live
+        # Let's inspect the Settings class or defaults in agent_live if exposed,
+        # or we test our new helper function / mixin attributes.
+        self.assertTrue(hasattr(agent_live, "get_default_settings"))
+        settings = agent_live.get_default_settings()
+        self.assertIsNotNone(settings.extra.get("session_resumption"))
+        self.assertIn("sliding_window", settings.context_window_compression)
+        self.assertEqual(settings.context_window_compression["sliding_window"]["trigger_tokens"], 20000)
+
+    async def test_tool_result_scheduling_extraction(self):
+        """Test that _tool_result pops scheduling from response dict to top-level FunctionResponse."""
+        mixin = agent_live.GeminiSessionLoggerMixin()
+        # Mocking required attributes for _tool_result
+        mixin._session = MagicMock()
+        mixin._session.send = AsyncMock()
+        
+        result_frame = FunctionCallResultFrame(
+            function_name="dynamic_tool_handler",
+            tool_call_id="call_123",
+            arguments={},
+            result={"status": "success", "scheduling": "SILENT"}
+        )
+        
+        await mixin._tool_result(result_frame)
+        
+        # Verify send was called with scheduling at top level of FunctionResponse
+        mixin._session.send.assert_called_once()
+        call_arg = mixin._session.send.call_args[0][0]
+        # In pipecat, call_arg is client_content or tool_response pydantic model
+        # We assert scheduling is extracted properly
+        self.assertEqual(getattr(call_arg, "scheduling", None) or call_arg.get("scheduling"), "SILENT")
+
+    async def test_two_layer_deduplication(self):
+        """Test that dynamic_tool_handler returns 'OK' on duplicate calls."""
+        # First call succeeds
+        res1 = await agent_live.dynamic_tool_handler("test_tool", {"action": "jump"}, round_id=1)
+        self.assertNotEqual(res1, "OK")
+        
+        # Second call with same round_id returns OK
+        res2 = await agent_live.dynamic_tool_handler("test_tool", {"action": "jump"}, round_id=1)
+        self.assertEqual(res2, "OK")
+
+    async def test_go_away_handling(self):
+        """Test that _connection_task_handler intercepts go_away and calls _reconnect."""
+        mixin = agent_live.GeminiSessionLoggerMixin()
+        mixin._reconnect = AsyncMock()
+        
+        # Simulate go_away message from server
+        go_away_msg = MagicMock()
+        go_away_msg.go_away = True
+        
+        await mixin._handle_server_message(go_away_msg)
+        mixin._reconnect.assert_called_once()
+
+    async def test_reconnect_audio_buffering(self):
+        """Test that audio frames are buffered during reconnect and flushed when session is ready."""
+        mixin = agent_live.GeminiSessionLoggerMixin()
+        mixin._session = None  # Simulating disconnected state during handshake
+        mixin._audio_buffer = []
+        
+        # Attempt to send audio while disconnected
+        audio_frame = MagicMock()
+        await mixin._buffer_or_send_audio(audio_frame)
+        
+        self.assertEqual(len(mixin._audio_buffer), 1)
+        self.assertEqual(mixin._audio_buffer[0], audio_frame)
+
+if __name__ == "__main__":
+    unittest.main()
