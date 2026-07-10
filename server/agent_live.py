@@ -366,6 +366,7 @@ class GeminiSessionLoggerMixin:
             frame = args[0]
             result_dict = frame.result if isinstance(frame.result, dict) else {}
             tool_call_id = getattr(frame, "tool_call_id", "")
+            tool_name = getattr(frame, "function_name", "")
         elif len(args) >= 3:
             tool_call_id = args[0]
             tool_name = args[1]
@@ -373,14 +374,27 @@ class GeminiSessionLoggerMixin:
         else:
             result_dict = kwargs.get("tool_result_message", {})
             tool_call_id = kwargs.get("tool_call_id", "")
+            tool_name = kwargs.get("tool_name", "")
 
         scheduling = result_dict.get("scheduling", "SILENT") if isinstance(result_dict, dict) else "SILENT"
-        
-        if hasattr(super(), "_tool_result"):
-            await super()._tool_result(*args, **kwargs)
-        elif getattr(self, "_session", None) and hasattr(self._session, "send"):
-            payload = {"tool_response": {"function_responses": [{"response": result_dict, "id": tool_call_id}]}, "scheduling": scheduling}
-            await self._session.send(payload)
+        if isinstance(result_dict, dict):
+            result_dict = {k: v for k, v in result_dict.items() if k != "scheduling"}
+
+        if getattr(self, "_disconnecting", False) or not getattr(self, "_session", None):
+            return
+
+        from google.genai.types import FunctionResponse
+        response = FunctionResponse(name=tool_name, id=tool_call_id, response=result_dict, scheduling=scheduling)
+
+        try:
+            if hasattr(self._session, "send_tool_response"):
+                await self._session.send_tool_response(function_responses=response)
+            elif hasattr(self._session, "send"):
+                payload = {"tool_response": {"function_responses": [{"response": result_dict, "id": tool_call_id}]}, "scheduling": scheduling}
+                await self._session.send(payload)
+        except Exception as e:
+            if hasattr(self, "_handle_send_error"):
+                await self._handle_send_error(e)
 
     async def _handle_server_message(self, message):
         if getattr(message, "go_away", False) or getattr(message, "goAway", False):
