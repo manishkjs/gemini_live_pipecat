@@ -98,10 +98,10 @@ async def save_user_memory_handler(params: FunctionCallParams):
 
             api_res = await loop.run_in_executor(None, _call_memory_bank_api)
             logger.info(f"[MemoryBank] Saved via API: {memory_text}")
-            result_msg = f"Memory saved successfully to Memory Bank: {memory_text}"
+            result_msg = f"Memory saved successfully to Agent Platform Memory Bank: {memory_text}"
         except Exception as e:
-            logger.error(f"[MemoryBank] API save failed: {e}. Falling back to local storage.")
-            result_msg = _save_local_memory(memory_text, category)
+            logger.error(f"[MemoryBank] API save failed: {e}")
+            result_msg = f"Error saving to Agent Platform Memory Bank: {e}"
     else:
         result_msg = _save_local_memory(memory_text, category)
 
@@ -170,15 +170,22 @@ async def search_user_memory_handler(params: FunctionCallParams):
 
             api_res = await loop.run_in_executor(None, _query_memory_bank_api)
             logger.info(f"[MemoryBank] Searched via API query: {query}")
-            memories = api_res.get("memories", [])
-            if not memories:
-                result_text = f"No memories found matching query '{query}' in Memory Bank."
+            retrieved = api_res.get("retrievedMemories", []) or api_res.get("memories", [])
+            facts = []
+            for item in retrieved:
+                m = item.get("memory", item) if isinstance(item, dict) else item
+                fact_str = m.get("fact") or m.get("text") if isinstance(m, dict) else str(m)
+                if fact_str:
+                    facts.append(fact_str)
+
+            if not facts:
+                result_text = f"No memories found matching query '{query}' in Agent Platform Memory Bank."
             else:
-                formatted = [f"- {m.get('fact', m.get('text', str(m)))}" for m in memories]
-                result_text = f"Found the following memories for '{query}':\n" + "\n".join(formatted)
+                formatted = [f"- {f}" for f in facts]
+                result_text = f"Found the following memories in Agent Platform Memory Bank for '{query}':\n" + "\n".join(formatted)
         except Exception as e:
-            logger.error(f"[MemoryBank] API search failed: {e}. Falling back to local storage.")
-            result_text = _search_local_memory(query)
+            logger.error(f"[MemoryBank] API search failed: {e}")
+            result_text = f"Error querying Agent Platform Memory Bank: {e}"
     else:
         result_text = _search_local_memory(query)
 

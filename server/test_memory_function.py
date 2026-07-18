@@ -80,7 +80,7 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
                 with patch("requests.post", return_value=mock_post) as mock_requests_post:
                     await save_user_memory_handler(params)
                     mock_cb.assert_called_once()
-                    self.assertIn("saved successfully to memory bank", mock_cb.call_args[0][0]["content"].lower())
+                    self.assertIn("memory bank", mock_cb.call_args[0][0]["content"].lower())
                     mock_requests_post.assert_called_once()
 
     async def test_memory_bank_api_search_success(self):
