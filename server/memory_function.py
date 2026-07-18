@@ -161,7 +161,6 @@ async def search_user_memory_handler(params: FunctionCallParams):
                     "Content-Type": "application/json"
                 }
                 payload = {
-                    "query": query,
                     "scope": {"user_id": "default_user"}
                 }
                 res = requests.post(url, headers=headers, json=payload, timeout=10)
