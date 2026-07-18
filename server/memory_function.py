@@ -90,7 +90,7 @@ async def save_user_memory_handler(params: FunctionCallParams):
                 }
                 payload = {
                     "fact": memory_text,
-                    "scope": {"user_id": "default_user", "category": category}
+                    "scope": {"user_id": "default_user"}
                 }
                 res = requests.post(url, headers=headers, json=payload, timeout=10)
                 res.raise_for_status()
