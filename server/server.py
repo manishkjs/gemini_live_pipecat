@@ -211,12 +211,13 @@ async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
 # Mount the static files directory
-if os.path.exists("client/dist"):
-    app.mount("/assets", StaticFiles(directory="client/dist/assets"), name="assets")
+client_dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist"))
+if os.path.exists(client_dist_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(client_dist_dir, "assets")), name="assets")
     
     @app.get("/{catch_all:path}")
     async def read_index(catch_all: str):
-        return FileResponse('client/dist/index.html')
+        return FileResponse(os.path.join(client_dist_dir, "index.html"))
 
 async def main():
     port = int(os.environ.get("PORT", 7860))
