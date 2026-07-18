@@ -2,18 +2,31 @@ import os
 import websockets
 import json
 import asyncio
+import re
+import google.auth
 from typing import Optional, List, Dict, Any
 from loguru import logger
 from fastapi import WebSocket
 from datetime import datetime
 import time
 
+from rag_function import search_knowledge_base_schema, search_knowledge_base_handler as rag_search_handler
+from memory_function import (
+    save_user_memory_schema,
+    search_user_memory_schema,
+    save_user_memory_handler,
+    search_user_memory_handler,
+)
+
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+try:
+    from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+except ImportError:
+    from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
@@ -498,31 +511,33 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         )
     )
 
-    # Dynamic Tool Registration
-    standard_tools = [FunctionSchema(
-        name="get_current_time",
-        description="Get the current time.",
-        properties={
-            "is_explicit_request": {
-                "type": "boolean",
-                "description": (
-                    "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                    "Return `false` for anything else, including:\n"
-                    "- Explaining schedules or timelines.\n"
-                    "- Mentioning time casually in conversation."
-                )
-            }
-        },
-        required=["is_explicit_request"]
-    )]
+    # Dynamic Tool & RAG / Memory Registration
+    standard_tools = [
+        FunctionSchema(
+            name="get_current_time",
+            description="Get the current time.",
+            properties={
+                "is_explicit_request": {
+                    "type": "boolean",
+                    "description": (
+                        "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                        "- Explaining schedules or timelines.\n"
+                        "- Mentioning time casually in conversation."
+                    )
+                }
+            },
+            required=["is_explicit_request"]
+        ),
+        search_knowledge_base_schema,
+        save_user_memory_schema,
+        search_user_memory_schema,
+    ]
 
-    
     if tools:
         try:
             tools_data = json.loads(tools)
             if isinstance(tools_data, list):
                 for tool in tools_data:
-                    # Basic validation
                     if "name" in tool:
                         standard_tools.append(FunctionSchema(
                             name=tool.get("name"),
@@ -599,6 +614,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    llm.register_function("save_user_memory", save_user_memory_handler)
+    llm.register_function("search_user_memory", search_user_memory_handler)
     
     # Register generic handler for dynamic tools
     for tool in standard_tools:

@@ -28,3 +28,6 @@ __pycache__/
 *.pyc
 server/voice_cloning_key_f.txt
 server/voice_cloning_key_m.txt
+server/user_memories.json
+server/rag_last_result.txt
+
