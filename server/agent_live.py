@@ -10,7 +10,7 @@ from fastapi import WebSocket
 from datetime import datetime
 import time
 
-from rag_function import search_knowledge_base_schema, search_knowledge_base_handler as rag_search_handler
+from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
 from memory_function import (
     save_user_memory_schema,
     search_user_memory_schema,
