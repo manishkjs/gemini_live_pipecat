@@ -618,9 +618,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     llm.register_function("save_user_memory", save_user_memory_handler)
     llm.register_function("search_user_memory", search_user_memory_handler)
     
-    # Register generic handler for dynamic tools
+    # Register generic handler for dynamic tools (skip built-in tools)
+    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory"}
     for tool in standard_tools:
-        if tool.name != "get_current_time":
+        if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
 
     initial_greeting = "नमस्ते!" if language == "hi-IN" else "Hello!"
