@@ -121,7 +121,7 @@ async def identify_user_handler(params: FunctionCallParams):
     clean_id = f"user:{name.lower().replace(' ', '_')}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
-    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Welcome them warmly by name and retrieve any relevant stored preferences from their profile if appropriate."})
+    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). (SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
 
 
 class GeminiSessionLoggerMixin:
@@ -516,9 +516,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     
     identity_instruction = (
         "\n\nCRITICAL IDENTITY & MEMORY RULE:\n"
-        "At the very start of the conversation when greeting the user, you MUST ALWAYS warmly ask who you are speaking with today (e.g. 'नमस्ते! मैं आपकी AI साथी हूँ। आपका शुभ नाम क्या है?' or 'Hello! Who am I speaking with today?').\n"
-        "As soon as the user tells you their name, you MUST immediately call the tool `identify_user(name=...)` so their specific multi-tenant memory profile is loaded.\n"
-        "Whenever calling `save_user_memory` or `search_user_memory`, always pass the active `user_id` if known."
+        "1. At the very start of the conversation when greeting the user, you MUST ALWAYS warmly ask who you are speaking with today (e.g. 'नमस्ते! मैं आपकी AI साथी हूँ। आपका शुभ नाम क्या है?' or 'Hello! Who am I speaking with today?').\n"
+        "2. As soon as the user tells you their name, you MUST immediately call the tool `identify_user(name=...)` so their specific multi-tenant memory profile is loaded.\n"
+        "3. Whenever calling `save_user_memory` or `search_user_memory`, always pass the active `user_id` if known.\n"
+        "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
+        "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ')."
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     
