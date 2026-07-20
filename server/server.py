@@ -148,14 +148,15 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     try:
         body = await request.json()
         if isinstance(body, dict):
-            # URL-encode the system_instruction from the body
+            # URL-encode system_instruction ONLY if customized and compact to prevent HTTP 400 (Query URL too long)
             if "system_instruction" in body:
-                encoded_instruction = quote(body["system_instruction"])
-                # Append to existing query params or start a new query string
-                if query_params:
-                    query_params += f"&system_instruction={encoded_instruction}"
-                else:
-                    query_params = f"system_instruction={encoded_instruction}"
+                custom_prompt = body["system_instruction"].strip()
+                if custom_prompt and custom_prompt != SYSTEM_PROMPT.strip() and len(custom_prompt) < 1500:
+                    encoded_instruction = quote(custom_prompt)
+                    if query_params:
+                        query_params += f"&system_instruction={encoded_instruction}"
+                    else:
+                        query_params = f"system_instruction={encoded_instruction}"
             
             # URL-encode the tools from the body
             if "tools" in body:
