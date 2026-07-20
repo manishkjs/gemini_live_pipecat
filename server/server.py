@@ -191,16 +191,13 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         # Body is not JSON or is empty, so we just ignore it
         pass
     
-    # Check if running in production (e.g., on Cloud Run)
-    is_production = "K_SERVICE" in os.environ
-
-    if is_production:
-        # Construct the full WebSocket URL for production
-        ws_url = f"wss://{request.url.hostname}/ws?{query_params}"
-    else:
-        # Construct the full WebSocket URL for local development
-        ws_url = f"ws://{request.url.hostname}:7860/ws?{query_params}"
-
+    # Dynamically determine WebSocket scheme (ws vs wss) and host
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    ws_scheme = "wss" if scheme == "https" else "ws"
+    
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    
+    ws_url = f"{ws_scheme}://{host}/ws?{query_params}"
     print(f"Generated WS URL for client: {ws_url}") # Helpful for debugging
     
     return {"ws_url": ws_url}
