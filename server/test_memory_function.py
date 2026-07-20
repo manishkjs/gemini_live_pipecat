@@ -94,5 +94,39 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
             mock_cb.assert_called_once()
             self.assertIn("Bangalore", mock_cb.call_args[0][0]["content"])
 
+    async def test_multi_tenant_isolation(self):
+        """Verify that user:rohan and user:priya maintain completely isolated memory stores."""
+        test_file_rohan = os.path.join(os.path.dirname(__file__), "user_memories_user_rohan.json")
+        test_file_priya = os.path.join(os.path.dirname(__file__), "user_memories_user_priya.json")
+        if os.path.exists(test_file_rohan): os.remove(test_file_rohan)
+        if os.path.exists(test_file_priya): os.remove(test_file_priya)
+
+        try:
+            with patch("memory_function.get_mem0_instance", return_value=None), patch("memory_function.get_memory_bank_config", return_value=(None, None, None)):
+                # Save Rohan's memory
+                mock_cb_rohan = AsyncMock()
+                params_rohan = MagicMock()
+                params_rohan.arguments = {"memory_text": "Rohan likes cricket", "category": "sports", "user_id": "user:rohan"}
+                params_rohan.result_callback = mock_cb_rohan
+                await save_user_memory_handler(params_rohan)
+
+                # Save Priya's memory
+                mock_cb_priya = AsyncMock()
+                params_priya = MagicMock()
+                params_priya.arguments = {"memory_text": "Priya likes tennis", "category": "sports", "user_id": "user:priya"}
+                params_priya.result_callback = mock_cb_priya
+                await save_user_memory_handler(params_priya)
+
+                # Search Priya's memory for Rohan's fact
+                mock_cb_search = AsyncMock()
+                params_search = MagicMock()
+                params_search.arguments = {"query": "cricket", "user_id": "user:priya"}
+                params_search.result_callback = mock_cb_search
+                await search_user_memory_handler(params_search)
+                self.assertIn("No memories found", mock_cb_search.call_args[0][0]["content"])
+        finally:
+            if os.path.exists(test_file_rohan): os.remove(test_file_rohan)
+            if os.path.exists(test_file_priya): os.remove(test_file_priya)
+
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,32 @@ async def get_current_time(params: FunctionCallParams):
     )
 
 
+identify_user_schema = FunctionSchema(
+    name="identify_user",
+    description=(
+        "Identify the user by name to load their specific multi-tenant memory profile. "
+        "MUST be called immediately when the user tells you their name or answers your opening identity question."
+    ),
+    properties={
+        "name": {
+            "type": "string",
+            "description": "The exact name of the user (e.g. 'Rohan' or 'Priya')."
+        }
+    },
+    required=["name"]
+)
+
+async def identify_user_handler(params: FunctionCallParams):
+    name = params.arguments.get("name", "").strip()
+    if not name:
+        await params.result_callback({"content": "Error: please provide a valid name."})
+        return
+    clean_id = f"user:{name.lower().replace(' ', '_')}"
+    os.environ["ACTIVE_USER_ID"] = clean_id
+    logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
+    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Welcome them warmly by name and retrieve any relevant stored preferences from their profile if appropriate."})
+
+
 class GeminiSessionLoggerMixin:
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
 
@@ -488,7 +514,13 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
     
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + f"\n\nIMPORTANT: You must converse in {language} language."
+    identity_instruction = (
+        "\n\nCRITICAL IDENTITY & MEMORY RULE:\n"
+        "At the very start of the conversation when greeting the user, you MUST ALWAYS warmly ask who you are speaking with today (e.g. 'नमस्ते! मैं आपकी AI साथी हूँ। आपका शुभ नाम क्या है?' or 'Hello! Who am I speaking with today?').\n"
+        "As soon as the user tells you their name, you MUST immediately call the tool `identify_user(name=...)` so their specific multi-tenant memory profile is loaded.\n"
+        "Whenever calling `save_user_memory` or `search_user_memory`, always pass the active `user_id` if known."
+    )
+    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     
     language_map = {
         "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
@@ -531,6 +563,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         search_knowledge_base_schema,
         save_user_memory_schema,
         search_user_memory_schema,
+        identify_user_schema,
     ]
 
     if tools:
@@ -617,9 +650,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
     llm.register_function("save_user_memory", save_user_memory_handler)
     llm.register_function("search_user_memory", search_user_memory_handler)
+    llm.register_function("identify_user", identify_user_handler)
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory"}
+    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory", "identify_user"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
