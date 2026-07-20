@@ -859,7 +859,9 @@ class WebsocketClientApp {
         systemInstructions = geminiSystemInstructionsTextarea.value;
       }
 
-      if (systemInstructions) {
+      // Only append system_instruction to URL if explicitly customized and brief (< 500 chars)
+      // Default system prompt is automatically loaded server-side to prevent HTTP 400 (URL query line too long)
+      if (systemInstructions && systemInstructions.length < 500) {
         connectUrl += `&system_instruction=${encodeURIComponent(
           systemInstructions
         )}`;
@@ -904,6 +906,7 @@ class WebsocketClientApp {
             if (this.stopBtn) this.stopBtn.disabled = true;
             this.updateMicStatus("idle");
             this.log("Client disconnected");
+            this.rtviClient = null;
           },
           onBotReady: (data) => {
             this.log(`Bot ready: ${JSON.stringify(data)}`);
@@ -946,6 +949,7 @@ class WebsocketClientApp {
         } catch (disconnectError) {
           this.log(`Error during disconnect: ${disconnectError}`, "error");
         }
+        this.rtviClient = null;
       }
     }
   }
