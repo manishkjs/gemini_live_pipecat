@@ -80,6 +80,10 @@ The backend server handles the core AI pipeline.
     GCP_PROJECT_ID="your-gcp-project-id"
     GCP_LOCATION="us-central1"
     
+    # Google Cloud Vertex AI Agent Memory (Reasoning Engine / Memory Bank)
+    # Format: projects/{PROJECT_ID}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}
+    MEMORY_BANK_RESOURCE_ID="projects/your-gcp-project-id/locations/us-central1/reasoningEngines/your-memory-bank-id"
+
     # Voice Cloning Keys from TTS provider (Chirp3 HD)
     CLONE_TTS_VOICE_KEY_MALE="/path/to/your/male_voice_key.txt"
     CLONE_TTS_VOICE_KEY_FEMALE="/path/to/your/female_voice_key.txt"
@@ -89,7 +93,14 @@ The backend server handles the core AI pipeline.
     - `GOOGLE_APPLICATION_CREDENTIALS`: Path to your GCP service account JSON key file
     - `GCP_PROJECT_ID`: Your Google Cloud Project ID (e.g., "my-project-123")
     - `GCP_LOCATION`: GCP region for Vertex AI (e.g., "us-central1", "us-east4", "europe-west1")
+    - `MEMORY_BANK_RESOURCE_ID`: Resource ID for Vertex AI Agent Memory (Reasoning Engine Memory Bank). If unconfigured, automatically falls back to embedded multi-tenant Mem0 / local storage (`user_memories_{user_id}.json`).
     - Voice cloning keys: File paths containing your Chirp3 HD voice cloning keys
+
+    **Multi-Tenant Agent Memory & Identity:**
+    - **Identity Identification:** The bot warmly asks for the user's name at the start of each session and automatically calls `identify_user(name=...)` to set `user_id` (e.g., `user:rohan`).
+    - **Isolated Storage:** `save_user_memory` and `search_user_memory` partition facts per user identity so user profiles remain strictly isolated.
+    - **Silent Operations:** All memory actions take place 100% silently behind the scenes without verbal notifications.
+    - **Female Hindi Grammar:** Strictly enforces female Hindi verb conjugations (`करती हूँ` / `सकती हूँ`).
 
     **Setup Service Account:**
     1. Create a service account in your GCP project with Vertex AI permissions
