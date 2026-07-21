@@ -419,7 +419,9 @@ class WebsocketClientApp {
     if (lastBubble && lastBubble.classList.contains(role)) {
       const timestamp = lastBubble.querySelector(".timestamp");
       if (timestamp) {
-        const fullText = (lastBubble.getAttribute('data-text') || '') + text;
+        const currentText = lastBubble.getAttribute('data-text') || '';
+        const separator = (currentText && !currentText.endsWith(' ') && !text.startsWith(' ')) ? ' ' : '';
+        const fullText = currentText + separator + text;
         lastBubble.setAttribute('data-text', fullText);
         
         const cleanText = fullText.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
@@ -920,9 +922,14 @@ class WebsocketClientApp {
                 this.handleServerMessage(message);
             }
           },
-          onMessageError: (error) =>
-            this.log(`Message error: ${error}`, "error"),
-          onError: (error) => this.log(`Error: ${error}`, "error"),
+          onMessageError: (error) => {
+            const errStr = typeof error === "object" ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : error;
+            this.log(`Message error: ${errStr}`, "error");
+          },
+          onError: (error) => {
+            const errStr = typeof error === "object" ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : error;
+            this.log(`Error: ${errStr}`, "error");
+          },
         },
       };
 
