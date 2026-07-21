@@ -285,10 +285,10 @@ async def run_agent(
     if skip_stt:
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
 
-    llm_location = "global" if "gemini-3" in llm_model else location
+    llm_location = "global" if any(k in llm_model for k in ["gemini-3", "3.6", "3.5"]) else location
     
     thinking_config = None
-    if llm_model in ["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]:
+    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
 
     llm = CustomGoogleVertexLLMService(
