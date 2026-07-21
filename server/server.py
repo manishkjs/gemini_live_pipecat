@@ -209,8 +209,15 @@ async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
 # Mount the static files directory
-client_dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist"))
-if os.path.exists(client_dist_dir):
+possible_dist_dirs = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "client/dist")),
+    os.path.abspath("/app/client/dist"),
+]
+
+client_dist_dir = next((d for d in possible_dist_dirs if os.path.exists(d)), None)
+
+if client_dist_dir:
     app.mount("/assets", StaticFiles(directory=os.path.join(client_dist_dir, "assets")), name="assets")
     
     @app.get("/{catch_all:path}")
