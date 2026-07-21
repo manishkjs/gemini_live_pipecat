@@ -76,9 +76,16 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
         try:
             await self.start_ttfb_metrics()
 
+            # Ensure language_code is a single valid BCP-47 tag (e.g. "hi-IN")
+            lang_code = self._language_code
+            if lang_code and "," in lang_code:
+                langs = [l.strip() for l in lang_code.split(",")]
+                hi_lang = next((l for l in langs if "hi" in l.lower()), None)
+                lang_code = hi_lang if hi_lang else langs[0]
+
             speech_config = types.SpeechConfig(
                 voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),
-                language_code=self._language_code
+                language_code=lang_code
             )
             generate_content_config = types.GenerateContentConfig(
                 response_modalities=["AUDIO"], 
@@ -90,18 +97,14 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
 performance notes, and context are direction only. Do NOT speak them.
 Speak ONLY the lines under #### TRANSCRIPT.
 
-# AUDIO PROFILE: Aria
-## "Empathetic AI Companion"
+# AUDIO PROFILE: {self._settings.voice}
+## "Empathetic Voice Assistant"
 
-## SCENE: A warm, friendly conversation
-Aria is chatting with the user, offering support and conversation with a genuine, human-like feel.
+## SCENE: A warm, natural conversation in colloquial Hindi/English
 
 ### PERFORMANCE
-Style: Warm and sincere. The voice carries feeling and expressiveness.
-Pace: Natural, conversational.
-
-### CONTEXT
-Aria is a professional and empathetic voice assistant designed to sound like a real human.
+Style: Warm, expressive, natural voice.
+Pace: Conversational.
 
 #### TRANSCRIPT
 {text}
@@ -305,6 +308,13 @@ async def run_agent(
     if tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
         tts_location = "global" if "gemini-3" in tts_model else location
+        
+        tts_lang = "hi-IN"
+        if stt_language:
+            langs = [l.strip() for l in stt_language.split(",")]
+            hi_lang = next((l for l in langs if "hi" in l.lower()), None)
+            tts_lang = hi_lang if hi_lang else langs[0]
+
         tts = CustomVertexGeminiTTSService(
             project_id=project_id,
             location=tts_location,
@@ -312,7 +322,7 @@ async def run_agent(
             model=tts_model, # Use the conditionally passed model
             sample_rate=24000, 
             voice_prompt=tts_voice_prompt,
-            language_code=stt_language.lower() if stt_language else None,
+            language_code=tts_lang,
             text_filters=[MarkdownTextFilter()]
         )
     elif tts_voice in ["Custom-Male", "Custom-Female"]:
@@ -358,12 +368,14 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()],
         )
 
+    is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
+    initial_greeting = "नमस्ते!" if is_hindi else "Hello!"
+
     if skip_stt:
         from pipecat.services.google.llm import GoogleLLMContext
         from processors.audio_accumulator import AudioAccumulator
         from pipecat.frames.frames import LLMContextFrame
         context = GoogleLLMContext()
-        initial_greeting = "नमस्ते!" if stt_language and "hi-IN" in stt_language else "Hello!"
         context.set_messages([
             {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
@@ -386,7 +398,6 @@ async def run_agent(
             transport.output()
         ]
     else:
-        initial_greeting = "नमस्ते!" if stt_language and "hi-IN" in stt_language else "Hello!"
         context = LLMContext(messages=[
             {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
