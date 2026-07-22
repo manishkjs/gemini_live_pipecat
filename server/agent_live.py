@@ -723,7 +723,24 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info("Pipecat Client disconnected")
+        logger.info("Pipecat Client disconnected. Triggering post-session async memory extraction...")
+        active_user = os.getenv("ACTIVE_USER_ID", "default_user")
+        try:
+            user_ctx = context_aggregator.user().get_context() if hasattr(context_aggregator, "user") else None
+            msgs = user_ctx.messages if user_ctx and hasattr(user_ctx, "messages") else []
+            transcript_lines = [f"{m.get('role', 'user')}: {m.get('content', '')}" for m in msgs if isinstance(m, dict) and m.get('content')]
+            transcript_text = "\n".join(transcript_lines)
+            if transcript_text and len(transcript_lines) > 1:
+                loop = asyncio.get_running_loop()
+                def _post_session_extraction():
+                    from memory_function import get_mem0_instance
+                    mem0 = get_mem0_instance()
+                    if mem0:
+                        logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} using gemini-3.5-flash-lite...")
+                        mem0.add(transcript_text, user_id=active_user, metadata={"category": "M6_Recent"}, infer=True)
+                loop.run_in_executor(None, _post_session_extraction)
+        except Exception as e:
+            logger.error(f"[PostSessionWorker] Error collecting session transcript: {e}")
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)
