@@ -20,7 +20,8 @@ from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame)
+                                   TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
+                                   InputTransportMessageFrame, LLMContextFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.transcriptions.language import Language
@@ -243,6 +244,32 @@ class ContextLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class StartTriggerProcessor(FrameProcessor):
+    def __init__(self, context, context_aggregator, skip_stt: bool):
+        super().__init__()
+        self.context = context
+        self.context_aggregator = context_aggregator
+        self.skip_stt = skip_stt
+        self.triggered = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, InputTransportMessageFrame):
+            message = frame.message
+            if isinstance(message, dict) and message.get("type") == "start_trigger":
+                if not self.triggered:
+                    self.triggered = True
+                    logger.info("[StartTriggerProcessor] start_trigger received. Queueing initial greeting turn.")
+                    if self.skip_stt:
+                        await self.push_frame(LLMContextFrame(self.context))
+                        await self.push_frame(LLMRunFrame())
+                    else:
+                        await self.push_frame(self.context_aggregator.user()._get_context_frame())
+                        await self.push_frame(LLMRunFrame())
+                return
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+
 async def run_agent(
     websocket: WebSocket,
     tts_voice: str,
@@ -374,7 +401,6 @@ async def run_agent(
     if skip_stt:
         from pipecat.services.google.llm import GoogleLLMContext
         from processors.audio_accumulator import AudioAccumulator
-        from pipecat.frames.frames import LLMContextFrame
         context = GoogleLLMContext()
         context.set_messages([
             {"role": "system", "content": final_system_instruction},
@@ -387,9 +413,11 @@ async def run_agent(
             stt_languages=stt_languages,
         )
         context_aggregator = LLMContextAggregatorPair(context)
+        start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
 
         pipeline_elements = [
             transport.input(),
+            start_trigger,
             accumulator,
             llm,
             TranscriptionBroadcaster(participant="Bot"),
@@ -403,8 +431,11 @@ async def run_agent(
             {"role": "user", "content": initial_greeting}
         ])
         context_aggregator = LLMContextAggregatorPair(context)
+        start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
+
         pipeline_elements = [
             transport.input(),
+            start_trigger,
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
@@ -430,10 +461,8 @@ async def run_agent(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        if skip_stt:
-            await task.queue_frames([LLMContextFrame(context), LLMRunFrame()])
-        else:
-            await task.queue_frames([context_aggregator.user()._get_context_frame(), LLMRunFrame()])
+        logger.info("Pipecat Client connected to STT-LLM-TTS pipeline")
+        # Defer greeting until start_trigger message is received when user clicks Start Listening
 
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
