@@ -150,7 +150,8 @@ search_user_memory_schema = FunctionSchema(
     name="search_user_memory",
     description=(
         "Search or retrieve stored long-term user memories, preferences, and past facts. "
-        "Use when user asks 'do you remember...', 'what was my preference', or to recall context from previous interactions."
+        "Use when user asks 'do you remember...', 'what was my preference', or asks a question needing historical context. "
+        "CRITICAL: DO NOT call this tool when the user simply introduces their name or says hello. Only call this when the user asks a question or explicitly asks to check history!"
     ),
     properties={
         "query": {
@@ -175,7 +176,8 @@ recall_user_memories_schema = FunctionSchema(
     name="recall_user_memories",
     description=(
         "Recall or search historical user facts and deep notes from long-term memory. "
-        "Use when user asks 'Remember what I said about...', 'Let me check your notes...', or queries specific historical details."
+        "Use when user asks 'Remember what I said about...', 'Let me check your notes...', or queries specific historical details. "
+        "CRITICAL: DO NOT call this tool when the user simply introduces their name or says hello. Only call this when the user asks a question or explicitly asks to check notes/history!"
     ),
     properties={
         "query": {

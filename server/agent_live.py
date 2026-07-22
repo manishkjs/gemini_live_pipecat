@@ -105,7 +105,8 @@ identify_user_schema = FunctionSchema(
     name="identify_user",
     description=(
         "Identify the user by name to load their specific multi-tenant memory profile. "
-        "MUST be called immediately when the user tells you their name or answers your opening identity question."
+        "MUST be called immediately when the user tells you their name or answers your opening identity question. "
+        "CRITICAL: When calling this tool upon identity introduction, DO NOT call `search_user_memory` or `recall_user_memories` alongside it. Only call search tools when the user asks a question!"
     ),
     properties={
         "name": {
@@ -538,8 +539,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     identity_instruction = (
         "\n\nCRITICAL IDENTITY & MEMORY RULE:\n"
         "1. At the very start of the conversation when greeting the user, you MUST ALWAYS warmly ask who you are speaking with today (e.g. 'नमस्ते! मैं आपकी AI साथी हूँ। आपका शुभ नाम क्या है?' or 'Hello! Who am I speaking with today?').\n"
-        "2. As soon as the user tells you their name, you MUST immediately call the tool `identify_user(name=...)` so their specific multi-tenant memory profile is loaded.\n"
-        "3. Whenever calling `save_user_memory` or `search_user_memory`, always pass the active `user_id` if known.\n"
+        "2. As soon as the user tells you their name, you MUST immediately call `identify_user(name=...)` so their specific multi-tenant memory profile is pre-loaded. CRITICAL: When the user simply tells you their name or greets you, DO NOT call `search_user_memory` or `recall_user_memories`! Only call search tools when the user asks a question needing historical context.\n"
+        "3. Whenever calling `save_user_memory`, `search_user_memory`, or `recall_user_memories`, always pass the active `user_id` if known.\n"
         "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
         "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ').\n"
         "6. PATH 2 SPEECH BRIDGE RULE: Whenever calling `search_user_memory` or `recall_user_memories` to check notes/history, you MUST simultaneously speak a natural bridge phrase right as you invoke the tool (e.g. 'एक मिनट, मैं आपकी नोट्स चेक करती हूँ...' or 'Let me check your notes on that...'). That completely eliminates any silent pause during the lookup!"
