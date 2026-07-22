@@ -62,17 +62,16 @@ search_knowledge_base_schema = FunctionSchema(
             "type": "string",
             "description": (
                 "The search query rewritten in FIRST-PERSON PERSPECTIVE. CRITICAL RULES: "
-                "1. REMOVE ALL brand terms (LenDenClub/Lendenclub) by converting to first-person: 'LenDenClub' -> 'you/your'. "
-                "2. Convert third-person to first-person: 'LenDenClub's NPA' -> 'your NPA', 'in LenDenClub' -> remove or 'here'. "
+                "1. REMOVE ALL brand terms by converting to first-person: 'Company' -> 'you/your'. "
+                "2. Convert third-person to first-person: 'Company's rates' -> 'your rates'. "
                 "3. Only translate Hindi to English - maintain user's intent exactly. "
                 "4. For pronouns (it, this, that, tumhara, uska), use conversation context to resolve reference. "
-                "5. NEVER add brand/domain terms that user didn't mention. "
+                "5. NEVER add specific brand/domain terms that user didn't mention. "
                 "Examples: "
-                "'NPA rate of Lendenclub' -> 'what is your NPA rate', "
-                "'How to invest in LenDenClub' -> 'how can I invest', "
-                "'Lendenclub ka disbursement' -> 'what is your disbursement value', "
-                "'What services does LenDenClub provide' -> 'what services do you provide', "
-                "'tumhara kitna hai?' (after NPA discussion) -> 'what is your NPA rate'"
+                "'NPA rate' -> 'what is your NPA rate', "
+                "'How to invest' -> 'how can I invest', "
+                "'What services do you provide' -> 'what services do you provide', "
+                "'tumhara kitna hai?' -> 'what is your rate'"
             ),
         },
         "total_records": {
@@ -80,10 +79,8 @@ search_knowledge_base_schema = FunctionSchema(
             "description": (
                 "Number of records to retrieve based on query type. "
                 "Use 3 for specific single-point queries (definitions, features). "
-                "Use 10 for Multiple questions, NPA rates questions, Disbursement values questions, time-range queries (data since/between specific dates, monthly/quarterly data, last six months). "
-                "Use 15 for trend/historical/comparative queries (over years, YoY, trends, comparisons, changes over time). "
-                "Examples: 'How does repayment process work' -> 3, 'what is your NPA rate in 2024' -> 10, 'disbursement value from Jan 2025 to Oct 2025' -> 15, 'NPA trend last 2024 october to 2025 october' -> 15. "
-                "Examples: 'what are the payment options' -> 3, 'what is repeat loan, filling fast, daily repayment, monthly repayment' -> 10, 'Give me the trend of disbursement value from March 2024 to March 2025' -> 15"
+                "Use 10 for Multiple questions, rate questions, time-range queries. "
+                "Use 15 for trend/historical/comparative queries (over years, YoY, trends, comparisons, changes over time)."
             ),
         },
     },
