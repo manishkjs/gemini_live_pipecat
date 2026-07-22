@@ -55,7 +55,8 @@ search_knowledge_base_schema = FunctionSchema(
     name="search_knowledge_base",
     description=(
         "Retrieve information from knowledge base with first-person query matching. "
-        "Use for: Definitions, 'How it works', Company info, Safety/Risk questions, Objections."
+        "ONLY call this tool when the user explicitly asks for specific external documentation, policies, or technical data. "
+        "DO NOT call this tool for identity questions ('who are you', 'who made you'), general greetings, or personal chitchat."
     ),
     properties={
         "query_for_vector_search": {
