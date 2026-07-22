@@ -363,7 +363,23 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             
         valid_results.append(item.get("memory", ""))
         
-    return [r for r in valid_results if r]
+    valid_list = [r for r in valid_results if r]
+    
+    # If no results found and user is still default_user, try global search across all memories
+    if not valid_list and user_id == "default_user":
+        try:
+            matched_global = mem0.search(query=query)
+            g_results = matched_global.get("results", []) if isinstance(matched_global, dict) else matched_global
+            if isinstance(g_results, list):
+                for item in g_results:
+                    if isinstance(item, dict) and item.get("score", 1.0) >= SIMILARITY_THRESHOLD:
+                        meta = item.get("metadata", {})
+                        if meta.get("status", "active") == "active":
+                            valid_list.append(item.get("memory", ""))
+        except Exception as e:
+            logger.warning(f"[recall_user_memories] Global fallback search failed: {e}")
+
+    return [r for r in valid_list if r]
 
 async def _save_to_vertex_memory_bank(memory_text: str, category: str, user_id: str) -> str:
     """Save user memory directly to Google Cloud Vertex AI Agent Memory / Reasoning Engine."""
