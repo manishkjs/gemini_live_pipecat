@@ -533,7 +533,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "2. As soon as the user tells you their name, you MUST immediately call the tool `identify_user(name=...)` so their specific multi-tenant memory profile is loaded.\n"
         "3. Whenever calling `save_user_memory` or `search_user_memory`, always pass the active `user_id` if known.\n"
         "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
-        "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ')."
+        "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ').\n"
+        "6. PATH 2 SPEECH BRIDGE RULE: Whenever calling `search_user_memory` or `recall_user_memories` to check notes/history, you MUST simultaneously speak a natural bridge phrase right as you invoke the tool (e.g. 'एक मिनट, मैं आपकी नोट्स चेक करती हूँ...' or 'Let me check your notes on that...'). That completely eliminates any silent pause during the lookup!"
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
