@@ -14,8 +14,11 @@ from rag_function import search_knowledge_base_schema, search_knowledge_base_han
 from memory_function import (
     save_user_memory_schema,
     search_user_memory_schema,
+    recall_user_memories_schema,
     save_user_memory_handler,
     search_user_memory_handler,
+    recall_user_memories_handler,
+    pre_load_user_profile,
 )
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -121,7 +124,9 @@ async def identify_user_handler(params: FunctionCallParams):
     clean_id = f"user:{name.lower().replace(' ', '_')}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
-    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). (SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
+    profile_facts = pre_load_user_profile(clean_id)
+    profile_str = "\n".join([f"- {f}" for f in profile_facts]) if profile_facts else "No pre-existing profile facts."
+    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Active Core Profile Facts (Path 1 Pre-Load):\n{profile_str}\n\n(SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
 
 
 class GeminiSessionLoggerMixin:
@@ -531,6 +536,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ')."
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
+    initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
+    preloaded_facts = pre_load_user_profile(initial_user_id)
+    if preloaded_facts:
+        facts_str = "\n".join([f"- {f}" for f in preloaded_facts])
+        prompt_text += f"\n\nActive Core Profile Facts for {initial_user_id} (Path 1 Pre-Load):\n{facts_str}"
     
     language_map = {
         "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
@@ -573,6 +583,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         search_knowledge_base_schema,
         save_user_memory_schema,
         search_user_memory_schema,
+        recall_user_memories_schema,
         identify_user_schema,
     ]
 
@@ -661,10 +672,11 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
     llm.register_function("save_user_memory", save_user_memory_handler)
     llm.register_function("search_user_memory", search_user_memory_handler)
+    llm.register_function("recall_user_memories", recall_user_memories_handler)
     llm.register_function("identify_user", identify_user_handler)
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory", "identify_user"}
+    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory", "recall_user_memories", "identify_user"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)

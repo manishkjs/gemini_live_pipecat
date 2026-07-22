@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from loguru import logger
 from dotenv import load_dotenv
 from pipecat.services.llm_service import FunctionCallParams
@@ -11,52 +11,82 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 # Auto-load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+# PRD-Aligned Promotion Threshold Matrix
+THRESHOLDS = {
+    "M7_Safety":     1,  # N=1 (Instant, UNVERIFIED)
+    "M5_Commitment": 1,  # N=1 (Instant, expires on completion + 30d)
+    "M1_Identity":   2,  # N=2 (Catches ASR errors / misstatements)
+    "M2_Relation":   2,  # N=2 (Catches ASR errors / misstatements)
+    "M3_Preference": 2,  # N=2 (Fast Staging)
+    "M4_Behavioral": 3,  # N=3 (Standard Staging)
+    "M6_Recent":     1   # N=1 (Expires in 3 days)
+}
+
+SIMILARITY_THRESHOLD = 0.80
+
 # Mem0 embedded engine singleton
 _MEM0_INSTANCE = None
 
+def get_mem0_config() -> dict:
+    """Return dynamic configuration for Mem0, supporting pgvector (Cloud SQL/AlloyDB) or local Qdrant fallback."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
+    
+    if pg_dsn:
+        vector_store_config = {
+            "provider": "pgvector",
+            "config": {
+                "connection_string": pg_dsn,
+                "collection_name": "user_memories",
+                "embedding_model_dims": 768
+            }
+        }
+    else:
+        db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
+        os.makedirs(db_path, exist_ok=True)
+        vector_store_config = {
+            "provider": "qdrant",
+            "config": {
+                "path": db_path,
+                "embedding_model_dims": 768
+            }
+        }
+
+    return {
+        "vector_store": vector_store_config,
+        "llm": {
+            "provider": "gemini",
+            "config": {
+                "model": "gemini-3.1-flash-lite",
+                "api_key": api_key
+            }
+        },
+        "embedder": {
+            "provider": "gemini",
+            "config": {
+                "model": "models/gemini-embedding-001",
+                "embedding_dims": 768,
+                "api_key": api_key
+            }
+        }
+    }
+
 def get_mem0_instance():
-    """Lazy initialize embedded self-hosted Mem0 instance using Qdrant local vector store & Gemini LLM/Embedder."""
+    """Lazy initialize embedded self-hosted Mem0 instance using pgvector (Cloud SQL/AlloyDB) or Qdrant fallback."""
     global _MEM0_INSTANCE
     if _MEM0_INSTANCE is not None:
         return _MEM0_INSTANCE
 
     try:
         from mem0 import Memory
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
+        config = get_mem0_config()
+        if not config["llm"]["config"]["api_key"]:
             logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 fallback will be used.")
             return None
 
-        db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
-        os.makedirs(db_path, exist_ok=True)
-
-        config = {
-            "vector_store": {
-                "provider": "qdrant",
-                "config": {
-                    "path": db_path,
-                    "embedding_model_dims": 768
-                }
-            },
-            "llm": {
-                "provider": "gemini",
-                "config": {
-                    "model": "gemini-3.1-flash-lite",
-                    "api_key": api_key
-                }
-            },
-            "embedder": {
-                "provider": "gemini",
-                "config": {
-                    "model": "models/gemini-embedding-001",
-                    "embedding_dims": 768,
-                    "api_key": api_key
-                }
-            }
-        }
-
         _MEM0_INSTANCE = Memory.from_config(config)
-        logger.info(f"[Mem0] Successfully initialized embedded self-hosted Mem0 engine at '{db_path}'")
+        provider = config["vector_store"]["provider"]
+        logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
         return _MEM0_INSTANCE
     except Exception as e:
         logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
@@ -122,6 +152,204 @@ def _get_active_user_id(params: FunctionCallParams) -> str:
     if params and hasattr(params, "arguments") and params.arguments.get("user_id"):
         return str(params.arguments.get("user_id")).strip().lower()
     return os.getenv("ACTIVE_USER_ID", "default_user").strip().lower()
+
+recall_user_memories_schema = FunctionSchema(
+    name="recall_user_memories",
+    description=(
+        "Recall or search historical user facts and deep notes from long-term memory. "
+        "Use when user asks 'Remember what I said about...', 'Let me check your notes...', or queries specific historical details."
+    ),
+    properties={
+        "query": {
+            "type": "string",
+            "description": "The search query to match against stored user memories."
+        },
+        "user_id": {
+            "type": "string",
+            "description": "The unique identity key or name of the user being spoken with (e.g. 'user:rohan')."
+        }
+    },
+    required=["query"]
+)
+
+def process_extracted_fact(fact_text: str, category: str, user_id: str, is_explicit_remember: bool = False):
+    """
+    Process a single distilled fact extracted by Gemini 3.1 Flash Lite at session end or during explicit save.
+    Implements the PRD Tiered Promotion Matrix, similarity threshold gating (min_score >= 0.80), and observation day tracking.
+    """
+    mem0 = get_mem0_instance()
+    if not mem0:
+        logger.warning("[process_extracted_fact] Mem0 engine unavailable.")
+        return None
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # 1. Determine promotion threshold N
+    threshold = 1 if is_explicit_remember else THRESHOLDS.get(category, 2)
+    
+    # 2. Determine expiry date for M6 Recent Context
+    expires_at = (datetime.now() + timedelta(days=3)).isoformat() if category == "M6_Recent" else None
+    
+    # 3. Determine verification status for M7 Safety Facts
+    verification_status = "UNVERIFIED" if category == "M7_Safety" else "NONE"
+    
+    # 4. Initial status
+    initial_status = "active" if threshold == 1 else "staging"
+
+    # 5. Query existing memories in staging or active
+    try:
+        existing_memories = mem0.search(query=fact_text, filters={"user_id": user_id, "status": ["staging", "active"]})
+    except Exception:
+        try:
+            existing_memories = mem0.search(query=fact_text, filters={"user_id": user_id})
+        except Exception:
+            existing_memories = mem0.search(query=fact_text, user_id=user_id)
+        
+    results = existing_memories.get("results", []) if isinstance(existing_memories, dict) else existing_memories
+    if not isinstance(results, list):
+        results = []
+
+    filtered_results = []
+    for item in results:
+        if isinstance(item, dict):
+            meta = item.get("metadata", {})
+            if meta.get("status", "active") in ["staging", "active"]:
+                filtered_results.append(item)
+
+    # 6. Apply Similarity Threshold Gate (min_score >= 0.80)
+    best_match = None
+    if filtered_results and filtered_results[0].get("score", 1.0) >= SIMILARITY_THRESHOLD:
+        best_match = filtered_results[0]
+
+    if best_match is None:
+        # 7. Raw Insert using infer=False (Single-LLM ownership with Gemini 3.1 Flash Lite)
+        meta = {
+            "category": category,
+            "status": initial_status,
+            "observation_count": 1,
+            "observation_dates": [today_str],
+            "verification_status": verification_status,
+            "expires_at": expires_at
+        }
+        res = mem0.add(fact_text, user_id=user_id, metadata=meta, infer=False)
+        logger.info(f"✅ Stored Raw Memory ({initial_status}): '{fact_text}'")
+        return res
+    else:
+        # 8. Match found: Increment count if observed on a NEW distinct day
+        meta = best_match.get("metadata", {})
+        dates = meta.get("observation_dates", [])
+        count = meta.get("observation_count", 1)
+
+        if today_str not in dates:
+            dates.append(today_str)
+            count += 1
+
+        # 9. Check if count reached threshold N for promotion
+        new_status = "active" if count >= threshold else "staging"
+
+        meta["status"] = new_status
+        meta["observation_count"] = count
+        meta["observation_dates"] = dates
+
+        # 10. Update metadata deterministically
+        try:
+            mem0.update(memory_id=best_match["id"], data=fact_text, metadata=meta)
+        except Exception as e:
+            logger.warning(f"Failed to update memory id {best_match.get('id')}: {e}")
+        logger.info(f"🔄 Updated Memory ({new_status}, {count}/{threshold}): '{fact_text}'")
+        return best_match
+
+def pre_load_user_profile(user_id: str) -> list[str]:
+    """
+    Path 1: Connection Pre-Load Handler.
+    Fetch active core profile facts at WebSocket connect (~40ms budget).
+    Scrubs expired M6 facts and flags UNVERIFIED M7 safety facts.
+    """
+    mem0 = get_mem0_instance()
+    if not mem0:
+        return []
+
+    now_iso = datetime.now().isoformat()
+    
+    try:
+        active_facts = mem0.get_all(filters={"user_id": user_id, "status": "active"})
+    except Exception:
+        try:
+            active_facts = mem0.get_all(filters={"user_id": user_id})
+        except Exception:
+            active_facts = mem0.get_all(user_id=user_id)
+
+    results = active_facts.get("results", []) if isinstance(active_facts, dict) else active_facts
+    if not isinstance(results, list):
+        results = []
+
+    valid_memories = []
+    for m in results:
+        if not isinstance(m, dict):
+            continue
+        meta = m.get("metadata", {})
+        if meta.get("status", "active") != "active":
+            continue
+            
+        # Scrub expired M6 context
+        expires_at = meta.get("expires_at")
+        if expires_at and expires_at < now_iso:
+            continue
+        
+        text = m.get("memory", "")
+        if not text:
+            continue
+
+        # Append verification flag for M7 Safety Facts
+        if meta.get("verification_status") == "UNVERIFIED":
+            text += " [UNVERIFIED: Confirm with user if relevant]"
+            
+        valid_memories.append(text)
+
+    return valid_memories
+
+def recall_user_memories(query: str, user_id: str) -> list[str]:
+    """
+    Path 2: On-Demand Deep Recall Tool Handler.
+    Query active memories matching specific historical recall requests.
+    Applies similarity gate (score >= 0.80) and scrubs expired facts.
+    """
+    mem0 = get_mem0_instance()
+    if not mem0:
+        return []
+
+    try:
+        matched = mem0.search(query=query, filters={"user_id": user_id, "status": "active"})
+    except Exception:
+        try:
+            matched = mem0.search(query=query, filters={"user_id": user_id})
+        except Exception:
+            matched = mem0.search(query=query, user_id=user_id)
+
+    results = matched.get("results", []) if isinstance(matched, dict) else matched
+    if not isinstance(results, list):
+        results = []
+    
+    valid_results = []
+    now_iso = datetime.now().isoformat()
+    
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
+            continue
+            
+        meta = item.get("metadata", {})
+        if meta.get("status", "active") != "active":
+            continue
+
+        expires_at = meta.get("expires_at")
+        if expires_at and expires_at < now_iso:
+            continue
+            
+        valid_results.append(item.get("memory", ""))
+        
+    return [r for r in valid_results if r]
 
 async def _save_to_vertex_memory_bank(memory_text: str, category: str, user_id: str) -> str:
     """Save user memory directly to Google Cloud Vertex AI Agent Memory / Reasoning Engine."""
@@ -217,8 +445,7 @@ async def save_user_memory_handler(params: FunctionCallParams):
         try:
             loop = asyncio.get_running_loop()
             def _add_mem0():
-                # Pass infer=False for raw deterministic insertion when storing pre-extracted facts
-                return mem0_engine.add(memory_text, user_id=user_id, metadata={"category": category}, infer=False)
+                return process_extracted_fact(memory_text, category, user_id, is_explicit_remember=True)
 
             res = await loop.run_in_executor(None, _add_mem0)
             logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
@@ -281,18 +508,10 @@ async def search_user_memory_handler(params: FunctionCallParams):
         try:
             loop = asyncio.get_running_loop()
             def _search_mem0():
-                return mem0_engine.search(query, filters={"user_id": user_id})
+                return recall_user_memories(query, user_id)
 
-            res = await loop.run_in_executor(None, _search_mem0)
+            facts = await loop.run_in_executor(None, _search_mem0)
             logger.info(f"[Mem0] Searched memory in-process query: '{query}' for {user_id}")
-
-            results_list = res.get("results", []) if isinstance(res, dict) else res
-            facts = []
-            for item in results_list:
-                if isinstance(item, dict) and "memory" in item:
-                    facts.append(item["memory"])
-                elif isinstance(item, str):
-                    facts.append(item)
 
             if not facts:
                 result_text = f"No memories found matching query '{query}' for {user_id} in Mem0."
@@ -301,6 +520,38 @@ async def search_user_memory_handler(params: FunctionCallParams):
                 result_text = f"Found the following memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
         except Exception as e:
             logger.error(f"[Mem0] Failed to search memory: {e}")
+            result_text = _search_local_memory(query, user_id)
+    else:
+        result_text = _search_local_memory(query, user_id)
+
+    await params.result_callback({"content": result_text})
+
+async def recall_user_memories_handler(params: FunctionCallParams):
+    """Path 2: Handle recall_user_memories tool call via deep recall or local fallback."""
+    query = params.arguments.get("query", "").strip()
+    user_id = _get_active_user_id(params)
+
+    if not query:
+        await params.result_callback({"content": "Please provide a valid query to recall memory."})
+        return
+
+    mem0_engine = get_mem0_instance()
+    if mem0_engine:
+        try:
+            loop = asyncio.get_running_loop()
+            def _recall_mem0():
+                return recall_user_memories(query, user_id)
+
+            facts = await loop.run_in_executor(None, _recall_mem0)
+            logger.info(f"[Path2DeepRecall] Recalled query: '{query}' for {user_id}")
+
+            if not facts:
+                result_text = f"No active memories found matching query '{query}' for {user_id} via deep recall."
+            else:
+                formatted = [f"- {f}" for f in facts]
+                result_text = f"Found the following active memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
+        except Exception as e:
+            logger.error(f"[Path2DeepRecall] Failed: {e}")
             result_text = _search_local_memory(query, user_id)
     else:
         result_text = _search_local_memory(query, user_id)

@@ -8,6 +8,13 @@ from memory_function import (
     save_user_memory_handler,
     search_user_memory_handler,
     get_memory_bank_config,
+    THRESHOLDS,
+    SIMILARITY_THRESHOLD,
+    get_mem0_config,
+    process_extracted_fact,
+    pre_load_user_profile,
+    recall_user_memories,
+    recall_user_memories_handler,
 )
 
 class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
@@ -127,6 +134,80 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
         finally:
             if os.path.exists(test_file_rohan): os.remove(test_file_rohan)
             if os.path.exists(test_file_priya): os.remove(test_file_priya)
+
+class TestMem0PgvectorAndTwoPath(unittest.TestCase):
+    def test_prd_constants_and_pgvector_config(self):
+        self.assertEqual(SIMILARITY_THRESHOLD, 0.80)
+        self.assertEqual(THRESHOLDS["M7_Safety"], 1)
+        self.assertEqual(THRESHOLDS["M4_Behavioral"], 3)
+        
+        with patch.dict(os.environ, {"CLOUDSQL_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"}):
+            config = get_mem0_config()
+            self.assertEqual(config["vector_store"]["provider"], "pgvector")
+            self.assertEqual(config["vector_store"]["config"]["connection_string"], "postgresql://user:pass@127.0.0.1:5432/memories")
+
+    @patch("memory_function.get_mem0_instance")
+    def test_process_extracted_fact_raw_insert_and_promotion(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        
+        # Test 1: No match -> Raw insert (infer=False)
+        mock_mem0.search.return_value = {"results": []}
+        mock_mem0.add.return_value = {"results": [{"id": "mem-1"}]}
+        
+        res = process_extracted_fact("User likes coffee", "M3_Preference", "user:test")
+        mock_mem0.add.assert_called_once()
+        args, kwargs = mock_mem0.add.call_args
+        self.assertFalse(kwargs["infer"])
+        self.assertEqual(kwargs["metadata"]["status"], "staging") # N=2 for M3_Preference
+        
+        # Test 2: Match found on new day -> Promotion
+        mock_mem0.search.return_value = {
+            "results": [{
+                "id": "mem-2",
+                "score": 0.88, # >= 0.80 SIMILARITY_THRESHOLD
+                "metadata": {
+                    "status": "staging",
+                    "observation_count": 1,
+                    "observation_dates": ["2026-07-20"]
+                }
+            }]
+        }
+        res2 = process_extracted_fact("User prefers black coffee", "M3_Preference", "user:test")
+        mock_mem0.update.assert_called_once()
+        update_kwargs = mock_mem0.update.call_args[1]
+        self.assertEqual(update_kwargs["metadata"]["status"], "active")
+        self.assertEqual(update_kwargs["metadata"]["observation_count"], 2)
+
+    @patch("memory_function.get_mem0_instance")
+    def test_path1_pre_load_user_profile(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.get_all.return_value = {
+            "results": [
+                {"memory": "User lives in Delhi", "metadata": {"status": "active"}},
+                {"memory": "User is allergic to peanuts", "metadata": {"status": "active", "verification_status": "UNVERIFIED"}},
+                {"memory": "Expired fact", "metadata": {"status": "active", "expires_at": "2026-01-01T00:00:00"}}
+            ]
+        }
+        valid = pre_load_user_profile("user:test")
+        self.assertEqual(len(valid), 2)
+        self.assertIn("User lives in Delhi", valid[0])
+        self.assertIn("[UNVERIFIED: Confirm with user if relevant]", valid[1])
+
+    @patch("memory_function.get_mem0_instance")
+    def test_path2_recall_user_memories(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.search.return_value = {
+            "results": [
+                {"memory": "Gaana subscription active", "score": 0.85, "metadata": {"status": "active"}},
+                {"memory": "Low score fact", "score": 0.70, "metadata": {"status": "active"}}
+            ]
+        }
+        recalled = recall_user_memories("Gaana", "user:test")
+        self.assertEqual(len(recalled), 1)
+        self.assertEqual(recalled[0], "Gaana subscription active")
 
 if __name__ == "__main__":
     unittest.main()
