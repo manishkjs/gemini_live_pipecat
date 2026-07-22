@@ -23,6 +23,7 @@ THRESHOLDS = {
 }
 
 SIMILARITY_THRESHOLD = 0.80
+RETRIEVAL_THRESHOLD = 0.15
 
 # Mem0 embedded engine singleton
 _MEM0_INSTANCE = None
@@ -57,16 +58,19 @@ def get_mem0_config() -> dict:
     use_vertex = os.getenv("USE_VERTEXAI", "true").lower() == "true"
     os.environ["USE_VERTEXAI"] = "true" if use_vertex else "false"
 
+    model_name = os.getenv("MEM0_LLM_MODEL", "gemini-3.5-flash-lite")
+    llm_location = "global" if any(k in model_name for k in ["gemini-3", "3.5", "3.1", "3.6"]) else location
+
     return {
         "vector_store": vector_store_config,
         "llm": {
             "provider": "gemini",
             "config": {
-                "model": os.getenv("MEM0_LLM_MODEL", "gemini-3.5-flash-lite"),
+                "model": model_name,
                 "api_key": api_key,
                 "vertexai": use_vertex,
                 "project": project_id,
-                "location": location,
+                "location": llm_location,
             }
         },
         "embedder": {
@@ -350,7 +354,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     for item in results:
         if not isinstance(item, dict):
             continue
-        if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
+        if item.get("score", 1.0) < RETRIEVAL_THRESHOLD:
             continue
             
         meta = item.get("metadata", {})
@@ -372,7 +376,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             g_results = matched_global.get("results", []) if isinstance(matched_global, dict) else matched_global
             if isinstance(g_results, list):
                 for item in g_results:
-                    if isinstance(item, dict) and item.get("score", 1.0) >= SIMILARITY_THRESHOLD:
+                    if isinstance(item, dict) and item.get("score", 1.0) >= RETRIEVAL_THRESHOLD:
                         meta = item.get("metadata", {})
                         if meta.get("status", "active") == "active":
                             valid_list.append(item.get("memory", ""))
