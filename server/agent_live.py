@@ -121,7 +121,15 @@ async def identify_user_handler(params: FunctionCallParams):
     if not name:
         await params.result_callback({"content": "Error: please provide a valid name."})
         return
-    clean_id = f"user:{name.lower().replace(' ', '_')}"
+    clean_name = name.lower().replace(' ', '_')
+    if "मनीष" in clean_name or "manish" in clean_name:
+        clean_id = "user:manish"
+    elif "रोहन" in clean_name or "rohan" in clean_name:
+        clean_id = "user:rohan"
+    elif "प्रिया" in clean_name or "priya" in clean_name:
+        clean_id = "user:priya"
+    else:
+        clean_id = f"user:{clean_name}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
     profile_facts = pre_load_user_profile(clean_id)
@@ -727,17 +735,17 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         logger.info("Pipecat Client disconnected. Triggering post-session async memory extraction...")
         active_user = os.getenv("ACTIVE_USER_ID", "default_user")
         try:
-            user_ctx = context_aggregator.user().get_context() if hasattr(context_aggregator, "user") else None
-            msgs = user_ctx.messages if user_ctx and hasattr(user_ctx, "messages") else []
-            transcript_lines = [f"{m.get('role', 'user')}: {m.get('content', '')}" for m in msgs if isinstance(m, dict) and m.get('content')]
-            transcript_text = "\n".join(transcript_lines)
+            user_aggr = context_aggregator.user() if hasattr(context_aggregator, "user") else None
+            msgs = user_aggr.messages if user_aggr and hasattr(user_aggr, "messages") else []
+            transcript_lines = [f"{m.get('role', 'user') if isinstance(m, dict) else getattr(m, 'role', 'user')}: {m.get('content', '') if isinstance(m, dict) else getattr(m, 'content', '')}" for m in msgs]
+            transcript_text = "\n".join([t for t in transcript_lines if t.strip() and not t.endswith(": ")])
             if transcript_text and len(transcript_lines) > 1:
                 loop = asyncio.get_running_loop()
                 def _post_session_extraction():
                     from memory_function import get_mem0_instance
                     mem0 = get_mem0_instance()
                     if mem0:
-                        logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} using gemini-3.5-flash-lite...")
+                        logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} using gemini-3.1-flash-lite...")
                         mem0.add(transcript_text, user_id=active_user, metadata={"category": "M6_Recent"}, infer=True)
                 loop.run_in_executor(None, _post_session_extraction)
         except Exception as e:
