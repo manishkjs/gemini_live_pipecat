@@ -497,6 +497,14 @@ class StartTriggerProcessor(FrameProcessor):
         if isinstance(frame, InputTransportMessageFrame):
             message = frame.message
             if isinstance(message, dict) and message.get("type") == "start_trigger":
+                msg_id = message.get("id")
+                if msg_id:
+                    await self.push_frame(OutputTransportMessageFrame(message={
+                        "label": "rtvi-ai",
+                        "type": "response",
+                        "id": msg_id,
+                        "data": {"status": "ok"}
+                    }))
                 if not self.triggered:
                     self.triggered = True
                     logger.info("[StartTriggerProcessor] start_trigger received. Queueing greeting turn.")

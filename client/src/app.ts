@@ -922,7 +922,10 @@ class WebsocketClientApp {
                 this.handleServerMessage(message);
             }
           },
-          onMessageError: (error) => {
+          onMessageError: (error: any) => {
+            if (error && error.type === "error-response" && (!error.data || Object.keys(error.data).length === 0)) {
+              return;
+            }
             const errStr = typeof error === "object" ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : error;
             this.log(`Message error: ${errStr}`, "error");
           },
