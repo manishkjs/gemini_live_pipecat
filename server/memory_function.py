@@ -52,21 +52,29 @@ def get_mem0_config() -> dict:
             }
         }
 
+    project_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
+    location = os.getenv("GCP_LOCATION", "us-central1")
+    use_vertex = os.getenv("USE_VERTEXAI", "true").lower() == "true"
+    os.environ["USE_VERTEXAI"] = "true" if use_vertex else "false"
+
     return {
         "vector_store": vector_store_config,
         "llm": {
             "provider": "gemini",
             "config": {
-                "model": "gemini-3.1-flash-lite",
-                "api_key": api_key
+                "model": os.getenv("MEM0_LLM_MODEL", "gemini-3.5-flash-lite"),
+                "api_key": api_key,
+                "vertexai": use_vertex,
+                "project": project_id,
+                "location": location,
             }
         },
         "embedder": {
             "provider": "gemini",
             "config": {
-                "model": "models/gemini-embedding-001",
+                "model": "models/text-embedding-004",
                 "embedding_dims": 768,
-                "api_key": api_key
+                "api_key": api_key,
             }
         },
         "custom_prompt": (
