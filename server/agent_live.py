@@ -635,7 +635,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
-        live_location = "global" if any(k in model for k in ["gemini-3", "gemini-live", "3.6", "3.5"]) else location
+        live_location = "global" if any(k in model for k in ["gemini-3", "3.6"]) else location
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{model}",
             system_instruction=prompt_text,
