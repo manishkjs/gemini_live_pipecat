@@ -68,7 +68,13 @@ def get_mem0_config() -> dict:
                 "embedding_dims": 768,
                 "api_key": api_key
             }
-        }
+        },
+        "custom_prompt": (
+            "You are a personal memory extraction assistant for Lenskart 'B' smartglasses. "
+            "CRITICAL GOVERNANCE RULE: Never extract exact street addresses, GPS coordinates, credit cards, "
+            "phone numbers, or exact government IDs. Always convert locations to coarse user-stated places "
+            "(e.g., 'Connaught Place cafe', 'Bangalore office', 'home in Saket')."
+        )
     }
 
 def get_mem0_instance():

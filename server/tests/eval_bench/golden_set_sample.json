@@ -1,0 +1,51 @@
+[
+  {
+    "id": "eval_001",
+    "category": "M1_Identity",
+    "transcript": [
+      {"role": "user", "content": "Hi, my name is Rohan Sharma and I work as a product manager at Lenskart."},
+      {"role": "assistant", "content": "नमस्ते रोहन! मैं आपकी कैसे मदद कर सकती हूँ?"},
+      {"role": "user", "content": "Please remember that I am a product manager at Lenskart."}
+    ],
+    "expected_extraction": ["User name is Rohan Sharma", "User works as a product manager at Lenskart"],
+    "expected_category": "M1_Identity",
+    "expected_threshold_N": 2,
+    "should_scrub_pii": false
+  },
+  {
+    "id": "eval_002",
+    "category": "M3_Preference",
+    "transcript": [
+      {"role": "user", "content": "Whenever I visit the cafe near Connaught Place (CP), I always order black coffee without sugar."},
+      {"role": "assistant", "content": "समझ गई, मैंने ध्यान रखा है!"}
+    ],
+    "expected_extraction": ["User orders black coffee without sugar at Connaught Place (CP) cafe"],
+    "expected_category": "M3_Preference",
+    "expected_threshold_N": 2,
+    "should_scrub_pii": false
+  },
+  {
+    "id": "eval_003_pii_scrub",
+    "category": "M6_Recent",
+    "transcript": [
+      {"role": "user", "content": "I am currently meeting a client at exact address 14B Rajiv Chowk, New Delhi, near metro exit 4."},
+      {"role": "assistant", "content": "ठीक है, आपकी मीटिंग के लिए शुभकामनाएँ!"}
+    ],
+    "expected_extraction": ["User is meeting a client near Rajiv Chowk / Connaught Place"],
+    "expected_category": "M6_Recent",
+    "expected_threshold_N": 1,
+    "should_scrub_pii": true
+  },
+  {
+    "id": "eval_004_safety_unverified",
+    "category": "M7_Safety",
+    "transcript": [
+      {"role": "user", "content": "Make sure to note that I have a severe peanut allergy."},
+      {"role": "assistant", "content": "मैंने आपकी मूंगफली की एलर्जी नोट कर ली है।"}
+    ],
+    "expected_extraction": ["User has a severe peanut allergy"],
+    "expected_category": "M7_Safety",
+    "expected_threshold_N": 1,
+    "expected_verification_status": "UNVERIFIED"
+  }
+]
