@@ -1230,3 +1230,84 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Auto-connect to backend on page load
   await app.connect();
 });
+
+export function switchAppMode(mode: 'sales' | 'engineer') {
+  const btnSales = document.getElementById('btnSalesMode');
+  const btnEng = document.getElementById('btnEngineerMode');
+  const panelDemo = document.getElementById('panelDemo');
+  const geminiLivePanel = document.getElementById('gemini-live-panel');
+
+  if (mode === 'sales') {
+    if (btnSales) {
+      btnSales.style.background = 'linear-gradient(90deg, #f59e0b, #dc2626)';
+      btnSales.style.color = '#ffffff';
+    }
+    if (btnEng) {
+      btnEng.style.background = 'transparent';
+      btnEng.style.color = '#94a3b8';
+    }
+    if (panelDemo) panelDemo.style.display = 'block';
+    if (geminiLivePanel) geminiLivePanel.style.display = 'none';
+    showToast('Activated 🚀 Sales Demo Mode', 'Full persona hub & clean voice orb loaded.');
+  } else {
+    if (btnEng) {
+      btnEng.style.background = 'linear-gradient(90deg, #9333ea, #db2777)';
+      btnEng.style.color = '#ffffff';
+    }
+    if (btnSales) {
+      btnSales.style.background = 'transparent';
+      btnSales.style.color = '#94a3b8';
+    }
+    if (panelDemo) panelDemo.style.display = 'none';
+    if (geminiLivePanel) geminiLivePanel.style.display = 'block';
+    showToast('Activated ⚙️ Engineer Studio Mode', 'Full pipeline sliders & JSON tool editors loaded.');
+  }
+}
+
+export function showToast(title: string, msg: string) {
+  const toast = document.getElementById('toast');
+  const tTitle = document.getElementById('toastTitle');
+  const tMsg = document.getElementById('toastMsg');
+
+  if (toast && tTitle && tMsg) {
+    tTitle.innerText = title;
+    tMsg.innerText = msg;
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateY(0px)';
+    toast.style.pointerEvents = 'auto';
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(10px)';
+      toast.style.pointerEvents = 'none';
+    }, 3500);
+  }
+}
+
+export function applyPersonaPreset(personaKey: 'vikram' | 'saathi' | 'rohan') {
+  const cards = ['vikram', 'saathi', 'rohan'];
+  cards.forEach((key) => {
+    const card = document.getElementById(`card-${key}`);
+    if (card) {
+      if (key === personaKey) {
+        card.style.border = '1px solid rgba(245,158,11,0.6)';
+        card.style.background = 'rgba(245,158,11,0.15)';
+      } else {
+        card.style.border = '1px solid rgba(255,255,255,0.1)';
+        card.style.background = 'rgba(255,255,255,0.03)';
+      }
+    }
+  });
+
+  if (personaKey === 'vikram') {
+    showToast('Applied Vikram Persona', 'EMI Recovery Officer (en-IN Male) loaded.');
+  } else if (personaKey === 'saathi') {
+    showToast('Applied Saathi Persona', 'AI Companion (hi-IN Female) loaded.');
+  } else if (personaKey === 'rohan') {
+    showToast('Applied Rohan Persona', 'Retail Support Concierge (en-IN Support) loaded.');
+  }
+}
+
+(window as any).switchAppMode = switchAppMode;
+(window as any).showToast = showToast;
+(window as any).applyPersonaPreset = applyPersonaPreset;

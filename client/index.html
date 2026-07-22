@@ -28,6 +28,14 @@
             <p>Powered by Google's AI - Gemini</p>
           </div>
         </div>
+        <div class="header-mode-switcher" style="display:flex; background:rgba(0,0,0,0.6); padding:4px; border-radius:14px; border:1px solid rgba(255,255,255,0.15);">
+          <button id="btnSalesMode" onclick="window.switchAppMode('sales')" class="mode-btn active" style="padding:6px 16px; border-radius:10px; font-size:12px; font-weight:600; background:linear-gradient(90deg, #f59e0b, #dc2626); color:#fff; border:none; cursor:pointer;">
+            🚀 Sales Demo Mode
+          </button>
+          <button id="btnEngineerMode" onclick="window.switchAppMode('engineer')" class="mode-btn" style="padding:6px 16px; border-radius:10px; font-size:12px; font-weight:500; color:#94a3b8; background:transparent; border:none; cursor:pointer;">
+            ⚙️ Engineer Studio Mode
+          </button>
+        </div>
         <div class="status-bar">
           <div class="status">
             <span id="status-indicator" class="disconnected"></span>
@@ -87,6 +95,59 @@
               <button class="tab-btn" data-tab="observability">
                 <i class="fas fa-chart-line"></i> Observability
               </button>
+            </div>
+            <div id="panelDemo" class="config-panel active">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h4 style="margin:0; font-size:12px; text-transform:uppercase; color:#94a3b8;">Cymbal Indian Sales Presets</h4>
+                <span style="font-size:10px; color:#34d399; background:rgba(52,211,153,0.1); padding:2px 8px; border-radius:12px;">3 Presets Active</span>
+              </div>
+
+              <div class="persona-cards" style="display:flex; flex-direction:column; gap:10px;">
+                
+                <!-- Vikram (Debt Collection en-IN) -->
+                <div id="card-vikram" onclick="window.applyPersonaPreset('vikram')" style="padding:12px; border-radius:12px; border:1px solid rgba(245,158,11,0.4); background:rgba(245,158,11,0.1); cursor:pointer;">
+                  <div style="display:flex; justify-content:space-between;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                      <div style="width:36px; height:36px; border-radius:50%; background:linear-gradient(135deg, #d97706, #dc2626); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:bold; font-size:12px;">VK</div>
+                      <div>
+                        <div style="font-weight:600; font-size:13px; color:#fff;">Vikram — Debt Officer</div>
+                        <div style="font-size:11px; color:#fcd34d;">Cymbal Finance EMI Recovery (en-IN Male)</div>
+                      </div>
+                    </div>
+                    <span style="width:8px; height:8px; border-radius:50%; background:#34d399;"></span>
+                  </div>
+                  <p style="font-size:11px; color:#94a3b8; margin:8px 0 0 0; line-height:1.4;">Firm, polite reminder for ₹18,500 overdue EMI. Offers instant UPI payment link generation.</p>
+                </div>
+
+                <!-- Saathi (Her Vibe Companion hi-IN) -->
+                <div id="card-saathi" onclick="window.applyPersonaPreset('saathi')" style="padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.03); cursor:pointer;">
+                  <div style="display:flex; justify-content:space-between;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                      <div style="width:36px; height:36px; border-radius:50%; background:linear-gradient(135deg, #ec4899, #9333ea); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:bold; font-size:12px;">ST</div>
+                      <div>
+                        <div style="font-weight:600; font-size:13px; color:#fff;">Saathi — AI Companion</div>
+                        <div style="font-size:11px; color:#f472b6;">'Her' Movie Vibe (hi-IN Female)</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p style="font-size:11px; color:#94a3b8; margin:8px 0 0 0; line-height:1.4;">Charming, warm, poetic Hindi/Hinglish companion. Listens deeply and logs emotional mood.</p>
+                </div>
+
+                <!-- Rohan (Retail Support en-IN) -->
+                <div id="card-rohan" onclick="window.applyPersonaPreset('rohan')" style="padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.03); cursor:pointer;">
+                  <div style="display:flex; justify-content:space-between;">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                      <div style="width:36px; height:36px; border-radius:50%; background:linear-gradient(135deg, #06b6d4, #2563eb); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:bold; font-size:12px;">RH</div>
+                      <div>
+                        <div style="font-weight:600; font-size:13px; color:#fff;">Rohan — Retail Support</div>
+                        <div style="font-size:11px; color:#38bdf8;">Cymbal Retail Concierge (en-IN Support)</div>
+                      </div>
+                    </div>
+                  </div>
+                  <p style="font-size:11px; color:#94a3b8; margin:8px 0 0 0; line-height:1.4;">Fast Indian English support. Checks order #CYM-8821 & initiates label-free doorstep returns.</p>
+                </div>
+
+              </div>
             </div>
             <div id="tts-llm-stt-panel" class="config-panel">
               <div class="tile" id="stt-tile">
@@ -391,6 +452,14 @@
       <footer class="footer">
         <p>: built by manishkjs@, feedback welcome.</p>
       </footer>
+    </div>
+    <!-- FLOATING TOAST NOTIFICATION FOR TOOL EXECUTION -->
+    <div id="toast" style="position:fixed; bottom:24px; right:24px; padding:12px 18px; border-radius:14px; background:#0891b2; color:#fff; font-size:12px; opacity:0; pointer-events:none; transition:all 0.3s ease; transform:translateY(10px); z-index:999; display:flex; align-items:center; gap:10px; border:1px solid rgba(255,255,255,0.2); box-shadow:0 10px 25px rgba(0,0,0,0.5);">
+      <span style="font-size:16px;">⚙️</span>
+      <div>
+        <div style="font-weight:bold;" id="toastTitle">Tool Executed</div>
+        <div style="font-family:monospace; font-size:11px;" id="toastMsg">generate_payment_link(amount=18500)</div>
+      </div>
     </div>
     <script type="module" src="/src/app.ts"></script>
     <audio id="bot-audio" autoplay playsinline></audio>
