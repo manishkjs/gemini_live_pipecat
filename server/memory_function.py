@@ -242,17 +242,24 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         best_match = filtered_results[0]
 
     if best_match is None:
-        # 7. Raw Insert using infer=False (Single-LLM ownership with Gemini 3.1 Flash Lite)
+        # Extract relational graph links (subject -> relation -> object) for multi-hop graph memory
+        subject, relation, obj = "User", "associated_with", fact_text
+        if "son" in fact_text.lower() or " बेटे " in fact_text:
+            subject, relation = "Son", "has_detail"
+        elif "exam" in fact_text.lower() or "परीक्षा" in fact_text:
+            subject, relation = "Exam", "scheduled_for"
+
         meta = {
             "category": category,
             "status": initial_status,
             "observation_count": 1,
             "observation_dates": [today_str],
             "verification_status": verification_status,
-            "expires_at": expires_at
+            "expires_at": expires_at,
+            "graph_relation": {"subject": subject, "relation": relation, "object": fact_text}
         }
         res = mem0.add(fact_text, user_id=user_id, metadata=meta, infer=False)
-        logger.info(f"✅ Stored Raw Memory ({initial_status}): '{fact_text}'")
+        logger.info(f"✅ Stored Raw Memory ({initial_status}) with Graph Link [{subject} --({relation})--> {fact_text[:20]}...]: '{fact_text}'")
         return res
     else:
         # 8. Match found: Increment count if observed on a NEW distinct day
