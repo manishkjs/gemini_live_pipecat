@@ -34,6 +34,7 @@ from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputP
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
@@ -543,7 +544,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "3. Whenever calling `save_user_memory`, `search_user_memory`, or `recall_user_memories`, always pass the active `user_id` if known.\n"
         "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
         "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ').\n"
-        "6. HUMAN THINKING FILLERS DURING MEMORY RECALL (NEVER SAY 'CHECKING NOTES'): Whenever calling `search_user_memory` or `recall_user_memories`, NEVER say 'I am checking my notes' or 'मैं नोट्स चेक करती हूँ' (that sounds robotic!). Instead, perform the tool call silently in the background and simultaneously speak natural, human conversational thinking fillers right as you invoke the tool: e.g. 'अरे हाँ... जहाँ तक मुझे याद है...', 'उम्म... सोचती हूँ...', or 'अच्छा हाँ... आपके बेटे का नाम...'. By the time you finish uttering that natural 1-second filler, the memory lookup result will arrive and you can seamlessly finish the sentence with the exact fact!"
+        "6. HUMAN THINKING FILLERS DURING MEMORY RECALL (NEVER SAY 'CHECKING NOTES'): Whenever calling `search_user_memory` or `recall_user_memories`, NEVER say 'I am checking my notes' or 'मैं नोट्स चेक करती हूँ' (that sounds robotic!). Instead, perform the tool call silently in the background and simultaneously speak natural, human conversational thinking fillers right as you invoke the tool: e.g. 'अरे हाँ... जहाँ तक मुझे याद है...', 'उम्म... सोचती हूँ...', or 'अच्छा हाँ... आपके बेटे का नाम...'. By the time you finish uttering that natural 1-second filler, the memory lookup result will arrive and you can seamlessly finish the sentence with the exact fact!\n"
+        "7. ULTRA-CONCISE 8-WORD LIMIT RULE: You MUST keep every single response EXTREMELY short and direct (maximum 8 words per turn). NEVER say conversation preambles e.g. 'अच्छा, आप सुन पा रहे हैं? बहुत अच्छे! और...'. When asked a question, state the exact answer directly in under 8 words!"
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
@@ -568,7 +570,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(), serializer=CustomProtobufSerializer(),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)), serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
