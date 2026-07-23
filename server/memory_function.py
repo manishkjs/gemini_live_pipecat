@@ -76,7 +76,7 @@ def get_mem0_config() -> dict:
         "embedder": {
             "provider": "gemini",
             "config": {
-                "model": "models/text-embedding-004",
+                "model": "text-embedding-004",
                 "embedding_dims": 768,
                 "api_key": api_key,
             }
