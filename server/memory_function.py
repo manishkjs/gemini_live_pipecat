@@ -212,44 +212,19 @@ search_user_memory_schema = FunctionSchema(
         },
         "user_id": {
             "type": "string",
-            "description": "The unique identity key or name of the user being spoken with (e.g. 'user:rohan')."
+            "description": "The unique identity key transliterated into canonical lowercased Roman ASCII script (e.g. 'user:manish' or 'user:chandra'). Never use raw Devnagari."
         }
     },
     required=["query"]
 )
 
-def llm_romanize_user_id(text: str) -> str:
-    """Use Gemini LLM to convert non-ASCII/Devanagari names to clean lowercased ASCII Roman slugs."""
-    if not text or not any(ord(c) > 127 for c in text):
-        return text
-    try:
-        from google import genai
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            return text
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"Return ONLY the raw lowercase ASCII Romanized name slug for '{text}' (no quotes, no explanation, e.g. 'मनीष' -> 'manish', 'चन्द्रा' -> 'chandra'):"
-        )
-        out = resp.text.strip().lower().replace(" ", "_")
-        out = re.sub(r'[^a-z0-9_-]', '', out)
-        return out if out else text
-    except Exception as e:
-        logger.warning(f"[llm_romanize_user_id] Gemini romanization error: {e}")
-        return text
-
 def normalize_user_id(raw_id: str) -> str:
-    """Normalize multi-lingual user_id strings to generic canonical ASCII keys (`user:<roman_slug>`) via Gemini LLM."""
+    """Normalize user_id strings to generic canonical identity keys (`user:<slug>`)."""
     if not raw_id:
         return "default_user"
-    clean = str(raw_id).strip()
-    if clean.startswith("user:") or clean.startswith("user_"):
-        body = clean[5:]
-        clean = "user:" + llm_romanize_user_id(body).lower().replace(" ", "_")
-    else:
-        clean = "user:" + llm_romanize_user_id(clean).lower().replace(" ", "_")
-    clean = re.sub(r'[^a-z0-9_:-]', '_', clean)
+    clean = str(raw_id).strip().lower().replace(" ", "_")
+    if not clean.startswith("user:"):
+        clean = f"user:{clean}"
     return clean
 
 def _get_active_user_id(params: FunctionCallParams) -> str:
@@ -272,7 +247,7 @@ recall_user_memories_schema = FunctionSchema(
         },
         "user_id": {
             "type": "string",
-            "description": "The unique identity key or name of the user being spoken with (e.g. 'user:rohan')."
+            "description": "The unique identity key transliterated into canonical lowercased Roman ASCII script (e.g. 'user:manish' or 'user:chandra'). Never use raw Devnagari."
         }
     },
     required=["query"]
@@ -511,17 +486,12 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     return valid_memories
 
 def _get_fallback_users(target_user_id: str) -> list[str]:
-    """Return fallbacks for target user ID using pure character-level transliteration without hardcoded names."""
+    """Return fallbacks for target user ID without hardcoded individual user names."""
     fallbacks = [target_user_id]
-    normed = normalize_user_id(target_user_id)
-    if normed not in fallbacks:
-        fallbacks.append(normed)
     if target_user_id.startswith("user:") and len(target_user_id) > 5:
         raw_name = target_user_id[5:]
-        raw_norm = normalize_user_id(raw_name)
-        for u in [raw_name, raw_norm]:
-            if u and u not in fallbacks:
-                fallbacks.append(u)
+        if raw_name not in fallbacks:
+            fallbacks.append(raw_name)
     elif not target_user_id.startswith("user:"):
         prefixed = f"user:{target_user_id}"
         if prefixed not in fallbacks:
@@ -848,6 +818,31 @@ async def recall_user_memories_handler(params: FunctionCallParams):
 
 def _search_local_memory(query: str, user_id: str = "default_user") -> str:
     """Fallback keyword search in local memory file for a specific user_id."""
+    file_path = get_memory_file_path(user_id)
+    if not os.path.exists(file_path):
+        return f"No memories saved yet for query '{query}' ({user_id})."
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            memories = json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading local memories: {e}")
+        return f"Failed to read local memory store."
+
+    query_words = [w.lower() for w in re.findall(r"\w+", query)]
+    matches = []
+
+    for entry in memories:
+        text = entry.get("memory_text", "").lower()
+        category = entry.get("category", "").lower()
+        if any(word in text or word in category for word in query_words):
+            matches.append(entry["memory_text"])
+
+    if not matches:
+        return f"No memories found matching '{query}' for {user_id}."
+
+    formatted = [f"- {m}" for m in matches]
+    return f"Retrieved memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
     file_path = get_memory_file_path(user_id)
     if not os.path.exists(file_path):
         return f"No memories saved yet for query '{query}' ({user_id})."

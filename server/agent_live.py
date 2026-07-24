@@ -111,12 +111,13 @@ identify_user_schema = FunctionSchema(
     description=(
         "Identify the user by name to load their specific multi-tenant memory profile. "
         "MUST be called immediately when the user tells you their name or answers your opening identity question. "
+        "CRITICAL ZERO-LATENCY ROMANIZATION RULE: Always output the name argument transliterated into canonical lowercase Roman ASCII script (e.g. if spoken in Devnagari as 'मेरा नाम मनीष है', pass name='manish'; if 'मेरा नाम चंद्रा है', pass name='chandra'). Never output raw Devnagari characters."
         "CRITICAL: When calling this tool upon identity introduction, DO NOT call `search_user_memory` or `recall_user_memories` alongside it. Only call search tools when the user asks a question!"
     ),
     properties={
         "name": {
             "type": "string",
-            "description": "The exact name of the user (e.g. 'Rohan' or 'Priya')."
+            "description": "The lowercased Romanized ASCII name slug of the user (e.g. 'manish' or 'chandra')."
         }
     },
     required=["name"]
