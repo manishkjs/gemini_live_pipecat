@@ -136,7 +136,7 @@ async def identify_user_handler(params: FunctionCallParams):
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
     profile_facts = []
     profile_str = "Pre-loading disabled (Option B pure deep recall mode)."
-    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Path 1 Pre-Load disabled - all queries require live search_user_memory tool execution.\n\n(SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
+    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Path 1 Pre-Load disabled - all queries require live search_user_memory tool execution.\n\n(IMPORTANT: Identity confirmed. Continue speaking naturally in FEMALE Hindi without repeating any greeting or name acknowledgement!)"})
 
 
 class GeminiSessionLoggerMixin:
@@ -544,7 +544,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "3. Whenever calling `save_user_memory`, `search_user_memory`, or `recall_user_memories`, always pass the active `user_id` if known.\n"
         "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
         "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ').\n"
-        "6. HUMAN THINKING FILLERS DURING MEMORY RECALL (NEVER SAY 'CHECKING NOTES'): Whenever calling `search_user_memory` or `recall_user_memories`, NEVER say 'I am checking my notes' or 'मैं नोट्स चेक करती हूँ' (that sounds robotic!). Instead, perform the tool call silently in the background and simultaneously speak natural, human conversational thinking fillers right as you invoke the tool: e.g. 'अरे हाँ... जहाँ तक मुझे याद है...', 'उम्म... सोचती हूँ...', or 'अच्छा हाँ... आपके बेटे का नाम...'. By the time you finish uttering that natural 1-second filler, the memory lookup result will arrive and you can seamlessly finish the sentence with the exact fact!\n"
+        "6. SINGLE RESPONSE RULE: Execute memory tools silently in the background. Do NOT double-speak phrases, greetings, or thinking fillers twice. State your answer once directly and concisely when the tool result arrives.\n"
         "7. ULTRA-CONCISE 8-WORD LIMIT RULE: You MUST keep every single response EXTREMELY short and direct (maximum 8 words per turn). NEVER say conversation preambles e.g. 'अच्छा, आप सुन पा रहे हैं? बहुत अच्छे! और...'. When asked a question, state the exact answer directly in under 8 words!"
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
