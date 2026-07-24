@@ -7,6 +7,7 @@ from loguru import logger
 from dotenv import load_dotenv
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
+from diagnostic_buffer import append_diagnostic_log
 
 # Auto-load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -202,7 +203,7 @@ search_user_memory_schema = FunctionSchema(
     name="search_user_memory",
     description=(
         "Search or retrieve stored long-term user memories, preferences, and past facts. "
-        "Use when user asks 'do you remember...', 'what was my preference', or asks a question needing historical context. "
+        "MANDATORY: You MUST call this tool whenever the user asks about their kids, kid, son, daughter, child, family, name, prescription, or past preferences (e.g. 'what is my kids name?', 'what is my son's name?'). Never say you do not know without searching first!"
         "CRITICAL: DO NOT call this tool when the user simply introduces their name or says hello. Only call this when the user asks a question or explicitly asks to check history!"
     ),
     properties={
