@@ -603,6 +603,14 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                             if mem_text not in valid_list:
                                 valid_list.append(mem_text)
 
+    if not valid_list:
+        local_res = _search_local_memory(query, user_id)
+        if local_res and "No memories" not in local_res:
+            for line in local_res.split("\n"):
+                clean_line = re.sub(r"^-\s*", "", line.strip())
+                if clean_line and "Retrieved memories" not in clean_line:
+                    valid_list.append(clean_line)
+
     return [r for r in valid_list if r]
 
 async def _save_to_vertex_memory_bank(memory_text: str, category: str, user_id: str) -> str:
