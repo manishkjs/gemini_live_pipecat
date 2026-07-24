@@ -72,6 +72,12 @@ from system_prompt import SYSTEM_PROMPT, tts_prompt
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles FastAPI startup and shutdown."""
+    try:
+        from memory_function import get_mem0_instance
+        print("[Startup] Pre-warming Mem0 vector memory engine in background thread...")
+        asyncio.create_task(asyncio.to_thread(get_mem0_instance))
+    except Exception as e:
+        print(f"[Startup] Mem0 pre-warm notice: {e}")
     yield  # Run app
 
 # Initialize FastAPI app with lifespan manager
