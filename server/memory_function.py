@@ -87,9 +87,6 @@ def get_mem0_config() -> dict:
             "config": {
                 "model": "gemini-embedding-001",
                 "embedding_dims": 768,
-                "vertexai": use_vertex,
-                "project": project_id,
-                "location": location,
                 "api_key": api_key if not use_vertex else None,
             }
         },
@@ -108,6 +105,7 @@ def get_mem0_instance():
     if _MEM0_INSTANCE is not None:
         return _MEM0_INSTANCE
 
+    config = None
     try:
         from mem0 import Memory
         config = get_mem0_config()
@@ -220,11 +218,20 @@ search_user_memory_schema = FunctionSchema(
     required=["query"]
 )
 
+def normalize_user_id(raw_id: str) -> str:
+    """Normalize user_id strings to generic canonical identity keys (`user:<slug>`)."""
+    if not raw_id:
+        return "default_user"
+    clean = str(raw_id).strip().lower().replace(" ", "_")
+    if not clean.startswith("user:"):
+        clean = f"user:{clean}"
+    return clean
+
 def _get_active_user_id(params: FunctionCallParams) -> str:
     """Extract user_id from arguments, session params, environment, or default."""
     if params and hasattr(params, "arguments") and params.arguments.get("user_id"):
-        return str(params.arguments.get("user_id")).strip().lower()
-    return os.getenv("ACTIVE_USER_ID", "default_user").strip().lower()
+        return normalize_user_id(str(params.arguments.get("user_id")))
+    return normalize_user_id(os.getenv("ACTIVE_USER_ID", "default_user"))
 
 recall_user_memories_schema = FunctionSchema(
     name="recall_user_memories",
@@ -497,6 +504,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     Query active memories matching specific historical recall requests.
     Applies similarity gate (score >= SIMILARITY_THRESHOLD) and scrubs expired facts.
     """
+    user_id = normalize_user_id(user_id)
     mem0 = get_mem0_instance()
     if not mem0:
         return []

@@ -17,6 +17,7 @@ from memory_function import (
     recall_user_memories_handler,
     is_roleplay_or_popculture_fact,
     extract_graph_triples,
+    normalize_user_id,
 )
 
 class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
@@ -230,6 +231,13 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         args, kwargs = mock_mem0.add.call_args
         self.assertEqual(kwargs["metadata"]["status"], "active")
         self.assertEqual(kwargs["metadata"]["graph_triples"], {"subject": "User", "relation": "identifies_as", "object": "Shaktiman"})
+
+    def test_normalize_user_id_devnagari(self):
+        self.assertEqual(normalize_user_id("मनीष"), "user:manish")
+        self.assertEqual(normalize_user_id("user:मनीष"), "user:manish")
+        self.assertEqual(normalize_user_id("चन्द्रा"), "user:chandra")
+        self.assertEqual(normalize_user_id("user:chandira"), "user:chandra")
+        self.assertEqual(normalize_user_id("रोहन"), "user:rohan")
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ from memory_function import (
     search_user_memory_handler,
     recall_user_memories_handler,
     pre_load_user_profile,
+    normalize_user_id,
 )
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -126,9 +127,7 @@ async def identify_user_handler(params: FunctionCallParams):
     if not name:
         await params.result_callback({"content": "Error: please provide a valid name."})
         return
-    # Pure generic user ID slugification — scales to any name/user in production
-    clean_name = re.sub(r'[^a-zA-Z0-9_\u0900-\u097F]', '', name.lower().replace(' ', '_'))
-    clean_id = f"user:{clean_name}"
+    clean_id = normalize_user_id(name)
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
     
