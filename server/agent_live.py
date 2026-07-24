@@ -25,7 +25,10 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_start import VADUserTurnStartStrategy, TranscriptionUserTurnStartStrategy
 try:
     from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 except ImportError:
@@ -704,7 +707,16 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             llm.register_function(tool.name, dynamic_tool_handler)
 
     initial_greeting = "नमस्ते!" if language == "hi-IN" else "Hello!"
-    context_aggregator = LLMContextAggregatorPair(LLMContext(messages=[{"role": "user", "content": initial_greeting}]))
+    user_params = LLMUserAggregatorParams(
+        user_turn_strategies=UserTurnStrategies(
+            start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy()],
+            stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)]
+        )
+    )
+    context_aggregator = LLMContextAggregatorPair(
+        LLMContext(messages=[{"role": "user", "content": initial_greeting}]),
+        user_params=user_params
+    )
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
         logger.info(f"User idle detected, retry count: {retry_count}")

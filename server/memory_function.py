@@ -30,7 +30,16 @@ _MEM0_INSTANCE = None
 
 def get_mem0_config() -> dict:
     """Return dynamic configuration for Mem0, supporting pgvector (Cloud SQL/AlloyDB) or local Qdrant fallback."""
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        env_file = os.path.join(os.path.dirname(__file__), ".env")
+        if os.path.exists(env_file):
+            with open(env_file) as f:
+                for line in f:
+                    if line.startswith("GEMINI_API_KEY="):
+                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+    api_key = api_key or ""
     pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
     
     if pg_dsn:
@@ -99,8 +108,8 @@ def get_mem0_instance():
 
     try:
         from mem0 import Memory
-        config = get_mem0_config()
-        if not config["llm"]["config"]["api_key"]:
+        use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
+        if not config["llm"]["config"]["api_key"] and not use_vertex:
             logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 fallback will be used.")
             return None
 
