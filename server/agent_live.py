@@ -134,9 +134,9 @@ async def identify_user_handler(params: FunctionCallParams):
         clean_id = f"user:{clean_name}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
-    profile_facts = pre_load_user_profile(clean_id)
-    profile_str = "\n".join([f"- {f}" for f in profile_facts]) if profile_facts else "No pre-existing profile facts."
-    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Active Core Profile Facts (Path 1 Pre-Load):\n{profile_str}\n\n(SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
+    profile_facts = []
+    profile_str = "Pre-loading disabled (Option B pure deep recall mode)."
+    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Path 1 Pre-Load disabled - all queries require live search_user_memory tool execution.\n\n(SILENT RULE: Welcome them warmly by name in strictly FEMALE Hindi grammar e.g. 'नमस्ते {name}! मैं आपकी कैसे मदद कर सकती हूँ?', but do NOT say out loud that you noted or loaded their ID/profile! Just speak naturally.)"})
 
 
 class GeminiSessionLoggerMixin:
@@ -549,10 +549,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
-    preloaded_facts = pre_load_user_profile(initial_user_id)
-    if preloaded_facts:
-        facts_str = "\n".join([f"- {f}" for f in preloaded_facts])
-        prompt_text += f"\n\nActive Core Profile Facts for {initial_user_id} (Path 1 Pre-Load):\n{facts_str}"
+    # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
+    preloaded_facts = []
     
     language_map = {
         "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
