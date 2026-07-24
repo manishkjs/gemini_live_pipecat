@@ -95,11 +95,10 @@ def get_mem0_config() -> dict:
         },
         "custom_prompt": (
             "You are a personal memory extraction assistant for Lenskart 'B' smartglasses. "
-            "Extract ALL user-stated facts, identities, roles, plans, goals, preferences, personal claims, and conversational details. "
-            "If the user states or claims an identity, role, or plan (e.g., 'I am Shaktiman', 'My plan is to defeat Kilvish', or pop-culture/identity claims about Shaktiman, Kilvish, Kabir, Adhyanth), ALWAYS extract it as a valid user memory fact with explicit remember status (e.g., 'User identifies as Shaktiman', 'User has a plan to defeat/kill Kilvish', 'Adhyanth identifies with Kabir'). "
+            "Extract ALL user-stated facts, family relationships, identities, roles, plans, goals, preferences, personal claims, and conversational details. "
+            "Always extract entity relationships clearly (e.g., 'User son name is X', 'User spouse name is Y', 'User has a goal to Z'). "
             "CRITICAL GOVERNANCE RULE: Never extract exact street addresses, GPS coordinates, credit cards, "
-            "phone numbers, or exact government IDs. Always convert locations to coarse user-stated places "
-            "(e.g., 'Connaught Place cafe', 'Bangalore office', 'home in Saket')."
+            "phone numbers, or exact government IDs. Always convert locations to coarse user-stated places."
         )
     }
 
