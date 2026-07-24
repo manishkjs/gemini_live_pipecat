@@ -139,7 +139,7 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
 
 class TestMem0PgvectorAndTwoPath(unittest.TestCase):
     def test_prd_constants_and_pgvector_config(self):
-        self.assertEqual(SIMILARITY_THRESHOLD, 0.80)
+        self.assertEqual(SIMILARITY_THRESHOLD, 0.65)
         self.assertEqual(THRESHOLDS["M7_Safety"], 1)
         self.assertEqual(THRESHOLDS["M4_Behavioral"], 3)
         

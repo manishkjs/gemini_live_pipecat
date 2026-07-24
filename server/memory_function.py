@@ -22,7 +22,7 @@ THRESHOLDS = {
     "M6_Recent":     1   # N=1 (Expires in 3 days)
 }
 
-SIMILARITY_THRESHOLD = 0.80
+SIMILARITY_THRESHOLD = 0.65
 RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
@@ -76,7 +76,7 @@ def get_mem0_config() -> dict:
         "embedder": {
             "provider": "gemini",
             "config": {
-                "model": "text-embedding-004",
+                "model": "gemini-embedding-001",
                 "embedding_dims": 768,
                 "api_key": api_key,
             }
