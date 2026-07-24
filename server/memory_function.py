@@ -110,6 +110,7 @@ def get_mem0_instance():
 
     try:
         from mem0 import Memory
+        config = get_mem0_config()
         use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
         if not config["llm"]["config"]["api_key"] and not use_vertex:
             logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 fallback will be used.")
