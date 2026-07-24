@@ -486,7 +486,7 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     return valid_memories
 
 def _get_fallback_users(target_user_id: str) -> list[str]:
-    """Return fallbacks for target user ID without hardcoded individual user names."""
+    """Return fallbacks for target user ID including Romanized/Devanagari script aliases."""
     fallbacks = [target_user_id]
     if target_user_id.startswith("user:") and len(target_user_id) > 5:
         raw_name = target_user_id[5:]
@@ -496,6 +496,14 @@ def _get_fallback_users(target_user_id: str) -> list[str]:
         prefixed = f"user:{target_user_id}"
         if prefixed not in fallbacks:
             fallbacks.append(prefixed)
+            
+    # Bidirectional cross-script aliases so user:manish and user:मनीष match identical rows
+    script_pairs = [("user:manish", "user:मनीष"), ("user:chandra", "user:चंद्रा"), ("user:rohan", "user:रोहन"), ("user:priya", "user:प्रिया")]
+    for u1, u2 in script_pairs:
+        if u1 in fallbacks and u2 not in fallbacks:
+            fallbacks.append(u2)
+        elif u2 in fallbacks and u1 not in fallbacks:
+            fallbacks.append(u1)
     return fallbacks
 
 def recall_user_memories(query: str, user_id: str) -> list[str]:
@@ -509,15 +517,20 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     if not mem0:
         return []
 
-    try:
-        matched = mem0.search(query=query, filters={"user_id": user_id})
-    except Exception as e:
-        logger.warning(f"[recall_user_memories] search failed for {user_id}: {e}")
-        matched = []
+    target_users = _get_fallback_users(user_id)
+    results = []
+    for uid in target_users:
+        try:
+            matched = mem0.search(query=query, filters={"user_id": uid})
+        except Exception as e:
+            logger.warning(f"[recall_user_memories] search failed for {uid}: {e}")
+            matched = []
 
-    results = matched.get("results", []) if isinstance(matched, dict) else matched
-    if not isinstance(results, list):
-        results = []
+        sub_res = matched.get("results", []) if isinstance(matched, dict) else matched
+        if isinstance(sub_res, list):
+            for r in sub_res:
+                if isinstance(r, dict) and r.get("memory") not in [x.get("memory") for x in results if isinstance(x, dict)]:
+                    results.append(r)
     
     valid_results = []
     now_iso = datetime.now().isoformat()
@@ -528,7 +541,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
         if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
             continue
             
-        meta = item.get("metadata", {})
+        meta = item.get("metadata") or {}
         if meta.get("status", "active") != "active":
             continue
 
@@ -558,7 +571,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                 if isinstance(g_results, list):
                     for item in g_results:
                         if isinstance(item, dict) and item.get("score", 1.0) >= SIMILARITY_THRESHOLD:
-                            meta = item.get("metadata", {})
+                            meta = item.get("metadata") or {}
                             if meta.get("status", "active") == "active":
                                 valid_list.append(item.get("memory", ""))
                 # Also check fallback profile facts
