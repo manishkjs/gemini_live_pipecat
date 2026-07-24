@@ -145,8 +145,12 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         
         with patch.dict(os.environ, {"CLOUDSQL_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"}):
             config = get_mem0_config()
+            self.assertEqual(config["embedder"]["provider"], "gemini")
+            self.assertEqual(config["embedder"]["config"]["model"], "gemini-embedding-001")
+            self.assertEqual(config["embedder"]["config"]["embedding_dims"], 768)
             self.assertEqual(config["vector_store"]["provider"], "pgvector")
             self.assertEqual(config["vector_store"]["config"]["connection_string"], "postgresql://user:pass@127.0.0.1:5432/memories")
+            self.assertEqual(config["vector_store"]["config"]["embedding_model_dims"], 768)
 
     @patch("memory_function.get_mem0_instance")
     def test_process_extracted_fact_raw_insert_and_promotion(self, mock_get_mem0):
@@ -167,7 +171,7 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         mock_mem0.search.return_value = {
             "results": [{
                 "id": "mem-2",
-                "score": 0.88, # >= 0.80 SIMILARITY_THRESHOLD
+                "score": 0.88, # >= 0.65 SIMILARITY_THRESHOLD
                 "metadata": {
                     "status": "staging",
                     "observation_count": 1,
