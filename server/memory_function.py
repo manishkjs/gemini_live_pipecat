@@ -218,13 +218,38 @@ search_user_memory_schema = FunctionSchema(
     required=["query"]
 )
 
+def llm_romanize_user_id(text: str) -> str:
+    """Use Gemini LLM to convert non-ASCII/Devanagari names to clean lowercased ASCII Roman slugs."""
+    if not text or not any(ord(c) > 127 for c in text):
+        return text
+    try:
+        from google import genai
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return text
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"Return ONLY the raw lowercase ASCII Romanized name slug for '{text}' (no quotes, no explanation, e.g. 'मनीष' -> 'manish', 'चन्द्रा' -> 'chandra'):"
+        )
+        out = resp.text.strip().lower().replace(" ", "_")
+        out = re.sub(r'[^a-z0-9_-]', '', out)
+        return out if out else text
+    except Exception as e:
+        logger.warning(f"[llm_romanize_user_id] Gemini romanization error: {e}")
+        return text
+
 def normalize_user_id(raw_id: str) -> str:
-    """Normalize user_id strings to generic canonical identity keys (`user:<slug>`)."""
+    """Normalize multi-lingual user_id strings to generic canonical ASCII keys (`user:<roman_slug>`) via Gemini LLM."""
     if not raw_id:
         return "default_user"
-    clean = str(raw_id).strip().lower().replace(" ", "_")
-    if not clean.startswith("user:"):
-        clean = f"user:{clean}"
+    clean = str(raw_id).strip()
+    if clean.startswith("user:") or clean.startswith("user_"):
+        body = clean[5:]
+        clean = "user:" + llm_romanize_user_id(body).lower().replace(" ", "_")
+    else:
+        clean = "user:" + llm_romanize_user_id(clean).lower().replace(" ", "_")
+    clean = re.sub(r'[^a-z0-9_:-]', '_', clean)
     return clean
 
 def _get_active_user_id(params: FunctionCallParams) -> str:
