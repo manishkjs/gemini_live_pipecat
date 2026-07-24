@@ -711,7 +711,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(),
-        UserIdleProcessor(callback=handle_user_idle, timeout=10.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
