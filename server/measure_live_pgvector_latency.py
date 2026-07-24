@@ -113,7 +113,7 @@ def run_latency_benchmark():
     print("🏁 BENCHMARK SUMMARY FOR LENSKART STAKEHOLDERS")
     print("==========================================================================")
     print(f"• Path 1 Connection Pre-Load (p50): {p50_p1:.2f} ms (vs ~40ms budget)")
-    print(f"• Path 2 Deep Vector Recall  (p50): {p50_p2:.2f} ms (Masked to 0s by 'Let me check your notes...')")
+    print(f"• Path 2 Deep Vector Recall  (p50): {p50_p2:.2f} ms (Masked by natural thinking fillers e.g. 'अरे हाँ...')")
     print(f"• Post-Session Async Worker  (p50): {p50_async:.2f} ms (Off critical path)")
     print("==========================================================================")
 

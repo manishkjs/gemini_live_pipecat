@@ -15,6 +15,8 @@ from memory_function import (
     pre_load_user_profile,
     recall_user_memories,
     recall_user_memories_handler,
+    is_roleplay_or_popculture_fact,
+    extract_graph_triples,
 )
 
 class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
@@ -202,12 +204,28 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         mock_mem0.search.return_value = {
             "results": [
                 {"memory": "Gaana subscription active", "score": 0.85, "metadata": {"status": "active"}},
-                {"memory": "Low score fact", "score": 0.70, "metadata": {"status": "active"}}
+                {"memory": "Low score fact", "score": 0.35, "metadata": {"status": "active"}}
             ]
         }
         recalled = recall_user_memories("Gaana", "user:test")
         self.assertEqual(len(recalled), 1)
         self.assertEqual(recalled[0], "Gaana subscription active")
+
+    @patch("memory_function.get_mem0_instance")
+    def test_roleplay_and_graph_triples_unit(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.search.return_value = {"results": []}
+        mock_mem0.add.return_value = {"results": [{"id": "unit-mock-id"}]}
+
+        self.assertTrue(is_roleplay_or_popculture_fact("I am Shaktiman and plan to kill Kilvish", "M1_Identity"))
+        triples = extract_graph_triples("User says I am Shaktiman and my plan is to kill Kilvish")
+        self.assertEqual(triples, {"subject": "Shaktiman", "relation": "plan", "object": "defeat/kill Kilvish"})
+
+        res = process_extracted_fact("User identifies as Shaktiman", "M4_Behavioral", "user:manish")
+        args, kwargs = mock_mem0.add.call_args
+        self.assertEqual(kwargs["metadata"]["status"], "active")
+        self.assertEqual(kwargs["metadata"]["graph_triples"], {"subject": "User", "relation": "identifies_as", "object": "Shaktiman"})
 
 if __name__ == "__main__":
     unittest.main()

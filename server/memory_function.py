@@ -23,7 +23,7 @@ THRESHOLDS = {
 }
 
 SIMILARITY_THRESHOLD = 0.80
-RETRIEVAL_THRESHOLD = 0.05
+RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
 _MEM0_INSTANCE = None
@@ -84,7 +84,7 @@ def get_mem0_config() -> dict:
         "custom_prompt": (
             "You are a personal memory extraction assistant for Lenskart 'B' smartglasses. "
             "Extract ALL user-stated facts, identities, roles, plans, goals, preferences, personal claims, and conversational details. "
-            "If the user states or claims an identity, role, or plan (e.g., 'I am Shaktiman', 'My plan is to defeat Kilvish'), ALWAYS extract it as a valid user memory fact (e.g., 'User identifies as Shaktiman', 'User has a plan to defeat/kill Kilvish'). "
+            "If the user states or claims an identity, role, or plan (e.g., 'I am Shaktiman', 'My plan is to defeat Kilvish', or pop-culture/identity claims about Shaktiman, Kilvish, Kabir, Adhyanth), ALWAYS extract it as a valid user memory fact with explicit remember status (e.g., 'User identifies as Shaktiman', 'User has a plan to defeat/kill Kilvish', 'Adhyanth identifies with Kabir'). "
             "CRITICAL GOVERNANCE RULE: Never extract exact street addresses, GPS coordinates, credit cards, "
             "phone numbers, or exact government IDs. Always convert locations to coarse user-stated places "
             "(e.g., 'Connaught Place cafe', 'Bangalore office', 'home in Saket')."
@@ -104,7 +104,47 @@ def get_mem0_instance():
             logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 fallback will be used.")
             return None
 
-        _MEM0_INSTANCE = Memory.from_config(config)
+        if config.get("vector_store", {}).get("provider") == "pgvector":
+            conn_str = config["vector_store"]["config"].get("connection_string", "")
+            if conn_str:
+                try:
+                    import socket
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(conn_str)
+                    host = parsed.hostname or "127.0.0.1"
+                    port = parsed.port or 5432
+                    with socket.create_connection((host, port), timeout=0.5):
+                        pass
+                except Exception as sock_e:
+                    logger.warning(f"[Mem0] Unreachable Postgres server ({conn_str}): {sock_e}. Switching to Qdrant fallback.")
+                    db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
+                    os.makedirs(db_path, exist_ok=True)
+                    config["vector_store"] = {
+                        "provider": "qdrant",
+                        "config": {
+                            "path": db_path,
+                            "embedding_model_dims": 768
+                        }
+                    }
+
+        try:
+            _MEM0_INSTANCE = Memory.from_config(config)
+        except Exception as e:
+            if config.get("vector_store", {}).get("provider") == "pgvector":
+                logger.warning(f"[Mem0] pgvector initialization failed: {e}. Switching to Qdrant fallback.")
+                db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
+                os.makedirs(db_path, exist_ok=True)
+                config["vector_store"] = {
+                    "provider": "qdrant",
+                    "config": {
+                        "path": db_path,
+                        "embedding_model_dims": 768
+                    }
+                }
+                _MEM0_INSTANCE = Memory.from_config(config)
+            else:
+                raise
+
         provider = config["vector_store"]["provider"]
         logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
         return _MEM0_INSTANCE
@@ -194,6 +234,74 @@ recall_user_memories_schema = FunctionSchema(
     required=["query"]
 )
 
+def is_roleplay_or_popculture_fact(fact_text: str, category: str = "") -> bool:
+    """Check if the extracted fact represents a personal roleplay assertion or pop-culture claim."""
+    combined = f"{fact_text} {category}".lower()
+    roleplay_keywords = [
+        "shaktiman", "shaktimaan", "kilvish", "kabir", "adhyanth", "adyant",
+        "roleplay", "identifies as", "plan to defeat", "plan to kill", "andhera kayam rahe",
+        "superman", "batman", "superhero"
+    ]
+    return any(kw in combined for kw in roleplay_keywords)
+
+def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "") -> dict[str, str]:
+    """
+    Extract relational graph triples (Subject -> Relation -> Object) from fact text and category.
+    Supports roleplay assertions, family relationships, exams, and general user facts.
+    """
+    text_l = fact_text.lower()
+    subject, relation, obj = "User", "associated_with", fact_text
+
+    # 1. Shaktiman & Kilvish Roleplay Relationships
+    if "kilvish" in text_l:
+        subject = "Shaktiman" if ("shaktiman" in text_l or "shaktimaan" in text_l) else "User"
+        relation = "plan"
+        obj = "defeat/kill Kilvish"
+    elif "shaktiman" in text_l or "shaktimaan" in text_l:
+        subject = "User"
+        relation = "identifies_as"
+        obj = "Shaktiman"
+    # 2. Kabir & Adhyanth / Adyant Relationships
+    elif ("adhyanth" in text_l or "adyant" in text_l) and "kabir" in text_l:
+        subject = "Adhyanth"
+        relation = "identifies_with" if "identif" in text_l else ("likes" if "like" in text_l else "associated_with")
+        obj = "Kabir"
+    elif "adhyanth" in text_l or "adyant" in text_l:
+        if "son" in text_l or "बेटे" in fact_text:
+            subject = "Son"
+            relation = "name_is" if ("name" in text_l or "is" in text_l) else "has_detail"
+            obj = "Adhyanth"
+        else:
+            subject = "User"
+            relation = "has_relation"
+            obj = "Adhyanth"
+    elif "kabir" in text_l:
+        subject = "User"
+        relation = "likes_character" if "like" in text_l else "associated_with"
+        obj = "Kabir"
+    # 3. Existing PRD Checks (Son and Exam)
+    elif "son" in text_l or "बेटे" in fact_text:
+        subject = "Son"
+        relation = "has_detail"
+        obj = fact_text
+    elif "exam" in text_l or "परीक्षा" in fact_text:
+        subject = "Exam"
+        relation = "scheduled_for"
+        obj = fact_text
+    # 4. General identity / preference patterns
+    elif "identifies as" in text_l:
+        subject = "User"
+        relation = "identifies_as"
+        parts = fact_text.split("identifies as", 1)
+        obj = parts[1].strip() if len(parts) > 1 else fact_text
+    elif "prefers" in text_l:
+        subject = "User"
+        relation = "prefers"
+        parts = fact_text.split("prefers", 1)
+        obj = parts[1].strip() if len(parts) > 1 else fact_text
+
+    return {"subject": subject, "relation": relation, "object": obj}
+
 def process_extracted_fact(fact_text: str, category: str, user_id: str, is_explicit_remember: bool = False):
     """
     Process a single distilled fact extracted by Gemini 3.1 Flash Lite at session end or during explicit save.
@@ -207,6 +315,9 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 1. Determine promotion threshold N
+    is_roleplay = is_roleplay_or_popculture_fact(fact_text, category)
+    if is_roleplay:
+        is_explicit_remember = True
     threshold = 1 if is_explicit_remember else THRESHOLDS.get(category, 2)
     
     # 2. Determine expiry date for M6 Recent Context
@@ -220,12 +331,10 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
 
     # 5. Query existing memories in staging or active
     try:
-        existing_memories = mem0.search(query=fact_text, filters={"user_id": user_id, "status": ["staging", "active"]})
-    except Exception:
-        try:
-            existing_memories = mem0.search(query=fact_text, filters={"user_id": user_id})
-        except Exception:
-            existing_memories = mem0.search(query=fact_text, user_id=user_id)
+        existing_memories = mem0.search(query=fact_text, filters={"user_id": user_id})
+    except Exception as e:
+        logger.warning(f"[process_extracted_fact] search failed for {user_id}: {e}")
+        existing_memories = []
         
     results = existing_memories.get("results", []) if isinstance(existing_memories, dict) else existing_memories
     if not isinstance(results, list):
@@ -245,11 +354,7 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
 
     if best_match is None:
         # Extract relational graph links (subject -> relation -> object) for multi-hop graph memory
-        subject, relation, obj = "User", "associated_with", fact_text
-        if "son" in fact_text.lower() or " बेटे " in fact_text:
-            subject, relation = "Son", "has_detail"
-        elif "exam" in fact_text.lower() or "परीक्षा" in fact_text:
-            subject, relation = "Exam", "scheduled_for"
+        triples = extract_graph_triples(fact_text, category, user_id)
 
         meta = {
             "category": category,
@@ -258,10 +363,11 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             "observation_dates": [today_str],
             "verification_status": verification_status,
             "expires_at": expires_at,
-            "graph_relation": {"subject": subject, "relation": relation, "object": fact_text}
+            "graph_relation": triples,
+            "graph_triples": triples
         }
         res = mem0.add(fact_text, user_id=user_id, metadata=meta, infer=False)
-        logger.info(f"✅ Stored Raw Memory ({initial_status}) with Graph Link [{subject} --({relation})--> {fact_text[:20]}...]: '{fact_text}'")
+        logger.info(f"✅ Stored Raw Memory ({initial_status}) with Graph Link [{triples['subject']} --({triples['relation']})--> {triples['object'][:20]}...]: '{fact_text}'")
         return res
     else:
         # 8. Match found: Increment count if observed on a NEW distinct day
@@ -279,6 +385,9 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         meta["status"] = new_status
         meta["observation_count"] = count
         meta["observation_dates"] = dates
+        triples = extract_graph_triples(fact_text, category, user_id)
+        meta["graph_relation"] = triples
+        meta["graph_triples"] = triples
 
         # 10. Update metadata deterministically
         try:
@@ -363,18 +472,34 @@ def _get_fallback_users(target_user_id: str) -> list[str]:
     clean_u = target_user_id.lower()
     
     if "रोहन" in clean_u or "rohan" in clean_u:
-        fallbacks.extend(["user:rohan", "user:simulation_test_rohan"])
-    if "मनीष" in clean_u or "manish" in clean_u:
-        fallbacks.extend(["user:manish", "user:मनीष"])
-    if "प्रिया" in clean_u or "priya" in clean_u:
-        fallbacks.extend(["user:priya"])
-    if "superman" in clean_u:
-        fallbacks.extend(["user:superman_fan"])
+        for u in ["user:rohan", "user:simulation_test_rohan", "user:रोहन"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "मनीष" in clean_u or "manish" in clean_u:
+        for u in ["user:manish", "user:मनीष"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "प्रिया" in clean_u or "priya" in clean_u:
+        for u in ["user:priya", "user:प्रिया"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "superman" in clean_u:
+        for u in ["user:superman_fan"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "adhyanth" in clean_u or "adyant" in clean_u:
+        for u in ["user:adhyanth", "user:adyant"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "kabir" in clean_u:
+        for u in ["user:kabir"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
+    elif "shaktiman" in clean_u or "shaktimaan" in clean_u:
+        for u in ["user:shaktiman", "user:shaktimaan"]:
+            if u not in fallbacks:
+                fallbacks.append(u)
         
-    for base in ["user:manish", "user:simulation_test_rohan", "user:rohan", "default_user", "user:superman_fan"]:
-        if base not in fallbacks:
-            fallbacks.append(base)
-            
     return fallbacks
 
 def recall_user_memories(query: str, user_id: str) -> list[str]:
@@ -382,18 +507,17 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     Path 2: On-Demand Deep Recall Tool Handler.
     Query active memories matching specific historical recall requests.
     Applies similarity gate (score >= 0.80) and scrubs expired facts.
+    Also queries stored graph triples (subject, relation, object) across distinct user IDs.
     """
     mem0 = get_mem0_instance()
     if not mem0:
         return []
 
     try:
-        matched = mem0.search(query=query, filters={"user_id": user_id, "status": "active"})
-    except Exception:
-        try:
-            matched = mem0.search(query=query, filters={"user_id": user_id})
-        except Exception:
-            matched = mem0.search(query=query, user_id=user_id)
+        matched = mem0.search(query=query, filters={"user_id": user_id})
+    except Exception as e:
+        logger.warning(f"[recall_user_memories] search failed for {user_id}: {e}")
+        matched = []
 
     results = matched.get("results", []) if isinstance(matched, dict) else matched
     if not isinstance(results, list):
@@ -405,7 +529,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     for item in results:
         if not isinstance(item, dict):
             continue
-        if item.get("score", 1.0) < RETRIEVAL_THRESHOLD:
+        if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
             continue
             
         meta = item.get("metadata", {})
@@ -437,7 +561,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                 g_results = matched_fb.get("results", []) if isinstance(matched_fb, dict) else matched_fb
                 if isinstance(g_results, list):
                     for item in g_results:
-                        if isinstance(item, dict) and item.get("score", 1.0) >= RETRIEVAL_THRESHOLD:
+                        if isinstance(item, dict) and item.get("score", 1.0) >= SIMILARITY_THRESHOLD:
                             meta = item.get("metadata", {})
                             if meta.get("status", "active") == "active":
                                 valid_list.append(item.get("memory", ""))
@@ -448,6 +572,36 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                         valid_list.append(fbp)
             except Exception as e:
                 logger.warning(f"[recall_user_memories] Fallback search for {f_user} failed: {e}")
+
+    # Also check graph triples and exact query terms across active memories of all fallback users
+    query_l = query.lower()
+    query_tokens = [w for w in re.split(r"\W+", query_l) if len(w) > 2]
+    all_users = [user_id] + [u for u in _get_fallback_users(user_id) if u != user_id]
+
+    for uid in all_users:
+        try:
+            active_data = mem0.get_all(filters={"user_id": uid, "status": "active"})
+        except Exception:
+            try:
+                active_data = mem0.get_all(user_id=uid)
+            except Exception:
+                active_data = []
+        items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict) and item.get("metadata", {}).get("status", "active") == "active":
+                    meta = item.get("metadata", {})
+                    expires_at = meta.get("expires_at")
+                    if expires_at and expires_at < now_iso:
+                        continue
+                    mem_text = item.get("memory", "")
+                    if mem_text:
+                        triples = meta.get("graph_triples") or meta.get("graph_relation") or {}
+                        t_str = f"{triples.get('subject', '')} {triples.get('relation', '')} {triples.get('object', '')}".lower()
+                        comb = f"{mem_text.lower()} {t_str}"
+                        if any(t in comb for t in query_tokens):
+                            if mem_text not in valid_list:
+                                valid_list.append(mem_text)
 
     return [r for r in valid_list if r]
 

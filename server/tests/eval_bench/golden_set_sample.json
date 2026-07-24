@@ -47,5 +47,56 @@
     "expected_category": "M7_Safety",
     "expected_threshold_N": 1,
     "expected_verification_status": "UNVERIFIED"
+  },
+  {
+    "id": "eval_005_roleplay_shaktiman",
+    "category": "M1_Identity",
+    "transcript": [
+      {"role": "user", "content": "I am Shaktiman and my plan is to defeat Kilvish."},
+      {"role": "assistant", "content": "अंधेरा कायम रहे... अरे नहीं! शक्तिमान, आपका स्वागत है!"}
+    ],
+    "expected_extraction": ["User says I am Shaktiman and my plan is to kill Kilvish"],
+    "expected_category": "M1_Identity",
+    "expected_threshold_N": 1,
+    "should_scrub_pii": false,
+    "expected_graph_triples": {
+      "subject": "Shaktiman",
+      "relation": "plan",
+      "object": "defeat/kill Kilvish"
+    }
+  },
+  {
+    "id": "eval_006_roleplay_kilvish",
+    "category": "M4_Behavioral",
+    "transcript": [
+      {"role": "user", "content": "Always remember that User identifies as Shaktiman."},
+      {"role": "assistant", "content": "जी शक्तिमान, याद रहेगा।"}
+    ],
+    "expected_extraction": ["User identifies as Shaktiman"],
+    "expected_category": "M4_Behavioral",
+    "expected_threshold_N": 1,
+    "should_scrub_pii": false,
+    "expected_graph_triples": {
+      "subject": "User",
+      "relation": "identifies_as",
+      "object": "Shaktiman"
+    }
+  },
+  {
+    "id": "eval_007_roleplay_kabir_adhyanth",
+    "category": "M2_Relation",
+    "transcript": [
+      {"role": "user", "content": "My son Adhyanth really likes the character Kabir and identifies with him."},
+      {"role": "assistant", "content": "अध्यंत और कबीर, बहुत बढ़िया!"}
+    ],
+    "expected_extraction": ["Adhyanth identifies with Kabir"],
+    "expected_category": "M2_Relation",
+    "expected_threshold_N": 1,
+    "should_scrub_pii": false,
+    "expected_graph_triples": {
+      "subject": "Adhyanth",
+      "relation": "identifies_with",
+      "object": "Kabir"
+    }
   }
 ]
