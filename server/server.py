@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
 load_dotenv(override=True)
+import diagnostic_buffer
 
 # Obsolete in pipecat-ai 1.x (which natively uses google-genai)
 # import pipecat.services.gemini_multimodal_live.gemini
@@ -213,6 +214,11 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 @app.get("/connect/system-prompt")
 async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
+
+@app.get("/api/logs")
+async def get_diagnostic_logs(limit: int = 50):
+    from diagnostic_buffer import get_recent_diagnostic_logs
+    return {"logs": get_recent_diagnostic_logs(limit)}
 
 # Mount the static files directory
 possible_dist_dirs = [

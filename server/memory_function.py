@@ -23,7 +23,7 @@ THRESHOLDS = {
     "M6_Recent":     1   # N=1 (Expires in 3 days)
 }
 
-SIMILARITY_THRESHOLD = 0.65
+SIMILARITY_THRESHOLD = 0.55
 RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
@@ -220,12 +220,30 @@ search_user_memory_schema = FunctionSchema(
 )
 
 def normalize_user_id(raw_id: str) -> str:
-    """Normalize user_id strings to generic canonical identity keys (`user:<slug>`)."""
+    """Normalize multi-lingual/Devnagari user_id strings to canonical ASCII identity keys (`user:manish`, `user:chandra`, etc)."""
     if not raw_id:
         return "default_user"
-    clean = str(raw_id).strip().lower().replace(" ", "_")
+    clean = str(raw_id).strip().lower()
     if not clean.startswith("user:"):
-        clean = f"user:{clean}"
+        if clean in ["मनीष", "manish"]:
+            clean = "user:manish"
+        elif clean in ["रोहन", "rohan"]:
+            clean = "user:rohan"
+        elif clean in ["प्रिया", "priya"]:
+            clean = "user:priya"
+        elif clean in ["चन्द्रा", "चंद्रा", "chandra", "chandira"]:
+            clean = "user:chandra"
+        else:
+            clean = f"user:{clean}"
+    
+    if "मनीष" in clean or "manish" in clean:
+        return "user:manish"
+    elif "रोहन" in clean or "rohan" in clean:
+        return "user:rohan"
+    elif "प्रिया" in clean or "priya" in clean:
+        return "user:priya"
+    elif "चन्द्रा" in clean or "चंद्रा" in clean or "chandra" in clean or "chandira" in clean:
+        return "user:chandra"
     return clean
 
 def _get_active_user_id(params: FunctionCallParams) -> str:

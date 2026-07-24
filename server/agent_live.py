@@ -21,6 +21,7 @@ from memory_function import (
     pre_load_user_profile,
     normalize_user_id,
 )
+from diagnostic_buffer import append_diagnostic_log
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -131,6 +132,7 @@ async def identify_user_handler(params: FunctionCallParams):
     clean_id = normalize_user_id(name)
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
+    append_diagnostic_log("Identity Switch", f"Spoken '{name}' -> Canonical ID '{clean_id}'", user_id=clean_id)
     
     await params.result_callback({
         "content": f"User successfully identified as '{name}' (ID: {clean_id}). Active user context set. You must execute search_user_memory tool calls dynamically for any memory or historical query."
@@ -151,6 +153,8 @@ class GeminiSessionLoggerMixin:
         if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
             self._current_turn_ttft = time.time() - self._my_ttfb_start
             logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
+            ttfb_ms = self._current_turn_ttft * 1000.0
+            append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms, user_id=os.getenv("ACTIVE_USER_ID", "default_user"))
             self._my_ttfb_start = None
 
 
