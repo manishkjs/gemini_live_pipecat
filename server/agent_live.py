@@ -126,31 +126,14 @@ async def identify_user_handler(params: FunctionCallParams):
     if not name:
         await params.result_callback({"content": "Error: please provide a valid name."})
         return
-    clean_name = name.lower().replace(' ', '_')
-    if "मनीष" in clean_name or "manish" in clean_name:
-        clean_id = "user:manish"
-    elif "रोहन" in clean_name or "rohan" in clean_name:
-        clean_id = "user:rohan"
-    elif "प्रिया" in clean_name or "priya" in clean_name:
-        clean_id = "user:priya"
-    else:
-        clean_id = f"user:{clean_name}"
+    # Pure generic user ID slugification — scales to any name/user in production
+    clean_name = re.sub(r'[^a-zA-Z0-9_\u0900-\u097F]', '', name.lower().replace(' ', '_'))
+    clean_id = f"user:{clean_name}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
     
-    # Auto-chain core profile & family facts inside identify_user so Gemini answers multi-part introduction queries in <200ms
-    try:
-        profile_facts = recall_user_memories("son child family profile name identity", clean_id)
-    except Exception as e:
-        logger.warning(f"Auto-profile fetch error during identity switch: {e}")
-        profile_facts = []
-
-    facts_str = "\n".join([f"- {f}" for f in profile_facts]) if profile_facts else "No active memories found yet."
-    
     await params.result_callback({
-        "content": f"User successfully identified as '{name}' (ID: {clean_id}).\n"
-                   f"Active User Memories:\n{facts_str}\n\n"
-                   f"(IMPORTANT: Use these profile facts immediately if the user asked a question in their opening turn. Speak naturally in FEMALE Hindi with MALE honorifics for the user. Do NOT pause or wait for user audio.)"
+        "content": f"User successfully identified as '{name}' (ID: {clean_id}). Active user context set. You must execute search_user_memory tool calls dynamically for any memory or historical query."
     })
 
 

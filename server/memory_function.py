@@ -87,7 +87,10 @@ def get_mem0_config() -> dict:
             "config": {
                 "model": "gemini-embedding-001",
                 "embedding_dims": 768,
-                "api_key": api_key,
+                "vertexai": use_vertex,
+                "project": project_id,
+                "location": location,
+                "api_key": api_key if not use_vertex else None,
             }
         },
         "custom_prompt": (
@@ -476,72 +479,37 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     return valid_memories
 
 def _get_fallback_users(target_user_id: str) -> list[str]:
-    """Return smart fallback user IDs for cross-script alias matching (Hindi vs English vs test prefixes)."""
+    """Return fallbacks for target user ID without hardcoded individual user names."""
     fallbacks = [target_user_id]
-    clean_u = target_user_id.lower()
-    
-    if "रोहन" in clean_u or "rohan" in clean_u:
-        for u in ["user:rohan", "user:simulation_test_rohan", "user:रोहन"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "मनीष" in clean_u or "manish" in clean_u:
-        for u in ["user:manish", "user:मनीष"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "प्रिया" in clean_u or "priya" in clean_u:
-        for u in ["user:priya", "user:प्रिया"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "superman" in clean_u:
-        for u in ["user:superman_fan"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "adhyanth" in clean_u or "adyant" in clean_u:
-        for u in ["user:adhyanth", "user:adyant"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "kabir" in clean_u:
-        for u in ["user:kabir"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-    elif "shaktiman" in clean_u or "shaktimaan" in clean_u:
-        for u in ["user:shaktiman", "user:shaktimaan"]:
-            if u not in fallbacks:
-                fallbacks.append(u)
-        
+    if target_user_id.startswith("user:") and len(target_user_id) > 5:
+        raw_name = target_user_id[5:]
+        if raw_name not in fallbacks:
+            fallbacks.append(raw_name)
+    elif not target_user_id.startswith("user:"):
+        prefixed = f"user:{target_user_id}"
+        if prefixed not in fallbacks:
+            fallbacks.append(prefixed)
     return fallbacks
 
 def recall_user_memories(query: str, user_id: str) -> list[str]:
     """
     Path 2: On-Demand Deep Recall Tool Handler.
     Query active memories matching specific historical recall requests.
-    Applies similarity gate (score >= 0.80) and scrubs expired facts.
-    Also queries stored graph triples (subject, relation, object) across distinct user IDs.
+    Applies similarity gate (score >= SIMILARITY_THRESHOLD) and scrubs expired facts.
     """
     mem0 = get_mem0_instance()
     if not mem0:
         return []
 
-    target_users = [user_id]
-    q_low = query.lower()
-    for entity_name, u_id in [("chandra", "user:chandra"), ("चंद्रा", "user:chandra"),
-                               ("rohan", "user:rohan"), ("रोहन", "user:rohan"),
-                               ("priya", "user:priya"), ("प्रिया", "user:priya"),
-                               ("manish", "user:manish"), ("मनीष", "user:manish")]:
-        if entity_name in q_low and u_id not in target_users:
-            target_users.append(u_id)
+    try:
+        matched = mem0.search(query=query, filters={"user_id": user_id})
+    except Exception as e:
+        logger.warning(f"[recall_user_memories] search failed for {user_id}: {e}")
+        matched = []
 
-    results = []
-    for uid in target_users:
-        try:
-            matched = mem0.search(query=query, filters={"user_id": uid})
-        except Exception as e:
-            logger.warning(f"[recall_user_memories] search failed for {uid}: {e}")
-            matched = []
-
-        sub_res = matched.get("results", []) if isinstance(matched, dict) else matched
-        if isinstance(sub_res, list):
-            results.extend(sub_res)
+    results = matched.get("results", []) if isinstance(matched, dict) else matched
+    if not isinstance(results, list):
+        results = []
     
     valid_results = []
     now_iso = datetime.now().isoformat()
