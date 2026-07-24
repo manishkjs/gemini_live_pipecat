@@ -23,7 +23,7 @@ THRESHOLDS = {
     "M6_Recent":     1   # N=1 (Expires in 3 days)
 }
 
-SIMILARITY_THRESHOLD = 0.55
+SIMILARITY_THRESHOLD = 0.20
 RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
