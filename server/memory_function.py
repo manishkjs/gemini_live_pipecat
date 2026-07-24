@@ -478,17 +478,39 @@ def pre_load_user_profile(user_id: str) -> list[str]:
 
     return valid_memories
 
+def _transliterate_devanagari(text: str) -> str:
+    """Generic Devanagari-to-Roman script character mapping for script-agnostic multi-tenant identity matching."""
+    char_map = {
+        'म': 'm', 'न': 'n', 'ी': 'i', 'ष': 'sh', 'श': 'sh', 'स': 's',
+        'च': 'ch', 'ं': 'n', 'द्': 'd', 'द': 'd', '्र': 'r', 'ा': 'a',
+        'र': 'r', 'ह': 'h', 'प': 'p', '्': '', 'ि': 'i', 'य': 'y',
+        'अ': 'a', 'आ': 'a', 'इ': 'i', 'ई': 'i', 'उ': 'u', 'ऊ': 'u',
+        'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'ज': 'j', 'झ': 'jh',
+        'ट': 't', 'ठ': 'th', 'ड': 'd', 'ढ': 'dh', 'त': 't', 'थ': 'th',
+        'ध': 'dh', 'ब': 'b', 'भ': 'bh', 'व': 'v', 'ल': 'l', 'ो': 'o',
+        'ौ': 'au', 'े': 'e', 'ै': 'ai', 'ु': 'u', 'ू': 'u', 'ँ': 'n',
+    }
+    return "".join(char_map.get(ch, ch) for ch in text)
+
 def _get_fallback_users(target_user_id: str) -> list[str]:
-    """Return fallbacks for target user ID without hardcoded individual user names."""
+    """Return fallbacks for target user ID including Romanized script transliteration without hardcoded names."""
     fallbacks = [target_user_id]
+    romanized = _transliterate_devanagari(target_user_id)
+    if romanized != target_user_id and romanized not in fallbacks:
+        fallbacks.append(romanized)
+
     if target_user_id.startswith("user:") and len(target_user_id) > 5:
         raw_name = target_user_id[5:]
-        if raw_name not in fallbacks:
-            fallbacks.append(raw_name)
+        raw_rom = _transliterate_devanagari(raw_name)
+        for u in [raw_name, f"user:{raw_rom}", raw_rom]:
+            if u and u not in fallbacks:
+                fallbacks.append(u)
     elif not target_user_id.startswith("user:"):
         prefixed = f"user:{target_user_id}"
-        if prefixed not in fallbacks:
-            fallbacks.append(prefixed)
+        prefixed_rom = f"user:{romanized}"
+        for u in [prefixed, prefixed_rom, romanized]:
+            if u and u not in fallbacks:
+                fallbacks.append(u)
     return fallbacks
 
 def recall_user_memories(query: str, user_id: str) -> list[str]:
@@ -501,15 +523,20 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     if not mem0:
         return []
 
-    try:
-        matched = mem0.search(query=query, filters={"user_id": user_id})
-    except Exception as e:
-        logger.warning(f"[recall_user_memories] search failed for {user_id}: {e}")
-        matched = []
+    target_users = _get_fallback_users(user_id)
+    results = []
+    for uid in target_users:
+        try:
+            matched = mem0.search(query=query, filters={"user_id": uid})
+        except Exception as e:
+            logger.warning(f"[recall_user_memories] search failed for {uid}: {e}")
+            matched = []
 
-    results = matched.get("results", []) if isinstance(matched, dict) else matched
-    if not isinstance(results, list):
-        results = []
+        sub_res = matched.get("results", []) if isinstance(matched, dict) else matched
+        if isinstance(sub_res, list):
+            for r in sub_res:
+                if isinstance(r, dict) and r.get("memory") not in [x.get("memory") for x in results if isinstance(x, dict)]:
+                    results.append(r)
     
     valid_results = []
     now_iso = datetime.now().isoformat()
