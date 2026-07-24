@@ -513,15 +513,26 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     if not mem0:
         return []
 
-    try:
-        matched = mem0.search(query=query, filters={"user_id": user_id})
-    except Exception as e:
-        logger.warning(f"[recall_user_memories] search failed for {user_id}: {e}")
-        matched = []
+    target_users = [user_id]
+    q_low = query.lower()
+    for entity_name, u_id in [("chandra", "user:chandra"), ("चंद्रा", "user:chandra"),
+                               ("rohan", "user:rohan"), ("रोहन", "user:rohan"),
+                               ("priya", "user:priya"), ("प्रिया", "user:priya"),
+                               ("manish", "user:manish"), ("मनीष", "user:manish")]:
+        if entity_name in q_low and u_id not in target_users:
+            target_users.append(u_id)
 
-    results = matched.get("results", []) if isinstance(matched, dict) else matched
-    if not isinstance(results, list):
-        results = []
+    results = []
+    for uid in target_users:
+        try:
+            matched = mem0.search(query=query, filters={"user_id": uid})
+        except Exception as e:
+            logger.warning(f"[recall_user_memories] search failed for {uid}: {e}")
+            matched = []
+
+        sub_res = matched.get("results", []) if isinstance(matched, dict) else matched
+        if isinstance(sub_res, list):
+            results.extend(sub_res)
     
     valid_results = []
     now_iso = datetime.now().isoformat()

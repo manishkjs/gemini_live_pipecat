@@ -134,9 +134,21 @@ async def identify_user_handler(params: FunctionCallParams):
         clean_id = f"user:{clean_name}"
     os.environ["ACTIVE_USER_ID"] = clean_id
     logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
-    profile_facts = []
-    profile_str = "Pre-loading disabled (Option B pure deep recall mode)."
-    await params.result_callback({"content": f"User successfully identified as '{name}' (ID: {clean_id}). Path 1 Pre-Load disabled - all queries require live search_user_memory tool execution.\n\n(IMPORTANT: Identity confirmed. Continue speaking naturally in FEMALE Hindi without repeating any greeting or name acknowledgement!)"})
+    
+    # Auto-chain core profile & family facts inside identify_user so Gemini answers multi-part introduction queries in <200ms
+    try:
+        profile_facts = recall_user_memories("son child family profile name identity", clean_id)
+    except Exception as e:
+        logger.warning(f"Auto-profile fetch error during identity switch: {e}")
+        profile_facts = []
+
+    facts_str = "\n".join([f"- {f}" for f in profile_facts]) if profile_facts else "No active memories found yet."
+    
+    await params.result_callback({
+        "content": f"User successfully identified as '{name}' (ID: {clean_id}).\n"
+                   f"Active User Memories:\n{facts_str}\n\n"
+                   f"(IMPORTANT: Use these profile facts immediately if the user asked a question in their opening turn. Speak naturally in FEMALE Hindi with MALE honorifics for the user. Do NOT pause or wait for user audio.)"
+    })
 
 
 class GeminiSessionLoggerMixin:
