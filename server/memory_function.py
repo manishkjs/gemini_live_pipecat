@@ -18,7 +18,7 @@ THRESHOLDS = {
     "M7_Safety":     1,  # N=1 (Instant, UNVERIFIED)
     "M5_Commitment": 1,  # N=1 (Instant, expires on completion + 30d)
     "M1_Identity":   2,  # N=2 (Catches ASR errors / misstatements)
-    "M2_Relation":   2,  # N=2 (Catches ASR errors / misstatements)
+    "M2_Relation":   1,  # N=1 (Instant: family relations, son/daughter names, core personal relations)
     "M3_Preference": 2,  # N=2 (Fast Staging)
     "M4_Behavioral": 3,  # N=3 (Standard Staging)
     "M6_Recent":     1   # N=1 (Expires in 3 days)
@@ -873,7 +873,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             continue
             
         meta = item.get("metadata") or {}
-        if meta.get("status", "active") != "active":
+        if meta.get("status", "active") not in ["active", "staging"]:
             continue
 
         expires_at = meta.get("expires_at")
@@ -897,12 +897,12 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                     for item in g_results:
                         if isinstance(item, dict) and item.get("score", 1.0) >= RETRIEVAL_THRESHOLD:
                             meta = item.get("metadata") or {}
-                            if meta.get("status", "active") == "active":
+                            if meta.get("status", "active") in ["active", "staging"]:
                                 valid_list.append(item.get("memory", ""))
             except Exception as e:
                 logger.warning(f"[recall_user_memories] Fallback search for {f_user} failed: {e}")
 
-    # Also check graph triples and exact query terms across active memories if vector/BM25 search missed
+    # Also check graph triples and exact query terms across active/staging memories if vector/BM25 search missed
     if not valid_list:
         query_l = query.lower()
         query_tokens = [w for w in re.split(r"\W+", query_l) if len(w) > 2]
@@ -910,10 +910,10 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
 
         for uid in all_users:
             try:
-                active_data = mem0.get_all(filters={"user_id": uid, "status": "active"}, limit=25)
+                active_data = mem0.get_all(filters={"user_id": uid}, limit=50)
             except Exception:
                 try:
-                    active_data = mem0.get_all(user_id=uid, limit=25)
+                    active_data = mem0.get_all(user_id=uid, limit=50)
                 except Exception:
                     active_data = []
             items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
@@ -922,7 +922,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                     if not isinstance(item, dict):
                         continue
                     meta = item.get("metadata") or {}
-                    if meta.get("status", "active") == "active":
+                    if meta.get("status", "active") in ["active", "staging"]:
                         expires_at = meta.get("expires_at")
                         if expires_at and expires_at < now_iso:
                             continue
