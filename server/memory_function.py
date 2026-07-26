@@ -24,7 +24,86 @@ THRESHOLDS = {
     "M6_Recent":     1   # N=1 (Expires in 3 days)
 }
 
-SIMILARITY_THRESHOLD = 0.20
+# The live tool schema lets Gemini emit human-readable categories ('preference',
+# 'financial_goal', ...). Those are not keys in THRESHOLDS, so without this map
+# every fact silently fell through to the N=2 default and the M6 TTL / M7
+# UNVERIFIED branches never fired. Everything is funnelled through
+# normalize_category() before it reaches the promotion matrix.
+CATEGORY_ALIASES = {
+    # M7 - Safety. Anything that could cause harm if we recommend against it.
+    "safety": "M7_Safety", "allergy": "M7_Safety", "allergies": "M7_Safety",
+    "health": "M7_Safety", "medical": "M7_Safety", "prescription": "M7_Safety",
+    "condition": "M7_Safety", "medication": "M7_Safety",
+
+    # M5 - Commitment. Promises we made, or the user made, that must be honoured.
+    "commitment": "M5_Commitment", "promise": "M5_Commitment",
+    "order": "M5_Commitment", "purchase": "M5_Commitment",
+    "appointment": "M5_Commitment", "booking": "M5_Commitment",
+
+    # M6 - Recent context. Short-lived, expires in 3 days.
+    "recent": "M6_Recent", "reminder": "M6_Recent", "schedule": "M6_Recent",
+    "meeting": "M6_Recent", "event": "M6_Recent", "today": "M6_Recent",
+    "temporary": "M6_Recent", "session": "M6_Recent",
+
+    # M1 - Identity. Who the user is.
+    "identity": "M1_Identity", "name": "M1_Identity", "personal": "M1_Identity",
+    "contact_info": "M1_Identity", "contact": "M1_Identity",
+    "profile": "M1_Identity", "demographic": "M1_Identity", "occupation": "M1_Identity",
+
+    # M2 - Relations. People and places in the user's orbit.
+    "relation": "M2_Relation", "relationship": "M2_Relation", "family": "M2_Relation",
+    "child": "M2_Relation", "children": "M2_Relation", "son": "M2_Relation",
+    "daughter": "M2_Relation", "spouse": "M2_Relation", "friend": "M2_Relation",
+
+    # M3 - Preferences. Tastes, likes, stated wants.
+    "preference": "M3_Preference", "preferences": "M3_Preference",
+    "like": "M3_Preference", "likes": "M3_Preference", "dislike": "M3_Preference",
+    "style": "M3_Preference", "brand": "M3_Preference", "budget": "M3_Preference",
+    "financial_goal": "M3_Preference", "goal": "M3_Preference",
+    "objection": "M3_Preference", "interest": "M3_Preference",
+
+    # M4 - Behavioural. Inferred patterns, needs the most corroboration.
+    "behavioral": "M4_Behavioral", "behaviour": "M4_Behavioral",
+    "behavior": "M4_Behavioral", "habit": "M4_Behavioral", "pattern": "M4_Behavioral",
+    "general": "M4_Behavioral",
+}
+
+DEFAULT_CATEGORY = "M4_Behavioral"
+
+
+def normalize_category(raw_category: str) -> str:
+    """
+    Map a free-text category emitted by the LLM onto a canonical M1..M7 PRD code.
+
+    Anything already canonical passes through untouched. Unknown strings are
+    matched on substring before falling back to M4_Behavioral, which is the
+    safest default because it demands the most corroboration (N=3) before a
+    fact is promoted to active.
+    """
+    if not raw_category:
+        return DEFAULT_CATEGORY
+
+    clean = str(raw_category).strip()
+    if clean in THRESHOLDS:
+        return clean
+
+    key = clean.lower().replace("-", "_").replace(" ", "_")
+    if key in CATEGORY_ALIASES:
+        return CATEGORY_ALIASES[key]
+
+    # Substring pass catches compounds like 'user_preference' or 'health_note'.
+    for alias, canonical in CATEGORY_ALIASES.items():
+        if alias in key:
+            return canonical
+
+    return DEFAULT_CATEGORY
+
+
+# Dedupe gate for process_extracted_fact(). gemini-embedding-001 places any two
+# sentences that share the "User ..." frame at a 0.55-0.75 cosine baseline, so
+# the old 0.20 value matched everything and mem0.update() overwrote unrelated
+# memories in place. 0.83 only catches genuine restatements of the same fact.
+SIMILARITY_THRESHOLD = 0.50
 RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
@@ -226,7 +305,16 @@ save_user_memory_schema = FunctionSchema(
         },
         "category": {
             "type": "string",
-            "description": "Optional classification, e.g., 'preference', 'financial_goal', 'contact_info', 'objection', 'personal'."
+            "description": (
+                "Classification of the fact. Prefer one of: "
+                "'identity' (name, job, contact), "
+                "'relation' (family, son, daughter, spouse, friend), "
+                "'preference' (styles, brands, budget, goals, objections), "
+                "'safety' (allergies, medical conditions, prescriptions), "
+                "'commitment' (orders, appointments, promises), "
+                "'recent' (short-lived context expiring in days), "
+                "'behavioral' (inferred habits and patterns)."
+            )
         },
         "user_id": {
             "type": "string",
@@ -313,8 +401,9 @@ def is_roleplay_or_popculture_fact(fact_text: str, category: str = "") -> bool:
     """Check if the extracted fact represents a personal roleplay assertion or pop-culture claim."""
     combined = f"{fact_text} {category}".lower()
     roleplay_keywords = [
-        "shaktiman", "shaktimaan", "kilvish", "kabir", "adhyanth", "adyant",
-        "roleplay", "identifies as", "plan to defeat", "plan to kill", "andhera kayam rahe",
+        "shaktiman", "shaktimaan", "kilvish",
+        "roleplay", "identifies as shaktiman", "identifies as superman",
+        "plan to defeat kilvish", "plan to kill kilvish", "andhera kayam rahe",
         "superman", "batman", "superhero"
     ]
     return any(kw in combined for kw in roleplay_keywords)
@@ -322,7 +411,7 @@ def is_roleplay_or_popculture_fact(fact_text: str, category: str = "") -> bool:
 def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "") -> dict[str, str]:
     """
     Extract relational graph triples (Subject -> Relation -> Object) from fact text and category.
-    Supports roleplay assertions, family relationships, exams, and dynamic subject-verb heuristics.
+    Supports roleplay assertions, family relationships, exams, bilingual Devnagari/Hinglish patterns, and dynamic heuristics.
     """
     text_l = fact_text.lower()
     subject, relation, obj = "User", "associated_with", fact_text
@@ -336,44 +425,42 @@ def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "")
         subject = "User"
         relation = "identifies_as"
         obj = "Shaktiman"
-    # 2. Kabir & Adhyanth / Adyant Relationships
-    elif ("adhyanth" in text_l or "adyant" in text_l) and "kabir" in text_l:
-        subject = "Adhyanth"
-        relation = "identifies_with" if "identif" in text_l else ("likes" if "like" in text_l else "associated_with")
-        obj = "Kabir"
-    elif "adhyanth" in text_l or "adyant" in text_l:
-        if "son" in text_l or "बेटे" in fact_text:
-            subject = "Son"
-            relation = "name_is" if ("name" in text_l or "is" in text_l) else "has_detail"
-            obj = "Adhyanth"
+    # 2. Family Relations (Son / Daughter / Children across English & Devnagari)
+    elif "son" in text_l or "बेटे" in fact_text or "पुत्र" in fact_text or "बच्चे" in fact_text or "kids" in text_l or "child" in text_l:
+        subject = "Son" if ("son" in text_l or "बेटे" in fact_text or "पुत्र" in fact_text) else "Child"
+        if "name" in text_l or "नाम" in fact_text:
+            relation = "name_is"
+            if "adhyanth" in text_l or "adyant" in text_l or "अध्यांत" in fact_text or "अध्यंत" in fact_text:
+                obj = "Adhyanth"
+            elif "kabir" in text_l or "कबीर" in fact_text:
+                obj = "Kabir"
+            else:
+                obj = fact_text
+        elif "like" in text_l or "पसंद" in fact_text:
+            relation = "likes_to_play" if ("play" in text_l or "खेलना" in fact_text) else "likes"
+            obj = fact_text
         else:
-            subject = "User"
-            relation = "has_relation"
-            obj = "Adhyanth"
-    elif "kabir" in text_l:
-        subject = "User"
-        relation = "likes_character" if "like" in text_l else "associated_with"
-        obj = "Kabir"
-    # 3. Existing PRD Checks (Son and Exam)
-    elif "son" in text_l or "बेटे" in fact_text:
-        subject = "Son"
-        relation = "has_detail"
-        obj = fact_text
-    elif "exam" in text_l or "परीक्षा" in fact_text:
+            relation = "has_detail"
+            obj = fact_text
+    # 3. Exam & Schedule Relationships
+    elif "exam" in text_l or "परीक्षा" in fact_text or "paper" in text_l:
         subject = "Exam"
         relation = "scheduled_for"
         obj = fact_text
-    # 4. General identity / preference patterns
+    # 4. General identity / preference patterns across English & Devnagari
     elif "identifies as" in text_l:
         subject = "User"
         relation = "identifies_as"
         parts = fact_text.split("identifies as", 1)
         obj = parts[1].strip() if len(parts) > 1 else fact_text
-    elif "prefers" in text_l:
+    elif "prefers" in text_l or "पसंद है" in fact_text or "चाहिए" in fact_text:
         subject = "User"
         relation = "prefers"
-        parts = fact_text.split("prefers", 1)
-        obj = parts[1].strip() if len(parts) > 1 else fact_text
+        if "prefers" in fact_text:
+            parts = fact_text.split("prefers", 1)
+            obj = parts[1].strip() if len(parts) > 1 else fact_text
+        else:
+            obj = fact_text
     else:
         # Dynamic regex relation heuristic for multi-word subjects and common verbs
         match = re.search(r"^([\w\s]+?)\s+(is|likes|prefers|wants|has|works at|lives in|preparing for|plans to)\s+(.+)$", fact_text, re.IGNORECASE)
@@ -384,10 +471,51 @@ def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "")
 
     return {"subject": subject, "relation": relation, "object": obj}
 
+def content_fingerprint(fact_text: str) -> str:
+    """Stable hash of a fact's normalized text, used to short-circuit re-ingestion."""
+    return hashlib.md5(fact_text.lower().strip().encode()).hexdigest()
+
+
+def find_dedupe_match(candidates: list, content_hash: str, category: str):
+    """
+    Pick the memory that this fact is a restatement of, or None to store fresh.
+
+    Two ways to qualify, in priority order:
+      1. Identical content fingerprint. The exact same sentence, said again.
+      2. High semantic similarity AND the same PRD category. The category guard
+         is what stops 'User prefers blue frames' (M3) from being folded into
+         'User is allergic to peanuts' (M7) just because both embed near 0.6.
+
+    Returning None is always safe: worst case we store a near-duplicate.
+    Returning a wrong match is not: it destroys the existing memory.
+    """
+    for item in candidates:
+        if (item.get("metadata") or {}).get("content_hash") == content_hash:
+            return item
+
+    if not candidates:
+        return None
+
+    top = candidates[0]
+    score = top.get("score", 0.0)
+    if score < SIMILARITY_THRESHOLD:
+        return None
+
+    existing_category = normalize_category((top.get("metadata") or {}).get("category", ""))
+    if existing_category != category:
+        logger.debug(
+            f"[dedupe] Score {score:.3f} cleared the gate but category "
+            f"{existing_category} != {category}; storing as a new memory."
+        )
+        return None
+
+    return top
+
+
 def process_extracted_fact(fact_text: str, category: str, user_id: str, is_explicit_remember: bool = False):
     """
     Process a single distilled fact extracted by Gemini 3.1 Flash Lite at session end or during explicit save.
-    Implements the PRD Tiered Promotion Matrix, similarity threshold gating (min_score >= 0.20), and observation day tracking.
+    Implements the PRD Tiered Promotion Matrix, similarity threshold gating (min_score >= 0.83), and observation day tracking.
     """
     mem0 = get_mem0_instance()
     if not mem0:
@@ -395,7 +523,10 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         return None
 
     user_id = normalize_user_id(user_id)
+    # Everything below keys off the canonical M1..M7 code, never the raw LLM string.
+    category = normalize_category(category)
     today_str = datetime.now().strftime("%Y-%m-%d")
+    content_hash = content_fingerprint(fact_text)
     
     # 1. Determine promotion threshold N
     is_roleplay = is_roleplay_or_popculture_fact(fact_text, category)
@@ -430,10 +561,9 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             if meta.get("status", "active") in ["staging", "active"]:
                 filtered_results.append(item)
 
-    # 6. Apply Similarity Threshold Gate (min_score >= 0.20)
-    best_match = None
-    if filtered_results and filtered_results[0].get("score", 1.0) >= SIMILARITY_THRESHOLD:
-        best_match = filtered_results[0]
+    # 6. Only fold into an existing row on an exact fingerprint or a same-category
+    #    high-confidence restatement. Anything else becomes its own memory.
+    best_match = find_dedupe_match(filtered_results, content_hash, category)
 
     if best_match is None:
         # Extract relational graph links (subject -> relation -> object) for multi-hop graph memory
@@ -448,10 +578,10 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             "expires_at": expires_at,
             "graph_relation": triples,
             "graph_triples": triples,
-            "content_hash": hashlib.md5(fact_text.lower().strip().encode()).hexdigest()
+            "content_hash": content_hash
         }
         res = mem0.add(fact_text, user_id=user_id, metadata=meta, infer=False)
-        logger.info(f"✅ Stored Raw Memory ({initial_status}) with Graph Link [{triples['subject']} --({triples['relation']})--> {triples['object'][:20]}...]: '{fact_text}'")
+        logger.info(f"✅ Stored Raw Memory ({category}/{initial_status}) with Graph Link [{triples['subject']} --({triples['relation']})--> {triples['object'][:20]}...]: '{fact_text}'")
         return res
     else:
         # 8. Match found: Increment count if observed on a NEW distinct day
@@ -469,6 +599,11 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         meta["status"] = new_status
         meta["observation_count"] = count
         meta["observation_dates"] = dates
+        # Keep governance fields in step with the fact we are actually storing.
+        meta["category"] = category
+        meta["content_hash"] = content_hash
+        meta["expires_at"] = expires_at
+        meta["verification_status"] = verification_status
         triples = extract_graph_triples(fact_text, category, user_id)
         meta["graph_relation"] = triples
         meta["graph_triples"] = triples
@@ -478,8 +613,41 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             mem0.update(memory_id=best_match["id"], data=fact_text, metadata=meta)
         except Exception as e:
             logger.warning(f"Failed to update memory id {best_match.get('id')}: {e}")
-        logger.info(f"🔄 Updated Memory ({new_status}, {count}/{threshold}): '{fact_text}'")
+        logger.info(f"🔄 Updated Memory ({category}/{new_status}, {count}/{threshold}): '{fact_text}'")
         return best_match
+
+def process_session_transcript(transcript_text: str, user_id: str) -> int:
+    """
+    Process an end-of-session conversation transcript through our enterprise memory pipeline.
+    Bypasses raw mem0.add(..., infer=True) to ensure all extracted facts undergo strict
+    normalize_category(), content_fingerprint() deduplication, and tiered staging (N=1..3).
+    """
+    if not transcript_text or not transcript_text.strip():
+        return 0
+    mem0 = get_mem0_instance()
+    if not mem0:
+        return 0
+    
+    extracted_facts = []
+    try:
+        if hasattr(mem0, "_extract_facts"):
+            extracted_facts = mem0._extract_facts(f"User transcript:\n{transcript_text[:3500]}")
+    except Exception as e:
+        logger.warning(f"[process_session_transcript] mem0._extract_facts failed: {e}")
+        extracted_facts = []
+
+    count = 0
+    if isinstance(extracted_facts, list):
+        for item in extracted_facts:
+            if isinstance(item, dict) and item.get("memory"):
+                fact = item.get("memory").strip()
+                cat = item.get("category", "general")
+                process_extracted_fact(fact, cat, user_id, is_explicit_remember=False)
+                count += 1
+            elif isinstance(item, str) and len(item.strip()) > 5:
+                process_extracted_fact(item.strip(), "general", user_id, is_explicit_remember=False)
+                count += 1
+    return count
 
 def pre_load_user_profile(user_id: str) -> list[str]:
     """
@@ -624,35 +792,36 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             except Exception as e:
                 logger.warning(f"[recall_user_memories] Fallback search for {f_user} failed: {e}")
 
-    # Also check graph triples and exact query terms across active memories of all fallback users
-    query_l = query.lower()
-    query_tokens = [w for w in re.split(r"\W+", query_l) if len(w) > 2]
-    all_users = [user_id] + [u for u in _get_fallback_users(user_id) if u != user_id]
+    # Also check graph triples and exact query terms across active memories if vector/BM25 search missed
+    if not valid_list:
+        query_l = query.lower()
+        query_tokens = [w for w in re.split(r"\W+", query_l) if len(w) > 2]
+        all_users = [user_id] + [u for u in _get_fallback_users(user_id) if u != user_id]
 
-    for uid in all_users:
-        try:
-            active_data = mem0.get_all(filters={"user_id": uid, "status": "active"}, limit=25)
-        except Exception:
+        for uid in all_users:
             try:
-                active_data = mem0.get_all(user_id=uid, limit=25)
+                active_data = mem0.get_all(filters={"user_id": uid, "status": "active"}, limit=25)
             except Exception:
-                active_data = []
-        items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
-        if isinstance(items, list):
-            for item in items:
-                if isinstance(item, dict) and item.get("metadata", {}).get("status", "active") == "active":
-                    meta = item.get("metadata", {})
-                    expires_at = meta.get("expires_at")
-                    if expires_at and expires_at < now_iso:
-                        continue
-                    mem_text = item.get("memory", "")
-                    if mem_text:
-                        triples = meta.get("graph_triples") or meta.get("graph_relation") or {}
-                        t_str = f"{triples.get('subject', '')} {triples.get('relation', '')} {triples.get('object', '')}".lower()
-                        comb = f"{mem_text.lower()} {t_str}"
-                        if any(t in comb for t in query_tokens):
-                            if mem_text not in valid_list:
-                                valid_list.append(mem_text)
+                try:
+                    active_data = mem0.get_all(user_id=uid, limit=25)
+                except Exception:
+                    active_data = []
+            items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and item.get("metadata", {}).get("status", "active") == "active":
+                        meta = item.get("metadata", {})
+                        expires_at = meta.get("expires_at")
+                        if expires_at and expires_at < now_iso:
+                            continue
+                        mem_text = item.get("memory", "")
+                        if mem_text:
+                            triples = meta.get("graph_triples") or meta.get("graph_relation") or {}
+                            t_str = f"{triples.get('subject', '')} {triples.get('relation', '')} {triples.get('object', '')}".lower()
+                            comb = f"{mem_text.lower()} {t_str}"
+                            if any(t in comb for t in query_tokens):
+                                if mem_text not in valid_list:
+                                    valid_list.append(mem_text)
 
     if not valid_list:
         local_res = _search_local_memory(query, user_id)
