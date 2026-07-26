@@ -107,12 +107,13 @@ class TestMemoryEvalBench(unittest.TestCase):
             recalled_kabir = recall_user_memories("Kabir", user_id)
             self.assertTrue(any("Kabir" in m for m in recalled_kabir))
 
+    @patch.dict(os.environ, {"ALLOYDB_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"})
     def test_privacy_governance_prompt_configured(self):
         """Verify that get_mem0_config explicitly includes location and PII governance rules."""
         config = get_mem0_config()
-        self.assertIn("custom_prompt", config)
-        self.assertIn("coarse user-stated places", config["custom_prompt"])
-        self.assertIn("Never extract exact street addresses", config["custom_prompt"])
+        self.assertIn("custom_instructions", config)
+        self.assertIn("coarse user-stated places", config["custom_instructions"])
+        self.assertIn("Never extract exact street addresses", config["custom_instructions"])
 
 if __name__ == "__main__":
     unittest.main()

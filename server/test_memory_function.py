@@ -25,49 +25,32 @@ from memory_function import (
 )
 
 class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
-    async def test_save_and_search_local_memory_fallback(self):
-        test_file = os.path.join(os.path.dirname(__file__), "test_user_memories_tmp.json")
-        if os.path.exists(test_file):
-            os.remove(test_file)
+    async def test_save_and_search_alloydb_error_when_instance_none(self):
+        with patch("memory_function.get_mem0_instance", return_value=None):
+            # Test saving memory when AlloyDB is disconnected/uninitialized
+            mock_cb_save = AsyncMock()
+            params_save = MagicMock()
+            params_save.arguments = {
+                "memory_text": "User prefers a 12-month tenure for loan",
+                "category": "preference"
+            }
+            params_save.result_callback = mock_cb_save
 
-        try:
-            with patch("memory_function.get_mem0_instance", return_value=None):
-                with patch("memory_function.get_memory_file_path", return_value=test_file):
-                    # Test saving memory
-                    mock_cb_save = AsyncMock()
-                    params_save = MagicMock()
-                    params_save.arguments = {
-                        "memory_text": "User prefers a 12-month tenure for loan",
-                        "category": "preference"
-                    }
-                    params_save.result_callback = mock_cb_save
+            await save_user_memory_handler(params_save)
+            mock_cb_save.assert_called_once()
+            saved_res = mock_cb_save.call_args[0][0]
+            self.assertIn("failed to save memory: alloydb pgvector store is not connected", saved_res.get("content", "").lower())
 
-                    await save_user_memory_handler(params_save)
-                    mock_cb_save.assert_called_once()
-                    saved_res = mock_cb_save.call_args[0][0]
-                    self.assertIn("saved successfully", saved_res.get("content", "").lower())
+            # Test searching memory when AlloyDB is disconnected/uninitialized
+            mock_cb_search = AsyncMock()
+            params_search = MagicMock()
+            params_search.arguments = {"query": "tenure"}
+            params_search.result_callback = mock_cb_search
 
-                    # Verify JSON file content
-                    self.assertTrue(os.path.exists(test_file))
-                    with open(test_file, "r") as f:
-                        data = json.load(f)
-                    self.assertEqual(len(data), 1)
-                    self.assertEqual(data[0]["memory_text"], "User prefers a 12-month tenure for loan")
-
-                    # Test searching memory
-                    mock_cb_search = AsyncMock()
-                    params_search = MagicMock()
-                    params_search.arguments = {"query": "tenure"}
-                    params_search.result_callback = mock_cb_search
-
-                    await search_user_memory_handler(params_search)
-                    mock_cb_search.assert_called_once()
-                    search_res = mock_cb_search.call_args[0][0]
-                    self.assertIn("12-month tenure", search_res.get("content", ""))
-
-        finally:
-            if os.path.exists(test_file):
-                os.remove(test_file)
+            await search_user_memory_handler(params_search)
+            mock_cb_search.assert_called_once()
+            search_res = mock_cb_search.call_args[0][0]
+            self.assertIn("memory search unavailable: alloydb pgvector store is not connected", search_res.get("content", "").lower())
 
     async def test_empty_memory_text_validation(self):
         mock_cb = AsyncMock()
@@ -109,38 +92,19 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Bangalore", mock_cb.call_args[0][0]["content"])
 
     async def test_multi_tenant_isolation(self):
-        """Verify that user:rohan and user:priya maintain completely isolated memory stores."""
-        test_file_rohan = os.path.join(os.path.dirname(__file__), "user_memories_user_rohan.json")
-        test_file_priya = os.path.join(os.path.dirname(__file__), "user_memories_user_priya.json")
-        if os.path.exists(test_file_rohan): os.remove(test_file_rohan)
-        if os.path.exists(test_file_priya): os.remove(test_file_priya)
+        """Verify that user:rohan and user:priya maintain completely isolated memory stores via user_id filters."""
+        mock_mem0 = MagicMock()
+        mock_mem0.search.side_effect = lambda query, filters: {"results": [{"memory": "Rohan likes cricket", "metadata": {"status": "active"}, "score": 0.95}]} if filters.get("user_id") == "user:rohan" else {"results": []}
+        mock_mem0.get_all.return_value = {"results": []}
 
-        try:
-            with patch("memory_function.get_mem0_instance", return_value=None), patch("memory_function.get_memory_bank_config", return_value=(None, None, None)):
-                # Save Rohan's memory
-                mock_cb_rohan = AsyncMock()
-                params_rohan = MagicMock()
-                params_rohan.arguments = {"memory_text": "Rohan likes cricket", "category": "sports", "user_id": "user:rohan"}
-                params_rohan.result_callback = mock_cb_rohan
-                await save_user_memory_handler(params_rohan)
-
-                # Save Priya's memory
-                mock_cb_priya = AsyncMock()
-                params_priya = MagicMock()
-                params_priya.arguments = {"memory_text": "Priya likes tennis", "category": "sports", "user_id": "user:priya"}
-                params_priya.result_callback = mock_cb_priya
-                await save_user_memory_handler(params_priya)
-
-                # Search Priya's memory for Rohan's fact
-                mock_cb_search = AsyncMock()
-                params_search = MagicMock()
-                params_search.arguments = {"query": "cricket", "user_id": "user:priya"}
-                params_search.result_callback = mock_cb_search
-                await search_user_memory_handler(params_search)
-                self.assertIn("No memories found", mock_cb_search.call_args[0][0]["content"])
-        finally:
-            if os.path.exists(test_file_rohan): os.remove(test_file_rohan)
-            if os.path.exists(test_file_priya): os.remove(test_file_priya)
+        with patch("memory_function.get_mem0_instance", return_value=mock_mem0), patch("memory_function.get_memory_bank_config", return_value=(None, None, None)):
+            mock_cb_search = AsyncMock()
+            params_search = MagicMock()
+            params_search.arguments = {"query": "cricket", "user_id": "user:priya"}
+            params_search.result_callback = mock_cb_search
+            await search_user_memory_handler(params_search)
+            self.assertIn("No memories found", mock_cb_search.call_args[0][0]["content"])
+            mock_mem0.search.assert_any_call(query="cricket", filters={"user_id": "user:priya"})
 
 class TestMem0PgvectorAndTwoPath(unittest.TestCase):
     def test_prd_constants_and_pgvector_config(self):

@@ -123,26 +123,22 @@ def get_mem0_config() -> dict:
     api_key = api_key or ""
     pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
     
-    if pg_dsn:
-        vector_store_config = {
-            "provider": "pgvector",
-            "config": {
-                "connection_string": pg_dsn,
-                "collection_name": "user_memories",
-                "embedding_model_dims": 768,
-                "hnsw": True
-            }
+    if not pg_dsn:
+        raise RuntimeError(
+            "CRITICAL PRODUCTION ERROR: ALLOYDB_PG_DSN (or CLOUDSQL_PG_DSN/DATABASE_URL) is required. "
+            "Local/ephemeral Qdrant and container filesystem fallbacks have been permanently removed "
+            "to prevent silent data loss on container recycle."
+        )
+
+    vector_store_config = {
+        "provider": "pgvector",
+        "config": {
+            "connection_string": pg_dsn,
+            "collection_name": "user_memories",
+            "embedding_model_dims": 768,
+            "hnsw": True
         }
-    else:
-        db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
-        os.makedirs(db_path, exist_ok=True)
-        vector_store_config = {
-            "provider": "qdrant",
-            "config": {
-                "path": db_path,
-                "embedding_model_dims": 768
-            }
-        }
+    }
 
     project_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
     location = os.getenv("GCP_LOCATION", "us-central1")
@@ -193,61 +189,29 @@ def get_mem0_instance():
         config = get_mem0_config()
         use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
         if not config["llm"]["config"]["api_key"] and not use_vertex:
-            logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 fallback will be used.")
+            logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 initialization failed.")
             return None
 
-        if config.get("vector_store", {}).get("provider") == "pgvector":
-            conn_str = config["vector_store"]["config"].get("connection_string", "")
-            if conn_str:
-                try:
-                    import socket
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(conn_str)
-                    host = parsed.hostname or "127.0.0.1"
-                    port = parsed.port or 5432
-                    # 0.5s was far too tight: a cold Cloud Run instance dialling AlloyDB
-                    # over the VPC connector routinely needs seconds on the first packet.
-                    # A spurious timeout here silently downgrades the whole service to
-                    # container-local Qdrant, which is wiped on every instance recycle.
-                    probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "5.0"))
-                    with socket.create_connection((host, port), timeout=probe_timeout):
-                        pass
-                except Exception as sock_e:
-                    logger.error(
-                        f"[Mem0] DURABILITY DEGRADED: Postgres unreachable at {host}:{port} ({sock_e}). "
-                        "Falling back to container-local Qdrant. Memories written now are EPHEMERAL "
-                        "and will be lost when this instance is recycled."
-                    )
-                    db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
-                    os.makedirs(db_path, exist_ok=True)
-                    config["vector_store"] = {
-                        "provider": "qdrant",
-                        "config": {
-                            "path": db_path,
-                            "embedding_model_dims": 768
-                        }
-                    }
+        conn_str = config["vector_store"]["config"].get("connection_string", "")
+        if conn_str:
+            try:
+                import socket
+                import urllib.parse
+                parsed = urllib.parse.urlparse(conn_str)
+                host = parsed.hostname or "127.0.0.1"
+                port = parsed.port or 5432
+                probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "5.0"))
+                with socket.create_connection((host, port), timeout=probe_timeout):
+                    pass
+            except Exception as sock_e:
+                logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
+                return None
 
         try:
             _MEM0_INSTANCE = Memory.from_config(config)
         except Exception as e:
-            if config.get("vector_store", {}).get("provider") == "pgvector":
-                logger.error(
-                    f"[Mem0] DURABILITY DEGRADED: pgvector initialization failed: {e}. "
-                    "Falling back to container-local Qdrant; memories written now are EPHEMERAL."
-                )
-                db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
-                os.makedirs(db_path, exist_ok=True)
-                config["vector_store"] = {
-                    "provider": "qdrant",
-                    "config": {
-                        "path": db_path,
-                        "embedding_model_dims": 768
-                    }
-                }
-                _MEM0_INSTANCE = Memory.from_config(config)
-            else:
-                raise
+            logger.error(f"[Mem0] CRITICAL: pgvector initialization failed: {e}. Ephemeral fallback disabled.")
+            return None
 
         provider = config["vector_store"]["provider"]
         logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
@@ -292,9 +256,8 @@ def get_mem0_instance():
         return None
 
 def get_memory_file_path(user_id: str = "default_user") -> str:
-    """Return path to local fallback user memories storage file, partitioned by user_id."""
-    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", user_id)
-    return os.path.join(os.path.dirname(__file__), f"user_memories_{clean_id}.json")
+    """Deprecated: Local JSON memory file storage has been removed in favor of strict AlloyDB pgvector."""
+    raise RuntimeError("Local memory storage file is disabled. AlloyDB pgvector is required.")
 
 def get_memory_bank_config():
     """Fetch Memory Bank resource configuration if present."""
@@ -414,7 +377,7 @@ def is_roleplay_or_popculture_fact(fact_text: str, category: str = "") -> bool:
     combined = f"{fact_text} {category}".lower()
     roleplay_keywords = [
         "shaktiman", "shaktimaan", "kilvish",
-        "roleplay", "identifies as shaktiman", "identifies as superman",
+        "roleplay", "identifies as shaktiman", "identifies as superman", "identifies with kabir",
         "plan to defeat kilvish", "plan to kill kilvish", "andhera kayam rahe",
         "superman", "batman", "superhero"
     ]
@@ -460,6 +423,11 @@ def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "")
         relation = "scheduled_for"
         obj = fact_text
     # 4. General identity / preference patterns across English & Devnagari
+    elif "identifies with" in text_l:
+        parts = fact_text.split("identifies with", 1)
+        subject = parts[0].strip() or "User"
+        relation = "identifies_with"
+        obj = parts[1].strip() if len(parts) > 1 else fact_text
     elif "identifies as" in text_l:
         subject = "User"
         relation = "identifies_as"
@@ -475,7 +443,7 @@ def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "")
             obj = fact_text
     else:
         # Dynamic regex relation heuristic for multi-word subjects and common verbs
-        match = re.search(r"^([\w\s]+?)\s+(is|likes|prefers|wants|has|works at|lives in|preparing for|plans to)\s+(.+)$", fact_text, re.IGNORECASE)
+        match = re.search(r"^([\w\s]+?)\s+(is|likes|prefers|wants|has|works at|lives in|preparing for|plans to|identifies with|identifies as)\s+(.+)$", fact_text, re.IGNORECASE)
         if match:
             subject = match.group(1).strip().capitalize()
             relation = match.group(2).lower().replace(" ", "_")
@@ -967,14 +935,6 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                                 if mem_text not in valid_list:
                                     valid_list.append(mem_text)
 
-    if not valid_list:
-        local_res = _search_local_memory(query, user_id)
-        if local_res and "No memories" not in local_res:
-            for line in local_res.split("\n"):
-                clean_line = re.sub(r"^-\s*", "", line.strip())
-                if clean_line and "Retrieved memories" not in clean_line:
-                    valid_list.append(clean_line)
-
     return [r for r in valid_list if r]
 
 async def _save_to_vertex_memory_bank(memory_text: str, category: str, user_id: str) -> str:
@@ -1077,49 +1037,15 @@ async def save_user_memory_handler(params: FunctionCallParams):
             logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
             result_msg = f"Memory saved successfully to Mem0 for {user_id}: {memory_text}"
         except Exception as e:
-            # Log the traceback, not just str(e). This outage presented as a bare
-            # "'NoneType' object has no attribute 'get'" with no file or line, which
-            # made a 100% write-failure rate look like a working system in the logs.
-            logger.exception(f"[Mem0] Failed to save memory, falling back to local disk: {e}")
-            # NOTE: on Cloud Run this fallback writes to the container filesystem and is
-            # lost when the instance is recycled. It keeps the turn alive; it is not durable.
-            result_msg = _save_local_memory(memory_text, category, user_id)
+            logger.exception(f"[Mem0] Failed to save memory to AlloyDB pgvector: {e}")
+            result_msg = f"Failed to save memory: AlloyDB pgvector store is unavailable ({e})"
     else:
-        result_msg = _save_local_memory(memory_text, category, user_id)
+        result_msg = "Failed to save memory: AlloyDB pgvector store is not connected or initialized."
 
     await params.result_callback({"content": result_msg})
 
-def _save_local_memory(memory_text: str, category: str, user_id: str = "default_user") -> str:
-    """Fallback local JSON storage for user memories, partitioned by user_id."""
-    file_path = get_memory_file_path(user_id)
-    memories = []
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                memories = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read local memory file: {e}")
-            memories = []
-
-    new_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "user_id": user_id,
-        "category": category,
-        "memory_text": memory_text
-    }
-    memories.append(new_entry)
-
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(memories, f, indent=2)
-        logger.info(f"[LocalMemory] Saved for {user_id}: {memory_text}")
-        return f"Memory saved successfully ({user_id}): '{memory_text}'"
-    except Exception as e:
-        logger.error(f"Failed to write local memory: {e}")
-        return f"Failed to save memory locally: {e}"
-
 async def search_user_memory_handler(params: FunctionCallParams):
-    """Handle search_user_memory tool call via Vertex AI Memory Bank, embedded Mem0, or local storage."""
+    """Handle search_user_memory tool call via Vertex AI Memory Bank or embedded Mem0 AlloyDB."""
     query = params.arguments.get("query", "").strip()
     user_id = _get_active_user_id(params)
 
@@ -1151,14 +1077,14 @@ async def search_user_memory_handler(params: FunctionCallParams):
                 result_text = f"Found the following memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
         except Exception as e:
             logger.error(f"[Mem0] Failed to search memory: {e}")
-            result_text = _search_local_memory(query, user_id)
+            result_text = f"Failed to search memories: AlloyDB pgvector store error ({e})."
     else:
-        result_text = _search_local_memory(query, user_id)
+        result_text = "Memory search unavailable: AlloyDB pgvector store is not connected or initialized."
 
     await params.result_callback({"content": result_text})
 
 async def recall_user_memories_handler(params: FunctionCallParams):
-    """Path 2: Handle recall_user_memories tool call via deep recall or local fallback."""
+    """Path 2: Handle recall_user_memories tool call via deep recall."""
     query = params.arguments.get("query", "").strip()
     user_id = _get_active_user_id(params)
 
@@ -1183,61 +1109,8 @@ async def recall_user_memories_handler(params: FunctionCallParams):
                 result_text = f"Found the following active memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
         except Exception as e:
             logger.error(f"[Path2DeepRecall] Failed: {e}")
-            result_text = _search_local_memory(query, user_id)
+            result_text = f"Failed to recall memories: AlloyDB pgvector store error ({e})."
     else:
-        result_text = _search_local_memory(query, user_id)
+        result_text = "Memory recall unavailable: AlloyDB pgvector store is not connected or initialized."
 
     await params.result_callback({"content": result_text})
-
-def _search_local_memory(query: str, user_id: str = "default_user") -> str:
-    """Fallback keyword search in local memory file for a specific user_id."""
-    file_path = get_memory_file_path(user_id)
-    if not os.path.exists(file_path):
-        return f"No memories saved yet for query '{query}' ({user_id})."
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            memories = json.load(f)
-    except Exception as e:
-        logger.error(f"Error reading local memories: {e}")
-        return f"Failed to read local memory store."
-
-    query_words = [w.lower() for w in re.findall(r"\w+", query)]
-    matches = []
-
-    for entry in memories:
-        text = entry.get("memory_text", "").lower()
-        category = entry.get("category", "").lower()
-        if any(word in text or word in category for word in query_words):
-            matches.append(entry["memory_text"])
-
-    if not matches:
-        return f"No memories found matching '{query}' for {user_id}."
-
-    formatted = [f"- {m}" for m in matches]
-    return f"Retrieved memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
-    file_path = get_memory_file_path(user_id)
-    if not os.path.exists(file_path):
-        return f"No memories saved yet for query '{query}' ({user_id})."
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            memories = json.load(f)
-    except Exception as e:
-        logger.error(f"Error reading local memories: {e}")
-        return f"Failed to read local memory store."
-
-    query_words = [w.lower() for w in re.findall(r"\w+", query)]
-    matches = []
-
-    for entry in memories:
-        text = entry.get("memory_text", "").lower()
-        category = entry.get("category", "").lower()
-        if any(word in text or word in category for word in query_words):
-            matches.append(entry["memory_text"])
-
-    if not matches:
-        return f"No memories found matching '{query}' for {user_id}."
-
-    formatted = [f"- {m}" for m in matches]
-    return f"Retrieved memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
