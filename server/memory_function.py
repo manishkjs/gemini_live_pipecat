@@ -1065,7 +1065,12 @@ async def save_user_memory_handler(params: FunctionCallParams):
             logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
             result_msg = f"Memory saved successfully to Mem0 for {user_id}: {memory_text}"
         except Exception as e:
-            logger.error(f"[Mem0] Failed to save memory: {e}")
+            # Log the traceback, not just str(e). This outage presented as a bare
+            # "'NoneType' object has no attribute 'get'" with no file or line, which
+            # made a 100% write-failure rate look like a working system in the logs.
+            logger.exception(f"[Mem0] Failed to save memory, falling back to local disk: {e}")
+            # NOTE: on Cloud Run this fallback writes to the container filesystem and is
+            # lost when the instance is recycled. It keeps the turn alive; it is not durable.
             result_msg = _save_local_memory(memory_text, category, user_id)
     else:
         result_msg = _save_local_memory(memory_text, category, user_id)
