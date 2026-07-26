@@ -12,6 +12,10 @@ from memory_function import (
     SIMILARITY_THRESHOLD,
     get_mem0_config,
     process_extracted_fact,
+    process_session_transcript,
+    normalize_category,
+    content_fingerprint,
+    find_dedupe_match,
     pre_load_user_profile,
     recall_user_memories,
     recall_user_memories_handler,
@@ -140,7 +144,9 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
 
 class TestMem0PgvectorAndTwoPath(unittest.TestCase):
     def test_prd_constants_and_pgvector_config(self):
-        self.assertEqual(SIMILARITY_THRESHOLD, 0.65)
+        # 0.83 not 0.20: gemini-embedding-001 puts unrelated "User ..." sentences
+        # at a 0.55-0.75 baseline, so a low gate makes update() clobber good data.
+        self.assertEqual(SIMILARITY_THRESHOLD, 0.83)
         self.assertEqual(THRESHOLDS["M7_Safety"], 1)
         self.assertEqual(THRESHOLDS["M4_Behavioral"], 3)
         
@@ -168,13 +174,14 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         self.assertFalse(kwargs["infer"])
         self.assertEqual(kwargs["metadata"]["status"], "staging") # N=2 for M3_Preference
         
-        # Test 2: Match found on new day -> Promotion
+        # Test 2: Match found on new day, same category -> Promotion
         mock_mem0.search.return_value = {
             "results": [{
                 "id": "mem-2",
-                "score": 0.88, # >= 0.65 SIMILARITY_THRESHOLD
+                "score": 0.88,  # >= 0.83 SIMILARITY_THRESHOLD
                 "metadata": {
                     "status": "staging",
+                    "category": "M3_Preference",
                     "observation_count": 1,
                     "observation_dates": ["2026-07-20"]
                 }
@@ -185,6 +192,87 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         update_kwargs = mock_mem0.update.call_args[1]
         self.assertEqual(update_kwargs["metadata"]["status"], "active")
         self.assertEqual(update_kwargs["metadata"]["observation_count"], 2)
+
+    @patch("memory_function.get_mem0_instance")
+    def test_high_score_across_categories_never_overwrites(self, mock_get_mem0):
+        """A near-identical embedding in a different PRD tier must not be clobbered.
+
+        This is the regression guard for the bug where a peanut allergy (M7) was
+        destroyed by a frame preference (M3) that merely embedded close to it.
+        """
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.search.return_value = {
+            "results": [{
+                "id": "mem-safety",
+                "score": 0.97,
+                "metadata": {"status": "active", "category": "M7_Safety", "observation_count": 1}
+            }]
+        }
+        mock_mem0.add.return_value = {"results": [{"id": "mem-new"}]}
+
+        process_extracted_fact("User prefers blue titanium frames", "preference", "user:test")
+
+        mock_mem0.update.assert_not_called()
+        mock_mem0.add.assert_called_once()
+        self.assertEqual(mock_mem0.add.call_args[1]["metadata"]["category"], "M3_Preference")
+
+    @patch("memory_function.get_mem0_instance")
+    def test_identical_fact_dedupes_on_content_hash(self, mock_get_mem0):
+        """An exact restatement folds into the existing row even below the score gate."""
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        text = "User prefers blue titanium frames"
+        mock_mem0.search.return_value = {
+            "results": [{
+                "id": "mem-dupe",
+                "score": 0.11,  # well under the gate
+                "metadata": {
+                    "status": "staging",
+                    "category": "M3_Preference",
+                    "content_hash": content_fingerprint(text),
+                    "observation_count": 1,
+                    "observation_dates": ["2026-07-20"]
+                }
+            }]
+        }
+        process_extracted_fact(text, "preference", "user:test")
+        mock_mem0.update.assert_called_once()
+        mock_mem0.add.assert_not_called()
+
+    def test_normalize_category_maps_llm_strings_to_prd_codes(self):
+        """The tool schema emits human words; the matrix keys on M1..M7."""
+        self.assertEqual(normalize_category("preference"), "M3_Preference")
+        self.assertEqual(normalize_category("financial_goal"), "M3_Preference")
+        self.assertEqual(normalize_category("personal"), "M1_Identity")
+        self.assertEqual(normalize_category("contact_info"), "M1_Identity")
+        self.assertEqual(normalize_category("allergy"), "M7_Safety")
+        self.assertEqual(normalize_category("reminder"), "M6_Recent")
+        self.assertEqual(normalize_category("family"), "M2_Relation")
+        # Canonical codes pass straight through.
+        self.assertEqual(normalize_category("M7_Safety"), "M7_Safety")
+        # Unknown and empty fall back to the most conservative tier (N=3).
+        self.assertEqual(normalize_category(""), "M4_Behavioral")
+        self.assertEqual(normalize_category("something_unmapped"), "M4_Behavioral")
+
+    @patch("memory_function.get_mem0_instance")
+    def test_governance_fields_fire_for_llm_category_strings(self, mock_get_mem0):
+        """TTL and UNVERIFIED must trigger on 'recent'/'safety', not just M6/M7."""
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.search.return_value = {"results": []}
+        mock_mem0.add.return_value = {"results": [{"id": "m"}]}
+
+        process_extracted_fact("User has a supplier meeting tomorrow", "recent", "user:test")
+        meta = mock_mem0.add.call_args[1]["metadata"]
+        self.assertEqual(meta["category"], "M6_Recent")
+        self.assertIsNotNone(meta["expires_at"])
+
+        mock_mem0.add.reset_mock()
+        process_extracted_fact("User is severely allergic to peanuts", "safety", "user:test")
+        meta = mock_mem0.add.call_args[1]["metadata"]
+        self.assertEqual(meta["category"], "M7_Safety")
+        self.assertEqual(meta["verification_status"], "UNVERIFIED")
 
     @patch("memory_function.get_mem0_instance")
     def test_path1_pre_load_user_profile(self, mock_get_mem0):
@@ -209,7 +297,7 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         mock_mem0.search.return_value = {
             "results": [
                 {"memory": "Gaana subscription active", "score": 0.85, "metadata": {"status": "active"}},
-                {"memory": "Low score fact", "score": 0.35, "metadata": {"status": "active"}}
+                {"memory": "Low score fact", "score": 0.15, "metadata": {"status": "active"}}
             ]
         }
         recalled = recall_user_memories("Gaana", "user:test")
@@ -224,13 +312,42 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         mock_mem0.add.return_value = {"results": [{"id": "unit-mock-id"}]}
 
         self.assertTrue(is_roleplay_or_popculture_fact("I am Shaktiman and plan to kill Kilvish", "M1_Identity"))
+        # Real family names must NOT be flagged as roleplay
+        self.assertFalse(is_roleplay_or_popculture_fact("User's son name is Adhyanth", "relation"))
+        self.assertFalse(is_roleplay_or_popculture_fact("My son Kabir is 5 years old", "family"))
+
         triples = extract_graph_triples("User says I am Shaktiman and my plan is to kill Kilvish")
         self.assertEqual(triples, {"subject": "Shaktiman", "relation": "plan", "object": "defeat/kill Kilvish"})
+
+        triples_hindi = extract_graph_triples("मेरे बेटे का नाम अध्यांत है", "family")
+        self.assertEqual(triples_hindi, {"subject": "Son", "relation": "name_is", "object": "Adhyanth"})
 
         res = process_extracted_fact("User identifies as Shaktiman", "M4_Behavioral", "user:manish")
         args, kwargs = mock_mem0.add.call_args
         self.assertEqual(kwargs["metadata"]["status"], "active")
         self.assertEqual(kwargs["metadata"]["graph_triples"], {"subject": "User", "relation": "identifies_as", "object": "Shaktiman"})
+
+    @patch("memory_function.get_mem0_instance")
+    def test_process_session_transcript_pipeline(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0._extract_facts.return_value = [
+            {"memory": "User prefers titanium frames", "category": "preference"},
+            {"memory": "User has a doctor appointment tomorrow", "category": "recent"}
+        ]
+        mock_mem0.search.return_value = {"results": []}
+        mock_mem0.add.return_value = {"results": [{"id": "post-session-id"}]}
+
+        count = process_session_transcript("User: I like titanium frames. Also doc appt tomorrow.", "user:manish")
+        self.assertEqual(count, 2)
+        self.assertEqual(mock_mem0.add.call_count, 2)
+        # Verify first item processed through normalize_category -> M3_Preference
+        first_call_meta = mock_mem0.add.call_args_list[0][1]["metadata"]
+        self.assertEqual(first_call_meta["category"], "M3_Preference")
+        # Verify second item processed -> M6_Recent with TTL
+        second_call_meta = mock_mem0.add.call_args_list[1][1]["metadata"]
+        self.assertEqual(second_call_meta["category"], "M6_Recent")
+        self.assertIsNotNone(second_call_meta["expires_at"])
 
     def test_normalize_user_id_devnagari(self):
         self.assertEqual(normalize_user_id("मनीष"), "user:manish")
@@ -238,6 +355,49 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         self.assertEqual(normalize_user_id("चन्द्रा"), "user:chandra")
         self.assertEqual(normalize_user_id("user:chandira"), "user:chandra")
         self.assertEqual(normalize_user_id("रोहन"), "user:rohan")
+
+    # ── Regression: null metadata from the vector store ──────────────────
+    #
+    # Production crash, 2026-07-26:
+    #   ERROR memory_function:save_user_memory_handler - [Mem0] Failed to
+    #   save memory: 'NoneType' object has no attribute 'get'
+    #
+    # Every write in that session died here, so the bot could only recall
+    # facts seeded before the regression. Rows written by mem0.add(...) with
+    # infer=False come back from search() with metadata explicitly set to
+    # None. dict.get("metadata", {}) returns None in that case -- the default
+    # only applies when the key is ABSENT, not when its value is null.
+
+    def test_find_dedupe_match_survives_null_metadata(self):
+        candidates = [{"id": "m1", "score": 0.99, "memory": "User likes football", "metadata": None}]
+        # Must not raise. A row with no metadata has no content_hash and no
+        # category, so it can never qualify as a confident restatement.
+        self.assertIsNone(find_dedupe_match(candidates, "deadbeef", "M3_Preference"))
+
+    @patch("memory_function.get_mem0_instance")
+    def test_process_extracted_fact_survives_null_metadata(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        # Exactly what AlloyDB returned in the failing session.
+        mock_mem0.search.return_value = {
+            "results": [
+                {"id": "m1", "score": 0.91, "memory": "User's son is named Adhyanth", "metadata": None},
+                {"id": "m2", "score": 0.72, "memory": "User likes strawberries"},
+            ]
+        }
+        mock_mem0.add.return_value = {"results": [{"id": "new-id"}]}
+
+        res = process_extracted_fact(
+            "User's son likes to play football.", "preference", "user:manish", is_explicit_remember=True
+        )
+
+        # The write must land rather than blow up in the dedupe scan.
+        self.assertIsNotNone(res)
+        mock_mem0.add.assert_called_once()
+        meta = mock_mem0.add.call_args[1]["metadata"]
+        self.assertEqual(meta["category"], "M3_Preference")
+        self.assertEqual(meta["status"], "active")
+
 
 if __name__ == "__main__":
     unittest.main()

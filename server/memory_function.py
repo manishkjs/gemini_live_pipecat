@@ -103,7 +103,7 @@ def normalize_category(raw_category: str) -> str:
 # sentences that share the "User ..." frame at a 0.55-0.75 cosine baseline, so
 # the old 0.20 value matched everything and mem0.update() overwrote unrelated
 # memories in place. 0.83 only catches genuine restatements of the same fact.
-SIMILARITY_THRESHOLD = 0.50
+SIMILARITY_THRESHOLD = 0.83
 RETRIEVAL_THRESHOLD = 0.40
 
 # Mem0 embedded engine singleton
@@ -557,7 +557,10 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
     filtered_results = []
     for item in results:
         if isinstance(item, dict):
-            meta = item.get("metadata", {})
+            # `or {}` not `.get(..., {})`: the vector store returns rows with
+            # metadata explicitly set to None, and a dict default only applies
+            # when the key is absent, not when its value is null.
+            meta = item.get("metadata") or {}
             if meta.get("status", "active") in ["staging", "active"]:
                 filtered_results.append(item)
 
@@ -585,7 +588,7 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         return res
     else:
         # 8. Match found: Increment count if observed on a NEW distinct day
-        meta = best_match.get("metadata", {})
+        meta = best_match.get("metadata") or {}
         dates = meta.get("observation_dates", [])
         count = meta.get("observation_count", 1)
 
@@ -616,37 +619,164 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         logger.info(f"🔄 Updated Memory ({category}/{new_status}, {count}/{threshold}): '{fact_text}'")
         return best_match
 
+# Fact-extraction contract for the end-of-session distiller. We ask for the
+# canonical M1..M7 code directly so the promotion matrix does not have to guess
+# from a free-text label. normalize_category() still runs on the way in, so a
+# malformed code degrades to M4_Behavioral instead of corrupting the tier.
+FACT_EXTRACTION_PROMPT = """You distil durable facts from a conversation between a user and the Lenskart 'B' smartglasses assistant.
+
+Return ONLY a JSON object of the form:
+{"facts": [{"memory": "<one self-contained sentence>", "category": "<code>"}]}
+
+Category codes:
+M1_Identity   - who the user is: name, age, job, city.
+M2_Relation   - people in the user's life: son, wife, friend, and their names.
+M3_Preference - what the user likes, wants, dislikes, their budget or style.
+M4_Behavioral - habits and patterns you inferred rather than were told.
+M5_Commitment - orders, bookings, appointments, promises either side made.
+M6_Recent     - short-lived context that stops mattering in a few days.
+M7_Safety     - allergies, medical conditions, prescriptions.
+
+Rules:
+- Write each fact so it stands alone. "User's son is named Adhyanth", never "his son is Adhyanth".
+- Record what the user said about themselves and their people. Ignore what the assistant said.
+- Translate to English. Keep proper nouns as spoken.
+- Never store street addresses, GPS coordinates, card numbers, phone numbers or government IDs.
+- No durable facts in the conversation means an empty list. Do not invent any.
+"""
+
+
+def _coerce_fact_list(payload) -> list:
+    """
+    Pull a list of {memory, category} dicts out of whatever the LLM handed back.
+
+    Providers disagree on shape: some return a bare list, some wrap it in
+    {"facts": [...]}, and some return JSON as a fenced string. We accept all
+    three rather than let one provider quirk silently empty the session.
+    """
+    if payload is None:
+        return []
+
+    if isinstance(payload, str):
+        text = payload.strip()
+        # Strip ```json fences before parsing.
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+        try:
+            payload = json.loads(text)
+        except Exception:
+            # Last resort: grab the outermost {...} or [...] span.
+            match = re.search(r"[\{\[].*[\}\]]", text, re.DOTALL)
+            if not match:
+                return []
+            try:
+                payload = json.loads(match.group(0))
+            except Exception:
+                return []
+
+    if isinstance(payload, dict):
+        for key in ("facts", "memories", "results", "memory"):
+            if isinstance(payload.get(key), list):
+                payload = payload[key]
+                break
+        else:
+            return []
+
+    return payload if isinstance(payload, list) else []
+
+
+def _llm_extract_facts(mem0, transcript_text: str) -> list:
+    """
+    Distil a transcript into candidate facts using Mem0's configured LLM.
+
+    Mem0 has no public fact-extraction entry point, so we drive the LLM the
+    engine already built for us. This keeps one model, one API key and one
+    billing path, and it hands us the M1..M7 code inline instead of forcing a
+    second classification pass.
+    """
+    snippet = transcript_text[:6000]
+
+    # Some Mem0 builds expose a private distiller. Use it when present so we
+    # inherit any upstream prompt improvements for free.
+    private_hook = getattr(mem0, "_extract_facts", None)
+    if callable(private_hook):
+        try:
+            facts = _coerce_fact_list(private_hook(snippet))
+            if facts:
+                return facts
+        except Exception as e:
+            logger.warning(f"[_llm_extract_facts] private mem0._extract_facts hook failed: {e}")
+
+    llm = getattr(mem0, "llm", None)
+    if llm is None or not hasattr(llm, "generate_response"):
+        logger.error("[_llm_extract_facts] Mem0 engine exposes no usable LLM. Session facts cannot be distilled.")
+        return []
+
+    messages = [
+        {"role": "system", "content": FACT_EXTRACTION_PROMPT},
+        {"role": "user", "content": f"Conversation:\n{snippet}"},
+    ]
+
+    # Ask for strict JSON first; fall back to a plain call for providers that
+    # reject the response_format argument.
+    try:
+        raw = llm.generate_response(messages=messages, response_format={"type": "json_object"})
+    except Exception as e:
+        logger.warning(f"[_llm_extract_facts] JSON-mode extraction failed ({e}). Retrying without response_format.")
+        try:
+            raw = llm.generate_response(messages=messages)
+        except Exception as e2:
+            logger.error(f"[_llm_extract_facts] LLM extraction failed outright: {e2}")
+            return []
+
+    return _coerce_fact_list(raw)
+
+
 def process_session_transcript(transcript_text: str, user_id: str) -> int:
     """
     Process an end-of-session conversation transcript through our enterprise memory pipeline.
     Bypasses raw mem0.add(..., infer=True) to ensure all extracted facts undergo strict
     normalize_category(), content_fingerprint() deduplication, and tiered staging (N=1..3).
+
+    This is the only path that persists anything the user said without the model
+    explicitly calling save_user_memory, so a silent failure here means the whole
+    session is forgotten. Every exit reports its count.
     """
     if not transcript_text or not transcript_text.strip():
+        logger.warning("[process_session_transcript] Empty transcript. Nothing to distil.")
         return 0
     mem0 = get_mem0_instance()
     if not mem0:
+        logger.error("[process_session_transcript] Mem0 engine unavailable. Session facts dropped.")
         return 0
-    
-    extracted_facts = []
-    try:
-        if hasattr(mem0, "_extract_facts"):
-            extracted_facts = mem0._extract_facts(f"User transcript:\n{transcript_text[:3500]}")
-    except Exception as e:
-        logger.warning(f"[process_session_transcript] mem0._extract_facts failed: {e}")
-        extracted_facts = []
+
+    extracted_facts = _llm_extract_facts(mem0, transcript_text)
 
     count = 0
-    if isinstance(extracted_facts, list):
-        for item in extracted_facts:
-            if isinstance(item, dict) and item.get("memory"):
-                fact = item.get("memory").strip()
-                cat = item.get("category", "general")
-                process_extracted_fact(fact, cat, user_id, is_explicit_remember=False)
-                count += 1
-            elif isinstance(item, str) and len(item.strip()) > 5:
-                process_extracted_fact(item.strip(), "general", user_id, is_explicit_remember=False)
-                count += 1
+    for item in extracted_facts:
+        fact, cat = "", "general"
+        if isinstance(item, dict):
+            fact = str(item.get("memory") or item.get("fact") or item.get("text") or "").strip()
+            cat = item.get("category") or "general"
+        elif isinstance(item, str):
+            fact = item.strip()
+
+        if len(fact) <= 5:
+            continue
+
+        try:
+            process_extracted_fact(fact, cat, user_id, is_explicit_remember=False)
+            count += 1
+        except Exception as e:
+            logger.error(f"[process_session_transcript] Failed to persist '{fact[:60]}': {e}")
+
+    if count:
+        logger.info(f"[process_session_transcript] Distilled and persisted {count} fact(s) for {user_id}.")
+    else:
+        logger.error(
+            f"[process_session_transcript] Extracted 0 facts from a {len(transcript_text)}-char "
+            f"transcript for {user_id}. This session will not be recalled."
+        )
     return count
 
 def pre_load_user_profile(user_id: str) -> list[str]:
@@ -678,7 +808,7 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     for m in results:
         if not isinstance(m, dict):
             continue
-        meta = m.get("metadata", {})
+        meta = m.get("metadata") or {}
         if meta.get("status", "active") != "active":
             continue
             
@@ -712,7 +842,7 @@ def pre_load_user_profile(user_id: str) -> list[str]:
             fb_res = fb_facts.get("results", []) if isinstance(fb_facts, dict) else fb_facts
             if isinstance(fb_res, list):
                 for fm in fb_res:
-                    if isinstance(fm, dict) and fm.get("metadata", {}).get("status", "active") == "active":
+                    if isinstance(fm, dict) and (fm.get("metadata") or {}).get("status", "active") == "active":
                         f_text = fm.get("memory", "")
                         if f_text and f_text not in valid_memories:
                             valid_memories.append(f_text)
@@ -759,7 +889,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     for item in results:
         if not isinstance(item, dict):
             continue
-        if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
+        if item.get("score", 1.0) < RETRIEVAL_THRESHOLD:
             continue
             
         meta = item.get("metadata") or {}
@@ -785,8 +915,8 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                 g_results = matched_fb.get("results", []) if isinstance(matched_fb, dict) else matched_fb
                 if isinstance(g_results, list):
                     for item in g_results:
-                        if isinstance(item, dict) and item.get("score", 1.0) >= SIMILARITY_THRESHOLD:
-                            meta = item.get("metadata", {})
+                        if isinstance(item, dict) and item.get("score", 1.0) >= RETRIEVAL_THRESHOLD:
+                            meta = item.get("metadata") or {}
                             if meta.get("status", "active") == "active":
                                 valid_list.append(item.get("memory", ""))
             except Exception as e:
@@ -809,8 +939,10 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
             if isinstance(items, list):
                 for item in items:
-                    if isinstance(item, dict) and item.get("metadata", {}).get("status", "active") == "active":
-                        meta = item.get("metadata", {})
+                    if not isinstance(item, dict):
+                        continue
+                    meta = item.get("metadata") or {}
+                    if meta.get("status", "active") == "active":
                         expires_at = meta.get("expires_at")
                         if expires_at and expires_at < now_iso:
                             continue
