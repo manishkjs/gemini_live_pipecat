@@ -157,16 +157,36 @@ class GeminiSessionLoggerMixin:
             append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms, user_id=os.getenv("ACTIVE_USER_ID", "default_user"))
             self._my_ttfb_start = None
 
+    async def _run_function_call(self, tool_call):
+        locked_by_method = False
+        if not getattr(self, '_frame_locked_tools', False):
+            self._active_tools_in_flight = getattr(self, '_active_tools_in_flight', 0) + 1
+            locked_by_method = True
+        try:
+            return await super()._run_function_call(tool_call)
+        finally:
+            if locked_by_method:
+                self._active_tools_in_flight = max(0, getattr(self, '_active_tools_in_flight', 1) - 1)
 
     async def process_frame(self, frame, direction):
-        """Intercept InterruptionFrame to set filler-pending flag.
+        """Intercept InterruptionFrame to set filler-pending flag and prevent memory turn cancellation."""
+        frame_type_name = type(frame).__name__
+        if frame_type_name in ("FunctionCallInProgressFrame", "FunctionCallsStartedFrame", "FunctionCallFromLLM"):
+            if not getattr(self, '_frame_locked_tools', False):
+                self._active_tools_in_flight = getattr(self, '_active_tools_in_flight', 0) + 1
+                self._frame_locked_tools = True
+                logger.info(f"[AntiCancel] Instantly locked _active_tools_in_flight={self._active_tools_in_flight} at T=0ms (0 async function call delay) on frame {frame_type_name}")
+        elif frame_type_name in ("FunctionCallResultFrame", "FunctionCallCancelFrame"):
+            if getattr(self, '_frame_locked_tools', False):
+                self._active_tools_in_flight = max(0, getattr(self, '_active_tools_in_flight', 1) - 1)
+                self._frame_locked_tools = False
+                logger.info(f"[AntiCancel] Released _active_tools_in_flight={self._active_tools_in_flight} on frame {frame_type_name}")
 
-        We override process_frame instead of _handle_interruption because
-        _bot_is_responding gets set to False when the API turn_complete arrives,
-        but audio may still be playing from the transport buffer. The
-        InterruptionFrame is only generated when the user actually interrupts
-        ongoing audio playback, so it's a reliable signal.
-        """
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+            if getattr(self, '_active_tools_in_flight', 0) > 0:
+                logger.info(f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool lookup ({self._active_tools_in_flight} tools in flight) to prevent memory turn cancellation!")
+                return
+
         if isinstance(frame, InterruptionFrame):
             if not hasattr(self, '_repeat_on_filler_pending'):
                 self._repeat_on_filler_pending = False
@@ -754,12 +774,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             if transcript_text and len(transcript_lines) > 1:
                 loop = asyncio.get_running_loop()
                 def _post_session_extraction():
-                    from memory_function import get_mem0_instance
-                    mem0 = get_mem0_instance()
-                    if mem0:
-                        logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} using gemini-3.1-flash-lite...")
-                        mem0.add(transcript_text, user_id=active_user, metadata={"category": "M6_Recent"}, infer=True)
-                loop.run_in_executor(None, _post_session_extraction)
+                    from memory_function import process_session_transcript
+                    logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} via enterprise pipeline...")
+                    process_session_transcript(transcript_text, active_user)
+                await loop.run_in_executor(None, _post_session_extraction)
         except Exception as e:
             logger.error(f"[PostSessionWorker] Error collecting session transcript: {e}")
         await task.cancel()
