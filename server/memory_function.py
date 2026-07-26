@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import re
+import hashlib
 from datetime import datetime, timedelta
 from loguru import logger
 from dotenv import load_dotenv
@@ -49,7 +50,8 @@ def get_mem0_config() -> dict:
             "config": {
                 "connection_string": pg_dsn,
                 "collection_name": "user_memories",
-                "embedding_model_dims": 768
+                "embedding_model_dims": 768,
+                "hnsw": True
             }
         }
     else:
@@ -91,7 +93,7 @@ def get_mem0_config() -> dict:
                 "api_key": api_key if not use_vertex else None,
             }
         },
-        "custom_prompt": (
+        "custom_instructions": (
             "You are a personal memory extraction assistant for Lenskart 'B' smartglasses. "
             "Extract ALL user-stated facts, family relationships, identities, roles, plans, goals, preferences, personal claims, and conversational details. "
             "Always extract entity relationships clearly (e.g., 'User son name is X', 'User spouse name is Y', 'User has a goal to Z'). "
@@ -320,7 +322,7 @@ def is_roleplay_or_popculture_fact(fact_text: str, category: str = "") -> bool:
 def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "") -> dict[str, str]:
     """
     Extract relational graph triples (Subject -> Relation -> Object) from fact text and category.
-    Supports roleplay assertions, family relationships, exams, and general user facts.
+    Supports roleplay assertions, family relationships, exams, and dynamic subject-verb heuristics.
     """
     text_l = fact_text.lower()
     subject, relation, obj = "User", "associated_with", fact_text
@@ -372,19 +374,27 @@ def extract_graph_triples(fact_text: str, category: str = "", user_id: str = "")
         relation = "prefers"
         parts = fact_text.split("prefers", 1)
         obj = parts[1].strip() if len(parts) > 1 else fact_text
+    else:
+        # Dynamic regex relation heuristic for multi-word subjects and common verbs
+        match = re.search(r"^([\w\s]+?)\s+(is|likes|prefers|wants|has|works at|lives in|preparing for|plans to)\s+(.+)$", fact_text, re.IGNORECASE)
+        if match:
+            subject = match.group(1).strip().capitalize()
+            relation = match.group(2).lower().replace(" ", "_")
+            obj = match.group(3).strip()
 
     return {"subject": subject, "relation": relation, "object": obj}
 
 def process_extracted_fact(fact_text: str, category: str, user_id: str, is_explicit_remember: bool = False):
     """
     Process a single distilled fact extracted by Gemini 3.1 Flash Lite at session end or during explicit save.
-    Implements the PRD Tiered Promotion Matrix, similarity threshold gating (min_score >= 0.80), and observation day tracking.
+    Implements the PRD Tiered Promotion Matrix, similarity threshold gating (min_score >= 0.20), and observation day tracking.
     """
     mem0 = get_mem0_instance()
     if not mem0:
         logger.warning("[process_extracted_fact] Mem0 engine unavailable.")
         return None
 
+    user_id = normalize_user_id(user_id)
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 1. Determine promotion threshold N
@@ -420,7 +430,7 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             if meta.get("status", "active") in ["staging", "active"]:
                 filtered_results.append(item)
 
-    # 6. Apply Similarity Threshold Gate (min_score >= 0.80)
+    # 6. Apply Similarity Threshold Gate (min_score >= 0.20)
     best_match = None
     if filtered_results and filtered_results[0].get("score", 1.0) >= SIMILARITY_THRESHOLD:
         best_match = filtered_results[0]
@@ -437,7 +447,8 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
             "verification_status": verification_status,
             "expires_at": expires_at,
             "graph_relation": triples,
-            "graph_triples": triples
+            "graph_triples": triples,
+            "content_hash": hashlib.md5(fact_text.lower().strip().encode()).hexdigest()
         }
         res = mem0.add(fact_text, user_id=user_id, metadata=meta, infer=False)
         logger.info(f"✅ Stored Raw Memory ({initial_status}) with Graph Link [{triples['subject']} --({triples['relation']})--> {triples['object'][:20]}...]: '{fact_text}'")
@@ -472,10 +483,11 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
 
 def pre_load_user_profile(user_id: str) -> list[str]:
     """
-    Path 1: Connection Pre-Load Handler.
-    Fetch active core profile facts at WebSocket connect (~40ms budget).
+    Path 1: Connection Pre-Load Handler (~40ms budget).
+    Fetch active core profile facts with bounded result limit (25) to prevent connection delays.
     Scrubs expired M6 facts and flags UNVERIFIED M7 safety facts.
     """
+    user_id = normalize_user_id(user_id)
     mem0 = get_mem0_instance()
     if not mem0:
         return []
@@ -483,12 +495,12 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     now_iso = datetime.now().isoformat()
     
     try:
-        active_facts = mem0.get_all(filters={"user_id": user_id, "status": "active"})
+        active_facts = mem0.get_all(filters={"user_id": user_id, "status": "active"}, limit=25)
     except Exception:
         try:
-            active_facts = mem0.get_all(filters={"user_id": user_id})
+            active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
         except Exception:
-            active_facts = mem0.get_all(user_id=user_id)
+            active_facts = mem0.get_all(user_id=user_id, limit=25)
 
     results = active_facts.get("results", []) if isinstance(active_facts, dict) else active_facts
     if not isinstance(results, list):
@@ -523,10 +535,10 @@ def pre_load_user_profile(user_id: str) -> list[str]:
             if f_id == user_id:
                 continue
             try:
-                fb_facts = mem0.get_all(filters={"user_id": f_id, "status": "active"})
+                fb_facts = mem0.get_all(filters={"user_id": f_id, "status": "active"}, limit=25)
             except Exception:
                 try:
-                    fb_facts = mem0.get_all(user_id=f_id)
+                    fb_facts = mem0.get_all(user_id=f_id, limit=25)
                 except Exception:
                     continue
             fb_res = fb_facts.get("results", []) if isinstance(fb_facts, dict) else fb_facts
@@ -619,10 +631,10 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
 
     for uid in all_users:
         try:
-            active_data = mem0.get_all(filters={"user_id": uid, "status": "active"})
+            active_data = mem0.get_all(filters={"user_id": uid, "status": "active"}, limit=25)
         except Exception:
             try:
-                active_data = mem0.get_all(user_id=uid)
+                active_data = mem0.get_all(user_id=uid, limit=25)
             except Exception:
                 active_data = []
         items = active_data.get("results", []) if isinstance(active_data, dict) else active_data
