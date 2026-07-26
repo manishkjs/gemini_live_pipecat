@@ -158,6 +158,41 @@ def get_mem0_instance():
 
         provider = config["vector_store"]["provider"]
         logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
+
+        # Stage 3 Instrument: Wrap embedding_model.embed to log exact input text, 768-dim vector preview, and exact API duration
+        if hasattr(_MEM0_INSTANCE, "embedding_model") and _MEM0_INSTANCE.embedding_model:
+            orig_embed = getattr(_MEM0_INSTANCE.embedding_model, "embed", None)
+            if orig_embed and not hasattr(orig_embed, "_is_instrumented"):
+                def instrumented_embed(text, *args, **kwargs):
+                    import time
+                    start_t = time.time()
+                    vec = orig_embed(text, *args, **kwargs)
+                    dur_ms = round((time.time() - start_t) * 1000.0, 1)
+                    dims = len(vec) if isinstance(vec, list) else "N/A"
+                    preview = f"[{', '.join(str(round(v, 4)) for v in vec[:4])}, ...]" if isinstance(vec, list) and len(vec) > 4 else str(vec)
+                    logger.info(f"[STAGE 3: gemini-embedding-001] Input: '{text}' -> Output: {dims}-dim Vector {preview} in {dur_ms} ms")
+                    append_diagnostic_log("STAGE 3: Embedder", f"Input: '{text}' -> {dims}-dim Vector {preview} ({dur_ms} ms)")
+                    return vec
+                instrumented_embed._is_instrumented = True
+                _MEM0_INSTANCE.embedding_model.embed = instrumented_embed
+
+        # Stage 4 Instrument: Wrap vector_store.search to log AlloyDB PGVector execution time and match count
+        if hasattr(_MEM0_INSTANCE, "vector_store") and _MEM0_INSTANCE.vector_store:
+            orig_search = getattr(_MEM0_INSTANCE.vector_store, "search", None)
+            if orig_search and not hasattr(orig_search, "_is_instrumented"):
+                def instrumented_vector_search(*args, **kwargs):
+                    import time
+                    start_t = time.time()
+                    res = orig_search(*args, **kwargs)
+                    dur_ms = round((time.time() - start_t) * 1000.0, 1)
+                    count = len(res) if isinstance(res, list) else len(res.get("results", [])) if isinstance(res, dict) else 0
+                    filters = kwargs.get("filters", "N/A")
+                    logger.info(f"[STAGE 4: AlloyDB PGVector] Search filters={filters} -> Returned {count} raw vector matches in {dur_ms} ms")
+                    append_diagnostic_log("STAGE 4: AlloyDB", f"Vector Search (filters={filters}) -> {count} rows matches ({dur_ms} ms)")
+                    return res
+                instrumented_vector_search._is_instrumented = True
+                _MEM0_INSTANCE.vector_store.search = instrumented_vector_search
+
         return _MEM0_INSTANCE
     except Exception as e:
         logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
@@ -547,7 +582,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
         if item.get("score", 1.0) < SIMILARITY_THRESHOLD:
             continue
             
-        meta = item.get("metadata", {})
+        meta = item.get("metadata") or {}
         if meta.get("status", "active") != "active":
             continue
 
@@ -558,12 +593,6 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
         valid_results.append(item.get("memory", ""))
         
     valid_list = [r for r in valid_results if r]
-    
-    # Merge active core/recent profile facts for multi-hop relational context (e.g. Adyant -> son -> EVS exam)
-    profile_facts = pre_load_user_profile(user_id)
-    for pf in profile_facts:
-        if pf not in valid_list:
-            valid_list.append(pf)
 
     # If no results found for specific user_id (e.g. script mismatch user:manish vs user:मनीष), try common user fallbacks
     if not valid_list:
@@ -580,11 +609,6 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
                             meta = item.get("metadata", {})
                             if meta.get("status", "active") == "active":
                                 valid_list.append(item.get("memory", ""))
-                # Also check fallback profile facts
-                fb_profile = pre_load_user_profile(f_user)
-                for fbp in fb_profile:
-                    if fbp not in valid_list:
-                        valid_list.append(fbp)
             except Exception as e:
                 logger.warning(f"[recall_user_memories] Fallback search for {f_user} failed: {e}")
 
