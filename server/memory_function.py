@@ -205,10 +205,19 @@ def get_mem0_instance():
                     parsed = urllib.parse.urlparse(conn_str)
                     host = parsed.hostname or "127.0.0.1"
                     port = parsed.port or 5432
-                    with socket.create_connection((host, port), timeout=0.5):
+                    # 0.5s was far too tight: a cold Cloud Run instance dialling AlloyDB
+                    # over the VPC connector routinely needs seconds on the first packet.
+                    # A spurious timeout here silently downgrades the whole service to
+                    # container-local Qdrant, which is wiped on every instance recycle.
+                    probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "5.0"))
+                    with socket.create_connection((host, port), timeout=probe_timeout):
                         pass
                 except Exception as sock_e:
-                    logger.warning(f"[Mem0] Unreachable Postgres server ({conn_str}): {sock_e}. Switching to Qdrant fallback.")
+                    logger.error(
+                        f"[Mem0] DURABILITY DEGRADED: Postgres unreachable at {host}:{port} ({sock_e}). "
+                        "Falling back to container-local Qdrant. Memories written now are EPHEMERAL "
+                        "and will be lost when this instance is recycled."
+                    )
                     db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
                     os.makedirs(db_path, exist_ok=True)
                     config["vector_store"] = {
@@ -223,7 +232,10 @@ def get_mem0_instance():
             _MEM0_INSTANCE = Memory.from_config(config)
         except Exception as e:
             if config.get("vector_store", {}).get("provider") == "pgvector":
-                logger.warning(f"[Mem0] pgvector initialization failed: {e}. Switching to Qdrant fallback.")
+                logger.error(
+                    f"[Mem0] DURABILITY DEGRADED: pgvector initialization failed: {e}. "
+                    "Falling back to container-local Qdrant; memories written now are EPHEMERAL."
+                )
                 db_path = os.getenv("MEM0_DB_PATH", os.path.join(os.path.dirname(__file__), "data", "mem0_qdrant_db"))
                 os.makedirs(db_path, exist_ok=True)
                 config["vector_store"] = {
