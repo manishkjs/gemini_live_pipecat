@@ -210,6 +210,8 @@ class GeminiSessionLoggerMixin:
             if not getattr(self, '_frame_locked_tools', False):
                 self._lock_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallResultFrame":
+            res_str = str(getattr(frame, 'result', getattr(frame, 'content', '')))
+            append_diagnostic_log("Tool Output", f"Result -> Model: {res_str[:150]}")
             if getattr(self, '_frame_locked_tools', False):
                 self._release_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallCancelFrame":
