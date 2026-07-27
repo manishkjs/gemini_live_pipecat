@@ -12,6 +12,13 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from diagnostic_buffer import append_diagnostic_log
 
+# Mem0 ships an anonymous PostHog client that spins up a background thread and
+# blocks on first use waiting for feature flags. On Cloud Run with
+# private-ranges-only VPC egress that call has nowhere good to go. Opt out
+# before mem0 is ever imported: mem0.memory.telemetry reads this flag at module
+# import time and never re-checks it.
+os.environ.setdefault("MEM0_TELEMETRY", "false")
+
 # Dedicated executors for isolation: live real-time voice tool calls vs. background batch distillation
 _MEM0_READ_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="mem0-read")
 _MEM0_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=5, thread_name_prefix="mem0-batch")
@@ -266,6 +273,56 @@ def get_mem0_instance():
         except Exception as e:
             logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
             return None
+
+
+def warm_memory_engine() -> None:
+    """
+    Pay every one-time cost of the memory path at container start, not on the
+    user's first question.
+
+    Building the Mem0 instance is not enough. `Memory.search()` lazily loads two
+    separate spaCy `en_core_web_sm` pipelines from disk before it ever reaches
+    the embedder: `get_nlp_lemma()` for BM25 lemmatisation and `get_nlp_full()`
+    for entity extraction. On a cold Cloud Run container those two loads cost
+    ~5.5s, and because they sit in front of the embed call they are invisible to
+    our STAGE 3 / STAGE 4 instrumentation. The user experiences it as a silent
+    stall between "tool called" and "bot speaks".
+
+    Running one throwaway search here forces both pipelines resident while the
+    container is still warming, so the first real recall is pure DB latency.
+    Every step is best-effort: a warmup failure must never block serving.
+    """
+    import time
+
+    start = time.time()
+
+    engine = get_mem0_instance()
+    if engine is None:
+        logger.warning("[Warmup] Mem0 engine unavailable, skipping spaCy pre-load.")
+        return
+
+    # Load the spaCy pipelines directly so a failure here is attributable,
+    # rather than being swallowed inside mem0's search error handling.
+    for loader_name in ("get_nlp_lemma", "get_nlp_full"):
+        try:
+            from mem0.utils import spacy_models
+            stage = time.time()
+            getattr(spacy_models, loader_name)()
+            logger.info(f"[Warmup] spaCy {loader_name} ready in {time.time() - stage:.2f}s")
+        except Exception as e:
+            logger.warning(f"[Warmup] spaCy {loader_name} pre-load skipped: {e}")
+
+    # One real search against a user that cannot exist. This exercises the full
+    # lemmatise -> entity-extract -> embed -> pgvector path and warms the
+    # embedding client's TLS/OAuth handshake too.
+    try:
+        stage = time.time()
+        engine.search(query="warmup", filters={"user_id": "__warmup__"})
+        logger.info(f"[Warmup] Dry-run search completed in {time.time() - stage:.2f}s")
+    except Exception as e:
+        logger.warning(f"[Warmup] Dry-run search skipped: {e}")
+
+    logger.info(f"[Warmup] Memory engine fully warm in {time.time() - start:.2f}s")
 
 def get_memory_file_path(user_id: str = "default_user") -> str:
     """Deprecated: Local JSON memory file storage has been removed in favor of strict AlloyDB pgvector."""
