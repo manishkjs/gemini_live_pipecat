@@ -31,7 +31,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 THRESHOLDS = {
     "M7_Safety":     1,  # N=1 (Instant, UNVERIFIED)
     "M5_Commitment": 1,  # N=1 (Instant, expires on completion + 30d)
-    "M1_Identity":   2,  # N=2 (Catches ASR errors / misstatements)
+    "M1_Identity":   1,  # N=1 (Instant: user identity, name, age, core identity)
+
     "M2_Relation":   1,  # N=1 (Instant: family relations, son/daughter names, core personal relations)
     "M3_Preference": 2,  # N=2 (Fast Staging)
     "M4_Behavioral": 3,  # N=3 (Standard Staging)
@@ -984,8 +985,9 @@ def pre_load_user_profile(user_id: str) -> list[str]:
         if not isinstance(m, dict):
             continue
         meta = m.get("metadata") or {}
-        if meta.get("status", "active") != "active":
+        if meta.get("status", "active") not in ["active", "staging"]:
             continue
+
             
         # Scrub expired M6 context
         expires_at = meta.get("expires_at")
