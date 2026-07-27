@@ -12,8 +12,9 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from diagnostic_buffer import append_diagnostic_log
 
-# Dedicated executor for CPU-bound or blocking DB/Mem0 tasks
-_MEM0_EXECUTOR = ThreadPoolExecutor(max_workers=20)
+# Dedicated executors for isolation: live real-time voice tool calls vs. background batch distillation
+_MEM0_READ_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="mem0-read")
+_MEM0_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=5, thread_name_prefix="mem0-batch")
 _MEM0_INIT_LOCK = threading.Lock()
 
 # Auto-load environment variables
@@ -1038,13 +1039,13 @@ async def save_user_memory_handler(params: FunctionCallParams):
 
     # 2. Try Mem0 engine
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
+    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
             def _add_mem0():
                 return process_extracted_fact(memory_text, category, user_id, is_explicit_remember=True)
 
-            res = await loop.run_in_executor(_MEM0_EXECUTOR, _add_mem0)
+            res = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _add_mem0)
             logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
             result_msg = f"Memory saved successfully to Mem0 for {user_id}: {memory_text}"
         except Exception as e:
@@ -1072,13 +1073,13 @@ async def search_user_memory_handler(params: FunctionCallParams):
 
     # 2. Try Mem0 engine
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
+    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
             def _search_mem0():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(_MEM0_EXECUTOR, _search_mem0)
+            facts = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _search_mem0)
             logger.info(f"[Mem0] Searched memory in-process query: '{query}' for {user_id}")
 
             if not facts:
@@ -1104,13 +1105,13 @@ async def recall_user_memories_handler(params: FunctionCallParams):
         return
 
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
+    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
             def _recall_mem0():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(_MEM0_EXECUTOR, _recall_mem0)
+            facts = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _recall_mem0)
             logger.info(f"[Path2DeepRecall] Recalled query: '{query}' for {user_id}")
 
             if not facts:

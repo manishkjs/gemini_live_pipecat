@@ -834,7 +834,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                     from memory_function import process_session_transcript
                     logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} via enterprise pipeline...")
                     process_session_transcript(transcript_text, active_user)
-                await loop.run_in_executor(None, _post_session_extraction)
+                from memory_function import _MEM0_BATCH_EXECUTOR
+                await loop.run_in_executor(_MEM0_BATCH_EXECUTOR, _post_session_extraction)
         except Exception as e:
             logger.error(f"[PostSessionWorker] Error collecting session transcript: {e}")
         await task.cancel()
