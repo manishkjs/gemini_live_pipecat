@@ -939,7 +939,7 @@ def pre_load_user_profile(user_id: str) -> list[str]:
         try:
             active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
         except Exception:
-            active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
+            active_facts = []
 
     results = active_facts.get("results", []) if isinstance(active_facts, dict) else active_facts
     if not isinstance(results, list) or len(results) == 0:
