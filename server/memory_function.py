@@ -210,7 +210,68 @@ def get_mem0_config() -> dict:
         )
     }
 
+def _patch_mem0_vertex_vector_search():
+    """Monkey-patch Mem0's VertexAIVectorSearch.search to handle neighbor.restricts being None safely."""
+    try:
+        import mem0.vector_stores.vertex_ai_vector_search as v_module
+        if hasattr(v_module, "VertexAIVectorSearch") and not getattr(v_module.VertexAIVectorSearch, "_patched_restricts", False):
+            from mem0.vector_stores.base import OutputData
+            import traceback
+
+            orig_search = v_module.VertexAIVectorSearch.search
+
+            def safe_search(self, query, top_k=5, filters=None, *args, **kwargs):
+                try:
+                    return orig_search(self, query=query, top_k=top_k, filters=filters, *args, **kwargs)
+                except TypeError as te:
+                    if "'NoneType' object is not iterable" in str(te) or "neighbor.restricts" in traceback.format_exc():
+                        logger.warning("[Mem0Patch] Intercepted NoneType restricts in VertexAIVectorSearch, executing safe fallback parse.")
+                        vectors = self.embedding_model.embed(query)
+                        from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
+                        filter_namespaces = []
+                        if filters:
+                            for key, value in filters.items():
+                                if isinstance(value, (str, int, float)):
+                                    filter_namespaces.append(Namespace(key, [str(value)], []))
+                                elif isinstance(value, dict):
+                                    includes = value.get("include", [])
+                                    excludes = value.get("exclude", [])
+                                    filter_namespaces.append(Namespace(key, includes, excludes))
+
+                        response = self.index_endpoint.find_neighbors(
+                            deployed_index_id=self.deployment_index_id,
+                            queries=[vectors],
+                            num_neighbors=top_k,
+                            filter=filter_namespaces if filter_namespaces else None,
+                            return_full_datapoint=True,
+                        )
+
+                        if not response or len(response) == 0 or len(response[0]) == 0:
+                            return []
+
+                        results = []
+                        for neighbor in response[0]:
+                            payload = {}
+                            restricts = getattr(neighbor, "restricts", None) or []
+                            for restrict in restricts:
+                                if hasattr(restrict, "name") and hasattr(restrict, "allow_tokens") and restrict.allow_tokens:
+                                    payload[restrict.name] = restrict.allow_tokens[0]
+
+                            score = max(0.0, 1.0 - neighbor.distance) if neighbor.distance is not None else None
+                            output_data = OutputData(id=neighbor.id, score=score, payload=payload)
+                            results.append(output_data)
+
+                        return results
+                    raise
+
+            v_module.VertexAIVectorSearch.search = safe_search
+            v_module.VertexAIVectorSearch._patched_restricts = True
+            logger.info("[Mem0] Successfully applied safe restricts patch to mem0 VertexAIVectorSearch.search")
+    except Exception as patch_e:
+        logger.warning(f"[Mem0] Could not patch VertexAIVectorSearch: {patch_e}")
+
 def get_mem0_instance():
+
     """Lazy initialize embedded self-hosted Mem0 instance using pgvector (Cloud SQL/AlloyDB) or Vertex Vector Search or Qdrant fallback."""
     global _MEM0_INSTANCE
     if _MEM0_INSTANCE is not None:
@@ -247,11 +308,15 @@ def get_mem0_instance():
                         logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
                         return None
 
+            if provider in ("vertex_vector_search", "vertex_ai_vector_search"):
+                _patch_mem0_vertex_vector_search()
+
             try:
                 _MEM0_INSTANCE = Memory.from_config(config)
             except Exception as e:
                 logger.error(f"[Mem0] CRITICAL: {provider} initialization failed: {e}. Ephemeral fallback disabled.")
                 return None
+
 
             provider = config["vector_store"]["provider"]
             logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
