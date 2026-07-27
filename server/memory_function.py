@@ -220,13 +220,15 @@ def _patch_mem0_vertex_vector_search():
 
             orig_search = v_module.VertexAIVectorSearch.search
 
-            def safe_search(self, query, top_k=5, filters=None, *args, **kwargs):
+            def safe_search(self, query, vectors=None, top_k=5, filters=None, *args, **kwargs):
                 try:
-                    return orig_search(self, query=query, top_k=top_k, filters=filters, *args, **kwargs)
-                except TypeError as te:
-                    if "'NoneType' object is not iterable" in str(te) or "neighbor.restricts" in traceback.format_exc():
+                    return orig_search(self, query, vectors, top_k=top_k, filters=filters, *args, **kwargs)
+                except Exception as te:
+                    if "'NoneType' object is not iterable" in str(te) or "neighbor.restricts" in traceback.format_exc() or "restricts" in str(te):
+
                         logger.warning("[Mem0Patch] Intercepted NoneType restricts in VertexAIVectorSearch, executing safe fallback parse.")
-                        vectors = self.embedding_model.embed(query)
+                        if vectors is None:
+                            vectors = self.embedding_model.embed(query)
                         from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
                         filter_namespaces = []
                         if filters:
@@ -263,6 +265,7 @@ def _patch_mem0_vertex_vector_search():
 
                         return results
                     raise
+
 
             v_module.VertexAIVectorSearch.search = safe_search
             v_module.VertexAIVectorSearch._patched_restricts = True
