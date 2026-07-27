@@ -96,6 +96,7 @@ class WebsocketClientApp {
     constructor() {
         this.setupDOMElements();
         this.setupEventListeners();
+        this.setupFloatingDiagnosticDrawer();
     }
     setupDOMElements() {
         this.connectBtn = document.getElementById("connect-btn");
@@ -360,7 +361,9 @@ class WebsocketClientApp {
         if (lastBubble && lastBubble.classList.contains(role)) {
             const timestamp = lastBubble.querySelector(".timestamp");
             if (timestamp) {
-                const fullText = (lastBubble.getAttribute('data-text') || '') + text;
+                const currentText = lastBubble.getAttribute('data-text') || '';
+                const separator = (currentText && !currentText.endsWith(' ') && !text.startsWith(' ')) ? ' ' : '';
+                const fullText = currentText + separator + text;
                 lastBubble.setAttribute('data-text', fullText);
                 const cleanText = fullText.replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
                 const textNode = timestamp.previousSibling;
@@ -741,7 +744,9 @@ class WebsocketClientApp {
                 }
                 systemInstructions = geminiSystemInstructionsTextarea.value;
             }
-            if (systemInstructions) {
+            // Only append system_instruction to URL if explicitly customized and brief (< 500 chars)
+            // Default system prompt is automatically loaded server-side to prevent HTTP 400 (URL query line too long)
+            if (systemInstructions && systemInstructions.length < 500) {
                 connectUrl += `&system_instruction=${encodeURIComponent(systemInstructions)}`;
             }
             // Handle Dynamic Tools
@@ -788,6 +793,7 @@ class WebsocketClientApp {
                             this.stopBtn.disabled = true;
                         this.updateMicStatus("idle");
                         this.log("Client disconnected");
+                        this.rtviClient = null;
                     },
                     onBotReady: (data) => {
                         this.log(`Bot ready: ${JSON.stringify(data)}`);
@@ -802,8 +808,19 @@ class WebsocketClientApp {
                             this.handleServerMessage(message);
                         }
                     },
-                    onMessageError: (error) => this.log(`Message error: ${error}`, "error"),
-                    onError: (error) => this.log(`Error: ${error}`, "error"),
+                    onMessageError: (error) => {
+                        if (error && (error.type === "error-response" || error.type === "error")) {
+                            if (!error.data || Object.keys(error.data).length === 0 || !error.data.message) {
+                                return;
+                            }
+                        }
+                        const errStr = typeof error === "object" ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : error;
+                        this.log(`Message error: ${errStr}`, "error");
+                    },
+                    onError: (error) => {
+                        const errStr = typeof error === "object" ? JSON.stringify(error, Object.getOwnPropertyNames(error)) : error;
+                        this.log(`Error: ${errStr}`, "error");
+                    },
                 },
             };
             this.rtviClient = new RTVIClient(RTVIConfig);
@@ -828,6 +845,7 @@ class WebsocketClientApp {
                 catch (disconnectError) {
                     this.log(`Error during disconnect: ${disconnectError}`, "error");
                 }
+                this.rtviClient = null;
             }
         }
     }
@@ -845,6 +863,161 @@ class WebsocketClientApp {
                 this.log(`Error disconnecting: ${error.message}`, "error");
             }
         }
+    }
+    setupFloatingDiagnosticDrawer() {
+        if (document.getElementById("floating-diag-container"))
+            return;
+        const container = document.createElement("div");
+        container.id = "floating-diag-container";
+        container.style.cssText = "position: fixed; bottom: 20px; right: 20px; z-index: 99999; font-family: 'JetBrains Mono', 'Fira Code', monospace;";
+        // Add custom pulse animation keyframes right inside the DOM
+        const styleTag = document.createElement("style");
+        styleTag.innerHTML = `
+      @keyframes diag-pulse {
+        0% { transform: scale(1); opacity: 1; box-shadow: 0 0 10px rgba(74, 222, 128, 0.4); }
+        50% { transform: scale(1.15); opacity: 0.75; box-shadow: 0 0 20px rgba(74, 222, 128, 0.8); }
+        100% { transform: scale(1); opacity: 1; box-shadow: 0 0 10px rgba(74, 222, 128, 0.4); }
+      }
+      @keyframes diag-glow {
+        0% { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 20px rgba(56, 189, 248, 0.25); }
+        50% { border-color: rgba(168, 85, 247, 0.6); box-shadow: 0 0 30px rgba(168, 85, 247, 0.35); }
+        100% { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 20px rgba(56, 189, 248, 0.25); }
+      }
+      .diag-card { transition: background 0.15s ease; }
+      .diag-card:hover { background: rgba(30, 41, 59, 0.7) !important; }
+    `;
+        document.head.appendChild(styleTag);
+        const badge = document.createElement("div");
+        badge.id = "floating-diag-badge";
+        badge.style.cssText = "background: linear-gradient(135deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.96) 100%); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.6); border-radius: 50px; padding: 10px 20px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 700; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); animation: diag-glow 4s infinite ease-in-out; backdrop-filter: blur(10px);";
+        badge.innerHTML = `
+      <div style="width: 10px; height: 10px; background: #4ade80; border-radius: 50%; animation: diag-pulse 2s infinite;"></div>
+      <span style="letter-spacing: 0.5px;">⚡ DIAGNOSTIC ENGINE</span>
+      <div id="diag-ttfb-pill" style="background: rgba(56, 189, 248, 0.18); color: #7dd3fc; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 800; border: 1px solid rgba(56, 189, 248, 0.3); margin-left: 4px;">TTFB: -- ms</div>
+    `;
+        const dialog = document.createElement("div");
+        dialog.id = "floating-diag-dialog";
+        dialog.style.cssText = "display: none; width: 860px; height: 640px; max-height: 88vh; max-width: 92vw; background: rgba(15, 23, 42, 0.97); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); overflow: hidden; flex-direction: column; margin-bottom: 16px;";
+        dialog.innerHTML = `
+      <div style="background: rgba(0,0,0,0.5); padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.12); display: flex; justify-content: space-between; align-items: center;">
+        <span style="color: #f8fafc; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
+          <span>🖥️</span> Cloud Run Live Diagnostic Feed (<span id="diag-log-count" style="color: #38bdf8;">0</span> items)
+        </span>
+        <button id="diag-close-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;">✕</button>
+      </div>
+      <div style="display: flex; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.1); overflow-x: auto; flex-shrink: 0;">
+        <button class="diag-tab-btn active" data-tab="all" style="flex: 1; background: rgba(56,189,248,0.2); border: none; color: #38bdf8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer; border-bottom: 2px solid #38bdf8;">📄 All Logs</button>
+        <button class="diag-tab-btn" data-tab="mem0" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">🧠 Mem0</button>
+        <button class="diag-tab-btn" data-tab="identity" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">👤 Multi-Tenant</button>
+        <button class="diag-tab-btn" data-tab="latency" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">⚡ Latency</button>
+      </div>
+      <div id="diag-log-feed" style="padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.6; color: #e2e8f0; background: rgba(0,0,0,0.15);">
+        <div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Connecting to Cloud Run live stream...</div>
+      </div>
+    `;
+        container.appendChild(dialog);
+        container.appendChild(badge);
+        document.body.appendChild(container);
+        let currentTab = "all";
+        let isOpen = false;
+        badge.addEventListener("click", () => {
+            isOpen = !isOpen;
+            dialog.style.display = isOpen ? "flex" : "none";
+        });
+        dialog.querySelector("#diag-close-btn")?.addEventListener("click", () => {
+            isOpen = false;
+            dialog.style.display = "none";
+        });
+        dialog.querySelectorAll(".diag-tab-btn").forEach((btn) => {
+            btn.addEventListener("click", (e) => {
+                dialog.querySelectorAll(".diag-tab-btn").forEach((b) => {
+                    b.style.background = "none";
+                    b.style.color = "#94a3b8";
+                    b.style.borderBottom = "none";
+                });
+                const target = e.currentTarget;
+                target.style.background = "rgba(56,189,248,0.2)";
+                target.style.color = "#38bdf8";
+                target.style.borderBottom = "2px solid #38bdf8";
+                currentTab = target.getAttribute("data-tab") || "all";
+            });
+        });
+        setInterval(async () => {
+            try {
+                const res = await fetch(`${getApiBaseUrl()}/api/logs`);
+                if (!res.ok)
+                    return;
+                const data = await res.json();
+                const logs = data.logs || [];
+                // Check latest TTFB
+                for (let i = logs.length - 1; i >= 0; i--) {
+                    if (logs[i].ttfb_ms && logs[i].ttfb_ms > 0) {
+                        const pill = document.getElementById("diag-ttfb-pill");
+                        if (pill)
+                            pill.innerText = `TTFB: ${logs[i].ttfb_ms} ms`;
+                        break;
+                    }
+                }
+                if (!isOpen)
+                    return;
+                const feed = document.getElementById("diag-log-feed");
+                const countSpan = document.getElementById("diag-log-count");
+                if (!feed)
+                    return;
+                const isNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+                const filtered = currentTab === "all" ? logs : logs.filter((l) => l.tab === currentTab || l.tab === "latency");
+                if (countSpan)
+                    countSpan.innerText = String(filtered.length);
+                if (filtered.length === 0) {
+                    feed.innerHTML = `<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">No logs recorded yet for tab [${currentTab}]...</div>`;
+                    return;
+                }
+                feed.innerHTML = filtered.map((item) => {
+                    let cardBg = "rgba(15, 23, 42, 0.6)";
+                    let borderLeftColor = "#475569";
+                    let badgeStyle = "background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3);";
+                    if (item.message.includes("STAGE 3:")) {
+                        cardBg = "rgba(6, 182, 212, 0.08)";
+                        borderLeftColor = "#06b6d4";
+                        badgeStyle = "background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid #0891b2;";
+                    }
+                    else if (item.message.includes("STAGE 4:")) {
+                        cardBg = "rgba(16, 185, 129, 0.08)";
+                        borderLeftColor = "#10b981";
+                        badgeStyle = "background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #059669;";
+                    }
+                    else if (item.tab === "identity" || item.message.includes("Identity Switch")) {
+                        cardBg = "rgba(168, 85, 247, 0.08)";
+                        borderLeftColor = "#a855f7";
+                        badgeStyle = "background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid #9333ea;";
+                    }
+                    else if (item.tab === "latency" || item.ttfb_ms) {
+                        cardBg = "rgba(234, 179, 8, 0.08)";
+                        borderLeftColor = "#eab308";
+                        badgeStyle = "background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid #ca8a04;";
+                    }
+                    else if (item.level === "ERROR") {
+                        cardBg = "rgba(239, 68, 68, 0.12)";
+                        borderLeftColor = "#ef4444";
+                        badgeStyle = "background: rgba(239, 68, 68, 0.25); color: #f87171; border: 1px solid #dc2626;";
+                    }
+                    const textColor = item.level === "ERROR" ? "#fca5a5" : item.level === "WARNING" ? "#fde047" : "#f1f5f9";
+                    return `<div class="diag-card" style="margin-bottom: 10px; padding: 10px 14px; background: ${cardBg}; border-radius: 8px; border-left: 4px solid ${borderLeftColor}; border-top: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.05);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+              <span style="font-size: 11px; color: #94a3b8; font-weight: 600;">⏱️ ${item.timestamp}</span>
+              <span style="padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; ${badgeStyle}">${item.badge}</span>
+            </div>
+            <div style="color: ${textColor}; word-break: break-word; font-family: monospace;">${item.message}</div>
+          </div>`;
+                }).join("");
+                if (isNearBottom) {
+                    feed.scrollTop = feed.scrollHeight;
+                }
+            }
+            catch (e) {
+                // silently ignore fetch errors
+            }
+        }, 1500);
     }
 }
 window.addEventListener("DOMContentLoaded", async () => {
