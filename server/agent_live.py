@@ -104,16 +104,11 @@ async def get_current_time(params: FunctionCallParams):
 
 identify_user_schema = FunctionSchema(
     name="identify_user",
-    description=(
-        "Identify the user by name to load their specific multi-tenant memory profile. "
-        "MUST be called immediately when the user tells you their name or answers your opening identity question. "
-        "CRITICAL ZERO-LATENCY ROMANIZATION RULE: Always output the name argument transliterated into canonical lowercase Roman ASCII script (e.g. if spoken in Devnagari as 'मेरा नाम मनीष है', pass name='manish'; if 'मेरा नाम चंद्रा है', pass name='chandra'). Never output raw Devnagari characters."
-        "CRITICAL: When calling this tool upon identity introduction, DO NOT call `search_user_memory` or `recall_user_memories` alongside it. Only call search tools when the user asks a question!"
-    ),
+    description="Identify the user by name to load their memory profile when they introduce themselves.",
     properties={
         "name": {
             "type": "string",
-            "description": "The lowercased Romanized ASCII name slug of the user (e.g. 'manish' or 'chandra')."
+            "description": "The lowercased Romanized ASCII name of the user (e.g. 'manish')."
         }
     },
     required=["name"]
@@ -200,17 +195,12 @@ class GeminiSessionLoggerMixin:
                     self._tool_lock_started_at = None
 
     async def _cancel_function_call(self, function_name: str | None):
-        """Block Pipecat from cancelling an in-flight tool on user interruption.
-
-        Pipecat calls this from `_handle_interruptions` for every function registered with
-        `cancel_on_interruption=True`. Cancelling kills the asyncio task mid-query, so the
-        DB lookup never returns a result frame and Gemini is left with a dangling tool call.
-        We refuse, so memory reads/writes always run to completion.
-        """
-        logger.info(
-            f"[AntiCancel] Refusing to cancel in-flight function call '{function_name}' "
-            "on user audio interruption. Tool will run to completion."
-        )
+        """Block Pipecat from cancelling an in-flight tool on user interruption."""
+        if getattr(self, '_active_tools_in_flight', 0) > 0:
+            logger.info(
+                f"[AntiCancel] Refusing to cancel in-flight function call '{function_name}' "
+                "on user audio interruption. Tool will run to completion."
+            )
         return
 
     async def process_frame(self, frame, direction):
@@ -617,14 +607,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     logger.info(f"Starting agent with language: {language}")
     
     identity_instruction = (
-        "\n\nCRITICAL IDENTITY & MEMORY RULE:\n"
-        "1. At the very start of the conversation when greeting the user, you MUST ALWAYS warmly ask who you are speaking with today (e.g. 'नमस्ते! मैं आपकी AI साथी हूँ। आपका शुभ नाम क्या है?' or 'Hello! Who am I speaking with today?').\n"
-        "2. As soon as the user tells you their name, you MUST immediately call `identify_user(name=...)` so their specific multi-tenant memory profile is pre-loaded. CRITICAL: When the user simply tells you their name or greets you, DO NOT call `search_user_memory` or `recall_user_memories`! Only call search tools when the user asks a question needing historical context.\n"
-        "3. Whenever calling `save_user_memory`, `search_user_memory`, or `recall_user_memories`, always pass the active `user_id` if known.\n"
-        "4. SILENT MEMORY RULE: NEVER say out loud that you saved, checked, or noted a preference (NEVER say 'मैंने आपकी पसंद नोट कर ली है'). Keep all tool actions 100% invisible/silent!\n"
-        "5. STRICT FEMALE HINDI CONJUGATIONS (`मैं एक महिला हूँ`): Every single verb ending MUST be female e.g. 'मैं आपकी कैसे सहायता कर सकती हूँ?' (NEVER say 'कर सकता हूँ' or 'करता हूँ').\n"
-        "6. SINGLE RESPONSE RULE: Execute memory tools silently in the background. Do NOT double-speak phrases, greetings, or thinking fillers twice. State your answer once directly and concisely when the tool result arrives.\n"
-        "7. ULTRA-CONCISE 8-WORD LIMIT RULE: You MUST keep every single response EXTREMELY short and direct (maximum 8 words per turn). NEVER say conversation preambles e.g. 'अच्छा, आप सुन पा रहे हैं? बहुत अच्छे! और...'. When asked a question, state the exact answer directly in under 8 words!"
+        "\n\nIDENTITY RULE:\n"
+        "1. When greeting the user initially, ask who you are speaking with today.\n"
+        "2. As soon as the user states their name, call `identify_user(name=...)` immediately.\n"
     )
     prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")

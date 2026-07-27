@@ -1,0 +1,262 @@
+--- benchmark_live_sessions.py.orig	2026-07-24 10:00:00.000000000 +0000
++++ benchmark_live_sessions.py	2026-07-24 10:11:00.000000000 +0000
+@@ -14,7 +14,7 @@
+ import json
+ import csv
+ from datetime import datetime
+-from typing import Dict, List, Any
++from typing import Dict, List, Any, Optional
+ 
+ # Ensure server directory is in path to import memory_function & agent_live handlers
+ server_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "server"))
+@@ -65,18 +65,19 @@
+     """
+     @staticmethod
+     def calculate_metrics(values: List[float]) -> Dict[str, float]:
+-        if not values:
++        clean_values = [v for v in values if v is not None]
++        if not clean_values:
+             return {
+                 "sample_count": 0,
+                 "mean_ms": 0.0,
+                 "median_p50_ms": 0.0,
+                 "p90_ms": 0.0,
+                 "p95_ms": 0.0,
+                 "min_ms": 0.0,
+                 "max_ms": 0.0
+             }
+ 
+-        sorted_vals = sorted(values)
++        sorted_vals = sorted(clean_values)
+         n = len(sorted_vals)
+         
+         mean_val = statistics.mean(sorted_vals)
+@@ -113,24 +114,24 @@
+     def __init__(self, session_id: str):
+         self.session_id = session_id
+         self.session_start_timestamp = datetime.utcnow().isoformat() + "Z"
+-        self.http_negotiate_ms: float = 0.0
+-        self.ws_handshake_ms: float = 0.0
+-        self.identify_user_latency_ms: float = 0.0
+-        self.search_memory_latency_ms: float = 0.0
+-        self.ttfb_turn1_ms: float = 0.0
+-        self.ttfb_turn2_ms: float = 0.0
+-        self.total_turn1_duration_ms: float = 0.0
+-        self.total_turn2_duration_ms: float = 0.0
++        self.http_negotiate_ms: Optional[float] = None
++        self.ws_handshake_ms: Optional[float] = None
++        self.identify_user_latency_ms: Optional[float] = None
++        self.search_memory_latency_ms: Optional[float] = None
++        self.ttfb_turn1_ms: Optional[float] = None
++        self.ttfb_turn2_ms: Optional[float] = None
++        self.total_turn1_duration_ms: Optional[float] = None
++        self.total_turn2_duration_ms: Optional[float] = None
+         self.identify_success: bool = False
+         self.search_success: bool = False
+         self.retrieved_content: str = ""
+-        self.top_match_score: float = 0.0
++        self.top_match_score: Optional[float] = None
+         self.similarity_threshold_passed: bool = False
+         self.status: str = "PENDING"
+ 
+ 
+-async def verify_live_network_endpoints(session_idx: int) -> Dict[str, float]:
++async def verify_live_network_endpoints(session_idx: int) -> Dict[str, Optional[float]]:
+     """Tier 1: Verify live Cloud Run HTTPS /connect and WSS /ws handshake."""
+-    metrics = {"http_negotiate_ms": 0.0, "ws_handshake_ms": 0.0}
++    metrics: Dict[str, Optional[float]] = {"http_negotiate_ms": None, "ws_handshake_ms": None}
+     
+     # 1. POST /connect over HTTPS
+     if "aiohttp" in sys.modules:
+@@ -182,9 +183,9 @@
+     net_metrics = await verify_live_network_endpoints(session_idx)
+     m.http_negotiate_ms = net_metrics["http_negotiate_ms"]
+     m.ws_handshake_ms = net_metrics["ws_handshake_ms"]
+-    if m.http_negotiate_ms > 0:
++    if m.http_negotiate_ms is not None and m.http_negotiate_ms > 0:
+         print(f"  🌐 Tier 1 HTTPS /connect negotiation: {m.http_negotiate_ms:.2f}ms")
+-    if m.ws_handshake_ms > 0:
++    if m.ws_handshake_ms is not None and m.ws_handshake_ms > 0:
+         print(f"  🌐 Tier 1 WSS /ws handshake: {m.ws_handshake_ms:.2f}ms")
+     
+     # Step 1: Pre-seed baseline memory for this session
+@@ -216,21 +217,31 @@
+ 
+     try:
+         m.identify_user_latency_ms = await asyncio.wait_for(_run_identify(), timeout=15.0)
++    except asyncio.TimeoutError:
++        print(f"  [Session {session_idx}] identify_user timed out after 15.0s")
++        m.identify_user_latency_ms = None
++        if m.status == "PENDING":
++            m.status = "TIMEOUT"
+     except Exception as e:
+         print(f"  [Session {session_idx}] identify_user error: {e}")
+-        m.identify_user_latency_ms = 50.0
++        m.identify_user_latency_ms = None
++        if m.status == "PENDING":
++            m.status = "FAILED"
+ 
+-    if cb_identify.called:
++    if cb_identify.called and m.identify_user_latency_ms is not None:
+         res = cb_identify.call_args[0][0].get("content", "")
+         if f"ID: {session_id}" in res or raw_name in res or "user:test_session" in res:
+             m.identify_success = True
+             print(f"  ✅ Turn 1 (identify_user) verified ({m.identify_user_latency_ms:.2f}ms) -> ACTIVE_USER_ID: {os.environ.get('ACTIVE_USER_ID')}")
+ 
+-    # Calculate Turn 1 TTFB and Duration
+-    m.ttfb_turn1_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + min(m.identify_user_latency_ms, 50.0)
+-    m.total_turn1_duration_ms = m.ttfb_turn1_ms + m.identify_user_latency_ms
++    # Calculate Turn 1 TTFB and Duration without synthetic capping
++    if m.identify_user_latency_ms is not None:
++        m.ttfb_turn1_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + m.identify_user_latency_ms
++        m.total_turn1_duration_ms = m.ttfb_turn1_ms + m.identify_user_latency_ms
++    else:
++        m.ttfb_turn1_ms = None
++        m.total_turn1_duration_ms = None
+ 
+     # Step 3: Turn 2 — Search User Memory (querying son's name with SIMILARITY_THRESHOLD >= 0.65)
+     cb_search = AsyncMock()
+@@ -250,15 +261,25 @@
+ 
+     try:
+         m.search_memory_latency_ms = await asyncio.wait_for(_run_search(), timeout=15.0)
++    except asyncio.TimeoutError:
++        print(f"  [Session {session_idx}] search_user_memory timed out after 15.0s")
++        m.search_memory_latency_ms = None
++        if m.status == "PENDING":
++            m.status = "TIMEOUT"
+     except Exception as e:
+         print(f"  [Session {session_idx}] search_user_memory error: {e}")
+-        m.search_memory_latency_ms = 80.0
++        m.search_memory_latency_ms = None
++        if m.status == "PENDING":
++            m.status = "FAILED"
+ 
+-    if cb_search.called:
++    if cb_search.called and m.search_memory_latency_ms is not None:
+         res = cb_search.call_args[0][0].get("content", "")
+         m.retrieved_content = res.strip().split('\n')[0] if res else ""
+         if "Kabir" in res or "Sharma" in res or "son's name" in res:
+             m.search_success = True
+             print(f"  ✅ Turn 2 (search_user_memory) verified ({m.search_memory_latency_ms:.2f}ms) -> Retrieved: '{m.retrieved_content[:65]}...'")
+ 
+@@ -281,15 +302,20 @@
+         top_score = max(top_score, 0.885)  # Exact fact retrieved successfully via memory bank/engine
+ 
+     m.top_match_score = top_score
+-    m.similarity_threshold_passed = (m.top_match_score >= SIMILARITY_THRESHOLD)
++    m.similarity_threshold_passed = (m.top_match_score is not None and m.top_match_score >= SIMILARITY_THRESHOLD)
+     print(f"  🎯 Vector Retrieval Similarity Gate: score={m.top_match_score:.4f} (Required >= {SIMILARITY_THRESHOLD}) -> {'PASS' if m.similarity_threshold_passed else 'FAIL'}")
+ 
+-    # Calculate Turn 2 TTFB and Duration
+-    m.ttfb_turn2_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + min(m.search_memory_latency_ms, 50.0)
+-    m.total_turn2_duration_ms = m.ttfb_turn2_ms + m.search_memory_latency_ms
++    # Calculate Turn 2 TTFB and Duration without synthetic capping
++    if m.search_memory_latency_ms is not None:
++        m.ttfb_turn2_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + m.search_memory_latency_ms
++        m.total_turn2_duration_ms = m.ttfb_turn2_ms + m.search_memory_latency_ms
++    else:
++        m.ttfb_turn2_ms = None
++        m.total_turn2_duration_ms = None
+ 
+     if m.identify_success and m.search_success and m.similarity_threshold_passed:
+         m.status = "SUCCESS"
+-    else:
++    elif m.status not in ("TIMEOUT", "FAILED"):
+         m.status = "FAILED"
+ 
+     return m
+@@ -311,14 +337,16 @@
+ 
+ def print_summary_and_save_artifacts(metrics_list: List[SessionMetrics]):
+     calc = BenchmarkStatsCalculator()
+     
+-    all_ttfb = [m.ttfb_turn1_ms for m in metrics_list] + [m.ttfb_turn2_ms for m in metrics_list]
+-    ident_latencies = [m.identify_user_latency_ms for m in metrics_list]
+-    search_latencies = [m.search_memory_latency_ms for m in metrics_list]
+-    all_durations = [m.total_turn1_duration_ms for m in metrics_list] + [m.total_turn2_duration_ms for m in metrics_list]
+-    http_neg = [m.http_negotiate_ms for m in metrics_list if m.http_negotiate_ms > 0]
+-    ws_hand = [m.ws_handshake_ms for m in metrics_list if m.ws_handshake_ms > 0]
+-    vector_scores = [m.top_match_score for m in metrics_list]
++    # Exclude unrecorded (None) and failed/timed-out turns from percentile/summary calculations
++    ident_latencies = [m.identify_user_latency_ms for m in metrics_list if m.identify_user_latency_ms is not None and m.status not in ("TIMEOUT", "FAILED")]
++    search_latencies = [m.search_memory_latency_ms for m in metrics_list if m.search_memory_latency_ms is not None and m.status not in ("TIMEOUT", "FAILED")]
++    all_ttfb = [m.ttfb_turn1_ms for m in metrics_list if m.ttfb_turn1_ms is not None and m.status not in ("TIMEOUT", "FAILED")] + \
++               [m.ttfb_turn2_ms for m in metrics_list if m.ttfb_turn2_ms is not None and m.status not in ("TIMEOUT", "FAILED")]
++    all_durations = [m.total_turn1_duration_ms for m in metrics_list if m.total_turn1_duration_ms is not None and m.status not in ("TIMEOUT", "FAILED")] + \
++                    [m.total_turn2_duration_ms for m in metrics_list if m.total_turn2_duration_ms is not None and m.status not in ("TIMEOUT", "FAILED")]
++    http_neg = [m.http_negotiate_ms for m in metrics_list if m.http_negotiate_ms is not None and m.http_negotiate_ms > 0]
++    ws_hand = [m.ws_handshake_ms for m in metrics_list if m.ws_handshake_ms is not None and m.ws_handshake_ms > 0]
++    vector_scores = [m.top_match_score for m in metrics_list if m.top_match_score is not None]
+ 
+     ttfb_stats = calc.calculate_metrics(all_ttfb)
+     ident_stats = calc.calculate_metrics(ident_latencies)
+@@ -344,7 +372,7 @@
+         ("HTTP /connect Negotiation", http_stats),
+         ("WebSocket /ws Handshake", ws_stats),
+     ]:
+-        print(f"{name:<28} | {st['mean']:10.2f} | {st['median_p50_ms']:10.2f} | {st['p90_ms']:10.2f} | {st['p95_ms']:10.2f} | {st['min_ms']:9.2f} | {st['max_ms']:9.2f}")
++        print(f"{name:<28} | {st['mean_ms']:10.2f} | {st['median_p50_ms']:10.2f} | {st['p90_ms']:10.2f} | {st['p95_ms']:10.2f} | {st['min_ms']:9.2f} | {st['max_ms']:9.2f}")
+     
+     print("-------------------------------------------------------------------------------------------------")
+     ttfb_pass = ttfb_stats["median_p50_ms"] < 1000.0
+@@ -379,19 +407,19 @@
+                 "session_id": m.session_id,
+                 "session_start_timestamp": m.session_start_timestamp,
+                 "session_status": m.status,
+-                "http_negotiate_ms": m.http_negotiate_ms,
+-                "ws_handshake_ms": m.ws_handshake_ms,
++                "http_negotiate_ms": round(m.http_negotiate_ms, 2) if m.http_negotiate_ms is not None else None,
++                "ws_handshake_ms": round(m.ws_handshake_ms, 2) if m.ws_handshake_ms is not None else None,
+                 "turns": [
+                     {
+                         "turn_index": 1,
+                         "turn_label": "identity_setup",
+                         "tool_invoked": {
+                             "name": "identify_user",
+                             "args": {"name": f"test_session_{idx+1}"},
+-                            "recall_latency_ms": round(m.identify_user_latency_ms, 2)
++                            "recall_latency_ms": round(m.identify_user_latency_ms, 2) if m.identify_user_latency_ms is not None else None
+                         },
+-                        "ttfb_ms": round(m.ttfb_turn1_ms, 2),
+-                        "total_turn_duration_ms": round(m.total_turn1_duration_ms, 2),
++                        "ttfb_ms": round(m.ttfb_turn1_ms, 2) if m.ttfb_turn1_ms is not None else None,
++                        "total_turn_duration_ms": round(m.total_turn1_duration_ms, 2) if m.total_turn1_duration_ms is not None else None,
+                         "functional_assertions": {
+                             "tool_called_correctly": m.identify_success,
+                             "active_user_id_resolved": m.session_id,
+@@ -404,15 +432,15 @@
+                         "tool_invoked": {
+                             "name": "search_user_memory",
+                             "args": {"query": "What is my son's name?", "user_id": m.session_id},
+-                            "recall_latency_ms": round(m.search_memory_latency_ms, 2)
++                            "recall_latency_ms": round(m.search_memory_latency_ms, 2) if m.search_memory_latency_ms is not None else None
+                         },
+                         "vector_retrieval_metrics": {
+                             "query": "What is my son's name?",
+-                            "top_match_score": round(m.top_match_score, 4),
++                            "top_match_score": round(m.top_match_score, 4) if m.top_match_score is not None else None,
+                             "similarity_threshold_required": SIMILARITY_THRESHOLD,
+                             "similarity_threshold_passed": m.similarity_threshold_passed,
+                             "retrieved_content": m.retrieved_content
+                         },
+-                        "ttfb_ms": round(m.ttfb_turn2_ms, 2),
+-                        "total_turn_duration_ms": round(m.total_turn2_duration_ms, 2),
++                        "ttfb_ms": round(m.ttfb_turn2_ms, 2) if m.ttfb_turn2_ms is not None else None,
++                        "total_turn_duration_ms": round(m.total_turn2_duration_ms, 2) if m.total_turn2_duration_ms is not None else None,
+                         "functional_assertions": {
+                             "tool_called_correctly": m.search_success,
+                             "fact_recalled_accurately": m.similarity_threshold_passed and m.search_success,
+@@ -421,9 +449,9 @@
+                     }
+                 ],
+                 "session_latency_summary_ms": {
+-                    "ttfb_ms_list": [round(m.ttfb_turn1_ms, 2), round(m.ttfb_turn2_ms, 2)],
+-                    "tool_recall_ms_list": [round(m.identify_user_latency_ms, 2), round(m.search_memory_latency_ms, 2)],
+-                    "turn_duration_ms_list": [round(m.total_turn1_duration_ms, 2), round(m.total_turn2_duration_ms, 2)]
++                    "ttfb_ms_list": [round(val, 2) for val in [m.ttfb_turn1_ms, m.ttfb_turn2_ms] if val is not None],
++                    "tool_recall_ms_list": [round(val, 2) for val in [m.identify_user_latency_ms, m.search_memory_latency_ms] if val is not None],
++                    "turn_duration_ms_list": [round(val, 2) for val in [m.total_turn1_duration_ms, m.total_turn2_duration_ms] if val is not None]
+                 }
+             }
+             for idx, m in enumerate(metrics_list)

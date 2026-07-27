@@ -1,0 +1,20 @@
+--- a/benchmark_live_sessions.py
++++ b/benchmark_live_sessions.py
+@@ -227,7 +227,7 @@ async def run_single_session_flow(session_idx: int) -> SessionMetrics:
+             print(f"  ✅ Turn 1 (identify_user) verified ({m.identify_user_latency_ms:.2f}ms) -> ACTIVE_USER_ID: {os.environ.get('ACTIVE_USER_ID')}")
+ 
+     # Calculate Turn 1 TTFB and Duration
+-    m.ttfb_turn1_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + min(m.identify_user_latency_ms, 50.0)
++    m.ttfb_turn1_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + m.identify_user_latency_ms
+     m.total_turn1_duration_ms = m.ttfb_turn1_ms + m.identify_user_latency_ms
+ 
+     # Step 3: Turn 2 — Search User Memory (querying son's name with SIMILARITY_THRESHOLD >= 0.65)
+@@ -285,7 +285,7 @@ async def run_single_session_flow(session_idx: int) -> SessionMetrics:
+     print(f"  🎯 Vector Retrieval Similarity Gate: score={m.top_match_score:.4f} (Required >= {SIMILARITY_THRESHOLD}) -> {'PASS' if m.similarity_threshold_passed else 'FAIL'}")
+ 
+     # Calculate Turn 2 TTFB and Duration
+-    m.ttfb_turn2_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + min(m.search_memory_latency_ms, 50.0)
++    m.ttfb_turn2_ms = (VAD_STOP_SECS * 1000.0) + FRAME_OVERHEAD_MS + m.search_memory_latency_ms
+     m.total_turn2_duration_ms = m.ttfb_turn2_ms + m.search_memory_latency_ms
+ 
+     if m.identify_success and m.search_success and m.similarity_threshold_passed:

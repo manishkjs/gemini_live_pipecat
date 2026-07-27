@@ -53,36 +53,15 @@ def initialize_vertex_if_needed():
 # Schema definition
 search_knowledge_base_schema = FunctionSchema(
     name="search_knowledge_base",
-    description=(
-        "Retrieve information from knowledge base with first-person query matching. "
-        "ONLY call this tool when the user explicitly asks for specific external documentation, policies, or technical data. "
-        "DO NOT call this tool for identity questions ('who are you', 'who made you'), general greetings, or personal chitchat."
-    ),
+    description="Retrieve factual information, policies, or technical data from the knowledge base.",
     properties={
         "query_for_vector_search": {
             "type": "string",
-            "description": (
-                "The search query rewritten in FIRST-PERSON PERSPECTIVE. CRITICAL RULES: "
-                "1. REMOVE ALL brand terms by converting to first-person: 'Company' -> 'you/your'. "
-                "2. Convert third-person to first-person: 'Company's rates' -> 'your rates'. "
-                "3. Only translate Hindi to English - maintain user's intent exactly. "
-                "4. For pronouns (it, this, that, tumhara, uska), use conversation context to resolve reference. "
-                "5. NEVER add specific brand/domain terms that user didn't mention. "
-                "Examples: "
-                "'NPA rate' -> 'what is your NPA rate', "
-                "'How to invest' -> 'how can I invest', "
-                "'What services do you provide' -> 'what services do you provide', "
-                "'tumhara kitna hai?' -> 'what is your rate'"
-            ),
+            "description": "The search query translated to English if necessary."
         },
         "total_records": {
             "type": "integer",
-            "description": (
-                "Number of records to retrieve based on query type. "
-                "Use 3 for specific single-point queries (definitions, features). "
-                "Use 10 for Multiple questions, rate questions, time-range queries. "
-                "Use 15 for trend/historical/comparative queries (over years, YoY, trends, comparisons, changes over time)."
-            ),
+            "description": "Number of records to retrieve (default: 5, use 10-15 for complex queries)."
         },
     },
     required=["query_for_vector_search", "total_records"],
