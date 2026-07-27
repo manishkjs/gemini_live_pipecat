@@ -22,6 +22,7 @@ frozenlist==1.8.0
 fsspec==2026.4.0
 google-api-core==2.30.3
 google-auth==2.53.0
+google-cloud-aiplatform
 google-cloud-speech==2.39.0
 google-cloud-texttospeech==2.36.0
 google-genai==2.4.0
@@ -94,3 +95,6 @@ uvicorn==0.47.0
 uvloop==0.21.0
 websockets==13.1
 yarl==1.23.0
+langchain-core>=0.3.0
+langchain-google-vertexai>=2.0.0
+

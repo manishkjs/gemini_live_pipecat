@@ -124,7 +124,7 @@ RETRIEVAL_THRESHOLD = 0.40
 _MEM0_INSTANCE = None
 
 def get_mem0_config() -> dict:
-    """Return dynamic configuration for Mem0, supporting pgvector (Cloud SQL/AlloyDB) or local Qdrant fallback."""
+    """Return dynamic configuration for Mem0, supporting pgvector (Cloud SQL/AlloyDB) or Vertex Vector Search or local Qdrant fallback."""
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         env_file = os.path.join(os.path.dirname(__file__), ".env")
@@ -135,24 +135,40 @@ def get_mem0_config() -> dict:
                         api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
                         break
     api_key = api_key or ""
-    pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
-    
-    if not pg_dsn:
-        raise RuntimeError(
-            "CRITICAL PRODUCTION ERROR: ALLOYDB_PG_DSN (or CLOUDSQL_PG_DSN/DATABASE_URL) is required. "
-            "Local/ephemeral Qdrant and container filesystem fallbacks have been permanently removed "
-            "to prevent silent data loss on container recycle."
-        )
 
-    vector_store_config = {
-        "provider": "pgvector",
-        "config": {
-            "connection_string": pg_dsn,
-            "collection_name": "user_memories",
-            "embedding_model_dims": 768,
-            "hnsw": True
+    vector_store_provider = os.getenv("VECTOR_STORE_PROVIDER", "pgvector").lower()
+
+    if vector_store_provider == "vertex_vector_search":
+        vector_store_config = {
+            "provider": "vertex_ai_vector_search",
+            "config": {
+                "project_id": os.getenv("GCP_PROJECT_ID", "deep-clock-339817"),
+                "project_number": os.getenv("GCP_PROJECT_NUMBER", ""),
+                "region": os.getenv("VERTEX_SEARCH_REGION", os.getenv("GCP_LOCATION", "us-central1")),
+                "endpoint_id": os.getenv("VECTOR_SEARCH_ENDPOINT_ID", ""),
+                "index_id": os.getenv("VECTOR_SEARCH_INDEX_ID", ""),
+                "deployment_index_id": os.getenv("VECTOR_SEARCH_DEPLOYED_INDEX_ID", ""),
+            }
         }
-    }
+    else:
+        pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
+        
+        if not pg_dsn:
+            raise RuntimeError(
+                "CRITICAL PRODUCTION ERROR: ALLOYDB_PG_DSN (or CLOUDSQL_PG_DSN/DATABASE_URL) is required. "
+                "Local/ephemeral Qdrant and container filesystem fallbacks have been permanently removed "
+                "to prevent silent data loss on container recycle."
+            )
+
+        vector_store_config = {
+            "provider": "pgvector",
+            "config": {
+                "connection_string": pg_dsn,
+                "collection_name": "user_memories",
+                "embedding_model_dims": 768,
+                "hnsw": True
+            }
+        }
 
     project_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
     location = os.getenv("GCP_LOCATION", "us-central1")
@@ -192,7 +208,7 @@ def get_mem0_config() -> dict:
     }
 
 def get_mem0_instance():
-    """Lazy initialize embedded self-hosted Mem0 instance using pgvector (Cloud SQL/AlloyDB) or Qdrant fallback."""
+    """Lazy initialize embedded self-hosted Mem0 instance using pgvector (Cloud SQL/AlloyDB) or Vertex Vector Search or Qdrant fallback."""
     global _MEM0_INSTANCE
     if _MEM0_INSTANCE is not None:
         return _MEM0_INSTANCE
@@ -211,20 +227,22 @@ def get_mem0_instance():
                 logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 initialization failed.")
                 return None
 
-            conn_str = config["vector_store"]["config"].get("connection_string", "")
-            if conn_str:
-                try:
-                    import socket
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(conn_str)
-                    host = parsed.hostname or "127.0.0.1"
-                    port = parsed.port or 5432
-                    probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "1.0"))
-                    with socket.create_connection((host, port), timeout=probe_timeout):
-                        pass
-                except Exception as sock_e:
-                    logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
-                    return None
+            provider = config.get("vector_store", {}).get("provider", "pgvector")
+            if provider == "pgvector":
+                conn_str = config["vector_store"]["config"].get("connection_string", "")
+                if conn_str:
+                    try:
+                        import socket
+                        import urllib.parse
+                        parsed = urllib.parse.urlparse(conn_str)
+                        host = parsed.hostname or "127.0.0.1"
+                        port = parsed.port or 5432
+                        probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "1.0"))
+                        with socket.create_connection((host, port), timeout=probe_timeout):
+                            pass
+                    except Exception as sock_e:
+                        logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
+                        return None
 
             try:
                 _MEM0_INSTANCE = Memory.from_config(config)
