@@ -3,12 +3,18 @@ import json
 import asyncio
 import re
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from loguru import logger
 from dotenv import load_dotenv
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from diagnostic_buffer import append_diagnostic_log
+
+# Dedicated executor for CPU-bound or blocking DB/Mem0 tasks
+_MEM0_EXECUTOR = ThreadPoolExecutor(max_workers=20)
+_MEM0_INIT_LOCK = threading.Lock()
 
 # Auto-load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -183,77 +189,82 @@ def get_mem0_instance():
     if _MEM0_INSTANCE is not None:
         return _MEM0_INSTANCE
 
-    config = None
-    try:
-        from mem0 import Memory
-        config = get_mem0_config()
-        use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
-        if not config["llm"]["config"]["api_key"] and not use_vertex:
-            logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 initialization failed.")
-            return None
+    with _MEM0_INIT_LOCK:
+        # Double check inside lock
+        if _MEM0_INSTANCE is not None:
+            return _MEM0_INSTANCE
 
-        conn_str = config["vector_store"]["config"].get("connection_string", "")
-        if conn_str:
-            try:
-                import socket
-                import urllib.parse
-                parsed = urllib.parse.urlparse(conn_str)
-                host = parsed.hostname or "127.0.0.1"
-                port = parsed.port or 5432
-                probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "5.0"))
-                with socket.create_connection((host, port), timeout=probe_timeout):
-                    pass
-            except Exception as sock_e:
-                logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
+        config = None
+        try:
+            from mem0 import Memory
+            config = get_mem0_config()
+            use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
+            if not config["llm"]["config"]["api_key"] and not use_vertex:
+                logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 initialization failed.")
                 return None
 
-        try:
-            _MEM0_INSTANCE = Memory.from_config(config)
+            conn_str = config["vector_store"]["config"].get("connection_string", "")
+            if conn_str:
+                try:
+                    import socket
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(conn_str)
+                    host = parsed.hostname or "127.0.0.1"
+                    port = parsed.port or 5432
+                    probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "1.0"))
+                    with socket.create_connection((host, port), timeout=probe_timeout):
+                        pass
+                except Exception as sock_e:
+                    logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
+                    return None
+
+            try:
+                _MEM0_INSTANCE = Memory.from_config(config)
+            except Exception as e:
+                logger.error(f"[Mem0] CRITICAL: pgvector initialization failed: {e}. Ephemeral fallback disabled.")
+                return None
+
+            provider = config["vector_store"]["provider"]
+            logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
+
+            # Stage 3 Instrument: Wrap embedding_model.embed to log exact input text, 768-dim vector preview, and exact API duration
+            if hasattr(_MEM0_INSTANCE, "embedding_model") and _MEM0_INSTANCE.embedding_model:
+                orig_embed = getattr(_MEM0_INSTANCE.embedding_model, "embed", None)
+                if orig_embed and not hasattr(orig_embed, "_is_instrumented"):
+                    def instrumented_embed(text, *args, **kwargs):
+                        import time
+                        start_t = time.time()
+                        vec = orig_embed(text, *args, **kwargs)
+                        dur_ms = round((time.time() - start_t) * 1000.0, 1)
+                        dims = len(vec) if isinstance(vec, list) else "N/A"
+                        preview = f"[{', '.join(str(round(v, 4)) for v in vec[:4])}, ...]" if isinstance(vec, list) and len(vec) > 4 else str(vec)
+                        logger.info(f"[STAGE 3: gemini-embedding-001] Input: '{text}' -> Output: {dims}-dim Vector {preview} in {dur_ms} ms")
+                        append_diagnostic_log("STAGE 3: Embedder", f"Input: '{text}' -> {dims}-dim Vector {preview} ({dur_ms} ms)")
+                        return vec
+                    instrumented_embed._is_instrumented = True
+                    _MEM0_INSTANCE.embedding_model.embed = instrumented_embed
+
+            # Stage 4 Instrument: Wrap vector_store.search to log AlloyDB PGVector execution time and match count
+            if hasattr(_MEM0_INSTANCE, "vector_store") and _MEM0_INSTANCE.vector_store:
+                orig_search = getattr(_MEM0_INSTANCE.vector_store, "search", None)
+                if orig_search and not hasattr(orig_search, "_is_instrumented"):
+                    def instrumented_vector_search(*args, **kwargs):
+                        import time
+                        start_t = time.time()
+                        res = orig_search(*args, **kwargs)
+                        dur_ms = round((time.time() - start_t) * 1000.0, 1)
+                        count = len(res) if isinstance(res, list) else len(res.get("results", [])) if isinstance(res, dict) else 0
+                        filters = kwargs.get("filters", "N/A")
+                        logger.info(f"[STAGE 4: AlloyDB PGVector] Search filters={filters} -> Returned {count} raw vector matches in {dur_ms} ms")
+                        append_diagnostic_log("STAGE 4: AlloyDB", f"Vector Search (filters={filters}) -> {count} rows matches ({dur_ms} ms)")
+                        return res
+                    instrumented_vector_search._is_instrumented = True
+                    _MEM0_INSTANCE.vector_store.search = instrumented_vector_search
+
+            return _MEM0_INSTANCE
         except Exception as e:
-            logger.error(f"[Mem0] CRITICAL: pgvector initialization failed: {e}. Ephemeral fallback disabled.")
+            logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
             return None
-
-        provider = config["vector_store"]["provider"]
-        logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
-
-        # Stage 3 Instrument: Wrap embedding_model.embed to log exact input text, 768-dim vector preview, and exact API duration
-        if hasattr(_MEM0_INSTANCE, "embedding_model") and _MEM0_INSTANCE.embedding_model:
-            orig_embed = getattr(_MEM0_INSTANCE.embedding_model, "embed", None)
-            if orig_embed and not hasattr(orig_embed, "_is_instrumented"):
-                def instrumented_embed(text, *args, **kwargs):
-                    import time
-                    start_t = time.time()
-                    vec = orig_embed(text, *args, **kwargs)
-                    dur_ms = round((time.time() - start_t) * 1000.0, 1)
-                    dims = len(vec) if isinstance(vec, list) else "N/A"
-                    preview = f"[{', '.join(str(round(v, 4)) for v in vec[:4])}, ...]" if isinstance(vec, list) and len(vec) > 4 else str(vec)
-                    logger.info(f"[STAGE 3: gemini-embedding-001] Input: '{text}' -> Output: {dims}-dim Vector {preview} in {dur_ms} ms")
-                    append_diagnostic_log("STAGE 3: Embedder", f"Input: '{text}' -> {dims}-dim Vector {preview} ({dur_ms} ms)")
-                    return vec
-                instrumented_embed._is_instrumented = True
-                _MEM0_INSTANCE.embedding_model.embed = instrumented_embed
-
-        # Stage 4 Instrument: Wrap vector_store.search to log AlloyDB PGVector execution time and match count
-        if hasattr(_MEM0_INSTANCE, "vector_store") and _MEM0_INSTANCE.vector_store:
-            orig_search = getattr(_MEM0_INSTANCE.vector_store, "search", None)
-            if orig_search and not hasattr(orig_search, "_is_instrumented"):
-                def instrumented_vector_search(*args, **kwargs):
-                    import time
-                    start_t = time.time()
-                    res = orig_search(*args, **kwargs)
-                    dur_ms = round((time.time() - start_t) * 1000.0, 1)
-                    count = len(res) if isinstance(res, list) else len(res.get("results", [])) if isinstance(res, dict) else 0
-                    filters = kwargs.get("filters", "N/A")
-                    logger.info(f"[STAGE 4: AlloyDB PGVector] Search filters={filters} -> Returned {count} raw vector matches in {dur_ms} ms")
-                    append_diagnostic_log("STAGE 4: AlloyDB", f"Vector Search (filters={filters}) -> {count} rows matches ({dur_ms} ms)")
-                    return res
-                instrumented_vector_search._is_instrumented = True
-                _MEM0_INSTANCE.vector_store.search = instrumented_vector_search
-
-        return _MEM0_INSTANCE
-    except Exception as e:
-        logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
-        return None
 
 def get_memory_file_path(user_id: str = "default_user") -> str:
     """Deprecated: Local JSON memory file storage has been removed in favor of strict AlloyDB pgvector."""
@@ -1026,14 +1037,14 @@ async def save_user_memory_handler(params: FunctionCallParams):
         return
 
     # 2. Try Mem0 engine
-    mem0_engine = get_mem0_instance()
+    loop = asyncio.get_running_loop()
+    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
-            loop = asyncio.get_running_loop()
             def _add_mem0():
                 return process_extracted_fact(memory_text, category, user_id, is_explicit_remember=True)
 
-            res = await loop.run_in_executor(None, _add_mem0)
+            res = await loop.run_in_executor(_MEM0_EXECUTOR, _add_mem0)
             logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
             result_msg = f"Memory saved successfully to Mem0 for {user_id}: {memory_text}"
         except Exception as e:
@@ -1060,14 +1071,14 @@ async def search_user_memory_handler(params: FunctionCallParams):
         return
 
     # 2. Try Mem0 engine
-    mem0_engine = get_mem0_instance()
+    loop = asyncio.get_running_loop()
+    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
-            loop = asyncio.get_running_loop()
             def _search_mem0():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(None, _search_mem0)
+            facts = await loop.run_in_executor(_MEM0_EXECUTOR, _search_mem0)
             logger.info(f"[Mem0] Searched memory in-process query: '{query}' for {user_id}")
 
             if not facts:
@@ -1092,14 +1103,14 @@ async def recall_user_memories_handler(params: FunctionCallParams):
         await params.result_callback({"content": "Please provide a valid query to recall memory."})
         return
 
-    mem0_engine = get_mem0_instance()
+    loop = asyncio.get_running_loop()
+    mem0_engine = await loop.run_in_executor(_MEM0_EXECUTOR, get_mem0_instance)
     if mem0_engine:
         try:
-            loop = asyncio.get_running_loop()
             def _recall_mem0():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(None, _recall_mem0)
+            facts = await loop.run_in_executor(_MEM0_EXECUTOR, _recall_mem0)
             logger.info(f"[Path2DeepRecall] Recalled query: '{query}' for {user_id}")
 
             if not facts:
