@@ -11,7 +11,7 @@ def classify_tab_and_badge(message_str: str) -> Dict[str, Any]:
     msg_low = message_str.lower()
     if "ttfb" in msg_low or "ttft" in msg_low or "turn token usage" in msg_low or "latency" in msg_low:
         return {"tab": "latency", "badge": "⚡ Latency Profile"}
-    elif "mem0" in msg_low or "recall_user_memories" in msg_low or "search_user_memory" in msg_low or "embedder" in msg_low or "qdrant" in msg_low or "pgvector" in msg_low:
+    elif any(k in msg_low for k in ["mem0", "recall_user_memories", "search_user_memory", "save_user_memory", "embedder", "qdrant", "pgvector", "alloydb", "tool result", "tool output"]):
         return {"tab": "mem0", "badge": "🧠 Mem0 Engine"}
     elif "multitenant" in msg_low or "identify_user" in msg_low or "active_user_id" in msg_low or "normalize_user_id" in msg_low or "identity" in msg_low:
         return {"tab": "identity", "badge": "👤 Multi-Tenant"}
@@ -82,6 +82,9 @@ def setup_global_backend_log_interceptor():
 
 def get_recent_diagnostic_logs(limit: int = 500) -> List[Dict[str, Any]]:
     return list(DIAGNOSTIC_LOG_BUFFER)[-limit:]
+
+def clear_diagnostic_logs() -> None:
+    DIAGNOSTIC_LOG_BUFFER.clear()
 
 # Initialize global interceptor immediately
 setup_global_backend_log_interceptor()

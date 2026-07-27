@@ -357,7 +357,13 @@
         </div>
         <div class="right-panel">
           <div class="tile debug-container">
-            <h3><i class="fas fa-bug"></i> Debug Info</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <h3><i class="fas fa-bug"></i> Debug Info</h3>
+              <div style="display: flex; gap: 6px;">
+                <button id="copy-debug-btn" style="padding: 3px 8px; font-size: 11px; border-radius: 4px; background: rgba(56,189,248,0.2); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); cursor: pointer;"><i class="fas fa-copy"></i> Copy</button>
+                <button id="clear-debug-btn" style="padding: 3px 8px; font-size: 11px; border-radius: 4px; background: rgba(239,68,68,0.2); color: #f87171; border: 1px solid rgba(239,68,68,0.4); cursor: pointer;"><i class="fas fa-trash"></i> Clear</button>
+              </div>
+            </div>
             <div id="debug-log" class="debug-log"></div>
           </div>
           <div class="tile system-status">

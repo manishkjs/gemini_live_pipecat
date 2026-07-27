@@ -154,6 +154,30 @@ class WebsocketClientApp {
       tab.addEventListener("click", () => this.switchTab(tab));
     });
 
+    document.getElementById("copy-debug-btn")?.addEventListener("click", async () => {
+      if (this.debugLog) {
+        await navigator.clipboard.writeText(this.debugLog.innerText || "");
+        const btn = document.getElementById("copy-debug-btn");
+        if (btn) {
+          const orig = btn.innerHTML;
+          btn.innerHTML = '<i class="fas fa-check"></i> Copied';
+          setTimeout(() => { btn.innerHTML = orig; }, 1500);
+        }
+      }
+    });
+
+    document.getElementById("clear-debug-btn")?.addEventListener("click", async () => {
+      if (this.debugLog) this.debugLog.innerHTML = "";
+      if (this.chatWindow) this.chatWindow.innerHTML = "";
+      try {
+        await fetch(`${getApiBaseUrl()}/api/logs/clear`, { method: "POST" });
+      } catch (e) {}
+      const feed = document.getElementById("diag-log-feed");
+      if (feed) feed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
+      const countSpan = document.getElementById("diag-log-count");
+      if (countSpan) countSpan.innerText = "0";
+    });
+
     const sttTrigger = document.getElementById("stt-language-trigger");
     const sttOptions = document.getElementById("stt-language-container");
     const sttDisplay = document.getElementById("stt-language-display");
@@ -1025,7 +1049,11 @@ class WebsocketClientApp {
         <span style="color: #f8fafc; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
           <span>🖥️</span> Cloud Run Live Diagnostic Feed (<span id="diag-log-count" style="color: #38bdf8;">0</span> items)
         </span>
-        <button id="diag-close-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;">✕</button>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button id="diag-copy-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3); color: #38bdf8; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600;"><i class="fas fa-copy"></i> Copy</button>
+          <button id="diag-clear-btn" style="background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #f87171; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600;"><i class="fas fa-trash"></i> Clear</button>
+          <button id="diag-close-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;">✕</button>
+        </div>
       </div>
       <div style="display: flex; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.1); overflow-x: auto; flex-shrink: 0;">
         <button class="diag-tab-btn active" data-tab="all" style="flex: 1; background: rgba(56,189,248,0.2); border: none; color: #38bdf8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer; border-bottom: 2px solid #38bdf8;">📄 All Logs</button>
@@ -1053,6 +1081,28 @@ class WebsocketClientApp {
     dialog.querySelector("#diag-close-btn")?.addEventListener("click", () => {
       isOpen = false;
       dialog.style.display = "none";
+    });
+
+    dialog.querySelector("#diag-copy-btn")?.addEventListener("click", async (e) => {
+      const feed = document.getElementById("diag-log-feed");
+      if (feed) {
+        await navigator.clipboard.writeText(feed.innerText || "");
+        const btn = e.currentTarget as HTMLElement;
+        const orig = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-check"></i> Copied';
+        setTimeout(() => { btn.innerHTML = orig; }, 1500);
+      }
+    });
+
+    dialog.querySelector("#diag-clear-btn")?.addEventListener("click", async () => {
+      try {
+        await fetch(`${getApiBaseUrl()}/api/logs/clear`, { method: "POST" });
+      } catch (err) {}
+      const feed = document.getElementById("diag-log-feed");
+      if (feed) feed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
+      const countSpan = document.getElementById("diag-log-count");
+      if (countSpan) countSpan.innerText = "0";
+      if (this.debugLog) this.debugLog.innerHTML = "";
     });
 
     dialog.querySelectorAll(".diag-tab-btn").forEach((btn) => {

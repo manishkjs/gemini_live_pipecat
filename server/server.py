@@ -225,6 +225,12 @@ async def get_diagnostic_logs(limit: int = 500):
     from diagnostic_buffer import get_recent_diagnostic_logs
     return {"logs": get_recent_diagnostic_logs(limit)}
 
+@app.post("/api/logs/clear")
+async def clear_diagnostic_logs_endpoint():
+    from diagnostic_buffer import clear_diagnostic_logs
+    clear_diagnostic_logs()
+    return {"status": "cleared"}
+
 # Mount the static files directory
 possible_dist_dirs = [
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist")),

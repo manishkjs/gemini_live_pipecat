@@ -1111,6 +1111,8 @@ async def save_user_memory_handler(params: FunctionCallParams):
     else:
         result_msg = "Failed to save memory: AlloyDB pgvector store is not connected or initialized."
 
+    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_msg}")
+    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_msg}")
     await params.result_callback({"content": result_msg})
 
 async def search_user_memory_handler(params: FunctionCallParams):
@@ -1150,6 +1152,8 @@ async def search_user_memory_handler(params: FunctionCallParams):
     else:
         result_text = "Memory search unavailable: AlloyDB pgvector store is not connected or initialized."
 
+    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
+    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_text}")
     await params.result_callback({"content": result_text})
 
 async def recall_user_memories_handler(params: FunctionCallParams):
@@ -1182,4 +1186,6 @@ async def recall_user_memories_handler(params: FunctionCallParams):
     else:
         result_text = "Memory recall unavailable: AlloyDB pgvector store is not connected or initialized."
 
+    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
+    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_text}")
     await params.result_callback({"content": result_text})

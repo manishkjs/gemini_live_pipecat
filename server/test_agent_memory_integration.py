@@ -20,7 +20,13 @@ class TestAgentMemoryIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_user_memory", tool_names)
         self.assertIn("search_user_memory", tool_names)
 
-    async def test_save_user_memory_handler_integration(self):
+    @patch("memory_function.get_mem0_instance")
+    async def test_save_user_memory_handler_integration(self, mock_get_mem0):
+        mock_mem0 = MagicMock()
+        mock_get_mem0.return_value = mock_mem0
+        mock_mem0.search.return_value = {"results": []}
+        mock_mem0.add.return_value = {"results": [{"id": "test-1"}]}
+
         mock_cb = AsyncMock()
         params = MagicMock()
         params.arguments = {"memory_text": "User wants 6 months tenure"}
