@@ -36,7 +36,6 @@ try:
         process_extracted_fact,
         get_mem0_instance,
         normalize_user_id,
-        _save_local_memory,
         SIMILARITY_THRESHOLD,
     )
     from agent_live import identify_user_handler
@@ -192,7 +191,6 @@ async def run_single_session_flow(session_idx: int) -> SessionMetrics:
     try:
         def _seed():
             process_extracted_fact(seed_fact, "M2_Relation", session_id, is_explicit_remember=True)
-            _save_local_memory(seed_fact, "M2_Relation", session_id)
         loop = asyncio.get_running_loop()
         await asyncio.wait_for(loop.run_in_executor(None, _seed), timeout=10.0)
     except Exception as e:
