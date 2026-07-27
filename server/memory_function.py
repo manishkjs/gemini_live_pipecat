@@ -211,22 +211,23 @@ def get_mem0_config() -> dict:
     }
 
 def _patch_mem0_vertex_vector_search():
-    """Monkey-patch Mem0's VertexAIVectorSearch.search to handle neighbor.restricts being None safely."""
+    """Monkey-patch Mem0's GoogleMatchingEngine.search to handle neighbor.restricts being None safely."""
     try:
         import mem0.vector_stores.vertex_ai_vector_search as v_module
-        if hasattr(v_module, "VertexAIVectorSearch") and not getattr(v_module.VertexAIVectorSearch, "_patched_restricts", False):
-            from mem0.vector_stores.base import OutputData
+        target_cls = getattr(v_module, "GoogleMatchingEngine", getattr(v_module, "VertexAIVectorSearch", None))
+        if target_cls and not getattr(target_cls, "_patched_restricts", False):
+            OutputData = getattr(v_module, "OutputData")
             import traceback
 
-            orig_search = v_module.VertexAIVectorSearch.search
+
+            orig_search = target_cls.search
 
             def safe_search(self, query, vectors=None, top_k=5, filters=None, *args, **kwargs):
                 try:
                     return orig_search(self, query, vectors, top_k=top_k, filters=filters, *args, **kwargs)
                 except Exception as te:
                     if "'NoneType' object is not iterable" in str(te) or "neighbor.restricts" in traceback.format_exc() or "restricts" in str(te):
-
-                        logger.warning("[Mem0Patch] Intercepted NoneType restricts in VertexAIVectorSearch, executing safe fallback parse.")
+                        logger.warning("[Mem0Patch] Intercepted NoneType restricts in GoogleMatchingEngine, executing safe fallback parse.")
                         if vectors is None:
                             vectors = self.embedding_model.embed(query)
                         from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
@@ -266,12 +267,12 @@ def _patch_mem0_vertex_vector_search():
                         return results
                     raise
 
-
-            v_module.VertexAIVectorSearch.search = safe_search
-            v_module.VertexAIVectorSearch._patched_restricts = True
-            logger.info("[Mem0] Successfully applied safe restricts patch to mem0 VertexAIVectorSearch.search")
+            target_cls.search = safe_search
+            target_cls._patched_restricts = True
+            logger.info("[Mem0] Successfully applied safe restricts patch to mem0 GoogleMatchingEngine.search")
     except Exception as patch_e:
-        logger.warning(f"[Mem0] Could not patch VertexAIVectorSearch: {patch_e}")
+        logger.warning(f"[Mem0] Could not patch GoogleMatchingEngine: {patch_e}")
+
 
 def get_mem0_instance():
 
