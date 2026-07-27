@@ -97,11 +97,6 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         return data.encode("utf-8") if isinstance(data, str) else data
 
 async def get_current_time(params: FunctionCallParams):
-    is_explicit = params.arguments.get('is_explicit_request')
-    if not is_explicit:
-        await params.result_callback({"error": "Explicit time request required."})
-        return
-
     await params.result_callback(
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
@@ -157,34 +152,96 @@ class GeminiSessionLoggerMixin:
             append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms, user_id=os.getenv("ACTIVE_USER_ID", "default_user"))
             self._my_ttfb_start = None
 
+    # Max wall-clock time a tool lock may suppress interruptions before self-healing.
+    # Guards against a handler that raises before emitting FunctionCallResultFrame,
+    # which would otherwise leave the bot permanently uninterruptible.
+    TOOL_LOCK_MAX_HOLD_SECS = 8.0
+
+    def _lock_tools(self, reason: str):
+        self._active_tools_in_flight = getattr(self, '_active_tools_in_flight', 0) + 1
+        self._frame_locked_tools = True
+        self._tool_lock_started_at = time.monotonic()
+        logger.info(f"[AntiCancel] Locked _active_tools_in_flight={self._active_tools_in_flight} at T=0ms on {reason}")
+
+    def _release_tools(self, reason: str):
+        self._active_tools_in_flight = max(0, getattr(self, '_active_tools_in_flight', 1) - 1)
+        self._frame_locked_tools = False
+        self._tool_lock_started_at = None
+        logger.info(f"[AntiCancel] Released _active_tools_in_flight={self._active_tools_in_flight} on {reason}")
+
+    def _tools_in_flight(self) -> bool:
+        """True while a tool call is genuinely executing. Self-heals a stuck lock."""
+        if getattr(self, '_active_tools_in_flight', 0) <= 0:
+            return False
+        started = getattr(self, '_tool_lock_started_at', None)
+        if started and (time.monotonic() - started) > self.TOOL_LOCK_MAX_HOLD_SECS:
+            logger.warning(
+                f"[AntiCancel] Tool lock held >{self.TOOL_LOCK_MAX_HOLD_SECS}s without a result frame. "
+                "Force-releasing so the user can interrupt again."
+            )
+            self._active_tools_in_flight = 0
+            self._frame_locked_tools = False
+            self._tool_lock_started_at = None
+            return False
+        return True
+
     async def _run_function_call(self, tool_call):
         locked_by_method = False
         if not getattr(self, '_frame_locked_tools', False):
             self._active_tools_in_flight = getattr(self, '_active_tools_in_flight', 0) + 1
+            self._tool_lock_started_at = time.monotonic()
             locked_by_method = True
         try:
             return await super()._run_function_call(tool_call)
         finally:
             if locked_by_method:
                 self._active_tools_in_flight = max(0, getattr(self, '_active_tools_in_flight', 1) - 1)
+                if self._active_tools_in_flight == 0:
+                    self._tool_lock_started_at = None
+
+    async def _cancel_function_call(self, function_name: str | None):
+        """Block Pipecat from cancelling an in-flight tool on user interruption.
+
+        Pipecat calls this from `_handle_interruptions` for every function registered with
+        `cancel_on_interruption=True`. Cancelling kills the asyncio task mid-query, so the
+        DB lookup never returns a result frame and Gemini is left with a dangling tool call.
+        We refuse, so memory reads/writes always run to completion.
+        """
+        logger.info(
+            f"[AntiCancel] Refusing to cancel in-flight function call '{function_name}' "
+            "on user audio interruption. Tool will run to completion."
+        )
+        return
 
     async def process_frame(self, frame, direction):
-        """Intercept InterruptionFrame to set filler-pending flag and prevent memory turn cancellation."""
+        """Guarantee memory tool calls complete despite user audio interruptions."""
         frame_type_name = type(frame).__name__
         if frame_type_name in ("FunctionCallInProgressFrame", "FunctionCallsStartedFrame", "FunctionCallFromLLM"):
             if not getattr(self, '_frame_locked_tools', False):
-                self._active_tools_in_flight = getattr(self, '_active_tools_in_flight', 0) + 1
-                self._frame_locked_tools = True
-                logger.info(f"[AntiCancel] Instantly locked _active_tools_in_flight={self._active_tools_in_flight} at T=0ms (0 async function call delay) on frame {frame_type_name}")
-        elif frame_type_name in ("FunctionCallResultFrame", "FunctionCallCancelFrame"):
+                self._lock_tools(f"frame {frame_type_name}")
+        elif frame_type_name == "FunctionCallResultFrame":
             if getattr(self, '_frame_locked_tools', False):
-                self._active_tools_in_flight = max(0, getattr(self, '_active_tools_in_flight', 1) - 1)
-                self._frame_locked_tools = False
-                logger.info(f"[AntiCancel] Released _active_tools_in_flight={self._active_tools_in_flight} on frame {frame_type_name}")
+                self._release_tools(f"frame {frame_type_name}")
+        elif frame_type_name == "FunctionCallCancelFrame":
+            # A cancel slipped through (e.g. LLM-driven async tool cancellation).
+            # Drop the frame so downstream never sees the tool as dead, but always
+            # release the lock so interruptions work again on the next turn.
+            in_flight = self._tools_in_flight()
+            if getattr(self, '_frame_locked_tools', False):
+                self._release_tools(f"frame {frame_type_name}")
+            if in_flight:
+                logger.info("[AntiCancel] Suppressed FunctionCallCancelFrame for an in-flight tool call.")
+                return
 
+        # NOTE: CancelFrame is deliberately NOT suppressed. It is the pipeline
+        # shutdown signal (client disconnect / task cancel); swallowing it leaks
+        # the Cloud Run session forever.
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
-            if getattr(self, '_active_tools_in_flight', 0) > 0:
-                logger.info(f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool lookup ({self._active_tools_in_flight} tools in flight) to prevent memory turn cancellation!")
+            if self._tools_in_flight():
+                logger.info(
+                    f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool lookup "
+                    f"({self._active_tools_in_flight} in flight) to prevent memory turn cancellation!"
+                )
                 return
 
         if isinstance(frame, InterruptionFrame):

@@ -216,7 +216,7 @@ async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
 @app.get("/api/logs")
-async def get_diagnostic_logs(limit: int = 50):
+async def get_diagnostic_logs(limit: int = 500):
     from diagnostic_buffer import get_recent_diagnostic_logs
     return {"logs": get_recent_diagnostic_logs(limit)}
 
