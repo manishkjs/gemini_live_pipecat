@@ -114,7 +114,7 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         self.assertEqual(THRESHOLDS["M7_Safety"], 1)
         self.assertEqual(THRESHOLDS["M4_Behavioral"], 3)
         
-        with patch.dict(os.environ, {"CLOUDSQL_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"}):
+        with patch.dict(os.environ, {"VECTOR_STORE_PROVIDER": "pgvector", "CLOUDSQL_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"}):
             config = get_mem0_config()
             self.assertEqual(config["embedder"]["provider"], "gemini")
             self.assertEqual(config["embedder"]["config"]["model"], "gemini-embedding-001")
