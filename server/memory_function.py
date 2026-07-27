@@ -257,8 +257,10 @@ def _patch_mem0_vertex_vector_search():
                             payload = {}
                             restricts = getattr(neighbor, "restricts", None) or []
                             for restrict in restricts:
-                                if hasattr(restrict, "name") and hasattr(restrict, "allow_tokens") and restrict.allow_tokens:
-                                    payload[restrict.name] = restrict.allow_tokens[0]
+                                name = getattr(restrict, "name", None) or getattr(restrict, "namespace", None)
+                                tokens = getattr(restrict, "allow_tokens", None) or getattr(restrict, "allow_list", None)
+                                if name and tokens:
+                                    payload[name] = tokens[0]
 
                             score = max(0.0, 1.0 - neighbor.distance) if neighbor.distance is not None else None
                             output_data = OutputData(id=neighbor.id, score=score, payload=payload)
