@@ -211,67 +211,94 @@ def get_mem0_config() -> dict:
     }
 
 def _patch_mem0_vertex_vector_search():
-    """Monkey-patch Mem0's GoogleMatchingEngine.search to handle neighbor.restricts being None safely."""
+    """Monkey-patch Mem0's GoogleMatchingEngine to safely handle NoneType restricts and store full payload in embedding_metadata."""
     try:
         import mem0.vector_stores.vertex_ai_vector_search as v_module
         target_cls = getattr(v_module, "GoogleMatchingEngine", getattr(v_module, "VertexAIVectorSearch", None))
         if target_cls and not getattr(target_cls, "_patched_restricts", False):
             OutputData = getattr(v_module, "OutputData")
             import traceback
+            from google.cloud import aiplatform_v1
+            from google.protobuf import struct_pb2
 
+            def safe_create_datapoint(self, vector_id: str, vector: list, payload: dict = None):
+                restrictions = []
+                meta_struct = None
+                if payload:
+                    for key, value in payload.items():
+                        if isinstance(value, (str, int, float)) and " " not in str(value):
+                            restrictions.append(self._create_restriction(key, value))
+                    try:
+                        meta_struct = struct_pb2.Struct()
+                        meta_struct.update(payload)
+                    except Exception as se:
+                        logger.warning(f"[Mem0Patch] Could not convert payload to Struct: {se}")
 
-            orig_search = target_cls.search
+                return aiplatform_v1.types.index.IndexDatapoint(
+                    datapoint_id=vector_id,
+                    feature_vector=vector,
+                    restricts=restrictions,
+                    embedding_metadata=meta_struct
+                )
+
+            target_cls._create_datapoint = safe_create_datapoint
 
             def safe_search(self, query, vectors=None, top_k=5, filters=None, *args, **kwargs):
+                if vectors is None and query:
+                    vectors = self.embedding_model.embed(query)
+                from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
+                filter_namespaces = []
+                if filters:
+                    for key, value in filters.items():
+                        if isinstance(value, (str, int, float)):
+                            filter_namespaces.append(Namespace(key, [str(value)], []))
+                        elif isinstance(value, dict):
+                            includes = value.get("include", [])
+                            excludes = value.get("exclude", [])
+                            filter_namespaces.append(Namespace(key, includes, excludes))
+
                 try:
-                    return orig_search(self, query, vectors, top_k=top_k, filters=filters, *args, **kwargs)
-                except Exception as te:
-                    if "'NoneType' object is not iterable" in str(te) or "neighbor.restricts" in traceback.format_exc() or "restricts" in str(te):
-                        logger.warning("[Mem0Patch] Intercepted NoneType restricts in GoogleMatchingEngine, executing safe fallback parse.")
-                        if vectors is None:
-                            vectors = self.embedding_model.embed(query)
-                        from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import Namespace
-                        filter_namespaces = []
-                        if filters:
-                            for key, value in filters.items():
-                                if isinstance(value, (str, int, float)):
-                                    filter_namespaces.append(Namespace(key, [str(value)], []))
-                                elif isinstance(value, dict):
-                                    includes = value.get("include", [])
-                                    excludes = value.get("exclude", [])
-                                    filter_namespaces.append(Namespace(key, includes, excludes))
+                    response = self.index_endpoint.find_neighbors(
+                        deployed_index_id=self.deployment_index_id,
+                        queries=[vectors] if vectors else [],
+                        num_neighbors=top_k,
+                        filter=filter_namespaces if filter_namespaces else None,
+                        return_full_datapoint=True,
+                    )
+                except Exception as fe:
+                    logger.error(f"[Mem0Patch] find_neighbors failed: {fe}")
+                    return []
 
-                        response = self.index_endpoint.find_neighbors(
-                            deployed_index_id=self.deployment_index_id,
-                            queries=[vectors],
-                            num_neighbors=top_k,
-                            filter=filter_namespaces if filter_namespaces else None,
-                            return_full_datapoint=True,
-                        )
+                if not response or len(response) == 0 or len(response[0]) == 0:
+                    return []
 
-                        if not response or len(response) == 0 or len(response[0]) == 0:
-                            return []
+                results = []
+                for neighbor in response[0]:
+                    payload = {}
+                    emb_meta = getattr(neighbor, "embedding_metadata", None)
+                    if emb_meta:
+                        try:
+                            payload = dict(emb_meta)
+                        except Exception:
+                            pass
 
-                        results = []
-                        for neighbor in response[0]:
-                            payload = {}
-                            restricts = getattr(neighbor, "restricts", None) or []
-                            for restrict in restricts:
-                                name = getattr(restrict, "name", None) or getattr(restrict, "namespace", None)
-                                tokens = getattr(restrict, "allow_tokens", None) or getattr(restrict, "allow_list", None)
-                                if name and tokens:
-                                    payload[name] = tokens[0]
+                    if not payload:
+                        restricts = getattr(neighbor, "restricts", None) or []
+                        for restrict in restricts:
+                            name = getattr(restrict, "name", None) or getattr(restrict, "namespace", None)
+                            tokens = getattr(restrict, "allow_tokens", None) or getattr(restrict, "allow_list", None)
+                            if name and tokens and len(tokens) > 0:
+                                payload[name] = tokens[0]
 
-                            score = max(0.0, 1.0 - neighbor.distance) if neighbor.distance is not None else None
-                            output_data = OutputData(id=neighbor.id, score=score, payload=payload)
-                            results.append(output_data)
+                    score = max(0.0, 1.0 - neighbor.distance) if neighbor.distance is not None else None
+                    output_data = OutputData(id=neighbor.id, score=score, payload=payload)
+                    results.append(output_data)
 
-                        return results
-                    raise
+                return results
 
             target_cls.search = safe_search
             target_cls._patched_restricts = True
-            logger.info("[Mem0] Successfully applied safe restricts patch to mem0 GoogleMatchingEngine.search")
+            logger.info("[Mem0] Successfully applied safe restricts & embedding_metadata patch to mem0 GoogleMatchingEngine")
     except Exception as patch_e:
         logger.warning(f"[Mem0] Could not patch GoogleMatchingEngine: {patch_e}")
 
