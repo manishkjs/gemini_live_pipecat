@@ -936,10 +936,17 @@ def pre_load_user_profile(user_id: str) -> list[str]:
             active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
 
     results = active_facts.get("results", []) if isinstance(active_facts, dict) else active_facts
-    if not isinstance(results, list):
-        results = []
+    if not isinstance(results, list) or len(results) == 0:
+        # Vertex AI Vector Search does not implement get_all(). Fallback to vector search for profile keywords.
+        try:
+            fallback_res = mem0.search(query="user identity family relationships profile name son daughter wife spouse", filters={"user_id": user_id}, top_k=25)
+            results = fallback_res.get("results", []) if isinstance(fallback_res, dict) else (fallback_res if isinstance(fallback_res, list) else [])
+        except Exception as search_e:
+            logger.warning(f"[pre_load_user_profile] Vector search fallback failed: {search_e}")
+            results = []
 
     valid_memories = []
+
     for m in results:
         if not isinstance(m, dict):
             continue
