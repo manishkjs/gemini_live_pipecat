@@ -139,17 +139,20 @@ def get_mem0_config() -> dict:
     vector_store_provider = os.getenv("VECTOR_STORE_PROVIDER", "pgvector").lower()
 
     if vector_store_provider == "vertex_vector_search":
+        proj_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
+        proj_num = os.getenv("GCP_PROJECT_NUMBER") or proj_id
         vector_store_config = {
             "provider": "vertex_ai_vector_search",
             "config": {
-                "project_id": os.getenv("GCP_PROJECT_ID", "deep-clock-339817"),
-                "project_number": os.getenv("GCP_PROJECT_NUMBER", ""),
+                "project_id": proj_id,
+                "project_number": proj_num,
                 "region": os.getenv("VERTEX_SEARCH_REGION", os.getenv("GCP_LOCATION", "us-central1")),
                 "endpoint_id": os.getenv("VECTOR_SEARCH_ENDPOINT_ID", ""),
                 "index_id": os.getenv("VECTOR_SEARCH_INDEX_ID", ""),
                 "deployment_index_id": os.getenv("VECTOR_SEARCH_DEPLOYED_INDEX_ID", ""),
             }
         }
+
     else:
         pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
         
@@ -247,7 +250,7 @@ def get_mem0_instance():
             try:
                 _MEM0_INSTANCE = Memory.from_config(config)
             except Exception as e:
-                logger.error(f"[Mem0] CRITICAL: pgvector initialization failed: {e}. Ephemeral fallback disabled.")
+                logger.error(f"[Mem0] CRITICAL: {provider} initialization failed: {e}. Ephemeral fallback disabled.")
                 return None
 
             provider = config["vector_store"]["provider"]
@@ -657,7 +660,7 @@ def process_extracted_fact(fact_text: str, category: str, user_id: str, is_expli
         # 8. Match found: Increment count if observed on a NEW distinct day
         meta = best_match.get("metadata") or {}
         dates = meta.get("observation_dates", [])
-        count = meta.get("observation_count", 1)
+        count = int(meta.get("observation_count", 1))
 
         if today_str not in dates:
             dates.append(today_str)
@@ -865,7 +868,7 @@ def pre_load_user_profile(user_id: str) -> list[str]:
         try:
             active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
         except Exception:
-            active_facts = mem0.get_all(user_id=user_id, limit=25)
+            active_facts = mem0.get_all(filters={"user_id": user_id}, limit=25)
 
     results = active_facts.get("results", []) if isinstance(active_facts, dict) else active_facts
     if not isinstance(results, list):
