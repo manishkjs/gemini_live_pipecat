@@ -259,18 +259,22 @@ class WebsocketClientApp {
       const selectedModel = geminiModelSelect.value;
       const selectedVoice = geminiVoiceSelect.value;
 
-      if (selectedModel.includes("native-audio")) {
-        if (ttsToggle.checked) {
-          ttsWarning.style.display = "block";
-        } else {
-          ttsWarning.style.display = "none";
-        }
+      // Only gemini-live-2.5-flash (cascaded) supports TEXT modality / external TTS.
+      const supportsTTS = selectedModel === "gemini-live-2.5-flash";
+
+      if (!supportsTTS) {
+        ttsToggle.checked = false;
+        ttsToggle.disabled = true;
+        ttsWarning.style.display = "none";
+
         if (selectedVoice.startsWith("Custom")) {
-          voiceWarning.style.display = "block";
+          geminiVoiceSelect.value = "Aoede";
+          voiceWarning.style.display = "none";
         } else {
           voiceWarning.style.display = "none";
         }
       } else {
+        ttsToggle.disabled = false;
         ttsWarning.style.display = "none";
         voiceWarning.style.display = "none";
       }
