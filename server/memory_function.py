@@ -1095,6 +1095,7 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             try:
                 matched_fb = mem0.search(query=query, filters={"user_id": f_user})
                 g_results = matched_fb.get("results", []) if isinstance(matched_fb, dict) else matched_fb
+                if isinstance(g_results, list):
                     for item in g_results:
                         item_score = getattr(item, "score", None) or (item.get("score") if isinstance(item, dict) else None) or 1.0
                         item_payload = getattr(item, "payload", None) or (item.get("metadata") if isinstance(item, dict) else None) or {}
