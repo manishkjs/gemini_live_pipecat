@@ -982,19 +982,20 @@ def pre_load_user_profile(user_id: str) -> list[str]:
     valid_memories = []
 
     for m in results:
-        if not isinstance(m, dict):
-            continue
-        meta = m.get("metadata") or {}
+        # Resolve m whether it is a dict or an OutputData object
+        m_payload = getattr(m, "payload", None) or (m.get("metadata") if isinstance(m, dict) else None) or {}
+        m_memory = getattr(m, "memory", None) or getattr(m, "data", None) or (m.get("memory") if isinstance(m, dict) else None)
+        
+        meta = m_payload
         if meta.get("status", "active") not in ["active", "staging"]:
             continue
-
             
         # Scrub expired M6 context
         expires_at = meta.get("expires_at")
         if expires_at and expires_at < now_iso:
             continue
         
-        text = m.get("memory", "")
+        text = m_memory
         if not text:
             continue
 
@@ -1064,12 +1065,15 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
     now_iso = datetime.now().isoformat()
     
     for item in results:
-        if not isinstance(item, dict):
-            continue
-        if item.get("score", 1.0) < RETRIEVAL_THRESHOLD:
+        # Resolve item whether it is a dict or an OutputData object
+        item_score = getattr(item, "score", None) or (item.get("score") if isinstance(item, dict) else None) or 1.0
+        item_payload = getattr(item, "payload", None) or (item.get("metadata") if isinstance(item, dict) else None) or {}
+        item_memory = getattr(item, "memory", None) or getattr(item, "data", None) or (item.get("memory") if isinstance(item, dict) else None)
+
+        if item_score < RETRIEVAL_THRESHOLD:
             continue
             
-        meta = item.get("metadata") or {}
+        meta = item_payload
         if meta.get("status", "active") not in ["active", "staging"]:
             continue
 
@@ -1077,9 +1081,10 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
         if expires_at and expires_at < now_iso:
             continue
             
-        valid_results.append(item.get("memory", ""))
+        valid_results.append(item_memory)
         
     valid_list = [r for r in valid_results if r]
+
 
     # If no results found for specific user_id (e.g. script mismatch user:manish vs user:मनीष), try common user fallbacks
     if not valid_list:
@@ -1090,12 +1095,16 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
             try:
                 matched_fb = mem0.search(query=query, filters={"user_id": f_user})
                 g_results = matched_fb.get("results", []) if isinstance(matched_fb, dict) else matched_fb
-                if isinstance(g_results, list):
                     for item in g_results:
-                        if isinstance(item, dict) and item.get("score", 1.0) >= RETRIEVAL_THRESHOLD:
-                            meta = item.get("metadata") or {}
+                        item_score = getattr(item, "score", None) or (item.get("score") if isinstance(item, dict) else None) or 1.0
+                        item_payload = getattr(item, "payload", None) or (item.get("metadata") if isinstance(item, dict) else None) or {}
+                        item_memory = getattr(item, "memory", None) or getattr(item, "data", None) or (item.get("memory") if isinstance(item, dict) else None)
+
+                        if item_score >= RETRIEVAL_THRESHOLD:
+                            meta = item_payload
                             if meta.get("status", "active") in ["active", "staging"]:
-                                valid_list.append(item.get("memory", ""))
+                                valid_list.append(item_memory)
+
             except Exception as e:
                 logger.warning(f"[recall_user_memories] Fallback search for {f_user} failed: {e}")
 
