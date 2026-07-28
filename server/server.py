@@ -107,7 +107,7 @@ async def websocket_endpoint(
     voice: Optional[str] = "Puck",
     language: str = "en-US",
     system_instruction: Optional[str] = None,
-    tts: bool = True,
+    tts: bool = False,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",
     tts_model: str = "google-tts",
     tts_pace: float = 0.80,

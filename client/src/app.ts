@@ -284,6 +284,9 @@ class WebsocketClientApp {
     geminiVoiceSelect?.addEventListener("change", handleModelChange);
     ttsToggle?.addEventListener("change", handleModelChange);
 
+    // Run initially to sync UI state
+    handleModelChange();
+
     // TTS Model Change Logic
     const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
     const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
