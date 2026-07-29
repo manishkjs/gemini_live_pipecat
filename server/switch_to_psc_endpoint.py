@@ -16,7 +16,7 @@ import time
 
 PROJECT_ID = "deep-clock-339817"
 REGION = "us-central1"
-OPERATION_ID = "7170069844765704192"
+OPERATION_ID = "3874270546367610880"
 PSC_ENDPOINT_ID = "6305455093713993728"
 PSC_DEPLOYED_INDEX_ID = "mem0_vector_search_psc_deployed_index"
 SERVICE_NAME = "memory-vector-search"
@@ -43,6 +43,18 @@ def main():
     code, stdout, stderr = run_cmd(cmd_check)
     if code != 0:
         print(f"Error checking operation: {stderr}")
+        sys.exit(1)
+
+    cmd_err = [
+        GCLOUD_CMD, "ai", "operations", "describe", OPERATION_ID,
+        f"--index-endpoint={PSC_ENDPOINT_ID}",
+        f"--region={REGION}",
+        f"--project={PROJECT_ID}",
+        "--format=value(error.message)"
+    ]
+    _, err_msg, _ = run_cmd(cmd_err)
+    if err_msg and err_msg != "None":
+        print(f"[STATUS: ERROR] Vertex AI operation failed: {err_msg}")
         sys.exit(1)
 
     is_done = stdout.lower() == "true"
