@@ -277,25 +277,165 @@ def _patch_mem0_vertex_vector_search():
                 for neighbor in response[0]:
                     payload = {}
                     emb_meta = getattr(neighbor, "embedding_metadata", None)
+                    restricts = getattr(neighbor, "restricts", None) or []
+                    
+                    logger.info(f"[DebugPatch] neighbor_id={neighbor.id} distance={neighbor.distance} has_emb_meta={emb_meta is not None} restricts_count={len(restricts)}")
+                    
                     if emb_meta:
                         try:
                             payload = dict(emb_meta)
-                        except Exception:
-                            pass
+                            logger.info(f"[DebugPatch] Parsed emb_meta: {payload}")
+                        except Exception as e:
+                            logger.error(f"[DebugPatch] Failed to parse emb_meta: {e}")
 
                     if not payload:
-                        restricts = getattr(neighbor, "restricts", None) or []
                         for restrict in restricts:
                             name = getattr(restrict, "name", None) or getattr(restrict, "namespace", None)
                             tokens = getattr(restrict, "allow_tokens", None) or getattr(restrict, "allow_list", None)
                             if name and tokens and len(tokens) > 0:
                                 payload[name] = tokens[0]
+                        if restricts:
+                            logger.info(f"[DebugPatch] Parsed restricts: {payload}")
 
                     score = max(0.0, 1.0 - neighbor.distance) if neighbor.distance is not None else None
                     output_data = OutputData(id=neighbor.id, score=score, payload=payload)
                     results.append(output_data)
 
                 return results
+
+            # Patch MatchingEngineIndexEndpoint to force embedding_enabled=True in match method
+            try:
+                from google.cloud.aiplatform import MatchingEngineIndexEndpoint
+                from google.cloud.aiplatform.matching_engine.matching_engine_index_endpoint import HybridQuery, MatchNeighbor, Namespace, NumericNamespace
+                from google.cloud.aiplatform.matching_engine._protos import match_service_pb2
+                import typing
+                
+                def patched_match(
+                    self,
+                    deployed_index_id: str,
+                    queries: typing.Union[typing.List[typing.List[float]], typing.List[HybridQuery]] = None,
+                    num_neighbors: int = 1,
+                    filter: typing.Optional[typing.List[Namespace]] = None,
+                    per_crowding_attribute_num_neighbors: typing.Optional[int] = None,
+                    approx_num_neighbors: typing.Optional[int] = None,
+                    fraction_leaf_nodes_to_search_override: typing.Optional[float] = None,
+                    low_level_batch_size: int = 0,
+                    numeric_filter: typing.Optional[typing.List[NumericNamespace]] = None,
+                    signed_jwt: typing.Optional[str] = None,
+                    psc_network: typing.Optional[str] = None,
+                ) -> typing.List[typing.List[MatchNeighbor]]:
+                    if psc_network:
+                        stub = self._instantiate_private_match_service_stub(
+                            deployed_index_id=deployed_index_id,
+                            psc_network=psc_network,
+                        )
+                    else:
+                        stub = self._instantiate_private_match_service_stub(
+                            deployed_index_id=deployed_index_id,
+                            ip_address=self._private_service_connect_ip_address,
+                        )
+
+                    batch_request = match_service_pb2.BatchMatchRequest()
+                    batch_request_for_index = (
+                        match_service_pb2.BatchMatchRequest.BatchMatchRequestPerIndex()
+                    )
+                    batch_request_for_index.deployed_index_id = deployed_index_id
+                    batch_request_for_index.low_level_batch_size = low_level_batch_size
+
+                    restricts = []
+                    if filter:
+                        for namespace in filter:
+                            restrict = match_service_pb2.Namespace()
+                            restrict.name = namespace.name
+                            restrict.allow_tokens.extend(namespace.allow_tokens)
+                            restrict.deny_tokens.extend(namespace.deny_tokens)
+                            restricts.append(restrict)
+                    numeric_restricts = []
+                    if numeric_filter:
+                        for numeric_namespace in numeric_filter:
+                            restrict = match_service_pb2.NumericNamespace()
+                            restrict.name = numeric_namespace.name
+                            restrict.op = match_service_pb2.NumericNamespace.Operator.Value(
+                                numeric_namespace.op
+                            )
+                            if numeric_namespace.value_int is not None:
+                                restrict.value_int = numeric_namespace.value_int
+                            if numeric_namespace.value_float is not None:
+                                restrict.value_float = numeric_namespace.value_float
+                            if numeric_namespace.value_double is not None:
+                                restrict.value_double = numeric_namespace.value_double
+                            numeric_restricts.append(restrict)
+
+                    requests = []
+                    if queries:
+                        query_is_hybrid = isinstance(queries[0], HybridQuery)
+                        for query in queries:
+                            request = match_service_pb2.MatchRequest(
+                                deployed_index_id=deployed_index_id,
+                                float_val=query.dense_embedding if query_is_hybrid else query,
+                                num_neighbors=num_neighbors,
+                                restricts=restricts,
+                                per_crowding_attribute_num_neighbors=per_crowding_attribute_num_neighbors,
+                                approx_num_neighbors=approx_num_neighbors,
+                                fraction_leaf_nodes_to_search_override=fraction_leaf_nodes_to_search_override,
+                                numeric_restricts=numeric_restricts,
+                                sparse_embedding=(
+                                    match_service_pb2.SparseEmbedding(
+                                        float_val=query.sparse_embedding_values,
+                                        dimension=query.sparse_embedding_dimensions,
+                                    )
+                                    if query_is_hybrid
+                                    else None
+                                ),
+                                rrf=(
+                                    match_service_pb2.MatchRequest.RRF(
+                                        alpha=query.rrf_ranking_alpha,
+                                    )
+                                    if query_is_hybrid and query.rrf_ranking_alpha
+                                    else None
+                                ),
+                                embedding_enabled=True,
+                            )
+                            requests.append(request)
+                    else:
+                        raise ValueError(
+                            "To find neighbors using matching engine, please specify `queries` or `embedding_ids`"
+                        )
+
+                    batch_request_for_index.requests.extend(requests)
+                    batch_request.requests.append(batch_request_for_index)
+
+                    metadata = None
+                    if signed_jwt:
+                        metadata = (("authorization", f"Bearer: {signed_jwt}"),)
+                    response = stub.BatchMatch(batch_request, metadata=metadata)
+
+                    match_neighbors_response = []
+                    for resp in response.responses[0].responses:
+                        embeddings_list = getattr(resp, "embeddings", [])
+                        logger.info(f"[DebugPatchMatch] resp.embeddings length={len(embeddings_list)}")
+                        for emb in embeddings_list:
+                            logger.info(f"[DebugPatchMatch] embedding id={emb.id} restricts_count={len(getattr(emb, 'restricts', []))} has_emb_meta={getattr(emb, 'embedding_metadata', None) is not None}")
+                        embedding_map = {embedding.id: embedding for embedding in embeddings_list}
+                        neighbors_list = []
+                        for neighbor in resp.neighbor:
+                            match_neighbor = MatchNeighbor(
+                                id=neighbor.id,
+                                distance=neighbor.distance if neighbor.distance else None,
+                                sparse_distance=(
+                                    neighbor.sparse_distance if neighbor.sparse_distance else None
+                                ),
+                            )
+                            if neighbor.id in embedding_map:
+                                match_neighbor.from_embedding(embedding=embedding_map[neighbor.id])
+                            neighbors_list.append(match_neighbor)
+                        match_neighbors_response.append(neighbors_list)
+                    return match_neighbors_response
+                
+                MatchingEngineIndexEndpoint.match = patched_match
+                logger.info("[Mem0] Successfully patched MatchingEngineIndexEndpoint.match to force embedding_enabled=True")
+            except Exception as e_sdk:
+                logger.warning(f"[Mem0] Could not patch MatchingEngineIndexEndpoint: {e_sdk}")
 
             target_cls.search = safe_search
             target_cls._patched_restricts = True
@@ -1069,6 +1209,8 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
         item_score = getattr(item, "score", None) or (item.get("score") if isinstance(item, dict) else None) or 1.0
         item_payload = getattr(item, "payload", None) or (item.get("metadata") if isinstance(item, dict) else None) or {}
         item_memory = getattr(item, "memory", None) or getattr(item, "data", None) or (item.get("memory") if isinstance(item, dict) else None)
+        
+        logger.info(f"[DebugRecall] item_id={getattr(item, 'id', None) or (item.get('id') if isinstance(item, dict) else None)} score={item_score} memory={item_memory} payload={item_payload}")
 
         if item_score < RETRIEVAL_THRESHOLD:
             continue
