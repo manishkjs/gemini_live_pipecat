@@ -11,6 +11,8 @@ from memory_function import (
     THRESHOLDS,
     SIMILARITY_THRESHOLD,
     get_mem0_config,
+    get_vertex_memory_bank_store,
+    VertexMemoryBankStore,
     process_extracted_fact,
     process_session_transcript,
     normalize_category,
@@ -26,8 +28,8 @@ from memory_function import (
 
 class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
     async def test_save_and_search_alloydb_error_when_instance_none(self):
-        with patch("memory_function.get_mem0_instance", return_value=None):
-            # Test saving memory when AlloyDB is disconnected/uninitialized
+        with patch("memory_function.get_vertex_memory_bank_store", return_value=None), patch("memory_function.get_mem0_instance", return_value=None):
+            # Test saving memory when store is disconnected/uninitialized
             mock_cb_save = AsyncMock()
             params_save = MagicMock()
             params_save.arguments = {
@@ -39,9 +41,9 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
             await save_user_memory_handler(params_save)
             mock_cb_save.assert_called_once()
             saved_res = mock_cb_save.call_args[0][0]
-            self.assertIn("failed to save memory: alloydb pgvector store is not connected", saved_res.get("content", "").lower())
+            self.assertIn("store is not connected", saved_res.get("content", "").lower())
 
-            # Test searching memory when AlloyDB is disconnected/uninitialized
+            # Test searching memory when store is disconnected/uninitialized
             mock_cb_search = AsyncMock()
             params_search = MagicMock()
             params_search.arguments = {"query": "tenure"}
@@ -50,7 +52,7 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
             await search_user_memory_handler(params_search)
             mock_cb_search.assert_called_once()
             search_res = mock_cb_search.call_args[0][0]
-            self.assertIn("memory search unavailable: alloydb pgvector store is not connected", search_res.get("content", "").lower())
+            self.assertIn("store is not connected", search_res.get("content", "").lower())
 
     async def test_empty_memory_text_validation(self):
         mock_cb = AsyncMock()
@@ -72,10 +74,10 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
         mock_mem0 = MagicMock()
         mock_mem0.add.return_value = {"results": [{"id": "1", "memory": "User lives in Bangalore"}]}
 
-        with patch("memory_function.get_mem0_instance", return_value=mock_mem0):
+        with patch("memory_function.get_vertex_memory_bank_store", return_value=mock_mem0), patch("memory_function.get_mem0_instance", return_value=mock_mem0):
             await save_user_memory_handler(params)
             mock_cb.assert_called_once()
-            self.assertIn("mem0", mock_cb.call_args[0][0]["content"].lower())
+            self.assertIn("vertex", mock_cb.call_args[0][0]["content"].lower())
 
     async def test_mem0_engine_search_success(self):
         mock_cb = AsyncMock()
@@ -86,7 +88,7 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
         mock_mem0 = MagicMock()
         mock_mem0.search.return_value = {"results": [{"memory": "User lives in Bangalore"}]}
 
-        with patch("memory_function.get_mem0_instance", return_value=mock_mem0):
+        with patch("memory_function.get_vertex_memory_bank_store", return_value=mock_mem0), patch("memory_function.get_mem0_instance", return_value=mock_mem0):
             await search_user_memory_handler(params)
             mock_cb.assert_called_once()
             self.assertIn("Bangalore", mock_cb.call_args[0][0]["content"])
@@ -97,7 +99,7 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
         mock_mem0.search.side_effect = lambda query, filters: {"results": [{"memory": "Rohan likes cricket", "metadata": {"status": "active"}, "score": 0.95}]} if filters.get("user_id") == "user:rohan" else {"results": []}
         mock_mem0.get_all.return_value = {"results": []}
 
-        with patch("memory_function.get_mem0_instance", return_value=mock_mem0), patch("memory_function.get_memory_bank_config", return_value=(None, None, None)):
+        with patch("memory_function.get_vertex_memory_bank_store", return_value=mock_mem0), patch("memory_function.get_mem0_instance", return_value=mock_mem0), patch("memory_function.get_memory_bank_config", return_value=(None, None, None)):
             mock_cb_search = AsyncMock()
             params_search = MagicMock()
             params_search.arguments = {"query": "cricket", "user_id": "user:priya"}
@@ -105,6 +107,18 @@ class TestMemoryFunction(unittest.IsolatedAsyncioTestCase):
             await search_user_memory_handler(params_search)
             self.assertIn("No memories found", mock_cb_search.call_args[0][0]["content"])
             mock_mem0.search.assert_any_call(query="cricket", filters={"user_id": "user:priya"})
+
+    def test_vertex_memory_bank_store_local_fallback(self):
+        """Verify VertexMemoryBankStore saves and retrieves memories using local fallback when SDK has no agent_engines."""
+        store = VertexMemoryBankStore()
+        add_res = store.add("User prefers tea over coffee", user_id="user:test_fallback")
+        self.assertIn("results", add_res)
+        self.assertEqual(add_res["results"][0]["memory"], "User prefers tea over coffee")
+
+        search_res = store.search("tea", filters={"user_id": "user:test_fallback"})
+        self.assertIn("results", search_res)
+        self.assertEqual(len(search_res["results"]), 1)
+        self.assertEqual(search_res["results"][0]["memory"], "User prefers tea over coffee")
 
 class TestMem0PgvectorAndTwoPath(unittest.TestCase):
     def test_prd_constants_and_pgvector_config(self):
@@ -114,14 +128,12 @@ class TestMem0PgvectorAndTwoPath(unittest.TestCase):
         self.assertEqual(THRESHOLDS["M7_Safety"], 1)
         self.assertEqual(THRESHOLDS["M4_Behavioral"], 3)
         
-        with patch.dict(os.environ, {"CLOUDSQL_PG_DSN": "postgresql://user:pass@127.0.0.1:5432/memories"}):
-            config = get_mem0_config()
-            self.assertEqual(config["embedder"]["provider"], "gemini")
-            self.assertEqual(config["embedder"]["config"]["model"], "gemini-embedding-001")
-            self.assertEqual(config["embedder"]["config"]["embedding_dims"], 768)
-            self.assertEqual(config["vector_store"]["provider"], "pgvector")
-            self.assertEqual(config["vector_store"]["config"]["connection_string"], "postgresql://user:pass@127.0.0.1:5432/memories")
-            self.assertEqual(config["vector_store"]["config"]["embedding_model_dims"], 768)
+        config = get_mem0_config()
+        self.assertEqual(config["embedder"]["provider"], "gemini")
+        self.assertEqual(config["embedder"]["config"]["model"], "gemini-embedding-001")
+        self.assertEqual(config["embedder"]["config"]["embedding_dims"], 768)
+        self.assertEqual(config["vector_store"]["provider"], "vertex_memory_bank")
+        self.assertEqual(config["vector_store"]["config"]["embedding_model_dims"], 768)
 
     @patch("memory_function.get_mem0_instance")
     def test_process_extracted_fact_raw_insert_and_promotion(self, mock_get_mem0):

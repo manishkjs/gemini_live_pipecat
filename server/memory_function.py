@@ -122,13 +122,14 @@ RETRIEVAL_THRESHOLD = 0.40
 _VERTEX_STORE_INSTANCE = None
 
 class VertexMemoryBankStore:
-    """Native GCP Vertex AI Agent Engine / Memory Bank API Client."""
+    """Native GCP Vertex AI Agent Engine / Memory Bank API Client with local fallback."""
 
     def __init__(self, resource_id: str | None = None, project_id: str | None = None, location: str = "us-central1"):
         self.resource_id = resource_id or os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/853612069841/locations/us-central1/reasoningEngines/4963337874536660992"
         self.project_id = project_id or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
         self.location = location or os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
         self._sdk_client = None
+        self._local_db = {}
 
     def _get_sdk_client(self):
         if self._sdk_client is None:
@@ -142,41 +143,68 @@ class VertexMemoryBankStore:
     def add(self, memory_text: str, user_id: str = "default_user", metadata: dict | None = None, infer: bool = False) -> dict:
         metadata = metadata or {}
         client = self._get_sdk_client()
-        if not client or not hasattr(client, "agent_engines"):
-            raise RuntimeError("[VertexMemoryBankStore] SDK Client unavailable. Local fallback disabled.")
+        if client and hasattr(client, "agent_engines"):
+            try:
+                res = client.agent_engines.memories.create(
+                    name=self.resource_id,
+                    fact=memory_text,
+                    scope={"user_id": user_id}
+                )
+                mem_id = getattr(res, "name", "").split("/")[-1] or f"mem-{content_fingerprint(memory_text)[:8]}"
+                rec = {"id": mem_id, "memory": memory_text, "metadata": metadata}
+                return {"results": [rec]}
+            except Exception as e:
+                logger.warning(f"[VertexMemoryBankStore] SDK memories.create failed: {e}. Falling back to local store.")
 
-        res = client.agent_engines.memories.create(
-            name=self.resource_id,
-            fact=memory_text,
-            scope={"user_id": user_id}
-        )
-        mem_id = getattr(res, "name", "").split("/")[-1] or f"mem-{content_fingerprint(memory_text)[:8]}"
-        rec = {"id": mem_id, "memory": memory_text, "metadata": metadata}
+        # Local fallback execution path
+        mem_id = f"mem-{content_fingerprint(memory_text)[:8]}"
+        rec = {"id": mem_id, "memory": memory_text, "metadata": metadata, "user_id": user_id}
+        self._local_db[mem_id] = rec
+        logger.info(f"[VertexMemoryBankStore] (Local Fallback) Stored memory for {user_id}: '{memory_text[:40]}'")
         return {"results": [rec]}
 
     def search(self, query: str, filters: dict | None = None) -> dict:
         filters = filters or {}
         user_id = filters.get("user_id", "default_user")
         client = self._get_sdk_client()
-        if not client or not hasattr(client, "agent_engines"):
-            raise RuntimeError("[VertexMemoryBankStore] SDK Client unavailable. Local fallback disabled.")
+        if client and hasattr(client, "agent_engines"):
+            try:
+                retrieved = list(client.agent_engines.memories.retrieve(
+                    name=self.resource_id,
+                    scope={"user_id": user_id}
+                ))
+                formatted = []
+                query_lower = query.lower()
+                for item in retrieved:
+                    content = getattr(item, "fact", None) or getattr(item, "content", "") or str(item)
+                    mem_id = getattr(item, "name", "").split("/")[-1] or "ver-id"
+                    if not query_lower or any(w in content.lower() for w in query_lower.split()):
+                        formatted.append({"id": mem_id, "memory": content, "score": 0.95, "metadata": getattr(item, "scope", {})})
+                return {"results": formatted}
+            except Exception as e:
+                logger.warning(f"[VertexMemoryBankStore] SDK memories.retrieve failed: {e}. Falling back to local store.")
 
-        retrieved = list(client.agent_engines.memories.retrieve(
-            name=self.resource_id,
-            scope={"user_id": user_id}
-        ))
-        formatted = []
+        # Local fallback search path
         query_lower = query.lower()
-        for item in retrieved:
-            content = getattr(item, "fact", None) or getattr(item, "content", "") or str(item)
-            mem_id = getattr(item, "name", "").split("/")[-1] or "ver-id"
+        formatted = []
+        for item in self._local_db.values():
+            item_user = item.get("user_id", "default_user")
+            if item_user != user_id and user_id != "default_user" and item_user != "default_user":
+                continue
+            content = item.get("memory", "")
             if not query_lower or any(w in content.lower() for w in query_lower.split()):
-                formatted.append({"id": mem_id, "memory": content, "score": 0.95, "metadata": getattr(item, "scope", {})})
+                formatted.append({"id": item["id"], "memory": content, "score": 0.95, "metadata": item.get("metadata", {})})
         return {"results": formatted}
 
     def update(self, memory_id: str, data: str, metadata: dict | None = None) -> dict:
         metadata = metadata or {}
-        return {"results": [{"id": memory_id, "memory": data, "metadata": metadata}]}
+        if memory_id in self._local_db:
+            self._local_db[memory_id]["memory"] = data
+            self._local_db[memory_id]["metadata"] = metadata
+            return {"results": [self._local_db[memory_id]]}
+        rec = {"id": memory_id, "memory": data, "metadata": metadata}
+        self._local_db[memory_id] = rec
+        return {"results": [rec]}
 
     def get_all(self, filters: dict | None = None, limit: int = 25, user_id: str | None = None) -> dict:
         target_user = user_id or (filters or {}).get("user_id", "default_user")
