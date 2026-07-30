@@ -122,7 +122,7 @@ RETRIEVAL_THRESHOLD = 0.40
 _VERTEX_STORE_INSTANCE = None
 
 class VertexMemoryBankStore:
-    """Native GCP Vertex AI Agent Engine / Memory Bank API Client with local fallback."""
+    """Native GCP Vertex AI Agent Engine / Memory Bank REST & SDK API Client."""
 
     def __init__(self, resource_id: str | None = None, project_id: str | None = None, location: str = "us-central1"):
         self.resource_id = resource_id or os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/853612069841/locations/us-central1/reasoningEngines/4963337874536660992"
@@ -130,6 +130,28 @@ class VertexMemoryBankStore:
         self.location = location or os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
         self._sdk_client = None
         self._local_db = {}
+        self._credentials = None
+        
+        if self.resource_id.startswith("projects/"):
+            self._endpoint_url = f"https://{self.location}-aiplatform.googleapis.com/v1/{self.resource_id}/memories"
+        else:
+            self._endpoint_url = f"https://{self.location}-aiplatform.googleapis.com/v1/projects/{self.project_id}/locations/{self.location}/reasoningEngines/{self.resource_id}/memories"
+
+    def _get_auth_headers(self) -> dict | None:
+        try:
+            import google.auth
+            from google.auth.transport.requests import Request
+            if self._credentials is None:
+                self._credentials, _ = google.auth.default()
+            if not self._credentials.valid:
+                self._credentials.refresh(Request())
+            return {
+                "Authorization": f"Bearer {self._credentials.token}",
+                "Content-Type": "application/json"
+            }
+        except Exception as e:
+            logger.warning(f"[VertexMemoryBankStore] Could not refresh GCP OAuth token: {e}")
+            return None
 
     def _get_sdk_client(self):
         if self._sdk_client is None:
@@ -142,6 +164,31 @@ class VertexMemoryBankStore:
 
     def add(self, memory_text: str, user_id: str = "default_user", metadata: dict | None = None, infer: bool = False) -> dict:
         metadata = metadata or {}
+        user_id = normalize_user_id(user_id)
+
+        # 1. Try native GCP Vertex AI REST API
+        headers = self._get_auth_headers()
+        if headers:
+            try:
+                import requests
+                payload = {
+                    "fact": memory_text,
+                    "scope": {"user_id": user_id}
+                }
+                res = requests.post(self._endpoint_url, headers=headers, json=payload, timeout=5.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    mem_name = data.get("response", {}).get("name") or data.get("name", "")
+                    mem_id = mem_name.split("/")[-1] if mem_name else f"mem-{content_fingerprint(memory_text)[:8]}"
+                    rec = {"id": mem_id, "memory": memory_text, "metadata": metadata}
+                    logger.info(f"[VertexMemoryBankStore] Saved memory via GCP REST API for {user_id}: '{memory_text[:40]}'")
+                    return {"results": [rec]}
+                else:
+                    logger.warning(f"[VertexMemoryBankStore] REST API POST returned status {res.status_code}: {res.text[:200]}")
+            except Exception as e:
+                logger.warning(f"[VertexMemoryBankStore] REST API POST failed: {e}")
+
+        # 2. Try SDK Client if agent_engines is supported
         client = self._get_sdk_client()
         if client and hasattr(client, "agent_engines"):
             try:
@@ -154,9 +201,9 @@ class VertexMemoryBankStore:
                 rec = {"id": mem_id, "memory": memory_text, "metadata": metadata}
                 return {"results": [rec]}
             except Exception as e:
-                logger.warning(f"[VertexMemoryBankStore] SDK memories.create failed: {e}. Falling back to local store.")
+                logger.warning(f"[VertexMemoryBankStore] SDK memories.create failed: {e}")
 
-        # Local fallback execution path
+        # 3. Local fallback execution path
         mem_id = f"mem-{content_fingerprint(memory_text)[:8]}"
         rec = {"id": mem_id, "memory": memory_text, "metadata": metadata, "user_id": user_id}
         self._local_db[mem_id] = rec
@@ -165,7 +212,39 @@ class VertexMemoryBankStore:
 
     def search(self, query: str, filters: dict | None = None) -> dict:
         filters = filters or {}
-        user_id = filters.get("user_id", "default_user")
+        user_id = normalize_user_id(filters.get("user_id", "default_user"))
+        query_lower = query.lower()
+
+        # 1. Try native GCP Vertex AI REST API
+        headers = self._get_auth_headers()
+        if headers:
+            try:
+                import requests
+                payload = {"scope": {"user_id": user_id}}
+                res = requests.post(f"{self._endpoint_url}:retrieve", headers=headers, json=payload, timeout=5.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    retrieved = data.get("retrievedMemories", [])
+                    formatted = []
+                    for item in retrieved:
+                        mem_obj = item.get("memory", {})
+                        content = mem_obj.get("fact", "") or mem_obj.get("content", "")
+                        mem_id = mem_obj.get("name", "").split("/")[-1] or "ver-id"
+                        if not query_lower or any(w in content.lower() for w in query_lower.split()):
+                            formatted.append({
+                                "id": mem_id,
+                                "memory": content,
+                                "score": 0.95,
+                                "metadata": mem_obj.get("scope", {})
+                            })
+                    logger.info(f"[VertexMemoryBankStore] Retrieved {len(formatted)} memories via GCP REST API for {user_id}")
+                    return {"results": formatted}
+                else:
+                    logger.warning(f"[VertexMemoryBankStore] REST API retrieve returned status {res.status_code}: {res.text[:200]}")
+            except Exception as e:
+                logger.warning(f"[VertexMemoryBankStore] REST API retrieve failed: {e}")
+
+        # 2. Try SDK Client if agent_engines is supported
         client = self._get_sdk_client()
         if client and hasattr(client, "agent_engines"):
             try:
@@ -174,7 +253,6 @@ class VertexMemoryBankStore:
                     scope={"user_id": user_id}
                 ))
                 formatted = []
-                query_lower = query.lower()
                 for item in retrieved:
                     content = getattr(item, "fact", None) or getattr(item, "content", "") or str(item)
                     mem_id = getattr(item, "name", "").split("/")[-1] or "ver-id"
@@ -182,10 +260,9 @@ class VertexMemoryBankStore:
                         formatted.append({"id": mem_id, "memory": content, "score": 0.95, "metadata": getattr(item, "scope", {})})
                 return {"results": formatted}
             except Exception as e:
-                logger.warning(f"[VertexMemoryBankStore] SDK memories.retrieve failed: {e}. Falling back to local store.")
+                logger.warning(f"[VertexMemoryBankStore] SDK memories.retrieve failed: {e}")
 
-        # Local fallback search path
-        query_lower = query.lower()
+        # 3. Local fallback search path
         formatted = []
         for item in self._local_db.values():
             item_user = item.get("user_id", "default_user")
