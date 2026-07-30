@@ -125,7 +125,7 @@ class VertexMemoryBankStore:
     """Native GCP Vertex AI Agent Engine / Memory Bank API Client."""
 
     def __init__(self, resource_id: str | None = None, project_id: str | None = None, location: str = "us-central1"):
-        self.resource_id = resource_id or os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/deep-clock-339817/locations/us-central1/reasoningEngines/lenskart-memory-bank-v1"
+        self.resource_id = resource_id or os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/853612069841/locations/us-central1/reasoningEngines/4963337874536660992"
         self.project_id = project_id or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
         self.location = location or os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
         self._sdk_client = None
@@ -133,10 +133,10 @@ class VertexMemoryBankStore:
     def _get_sdk_client(self):
         if self._sdk_client is None:
             try:
-                import vertexai
-                self._sdk_client = vertexai.Client(project=self.project_id, location=self.location)
+                from google.genai import Client
+                self._sdk_client = Client(vertexai=True, project=self.project_id, location=self.location)
             except Exception as e:
-                logger.warning(f"[VertexMemoryBankStore] Failed to initialize vertexai.Client: {e}")
+                logger.warning(f"[VertexMemoryBankStore] Failed to initialize google.genai.Client: {e}")
         return self._sdk_client
 
     def add(self, memory_text: str, user_id: str = "default_user", metadata: dict | None = None, infer: bool = False) -> dict:
@@ -255,7 +255,7 @@ def get_memory_file_path(user_id: str = "default_user") -> str:
 
 def get_memory_bank_config():
     """Fetch Memory Bank resource configuration if present."""
-    resource_id = os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/deep-clock-339817/locations/us-central1/reasoningEngines/lenskart-memory-bank-v1"
+    resource_id = os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/853612069841/locations/us-central1/reasoningEngines/4963337874536660992"
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
     return resource_id, project_id, location
