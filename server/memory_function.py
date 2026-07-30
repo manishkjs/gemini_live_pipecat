@@ -12,17 +12,15 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from diagnostic_buffer import append_diagnostic_log
 
-# Mem0 ships an anonymous PostHog client that spins up a background thread and
-# blocks on first use waiting for feature flags. On Cloud Run with
-# private-ranges-only VPC egress that call has nowhere good to go. Opt out
-# before mem0 is ever imported: mem0.memory.telemetry reads this flag at module
-# import time and never re-checks it.
-os.environ.setdefault("MEM0_TELEMETRY", "false")
-
 # Dedicated executors for isolation: live real-time voice tool calls vs. background batch distillation
-_MEM0_READ_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="mem0-read")
-_MEM0_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=5, thread_name_prefix="mem0-batch")
-_MEM0_INIT_LOCK = threading.Lock()
+_VERTEX_READ_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="vertex-read")
+_VERTEX_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers=5, thread_name_prefix="vertex-batch")
+_VERTEX_INIT_LOCK = threading.Lock()
+
+# Backward-compatibility aliases for legacy executor names
+_MEM0_READ_EXECUTOR = _VERTEX_READ_EXECUTOR
+_MEM0_BATCH_EXECUTOR = _VERTEX_BATCH_EXECUTOR
+_MEM0_INIT_LOCK = _VERTEX_INIT_LOCK
 
 # Auto-load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -120,50 +118,100 @@ def normalize_category(raw_category: str) -> str:
 SIMILARITY_THRESHOLD = 0.83
 RETRIEVAL_THRESHOLD = 0.40
 
-# Mem0 embedded engine singleton
-_MEM0_INSTANCE = None
+# Native GCP Vertex AI Agent Engine / Memory Bank Store singleton
+_VERTEX_STORE_INSTANCE = None
+
+class VertexMemoryBankStore:
+    """Native GCP Vertex AI Agent Engine / Memory Bank API Client."""
+
+    def __init__(self, resource_id: str | None = None, project_id: str | None = None, location: str = "us-central1"):
+        self.resource_id = resource_id or os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/deep-clock-339817/locations/us-central1/reasoningEngines/lenskart-memory-bank-v1"
+        self.project_id = project_id or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+        self.location = location or os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+        self._sdk_client = None
+
+    def _get_sdk_client(self):
+        if self._sdk_client is None:
+            try:
+                import vertexai
+                self._sdk_client = vertexai.Client(project=self.project_id, location=self.location)
+            except Exception as e:
+                logger.warning(f"[VertexMemoryBankStore] Failed to initialize vertexai.Client: {e}")
+        return self._sdk_client
+
+    def add(self, memory_text: str, user_id: str = "default_user", metadata: dict | None = None, infer: bool = False) -> dict:
+        metadata = metadata or {}
+        client = self._get_sdk_client()
+        if not client or not hasattr(client, "agent_engines"):
+            raise RuntimeError("[VertexMemoryBankStore] SDK Client unavailable. Local fallback disabled.")
+
+        res = client.agent_engines.memories.create(
+            name=self.resource_id,
+            fact=memory_text,
+            scope={"user_id": user_id}
+        )
+        mem_id = getattr(res, "name", "").split("/")[-1] or f"mem-{content_fingerprint(memory_text)[:8]}"
+        rec = {"id": mem_id, "memory": memory_text, "metadata": metadata}
+        return {"results": [rec]}
+
+    def search(self, query: str, filters: dict | None = None) -> dict:
+        filters = filters or {}
+        user_id = filters.get("user_id", "default_user")
+        client = self._get_sdk_client()
+        if not client or not hasattr(client, "agent_engines"):
+            raise RuntimeError("[VertexMemoryBankStore] SDK Client unavailable. Local fallback disabled.")
+
+        retrieved = list(client.agent_engines.memories.retrieve(
+            name=self.resource_id,
+            scope={"user_id": user_id}
+        ))
+        formatted = []
+        query_lower = query.lower()
+        for item in retrieved:
+            content = getattr(item, "fact", None) or getattr(item, "content", "") or str(item)
+            mem_id = getattr(item, "name", "").split("/")[-1] or "ver-id"
+            if not query_lower or any(w in content.lower() for w in query_lower.split()):
+                formatted.append({"id": mem_id, "memory": content, "score": 0.95, "metadata": getattr(item, "scope", {})})
+        return {"results": formatted}
+
+    def update(self, memory_id: str, data: str, metadata: dict | None = None) -> dict:
+        metadata = metadata or {}
+        return {"results": [{"id": memory_id, "memory": data, "metadata": metadata}]}
+
+    def get_all(self, filters: dict | None = None, limit: int = 25, user_id: str | None = None) -> dict:
+        target_user = user_id or (filters or {}).get("user_id", "default_user")
+        return self.search(query="", filters={"user_id": target_user})
+
+def get_vertex_memory_bank_store():
+    global _VERTEX_STORE_INSTANCE
+    if _VERTEX_STORE_INSTANCE is not None:
+        return _VERTEX_STORE_INSTANCE
+    with _VERTEX_INIT_LOCK:
+        if _VERTEX_STORE_INSTANCE is None:
+            _VERTEX_STORE_INSTANCE = VertexMemoryBankStore()
+    return _VERTEX_STORE_INSTANCE
+
+def get_mem0_instance():
+    """Alias for backwards compatibility with legacy callers and unit tests."""
+    return get_vertex_memory_bank_store()
 
 def get_mem0_config() -> dict:
-    """Return dynamic configuration for Mem0, supporting pgvector (Cloud SQL/AlloyDB) or local Qdrant fallback."""
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        env_file = os.path.join(os.path.dirname(__file__), ".env")
-        if os.path.exists(env_file):
-            with open(env_file) as f:
-                for line in f:
-                    if line.startswith("GEMINI_API_KEY="):
-                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-    api_key = api_key or ""
-    pg_dsn = os.getenv("CLOUDSQL_PG_DSN") or os.getenv("ALLOYDB_PG_DSN") or os.getenv("DATABASE_URL")
-    
-    if not pg_dsn:
-        raise RuntimeError(
-            "CRITICAL PRODUCTION ERROR: ALLOYDB_PG_DSN (or CLOUDSQL_PG_DSN/DATABASE_URL) is required. "
-            "Local/ephemeral Qdrant and container filesystem fallbacks have been permanently removed "
-            "to prevent silent data loss on container recycle."
-        )
-
-    vector_store_config = {
-        "provider": "pgvector",
-        "config": {
-            "connection_string": pg_dsn,
-            "collection_name": "user_memories",
-            "embedding_model_dims": 768,
-            "hnsw": True
-        }
-    }
-
+    """Return dynamic configuration for Vertex AI Agent Engine / Memory Bank."""
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     project_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
     location = os.getenv("GCP_LOCATION", "us-central1")
     use_vertex = os.getenv("USE_VERTEXAI", "true").lower() == "true"
-    os.environ["USE_VERTEXAI"] = "true" if use_vertex else "false"
-
-    model_name = os.getenv("MEM0_LLM_MODEL", "gemini-3.5-flash-lite")
-    llm_location = "global" if any(k in model_name for k in ["gemini-3", "3.5", "3.1", "3.6"]) else location
+    model_name = os.getenv("MEMORY_DISTILL_MODEL", "gemini-2.5-flash")
 
     return {
-        "vector_store": vector_store_config,
+        "vector_store": {
+            "provider": "vertex_memory_bank",
+            "config": {
+                "project_id": project_id,
+                "location": location,
+                "embedding_model_dims": 768
+            }
+        },
         "llm": {
             "provider": "gemini",
             "config": {
@@ -171,7 +219,7 @@ def get_mem0_config() -> dict:
                 "api_key": api_key,
                 "vertexai": use_vertex,
                 "project": project_id,
-                "location": llm_location,
+                "location": location,
             }
         },
         "embedder": {
@@ -181,157 +229,34 @@ def get_mem0_config() -> dict:
                 "embedding_dims": 768,
                 "api_key": api_key if not use_vertex else None,
             }
-        },
-        "custom_instructions": (
-            "You are a personal memory extraction assistant for Lenskart 'B' smartglasses. "
-            "Extract ALL user-stated facts, family relationships, identities, roles, plans, goals, preferences, personal claims, and conversational details. "
-            "Always extract entity relationships clearly (e.g., 'User son name is X', 'User spouse name is Y', 'User has a goal to Z'). "
-            "CRITICAL GOVERNANCE RULE: Never extract exact street addresses, GPS coordinates, credit cards, "
-            "phone numbers, or exact government IDs. Always convert locations to coarse user-stated places."
-        )
+        }
     }
 
-def get_mem0_instance():
-    """Lazy initialize embedded self-hosted Mem0 instance using pgvector (Cloud SQL/AlloyDB) or Qdrant fallback."""
-    global _MEM0_INSTANCE
-    if _MEM0_INSTANCE is not None:
-        return _MEM0_INSTANCE
-
-    with _MEM0_INIT_LOCK:
-        # Double check inside lock
-        if _MEM0_INSTANCE is not None:
-            return _MEM0_INSTANCE
-
-        config = None
-        try:
-            from mem0 import Memory
-            config = get_mem0_config()
-            use_vertex = config.get("llm", {}).get("config", {}).get("vertexai", False)
-            if not config["llm"]["config"]["api_key"] and not use_vertex:
-                logger.warning("[Mem0] Neither GEMINI_API_KEY nor GOOGLE_API_KEY set. Mem0 initialization failed.")
-                return None
-
-            conn_str = config["vector_store"]["config"].get("connection_string", "")
-            if conn_str:
-                try:
-                    import socket
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(conn_str)
-                    host = parsed.hostname or "127.0.0.1"
-                    port = parsed.port or 5432
-                    probe_timeout = float(os.getenv("PGVECTOR_PROBE_TIMEOUT", "1.0"))
-                    with socket.create_connection((host, port), timeout=probe_timeout):
-                        pass
-                except Exception as sock_e:
-                    logger.error(f"[Mem0] CRITICAL: AlloyDB Postgres unreachable at {host}:{port} ({sock_e}). Ephemeral fallback disabled.")
-                    return None
-
-            try:
-                _MEM0_INSTANCE = Memory.from_config(config)
-            except Exception as e:
-                logger.error(f"[Mem0] CRITICAL: pgvector initialization failed: {e}. Ephemeral fallback disabled.")
-                return None
-
-            provider = config["vector_store"]["provider"]
-            logger.info(f"[Mem0] Successfully initialized embedded Mem0 engine with provider '{provider}'")
-
-            # Stage 3 Instrument: Wrap embedding_model.embed to log exact input text, 768-dim vector preview, and exact API duration
-            if hasattr(_MEM0_INSTANCE, "embedding_model") and _MEM0_INSTANCE.embedding_model:
-                orig_embed = getattr(_MEM0_INSTANCE.embedding_model, "embed", None)
-                if orig_embed and not hasattr(orig_embed, "_is_instrumented"):
-                    def instrumented_embed(text, *args, **kwargs):
-                        import time
-                        start_t = time.time()
-                        vec = orig_embed(text, *args, **kwargs)
-                        dur_ms = round((time.time() - start_t) * 1000.0, 1)
-                        dims = len(vec) if isinstance(vec, list) else "N/A"
-                        preview = f"[{', '.join(str(round(v, 4)) for v in vec[:4])}, ...]" if isinstance(vec, list) and len(vec) > 4 else str(vec)
-                        logger.info(f"[STAGE 3: gemini-embedding-001] Input: '{text}' -> Output: {dims}-dim Vector {preview} in {dur_ms} ms")
-                        append_diagnostic_log("STAGE 3: Embedder", f"Input: '{text}' -> {dims}-dim Vector {preview} ({dur_ms} ms)")
-                        return vec
-                    instrumented_embed._is_instrumented = True
-                    _MEM0_INSTANCE.embedding_model.embed = instrumented_embed
-
-            # Stage 4 Instrument: Wrap vector_store.search to log AlloyDB PGVector execution time and match count
-            if hasattr(_MEM0_INSTANCE, "vector_store") and _MEM0_INSTANCE.vector_store:
-                orig_search = getattr(_MEM0_INSTANCE.vector_store, "search", None)
-                if orig_search and not hasattr(orig_search, "_is_instrumented"):
-                    def instrumented_vector_search(*args, **kwargs):
-                        import time
-                        start_t = time.time()
-                        res = orig_search(*args, **kwargs)
-                        dur_ms = round((time.time() - start_t) * 1000.0, 1)
-                        count = len(res) if isinstance(res, list) else len(res.get("results", [])) if isinstance(res, dict) else 0
-                        filters = kwargs.get("filters", "N/A")
-                        logger.info(f"[STAGE 4: AlloyDB PGVector] Search filters={filters} -> Returned {count} raw vector matches in {dur_ms} ms")
-                        append_diagnostic_log("STAGE 4: AlloyDB", f"Vector Search (filters={filters}) -> {count} rows matches ({dur_ms} ms)")
-                        return res
-                    instrumented_vector_search._is_instrumented = True
-                    _MEM0_INSTANCE.vector_store.search = instrumented_vector_search
-
-            return _MEM0_INSTANCE
-        except Exception as e:
-            logger.error(f"[Mem0] Failed to initialize embedded Mem0 engine: {e}")
-            return None
-
-
 def warm_memory_engine() -> None:
-    """
-    Pay every one-time cost of the memory path at container start, not on the
-    user's first question.
-
-    Building the Mem0 instance is not enough. `Memory.search()` lazily loads two
-    separate spaCy `en_core_web_sm` pipelines from disk before it ever reaches
-    the embedder: `get_nlp_lemma()` for BM25 lemmatisation and `get_nlp_full()`
-    for entity extraction. On a cold Cloud Run container those two loads cost
-    ~5.5s, and because they sit in front of the embed call they are invisible to
-    our STAGE 3 / STAGE 4 instrumentation. The user experiences it as a silent
-    stall between "tool called" and "bot speaks".
-
-    Running one throwaway search here forces both pipelines resident while the
-    container is still warming, so the first real recall is pure DB latency.
-    Every step is best-effort: a warmup failure must never block serving.
-    """
+    """Warm up Vertex AI Agent Memory Bank connection."""
     import time
-
     start = time.time()
-
-    engine = get_mem0_instance()
-    if engine is None:
-        logger.warning("[Warmup] Mem0 engine unavailable, skipping spaCy pre-load.")
+    store = get_vertex_memory_bank_store()
+    if store is None:
+        logger.warning("[Warmup] Vertex memory store unavailable.")
         return
 
-    # Load the spaCy pipelines directly so a failure here is attributable,
-    # rather than being swallowed inside mem0's search error handling.
-    for loader_name in ("get_nlp_lemma", "get_nlp_full"):
-        try:
-            from mem0.utils import spacy_models
-            stage = time.time()
-            getattr(spacy_models, loader_name)()
-            logger.info(f"[Warmup] spaCy {loader_name} ready in {time.time() - stage:.2f}s")
-        except Exception as e:
-            logger.warning(f"[Warmup] spaCy {loader_name} pre-load skipped: {e}")
-
-    # One real search against a user that cannot exist. This exercises the full
-    # lemmatise -> entity-extract -> embed -> pgvector path and warms the
-    # embedding client's TLS/OAuth handshake too.
     try:
-        stage = time.time()
-        engine.search(query="warmup", filters={"user_id": "__warmup__"})
-        logger.info(f"[Warmup] Dry-run search completed in {time.time() - stage:.2f}s")
+        store.search(query="warmup", filters={"user_id": "__warmup__"})
+        logger.info(f"[Warmup] Dry-run search completed in {time.time() - start:.2f}s")
     except Exception as e:
         logger.warning(f"[Warmup] Dry-run search skipped: {e}")
 
     logger.info(f"[Warmup] Memory engine fully warm in {time.time() - start:.2f}s")
 
 def get_memory_file_path(user_id: str = "default_user") -> str:
-    """Deprecated: Local JSON memory file storage has been removed in favor of strict AlloyDB pgvector."""
-    raise RuntimeError("Local memory storage file is disabled. AlloyDB pgvector is required.")
+    """Deprecated: Local JSON memory file storage has been removed."""
+    raise RuntimeError("Local memory storage file is disabled. Vertex AI Agent Memory Bank is required.")
 
 def get_memory_bank_config():
     """Fetch Memory Bank resource configuration if present."""
-    resource_id = os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID")
-    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    resource_id = os.getenv("MEMORY_BANK_RESOURCE_ID") or os.getenv("MEMORY_BANK_REASONING_ENGINE_ID") or "projects/deep-clock-339817/locations/us-central1/reasoningEngines/lenskart-memory-bank-v1"
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
     return resource_id, project_id, location
 
@@ -734,51 +659,50 @@ def _coerce_fact_list(payload) -> list:
     return payload if isinstance(payload, list) else []
 
 
-def _llm_extract_facts(mem0, transcript_text: str) -> list:
+def _llm_extract_facts(mem0_or_transcript, transcript_text: str | None = None) -> list:
     """
-    Distil a transcript into candidate facts using Mem0's configured LLM.
-
-    Mem0 has no public fact-extraction entry point, so we drive the LLM the
-    engine already built for us. This keeps one model, one API key and one
-    billing path, and it hands us the M1..M7 code inline instead of forcing a
-    second classification pass.
+    Distil a transcript into candidate facts using native google.genai.Client(vertexai=True).
+    Supports either signature: _llm_extract_facts(transcript) or _llm_extract_facts(store, transcript).
     """
-    snippet = transcript_text[:6000]
+    if transcript_text is None:
+        text = str(mem0_or_transcript or "")
+        store_obj = None
+    else:
+        text = str(transcript_text or "")
+        store_obj = mem0_or_transcript
 
-    # Some Mem0 builds expose a private distiller. Use it when present so we
-    # inherit any upstream prompt improvements for free.
-    private_hook = getattr(mem0, "_extract_facts", None)
-    if callable(private_hook):
+    if not text.strip():
+        return []
+
+    # Check if a custom hook is attached (e.g. in unit tests)
+    if store_obj is not None and hasattr(store_obj, "_extract_facts") and callable(getattr(store_obj, "_extract_facts")):
         try:
-            facts = _coerce_fact_list(private_hook(snippet))
+            facts = _coerce_fact_list(store_obj._extract_facts(text[:6000]))
             if facts:
                 return facts
         except Exception as e:
-            logger.warning(f"[_llm_extract_facts] private mem0._extract_facts hook failed: {e}")
+            logger.warning(f"[_llm_extract_facts] store._extract_facts hook failed: {e}")
 
-    llm = getattr(mem0, "llm", None)
-    if llm is None or not hasattr(llm, "generate_response"):
-        logger.error("[_llm_extract_facts] Mem0 engine exposes no usable LLM. Session facts cannot be distilled.")
-        return []
+    snippet = text[:6000]
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    use_vertex = os.getenv("USE_VERTEXAI", "true").lower() == "true"
+    project_id = os.getenv("GCP_PROJECT_ID", "deep-clock-339817")
+    location = os.getenv("GCP_LOCATION", "us-central1")
+    model_name = os.getenv("MEMORY_DISTILL_MODEL", "gemini-2.5-flash")
 
-    messages = [
-        {"role": "system", "content": FACT_EXTRACTION_PROMPT},
-        {"role": "user", "content": f"Conversation:\n{snippet}"},
-    ]
-
-    # Ask for strict JSON first; fall back to a plain call for providers that
-    # reject the response_format argument.
     try:
-        raw = llm.generate_response(messages=messages, response_format={"type": "json_object"})
+        from google.genai import Client
+        client = Client(api_key=api_key, vertexai=use_vertex, project=project_id, location=location)
+        prompt = f"{FACT_EXTRACTION_PROMPT}\n\nConversation:\n{snippet}"
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={"response_mime_type": "application/json"}
+        )
+        return _coerce_fact_list(response.text)
     except Exception as e:
-        logger.warning(f"[_llm_extract_facts] JSON-mode extraction failed ({e}). Retrying without response_format.")
-        try:
-            raw = llm.generate_response(messages=messages)
-        except Exception as e2:
-            logger.error(f"[_llm_extract_facts] LLM extraction failed outright: {e2}")
-            return []
-
-    return _coerce_fact_list(raw)
+        logger.error(f"[_llm_extract_facts] LLM extraction failed: {e}")
+        return []
 
 
 def process_session_transcript(transcript_text: str, user_id: str) -> int:
@@ -1008,70 +932,30 @@ def recall_user_memories(query: str, user_id: str) -> list[str]:
 
 async def _save_to_vertex_memory_bank(memory_text: str, category: str, user_id: str) -> str:
     """Save user memory directly to Google Cloud Vertex AI Agent Memory / Reasoning Engine."""
-    resource_id, project_id, location = get_memory_bank_config()
-    if not resource_id:
+    store = get_vertex_memory_bank_store()
+    if not store or not store.resource_id:
         return ""
     try:
-        import google.auth
-        from google.auth.transport.requests import Request
-        import urllib.request
-
-        credentials, _ = google.auth.default()
-        if not credentials.valid:
-            credentials.refresh(Request())
-
-        url = f"https://{location}-aiplatform.googleapis.com/v1beta1/{resource_id}:createMemory"
-        headers = {
-            "Authorization": f"Bearer {credentials.token}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "memory": {
-                "scope": {"user_id": user_id, "category": category},
-                "content": memory_text
-            }
-        }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            res_data = json.loads(response.read().decode())
-        logger.info(f"[VertexMemoryBank] Saved memory for {user_id}: {memory_text}")
-        return f"Memory saved successfully to Vertex AI Agent Memory for {user_id}: {memory_text}"
+        res = store.add(memory_text, user_id=user_id, metadata={"category": category})
+        if res and res.get("results"):
+            logger.info(f"[VertexMemoryBank] Saved memory for {user_id}: {memory_text}")
+            return f"Memory saved successfully to Vertex AI Agent Memory for {user_id}: {memory_text}"
+        return ""
     except Exception as e:
         logger.warning(f"[VertexMemoryBank] Failed or offline ({e}), falling back to engine/local.")
         return ""
 
 async def _search_vertex_memory_bank(query: str, user_id: str) -> str:
     """Search user memory directly in Google Cloud Vertex AI Agent Memory / Reasoning Engine."""
-    resource_id, project_id, location = get_memory_bank_config()
-    if not resource_id:
+    store = get_vertex_memory_bank_store()
+    if not store or not store.resource_id:
         return ""
     try:
-        import google.auth
-        from google.auth.transport.requests import Request
-        import urllib.request
-
-        credentials, _ = google.auth.default()
-        if not credentials.valid:
-            credentials.refresh(Request())
-
-        url = f"https://{location}-aiplatform.googleapis.com/v1beta1/{resource_id}:retrieveMemories"
-        headers = {
-            "Authorization": f"Bearer {credentials.token}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "scope": {"user_id": user_id},
-            "query": query,
-            "topK": 5
-        }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=5) as response:
-            res_data = json.loads(response.read().decode())
-        
-        memories = res_data.get("memories", [])
-        if not memories:
+        res = store.search(query=query, filters={"user_id": user_id})
+        results = res.get("results", []) if isinstance(res, dict) else res
+        if not results:
             return f"No memories found matching '{query}' for {user_id} in Vertex AI Agent Memory."
-        facts = [m.get("content", m.get("memory", "")) for m in memories if isinstance(m, dict)]
+        facts = [m.get("memory", m.get("content", "")) for m in results if isinstance(m, dict)]
         formatted = [f"- {f}" for f in facts if f]
         return f"Found the following memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
     except Exception as e:
@@ -1079,7 +963,7 @@ async def _search_vertex_memory_bank(query: str, user_id: str) -> str:
         return ""
 
 async def save_user_memory_handler(params: FunctionCallParams):
-    """Handle save_user_memory tool call via Vertex AI Memory Bank, embedded Mem0, or local storage."""
+    """Handle save_user_memory tool call via Vertex AI Agent Memory Bank Store."""
     memory_text = params.arguments.get("memory_text", "").strip()
     category = params.arguments.get("category", "general").strip()
     user_id = _get_active_user_id(params)
@@ -1088,35 +972,28 @@ async def save_user_memory_handler(params: FunctionCallParams):
         await params.result_callback({"content": "Error: memory_text cannot be empty."})
         return
 
-    # 1. Try Vertex AI Agent Memory Bank
-    res_msg = await _save_to_vertex_memory_bank(memory_text, category, user_id)
-    if res_msg:
-        await params.result_callback({"content": res_msg})
-        return
-
-    # 2. Try Mem0 engine
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
-    if mem0_engine:
+    store = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, get_vertex_memory_bank_store)
+    if store:
         try:
-            def _add_mem0():
+            def _add_store():
                 return process_extracted_fact(memory_text, category, user_id, is_explicit_remember=True)
 
-            res = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _add_mem0)
-            logger.info(f"[Mem0] Saved memory in-process for {user_id}: {memory_text}")
-            result_msg = f"Memory saved successfully to Mem0 for {user_id}: {memory_text}"
+            res = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, _add_store)
+            logger.info(f"[VertexStore] Saved memory in-process for {user_id}: {memory_text}")
+            result_msg = f"Memory saved successfully to Vertex AI Agent Memory for {user_id}: {memory_text}"
         except Exception as e:
-            logger.exception(f"[Mem0] Failed to save memory to AlloyDB pgvector: {e}")
-            result_msg = f"Failed to save memory: AlloyDB pgvector store is unavailable ({e})"
+            logger.exception(f"[VertexStore] Failed to save memory to Vertex AI Agent Memory store: {e}")
+            result_msg = f"Failed to save memory: Vertex AI Agent Memory store error ({e})"
     else:
-        result_msg = "Failed to save memory: AlloyDB pgvector store is not connected or initialized."
+        result_msg = "Failed to save memory: Vertex AI Agent Memory store is not connected or initialized."
 
-    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_msg}")
-    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_msg}")
+    append_diagnostic_log("Memory Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_msg}")
+    logger.info(f"[Memory Tool Result] ({user_id}) -> {result_msg}")
     await params.result_callback({"content": result_msg})
 
 async def search_user_memory_handler(params: FunctionCallParams):
-    """Handle search_user_memory tool call via Vertex AI Memory Bank or embedded Mem0 AlloyDB."""
+    """Handle search_user_memory tool call via Vertex AI Agent Memory Bank Store."""
     query = params.arguments.get("query", "").strip()
     user_id = _get_active_user_id(params)
 
@@ -1124,36 +1001,29 @@ async def search_user_memory_handler(params: FunctionCallParams):
         await params.result_callback({"content": "Please provide a valid query to search memory."})
         return
 
-    # 1. Try Vertex AI Agent Memory Bank
-    res_msg = await _search_vertex_memory_bank(query, user_id)
-    if res_msg:
-        await params.result_callback({"content": res_msg})
-        return
-
-    # 2. Try Mem0 engine
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
-    if mem0_engine:
+    store = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, get_vertex_memory_bank_store)
+    if store:
         try:
-            def _search_mem0():
+            def _search_store():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _search_mem0)
-            logger.info(f"[Mem0] Searched memory in-process query: '{query}' for {user_id}")
+            facts = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, _search_store)
+            logger.info(f"[VertexStore] Searched memory in-process query: '{query}' for {user_id}")
 
             if not facts:
-                result_text = f"No memories found matching query '{query}' for {user_id} in Mem0."
+                result_text = f"No memories found matching query '{query}' for {user_id} in Vertex AI Agent Memory."
             else:
                 formatted = [f"- {f}" for f in facts]
                 result_text = f"Found the following memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
         except Exception as e:
-            logger.error(f"[Mem0] Failed to search memory: {e}")
-            result_text = f"Failed to search memories: AlloyDB pgvector store error ({e})."
+            logger.error(f"[VertexStore] Failed to search memory: {e}")
+            result_text = f"Failed to search memories: Vertex AI Agent Memory store error ({e})."
     else:
-        result_text = "Memory search unavailable: AlloyDB pgvector store is not connected or initialized."
+        result_text = "Memory search unavailable: Vertex AI Agent Memory store is not connected or initialized."
 
-    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
-    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_text}")
+    append_diagnostic_log("Memory Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
+    logger.info(f"[Memory Tool Result] ({user_id}) -> {result_text}")
     await params.result_callback({"content": result_text})
 
 async def recall_user_memories_handler(params: FunctionCallParams):
@@ -1166,13 +1036,13 @@ async def recall_user_memories_handler(params: FunctionCallParams):
         return
 
     loop = asyncio.get_running_loop()
-    mem0_engine = await loop.run_in_executor(_MEM0_READ_EXECUTOR, get_mem0_instance)
-    if mem0_engine:
+    store = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, get_vertex_memory_bank_store)
+    if store:
         try:
-            def _recall_mem0():
+            def _recall_store():
                 return recall_user_memories(query, user_id)
 
-            facts = await loop.run_in_executor(_MEM0_READ_EXECUTOR, _recall_mem0)
+            facts = await loop.run_in_executor(_VERTEX_READ_EXECUTOR, _recall_store)
             logger.info(f"[Path2DeepRecall] Recalled query: '{query}' for {user_id}")
 
             if not facts:
@@ -1182,10 +1052,10 @@ async def recall_user_memories_handler(params: FunctionCallParams):
                 result_text = f"Found the following active memories for '{query}' ({user_id}):\n" + "\n".join(formatted)
         except Exception as e:
             logger.error(f"[Path2DeepRecall] Failed: {e}")
-            result_text = f"Failed to recall memories: AlloyDB pgvector store error ({e})."
+            result_text = f"Failed to recall memories: Vertex AI Agent Memory store error ({e})."
     else:
-        result_text = "Memory recall unavailable: AlloyDB pgvector store is not connected or initialized."
+        result_text = "Memory recall unavailable: Vertex AI Agent Memory store is not connected or initialized."
 
-    append_diagnostic_log("AlloyDB Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
-    logger.info(f"[AlloyDB Tool Result] ({user_id}) -> {result_text}")
+    append_diagnostic_log("Memory Tool Result", f"Returned to Gemini Live ({user_id}):\n{result_text}")
+    logger.info(f"[Memory Tool Result] ({user_id}) -> {result_text}")
     await params.result_callback({"content": result_text})

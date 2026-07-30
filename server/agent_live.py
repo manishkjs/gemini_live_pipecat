@@ -211,10 +211,10 @@ class GeminiSessionLoggerMixin:
                 self._lock_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallResultFrame":
             res_str = str(getattr(frame, 'result', getattr(frame, 'content', '')))
-            if len(res_str) > 150 and not any(k in res_str.lower() for k in ["memory", "mem0", "alloydb", "found the following"]):
+            if len(res_str) > 150 and not any(k in res_str.lower() for k in ["memory", "mem0", "vertex", "alloydb", "found the following"]):
                 append_diagnostic_log("Tool Output", f"Result -> Model: {res_str[:150]}...")
             else:
-                append_diagnostic_log("AlloyDB Tool Output" if any(k in res_str.lower() for k in ["memory", "mem0", "alloydb", "found the following"]) else "Tool Output", f"Result -> Model:\n{res_str}")
+                append_diagnostic_log("Memory Tool Output" if any(k in res_str.lower() for k in ["memory", "mem0", "vertex", "alloydb", "found the following"]) else "Tool Output", f"Result -> Model:\n{res_str}")
             if getattr(self, '_frame_locked_tools', False):
                 self._release_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallCancelFrame":
@@ -707,7 +707,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if context_compression_trigger_tokens is not None:
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
-    if model == "gemini-3.1-flash-live-preview":
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if model == "gemini-3.1-flash-live-preview" and api_key:
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{model}",
             system_instruction=prompt_text,
@@ -717,7 +718,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             context_window_compression=cwc
         )
         ai_studio_params = {
-            "api_key": os.getenv("GEMINI_API_KEY"),
+            "api_key": api_key,
             "tools": tools_schema,
             "transcribe_model_audio": True,
             "settings": settings,
@@ -725,6 +726,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
+        if model == "gemini-3.1-flash-live-preview" and not api_key:
+            logger.warning("GEMINI_API_KEY not found in environment; falling back to Vertex AI mode with gemini-2.5-flash")
+            model = "gemini-2.5-flash"
         live_location = "global" if any(k in model for k in ["gemini-3", "3.6"]) else location
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{model}",
@@ -824,8 +828,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                     from memory_function import process_session_transcript
                     logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} via enterprise pipeline...")
                     process_session_transcript(transcript_text, active_user)
-                from memory_function import _MEM0_BATCH_EXECUTOR
-                await loop.run_in_executor(_MEM0_BATCH_EXECUTOR, _post_session_extraction)
+                from memory_function import _VERTEX_BATCH_EXECUTOR
+                await loop.run_in_executor(_VERTEX_BATCH_EXECUTOR, _post_session_extraction)
         except Exception as e:
             logger.error(f"[PostSessionWorker] Error collecting session transcript: {e}")
         await task.cancel()
