@@ -11,16 +11,6 @@ from datetime import datetime
 import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
-from memory_function import (
-    save_user_memory_schema,
-    search_user_memory_schema,
-    recall_user_memories_schema,
-    save_user_memory_handler,
-    search_user_memory_handler,
-    recall_user_memories_handler,
-    pre_load_user_profile,
-    normalize_user_id,
-)
 from diagnostic_buffer import append_diagnostic_log
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -100,33 +90,6 @@ async def get_current_time(params: FunctionCallParams):
     await params.result_callback(
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
-
-
-identify_user_schema = FunctionSchema(
-    name="identify_user",
-    description="Identify the user by name to load their memory profile when they introduce themselves.",
-    properties={
-        "name": {
-            "type": "string",
-            "description": "The lowercased Romanized ASCII name of the user (e.g. 'manish')."
-        }
-    },
-    required=["name"]
-)
-
-async def identify_user_handler(params: FunctionCallParams):
-    name = params.arguments.get("name", "").strip()
-    if not name:
-        await params.result_callback({"content": "Error: please provide a valid name."})
-        return
-    clean_id = normalize_user_id(name)
-    os.environ["ACTIVE_USER_ID"] = clean_id
-    logger.info(f"[MultiTenantIdentity] User identified: '{name}' -> ACTIVE_USER_ID set to '{clean_id}'")
-    append_diagnostic_log("Identity Switch", f"Spoken '{name}' -> Canonical ID '{clean_id}'", user_id=clean_id)
-    
-    await params.result_callback({
-        "content": f"User successfully identified as '{name}' (ID: {clean_id}). Active user context set. You must execute search_user_memory tool calls dynamically for any memory or historical query."
-    })
 
 
 class GeminiSessionLoggerMixin:
@@ -221,10 +184,10 @@ class GeminiSessionLoggerMixin:
                 self._lock_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallResultFrame":
             res_str = str(getattr(frame, 'result', getattr(frame, 'content', '')))
-            if len(res_str) > 150 and not any(k in res_str.lower() for k in ["memory", "mem0", "alloydb", "found the following"]):
+            if len(res_str) > 150:
                 append_diagnostic_log("Tool Output", f"Result -> Model: {res_str[:150]}...")
             else:
-                append_diagnostic_log("AlloyDB Tool Output" if any(k in res_str.lower() for k in ["memory", "mem0", "alloydb", "found the following"]) else "Tool Output", f"Result -> Model:\n{res_str}")
+                append_diagnostic_log("Tool Output", f"Result -> Model:\n{res_str}")
             if getattr(self, '_frame_locked_tools', False):
                 self._release_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallCancelFrame":
@@ -244,8 +207,8 @@ class GeminiSessionLoggerMixin:
         if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
             if self._tools_in_flight():
                 logger.info(
-                    f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool lookup "
-                    f"({self._active_tools_in_flight} in flight) to prevent memory turn cancellation!"
+                    f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool call "
+                    f"({self._active_tools_in_flight} in flight)."
                 )
                 return
 
@@ -700,10 +663,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             required=["is_explicit_request"]
         ),
         search_knowledge_base_schema,
-        save_user_memory_schema,
-        search_user_memory_schema,
-        recall_user_memories_schema,
-        identify_user_schema,
     ]
 
     if tools:
@@ -804,13 +763,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
-    llm.register_function("save_user_memory", save_user_memory_handler)
-    llm.register_function("search_user_memory", search_user_memory_handler)
-    llm.register_function("recall_user_memories", recall_user_memories_handler)
-    llm.register_function("identify_user", identify_user_handler)
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base", "save_user_memory", "search_user_memory", "recall_user_memories", "identify_user"}
+    built_in_tools = {"get_current_time", "search_knowledge_base"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
@@ -865,23 +820,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info("Pipecat Client disconnected. Triggering post-session async memory extraction...")
-        active_user = os.getenv("ACTIVE_USER_ID", "default_user")
-        try:
-            user_aggr = context_aggregator.user() if hasattr(context_aggregator, "user") else None
-            msgs = user_aggr.messages if user_aggr and hasattr(user_aggr, "messages") else []
-            transcript_lines = [f"{m.get('role', 'user') if isinstance(m, dict) else getattr(m, 'role', 'user')}: {m.get('content', '') if isinstance(m, dict) else getattr(m, 'content', '')}" for m in msgs]
-            transcript_text = "\n".join([t for t in transcript_lines if t.strip() and not t.endswith(": ")])
-            if transcript_text and len(transcript_lines) > 1:
-                loop = asyncio.get_running_loop()
-                def _post_session_extraction():
-                    from memory_function import process_session_transcript
-                    logger.info(f"[PostSessionWorker] Extracting memories from {len(transcript_lines)} turns for {active_user} via enterprise pipeline...")
-                    process_session_transcript(transcript_text, active_user)
-                from memory_function import _MEM0_BATCH_EXECUTOR
-                await loop.run_in_executor(_MEM0_BATCH_EXECUTOR, _post_session_extraction)
-        except Exception as e:
-            logger.error(f"[PostSessionWorker] Error collecting session transcript: {e}")
+        logger.info("Pipecat Client disconnected")
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

@@ -73,17 +73,6 @@ from system_prompt import SYSTEM_PROMPT, tts_prompt
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles FastAPI startup and shutdown."""
-    try:
-        from memory_function import warm_memory_engine
-        # Constructing the Mem0 instance alone is not enough. Memory.search()
-        # lazily loads two spaCy en_core_web_sm pipelines from disk before it
-        # reaches the embedder, which cost ~5.5s on a cold container and land
-        # squarely on the first user question. warm_memory_engine() forces
-        # those resident now, while nobody is listening.
-        print("[Startup] Warming Mem0 engine and spaCy NLP pipelines in background thread...")
-        asyncio.create_task(asyncio.to_thread(warm_memory_engine))
-    except Exception as e:
-        print(f"[Startup] Memory pre-warm notice: {e}")
     yield  # Run app
 
 # Initialize FastAPI app with lifespan manager
