@@ -167,6 +167,21 @@ class LangSmithTracer:
         except Exception as e:
             logger.debug(f"[LangSmith] Interruption trace error: {e}")
 
+    def _ensure_shared_link(self, run_id: str) -> Optional[str]:
+        if not self.client or not run_id:
+            return None
+        try:
+            return self.client.share_run(run_id)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "already shared" in err_str or "409" in err_str or "conflict" in err_str:
+                try:
+                    return self.client.read_run_shared_link(run_id)
+                except Exception:
+                    pass
+            logger.debug(f"[LangSmith] share_run notice: {e}")
+        return None
+
     def end_session(self, summary: Optional[str] = None):
         if not self.enabled or not self.root_run:
             return
@@ -175,12 +190,10 @@ class LangSmithTracer:
             self.root_run.patch()
             
             if self.client and self.root_run.id:
-                try:
-                    public_url = self.client.share_run(self.root_run.id)
-                    if public_url:
-                        self.current_trace_url = public_url
-                except Exception:
-                    pass
+                link = self._ensure_shared_link(self.root_run.id)
+                if link:
+                    self.current_trace_url = link
+                    logger.info(f"[LangSmith] Final Public Share URL: {self.current_trace_url}")
 
             logger.info(f"[LangSmith] Session ended: {self.active_session_id} (Total Turns: {self.turn_counter})")
         except Exception as e:
