@@ -545,7 +545,7 @@ class WebsocketClientApp {
       
       const parts = [];
       if (this.lastLLMLatency !== null) parts.push(`⚡ Live TTFB: ${Math.round(this.lastLLMLatency * 1000)}ms`);
-      if (this.lastTTSLatency !== null) parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
+      if (this.lastTTSLatency !== null && this.activeTab === "tts-llm-stt") parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
       if (this.lastTurnUsage !== null) {
           let detailsStr = `Tokens: ${this.lastTurnUsage.total_token_count}`;
           

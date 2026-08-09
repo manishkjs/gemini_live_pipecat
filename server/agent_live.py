@@ -616,8 +616,9 @@ class UserIdleProcessor(FrameProcessor):
 
 
 class StartTriggerProcessor(FrameProcessor):
-    def __init__(self):
+    def __init__(self, language: str = "en-US"):
         super().__init__()
+        self.language = language
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
@@ -634,8 +635,9 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
-                    logger.info("[StartTriggerProcessor] start_trigger received. Queueing greeting turn.")
-                    await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": "Hello!"}]))
+                    greeting_text = "नमस्ते!" if self.language == "hi-IN" else "Hello!"
+                    logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
+                    await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
                     await self.push_frame(LLMRunFrame())
                 return
         await super().process_frame(frame, direction)
@@ -813,7 +815,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
 
-    initial_greeting = "नमस्ते!" if language == "hi-IN" else "Hello!"
     user_params = LLMUserAggregatorParams(
         user_turn_strategies=UserTurnStrategies(
             start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy()],
@@ -821,7 +822,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         )
     )
     context_aggregator = LLMContextAggregatorPair(
-        LLMContext(messages=[{"role": "user", "content": initial_greeting}]),
+        LLMContext(messages=[]),
         user_params=user_params
     )
 
@@ -841,7 +842,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     pipeline = Pipeline([
         transport.input(),
-        StartTriggerProcessor(),
+        StartTriggerProcessor(language=language),
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
