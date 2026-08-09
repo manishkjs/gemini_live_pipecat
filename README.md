@@ -1,226 +1,248 @@
-**Real-Time Voice-to-Voice bot using Google's AI & Pipecat orchestration**
+# 🎙️ Gemini Live + Pipecat: Real-Time Duplex Voice AI Assistant
 
-![alt text](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com)
+[![Pipecat AI](https://img.shields.io/badge/Orchestration-Pipecat%20AI%201.2-blue.svg)](https://pipecat.ai)
+[![Google Vertex AI](https://img.shields.io/badge/Model-Gemini%20Live%202.5%20Flash-4285F4.svg)](https://cloud.google.com/vertex-ai)
+[![LangSmith](https://img.shields.io/badge/Observability-LangSmith%20Tracing-FF6B6B.svg)](https://smith.langchain.com)
 
-This project demonstrates a real-time, voice-to-voice AI assistant using Google's AI models with Pipecat's WebSocket transport. It features a Python FastAPI backend and a TypeScript/Vite frontend.
+A high-performance, real-time voice-to-voice conversational AI application built with **Google Gemini Live (2.5 Flash Native Audio & 3.1 Flash Preview)** orchestrated through **Pipecat AI**, featuring full-duplex audio streaming over WebSockets, sub-500ms TTFB turnaround, automated filler handling, diagnostic ring buffering, and enterprise **LangSmith Tracing**.
 
-The application captures audio from the user's microphone, streams it to the server for transcription, processes it with a LLM, generates a spoken response with text-to-speech, and streams the audio back to the client for playback—all in real time.
+---
 
-Two flows available:
-- Live API flow (with standard voices and cloned voice via Chirp 3 HD TTS)
-- STT + LLM + TTS flow (with standard voices and cloned voice via Chirp3 HD TTS)
+## 🌟 Key Features
 
-Learn about instant custom clone voice here - https://cloud.google.com/text-to-speech/docs/chirp3-instant-custom-voice
+* **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`), achieving ~450ms–700ms Time-to-First-Byte (TTFB).
+* **🔄 Dual Conversational Pipelines:**
+  1. **Native Gemini Live Duplex Mode:** End-to-end multimodal audio-in / audio-out via WebSocket.
+  2. **Cascaded Mode:** Speech-to-Text + LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Instant Custom Voice Cloning).
+* **🧠 Smart Filler & Interruption Detection:** Automatically differentiates between short conversational acknowledgments (e.g., *"haan"*, *"okay"*, *"right"*) and genuine topic interruptions, prompting the model to gracefully resume or yield.
+* **🔍 LangSmith Full-Duplex Observability:** Captures the full conversation run tree with nested child spans for User Speech (VAD boundaries), Gemini Live streaming turns, TTFT latencies, token consumption, and tool executions.
+* **🔓 Credential-Free Public Trace Links:** Mints public share tokens (`https://smith.langchain.com/public/<token>/r`) so sales teams, stakeholders, and clients can inspect live traces with **zero login or API key requirements**.
+* **📊 Dedicated `/diagnostics` Web Console:** Built-in real-time telemetry dashboard rendering live KPI cards (TTFB, Token Usage, Turn Count, Interruptions), search filters, and an interactive trace launcher.
+* **☁️ Production-Ready Single Container:** Containerized with Docker multi-stage builds and automated deployment to **Google Cloud Run** using Secret Manager.
 
-**Architecture**
+---
 
-The client-side UI captures microphone audio and establishes a WebSocket connection with the Pipecat server. The server manages the real-time pipeline, integrating with third-party AI services for transcription, language modeling, and speech synthesis.
+## 🏗️ Architecture
 
-![alt text](./architecture.jpeg)
-
-Features
-- Real-Time Transcription: Captures user audio and transcribes it live.
-- LLM Integration: Processes transcribed text with a configurable large language model.
-- Low-Latency Text-to-Speech (TTS): Generates and streams synthesized voice back to the client with minimal delay.
-- Voice Cloning: Utilizes voice IDs to generate responses in specific cloned voices.
-- Scalable Backend: Built with FastAPI, suitable for production workloads.
-- Modern Frontend: Clean user interface built with TypeScript and Vite.
-- Cloud-Ready: Includes a complete guide for deploying to Google Cloud Run with Docker and Secret Manager.
-
-**Prerequisites**
-
-- Python 3.8+
-- Node.js and npm (v18+)
-- Google Cloud SDK (gcloud CLI)
-- GCP project with Vertex AI API enabled
-- Service account with Vertex AI permissions (or Application Default Credentials)
-
-
-Follow these steps to set up and run the project on your local machine.
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/your-username/pipecat-websocket-demo.git
-cd pipecat-websocket-demo
+```mermaid
+graph TD
+    Client[Browser UI / & /diagnostics] <-->|WebSocket + RTVI Protocol| FastAPI[FastAPI Server :7860]
+    FastAPI <-->|Bidirectional Audio/Text Streams| GeminiLive[Gemini Live API on Vertex AI]
+    FastAPI -->|OpenTelemetry / RunTree Spans| LangSmith[LangSmith Tracing Platform]
+    FastAPI -->|In-Memory Ring Buffer| DiagBuffer[Diagnostic Buffer]
+    DiagBuffer -->|GET /api/logs & /api/trace| Client
 ```
 
-### 2. Configure the Backend
+---
 
-The backend server handles the core AI pipeline.
+## 📋 Prerequisites
 
-1.  **Navigate to the server directory:**
-    ```bash
-    cd server
-    ```
+Before running the project locally or deploying to the cloud, ensure you have:
+1. **Python 3.10+** (Python 3.11 or 3.13 recommended)
+2. **Node.js 18+** and `npm`
+3. **Google Cloud SDK (`gcloud` CLI)** logged into your GCP account
+4. **Google Cloud Project** with the following APIs enabled:
+   * Vertex AI API (`aiplatform.googleapis.com`)
+   * Cloud Run API (`run.googleapis.com`)
+   * Secret Manager API (`secretmanager.googleapis.com`)
+   * Cloud Build API (`cloudbuild.googleapis.com`)
+5. *(Optional)* **LangSmith API Key** for telemetry and trace sharing ([smith.langchain.com](https://smith.langchain.com)).
 
-2.  **Create and activate a virtual environment:**
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    # On Windows, use: venv\Scripts\activate
-    ```
+---
 
-3.  **Install Python dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+## 🚀 Quickstart: Local Development from Scratch
 
-4.  **Set up your environment variables:**
-    Copy the example file and add your secret keys.
-    ```bash
-    cp .env.example .env
-    ```
-    Now, edit the `.env` file with your credentials. This is where you'll add your Vertex AI configuration and voice cloning keys.
+### 1. Clone the Repository
+```bash
+git clone https://github.com/manishkjs/gemini_live_pipecat.git
+cd gemini_live_pipecat
+```
 
-    **.env**
-    ```env
-    # Vertex AI Configuration
-    GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
-    GCP_PROJECT_ID="your-gcp-project-id"
-    GCP_LOCATION="us-central1"
-    
-    # Google Cloud Vertex AI Agent Memory (Reasoning Engine / Memory Bank)
-    # Format: projects/{PROJECT_ID}/locations/{LOCATION}/reasoningEngines/{ENGINE_ID}
-    MEMORY_BANK_RESOURCE_ID="projects/your-gcp-project-id/locations/us-central1/reasoningEngines/your-memory-bank-id"
+### 2. Configure & Run the Backend Server
 
-    # Voice Cloning Keys from TTS provider (Chirp3 HD)
-    CLONE_TTS_VOICE_KEY_MALE="/path/to/your/male_voice_key.txt"
-    CLONE_TTS_VOICE_KEY_FEMALE="/path/to/your/female_voice_key.txt"
-    ```
-    
-    **Configuration Details:**
-    - `GOOGLE_APPLICATION_CREDENTIALS`: Path to your GCP service account JSON key file
-    - `GCP_PROJECT_ID`: Your Google Cloud Project ID (e.g., "my-project-123")
-    - `GCP_LOCATION`: GCP region for Vertex AI (e.g., "us-central1", "us-east4", "europe-west1")
-    - `MEMORY_BANK_RESOURCE_ID`: Resource ID for Vertex AI Agent Memory (Reasoning Engine Memory Bank). If unconfigured, automatically falls back to embedded multi-tenant Mem0 / local storage (`user_memories_{user_id}.json`).
-    - Voice cloning keys: File paths containing your Chirp3 HD voice cloning keys
+1. Navigate to the `server/` directory and create a virtual environment:
+   ```bash
+   cd server
+   python3 -m venv venv
+   source venv/bin/activate
+   # On Windows: venv\Scripts\activate
+   ```
 
-    **Multi-Tenant Agent Memory & Identity:**
-    - **Identity Identification:** The bot warmly asks for the user's name at the start of each session and automatically calls `identify_user(name=...)` to set `user_id` (e.g., `user:rohan`).
-    - **Isolated Storage:** `save_user_memory` and `search_user_memory` partition facts per user identity so user profiles remain strictly isolated.
-    - **Silent Operations:** All memory actions take place 100% silently behind the scenes without verbal notifications.
-    - **Female Hindi Grammar:** Strictly enforces female Hindi verb conjugations (`करती हूँ` / `सकती हूँ`).
+2. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-    **Setup Service Account:**
-    1. Create a service account in your GCP project with Vertex AI permissions
-    2. Download the JSON key file
-    3. Set the path in `GOOGLE_APPLICATION_CREDENTIALS`
-    
-    Alternatively, for local development, you can authenticate using:
-    ```bash
-    gcloud auth application-default login
-    ```
-    
-### 3. Run the Application
+3. Authenticate with Google Cloud Application Default Credentials (ADC):
+   ```bash
+   gcloud auth application-default login
+   gcloud config set project YOUR_GCP_PROJECT_ID
+   ```
 
-1.  **Start the backend server:**
-    Make sure you are in the `server` directory with your virtual environment active.
-    ```bash
-    python server.py
-    ```
-    The server will start on `http://localhost:7860`. (Do not OPEN THIS IN BROWSER. This is only running server)
+4. Create your `.env` configuration in `server/.env`:
+   ```env
+   # Google Cloud / Vertex AI Configuration
+   GCP_PROJECT_ID="YOUR_GCP_PROJECT_ID"
+   GCP_LOCATION="us-central1"
+   USE_VERTEXAI="true"
 
-2.  **Run the frontend client:**
-    Open a **new terminal window**.
-    ```bash
-    cd client
-    npm install
-    npm run dev
-    ```
-    The client will be accessible at the URL provided by Vite (usually `http://localhost:5173`). Open this URL in your browser to start using the voice assistant.
+   # Optional: LangSmith Tracing Configuration
+   LANGSMITH_API_KEY="lsv2_pt_..."
+   LANGSMITH_PROJECT="gemini-live-pipecat"
+   LANGSMITH_TRACING="true"
+   ```
 
-### 4. Writing Tools for Gemini Live
-You can register custom tools to expand the capabilities of the voice assistant. To prevent the model from hallucinating tool calls in casual conversation, follow this structured approach using explicit Boolean parameter constraints:
+5. Start the FastAPI backend:
+   ```bash
+   python server.py
+   ```
+   *The backend starts listening on `http://0.0.0.0:7860`.*
 
-#### Best Practice Tool Structure
-Define tools in `FunctionSchema` by incorporating boolean intent guards. The model evaluates conversational checks, ensuring it doesn’t invoke actions without explicit intent. 
+### 3. Build & Run the Frontend Client
 
-Example for an actions tool:
+1. Open a **new terminal** and navigate to the `client/` directory:
+   ```bash
+   cd client
+   npm install
+   ```
+
+2. Start the Vite development server:
+   ```bash
+   npm run dev
+   ```
+   *Open `http://localhost:5173` in your browser.*
+
+3. *(Optional)* To test production builds locally:
+   ```bash
+   npm run build
+   ```
+   *Vite compiles both `index.html` (Main Voice Demo) and `diagnostics.html` (`/diagnostics` Telemetry Console) into `client/dist/`.*
+
+---
+
+## 🔍 Observability & LangSmith Tracing
+
+### How Tracing Works
+Every conversation automatically initializes a trace lifecycle managed by `server/tracing.py`:
+1. **Session Start:** Creates a root `GeminiLiveDuplexSession` run in LangSmith.
+2. **Public Share Link:** Invokes LangSmith's `client.share_run(run_id)` to generate a public share token.
+3. **Turn Recording:**
+   - User speech frames emit a `UserSpeech_Turn_{i}` span with transcribed text.
+   - Bot responses emit a `GeminiLiveResponse_Turn_{i}` span with TTFT latency and token counts.
+   - Function calls emit a `Tool_{name}` span with execution latency and returned payload.
+   - User speech interruptions emit a `UserInterruption_Turn_{i}` span with speaking duration.
+
+### Accessing the Diagnostics Console
+* **Main Voice Demo (`/`):** Click on the floating **`⚡ DIAGNOSTIC ENGINE`** badge at the bottom-right of the screen to open the slide-out drawer or click `↗ Full Dashboard`.
+* **Full-Screen Console (`/diagnostics`):** Open `https://<YOUR_APP_URL>/diagnostics` to view:
+  * ⚡ **Live TTFB Latency** Gauge
+  * 📊 **Token Usage** (Prompt & Response counters)
+  * 🔄 **Conversational Turn** counter
+  * ⚡ **Interruption** counter
+  * 🛠️ **Tool Invocations** timeline
+  * ↗️ **Open in LangSmith** button linking straight to the public visual trace graph.
+
+---
+
+## ☁️ Production Deployment: Google Cloud Run
+
+The application is containerized with a multi-stage `Dockerfile` that compiles the TypeScript frontend and runs the FastAPI backend inside a single Cloud Run service.
+
+### 1. Store Secrets in Google Secret Manager
+
+```bash
+export PROJECT_ID="YOUR_GCP_PROJECT_ID"
+gcloud config set project $PROJECT_ID
+
+# Store Gemini API Key (if using API key authentication alongside Vertex ADC)
+echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets create GEMINI_API_KEY \
+  --project=$PROJECT_ID \
+  --data-file=- \
+  --replication-policy="automatic"
+
+# Optional: Store LangSmith API Key for live telemetry
+echo -n "YOUR_LANGSMITH_API_KEY" | gcloud secrets create LANGSMITH_API_KEY \
+  --project=$PROJECT_ID \
+  --data-file=- \
+  --replication-policy="automatic"
+```
+
+### 2. Deploy Service to Cloud Run
+
+Deploy directly from the root directory:
+
+```bash
+gcloud run deploy v2v-demo \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --project $PROJECT_ID \
+  --ingress all \
+  --allow-unauthenticated \
+  --memory 2Gi \
+  --cpu 2 \
+  --timeout 3600 \
+  --set-env-vars="GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=us-central1,USE_VERTEXAI=true,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true" \
+  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
+```
+
+*When deployment completes, Cloud Run will output the live Service URL (e.g. `https://v2v-demo-853612069841.us-central1.run.app`).*
+
+---
+
+## 🛠️ Adding Custom Tools to Gemini Live
+
+Custom tools can be registered by declaring a JSON schema in `server/agent_live.py` and adding the callback handler to the Pipecat LLM service.
+
+### Schema Definition
 ```python
-FunctionSchema(
-    name="execute_action",
-    description="Executes a specific action requested by the user.",
+from pipecat.services.google.gemini_live.llm import FunctionSchema
+
+custom_tool_schema = FunctionSchema(
+    name="get_current_weather",
+    description="Fetches real-time weather information for a specified city.",
     properties={
-        "action_name": {"type": "string", "description": "Name of the action"},
-        "is_explicit_intent": {
-            "type": "boolean",
-            "description": (
-                "Return `true` ONLY if the user explicitly requests to run this action now.\n"
-                "Return `false` for casual mentions or theoretical discussions."
-            )
+        "location": {
+            "type": "string",
+            "description": "City and country, e.g. 'San Francisco, CA' or 'Bengaluru, India'"
         }
     },
-    required=["action_name", "is_explicit_intent"]
+    required=["location"]
 )
 ```
 
-In the tool handler implementation, fail gracefully if the constraint resolves to `false`:
+### Handler Registration
 ```python
-if not params.arguments.get("is_explicit_intent"):
-    return await params.result_callback({"error": "Explicit intent validation required."})
+async def handle_get_current_weather(params):
+    city = params.arguments.get("location", "Unknown")
+    # Fetch weather data...
+    weather_info = f"Current weather in {city}: 24°C, Partly Cloudy"
+    return await params.result_callback({"status": "success", "weather": weather_info})
+
+# Register with LLM service
+llm.register_function("get_current_weather", handle_get_current_weather)
 ```
 
-## Deployment to Google Cloud Run
+---
 
-This project is configured for easy deployment as a single container on Google Cloud Run. The `Dockerfile` builds the frontend assets and serves them from the Python backend.
+## 🧪 Testing & Verification
 
-### 1. Secret Management (Optional but definitely recommended for production workloads)
-
-Do not hardcode your credentials. Use Google Secret Manager to store them securely.
-**Note:** This application now uses Vertex AI for accessing Gemini Live API, providing better integration with GCP services.
-
+Run the comprehensive unit test suite:
 ```bash
-# Set your GCP Project ID
-export PROJECT_ID="your-gcp-project-id"
-gcloud config set project $PROJECT_ID
+cd server
+./venv/bin/python test_routes.py
 ```
 
-### 2. Deploy to Cloud Run
+This verifies:
+* HTTP 200 response for `/` and `/diagnostics`
+* Real-time streaming log feed at `GET /api/logs`
+* Active trace URL reporting at `GET /api/trace/current`
+* `LangSmithTracer` lifecycle methods (session start, turn recording, interruption tracking, session end).
 
-From the root directory of the project, run the following command.
-This command builds the container from the Dockerfile and deploys it securely using Google Secret Manager.
+---
 
-```bash
-gcloud run deploy <your-service-name> \
-  --source . \
-  --platform managed \
-  --region <your-region> \
-  --allow-unauthenticated \
-  --set-env-vars="GCP_PROJECT_ID=<your-gcp-project>,GCP_LOCATION=us-central1,USE_VERTEXAI=true" \
-  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
-```
+## 📄 License
 
-> [!TIP]
-> **Secret Manager Best Practice:** Storing `GEMINI_API_KEY` in Google Cloud Secret Manager and mounting it via `--set-secrets` ensures zero plain-text API keys are stored in code, `.env` files, or Git commits. Local development automatically reads from Secret Manager via Application Default Credentials (ADC).
-
-How to run UI:
-
-![alt text](./bot_UI.jpeg)
-
-Steps:
-
-(API Key is not needed)
-
-1. Select the flow - STT-LLM-TTS or Gemini Live (its default).
-2. Select the model, voice and language. defaults are
-    - gemini-live-2.5-flash-native-audio
-    - Aoede (Female Voice)
-    - Hindi
-3. Update system instruction. You can override it. The default system instruction is for a voice assistant speaking in Indian Hindi accent.
-4. Click on Connect > Click on Mic button (to start conversation.)
-
-
-**Contributing**
-
-Contributions are welcome! Please feel free to submit a pull request or open an issue for bugs, feature requests, or improvements.
-
-Fork the repository.
-- Create your feature branch (git checkout -b feature/AmazingFeature).
-- Commit your changes (git commit -m 'Add some AmazingFeature').
-- Push to the branch (git push origin feature/AmazingFeature).
-- Open a Pull Request. We will review and proceed.
-
-**License**
-
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the [MIT License](LICENSE).
