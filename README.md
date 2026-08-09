@@ -10,21 +10,25 @@ A high-performance, real-time voice-to-voice conversational AI application built
 
 ---
 
-## 🌟 Key Features
+## 🖥️ Bot Interface & User Experience
 
-* **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`), achieving ~450ms–700ms Time-to-First-Byte (TTFB).
-* **🔄 Dual Conversational Pipelines:**
-  1. **Native Gemini Live Duplex Mode:** End-to-end multimodal audio-in / audio-out via WebSocket.
-  2. **Cascaded Mode:** Speech-to-Text + LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Instant Custom Voice Cloning).
-* **🧠 Smart Filler & Interruption Detection:** Automatically differentiates between short conversational acknowledgments (e.g., *"haan"*, *"okay"*, *"right"*) and genuine topic interruptions, prompting the model to gracefully resume or yield.
-* **🔍 LangSmith Full-Duplex Observability:** Captures the full conversation run tree with nested child spans for User Speech (VAD boundaries), Gemini Live streaming turns, TTFT latencies, token consumption, and tool executions.
-* **🔓 Credential-Free Public Trace Links:** Mints public share tokens (`https://smith.langchain.com/public/<token>/r`) so sales teams, stakeholders, and clients can inspect live traces with **zero login or API key requirements**.
-* **📊 Dedicated `/diagnostics` Web Console:** Built-in real-time telemetry dashboard rendering live KPI cards (TTFB, Token Usage, Turn Count, Interruptions), search filters, and an interactive trace launcher.
-* **☁️ Production-Ready Single Container:** Containerized with Docker multi-stage builds and automated deployment to **Google Cloud Run** using Secret Manager.
+![Gemini Live Voice Bot UI](./bot_UI.jpeg)
+
+### 🎙️ How to Use the UI:
+1. **Select Flow:** Choose between **Gemini Live (Native Duplex Audio)** (default) or **STT + LLM + TTS (Cascaded)**.
+2. **Configure Model & Voice:**
+   * **Model:** `gemini-live-2.5-flash-native-audio` or `gemini-3.1-flash-live-preview`
+   * **Voice:** Aoede, Puck, Charon, Fenrir, or Kore
+   * **Language:** Hindi, English, Spanish, French, etc.
+3. **Customize System Instructions:** Modify persona or behavior directly in the prompt textarea.
+4. **Connect & Speak:** Click **Connect**, grant microphone access, and start speaking naturally.
+5. **Inspect Live Telemetry:** Click the **`⚡ DIAGNOSTIC ENGINE`** badge at the bottom-right for live TTFB gauges or click **`↗ Full Dashboard`** / **`↗️ Open in LangSmith`** for trace trees.
 
 ---
 
 ## 🏗️ Architecture
+
+![Architecture Diagram](./architecture.jpeg)
 
 ```mermaid
 graph TD
@@ -34,6 +38,20 @@ graph TD
     FastAPI -->|In-Memory Ring Buffer| DiagBuffer[Diagnostic Buffer]
     DiagBuffer -->|GET /api/logs & /api/trace| Client
 ```
+
+---
+
+## 🌟 Key Features
+
+* **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`), achieving ~390ms–500ms Time-to-First-Byte (TTFB).
+* **🔄 Dual Conversational Pipelines:**
+  1. **Native Gemini Live Duplex Mode:** End-to-end multimodal audio-in / audio-out via WebSocket.
+  2. **Cascaded Mode:** Speech-to-Text + LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Instant Custom Voice Cloning).
+* **🧠 Smart Filler & Interruption Detection:** Automatically differentiates between short conversational acknowledgments (e.g., *"haan"*, *"okay"*, *"right"*) and genuine topic interruptions, prompting the model to gracefully resume or yield.
+* **🔍 LangSmith Full-Duplex Observability:** Captures the full conversation run tree with nested child spans for User Speech (VAD boundaries), Gemini Live streaming turns, TTFT latencies, token consumption, and tool executions.
+* **🔓 Credential-Free Public Trace Links:** Mints public share tokens (`https://smith.langchain.com/public/<token>/r`) so sales teams, stakeholders, and clients can inspect live traces with **zero login or API key requirements**.
+* **📊 Dedicated `/diagnostics` Web Console:** Built-in real-time telemetry dashboard rendering live KPI cards (TTFB, Token Usage, Turn Count, Interruptions), search filters, and an interactive trace launcher.
+* **☁️ Production-Ready Single Container:** Containerized with Docker multi-stage builds and automated deployment to **Google Cloud Run** using Secret Manager.
 
 ---
 
@@ -127,7 +145,7 @@ cd gemini_live_pipecat
 ### How Tracing Works
 Every conversation automatically initializes a trace lifecycle managed by `server/tracing.py`:
 1. **Session Start:** Creates a root `GeminiLiveDuplexSession` run in LangSmith.
-2. **Public Share Link:** Invokes LangSmith's `client.share_run(run_id)` to generate a public share token.
+2. **Public Share Link:** Invokes LangSmith's `client.share_run(run_id)` in the background to generate a public share token.
 3. **Turn Recording:**
    - User speech frames emit a `UserSpeech_Turn_{i}` span with transcribed text.
    - Bot responses emit a `GeminiLiveResponse_Turn_{i}` span with TTFT latency and token counts.
@@ -188,8 +206,6 @@ gcloud run deploy v2v-demo \
   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
 ```
 
-*When deployment completes, Cloud Run will output the live Service URL (e.g. `https://v2v-demo-853612069841.us-central1.run.app`).*
-
 ---
 
 ## 🛠️ Adding Custom Tools to Gemini Live
@@ -217,7 +233,6 @@ custom_tool_schema = FunctionSchema(
 ```python
 async def handle_get_current_weather(params):
     city = params.arguments.get("location", "Unknown")
-    # Fetch weather data...
     weather_info = f"Current weather in {city}: 24°C, Partly Cloudy"
     return await params.result_callback({"status": "success", "weather": weather_info})
 
