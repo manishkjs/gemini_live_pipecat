@@ -532,7 +532,7 @@ class WebsocketClientApp {
       if (botBubbles.length === 0) return;
       const lastBubble = botBubbles[botBubbles.length - 1] as HTMLElement;
       
-      let latencyEl = lastBubble.querySelector(".loop-latencies") as HTMLElement;
+      let latencyEl = lastBubble.querySelector(".loop-latencies, .ttft-latency") as HTMLElement;
       if (!latencyEl) {
           latencyEl = document.createElement("div");
           latencyEl.classList.add("loop-latencies");
@@ -544,7 +544,7 @@ class WebsocketClientApp {
       }
       
       const parts = [];
-      if (this.lastLLMLatency !== null) parts.push(`LLM: ${Math.round(this.lastLLMLatency * 1000)}ms`);
+      if (this.lastLLMLatency !== null) parts.push(`⚡ Live TTFB: ${Math.round(this.lastLLMLatency * 1000)}ms`);
       if (this.lastTTSLatency !== null) parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
       if (this.lastTurnUsage !== null) {
           let detailsStr = `Tokens: ${this.lastTurnUsage.total_token_count}`;
@@ -557,8 +557,8 @@ class WebsocketClientApp {
               return list.length > 0 ? ` (${list.join(", ")})` : "";
           };
           
-          const promptStr = `Input: ${this.lastTurnUsage.prompt_token_count}${formatModality(this.lastTurnUsage.prompt_details)}`;
-          const responseStr = `Output: ${this.lastTurnUsage.response_token_count}${formatModality(this.lastTurnUsage.response_details)}`;
+          const promptStr = `In: ${this.lastTurnUsage.prompt_token_count}${formatModality(this.lastTurnUsage.prompt_details)}`;
+          const responseStr = `Out: ${this.lastTurnUsage.response_token_count}${formatModality(this.lastTurnUsage.response_details)}`;
           
           parts.push(`${detailsStr} [${promptStr} | ${responseStr}]`);
       }
@@ -566,6 +566,25 @@ class WebsocketClientApp {
       if (parts.length > 0) {
           latencyEl.textContent = parts.join(" | ");
       }
+  }
+
+  private markInterruptionLatency(elapsed_ms: number) {
+      if (!this.chatWindow) return;
+      const botBubbles = this.chatWindow.querySelectorAll(".chat-bubble.bot");
+      if (botBubbles.length === 0) return;
+      const lastBubble = botBubbles[botBubbles.length - 1] as HTMLElement;
+      let latencyEl = lastBubble.querySelector(".loop-latencies, .ttft-latency") as HTMLElement;
+      if (!latencyEl) {
+          latencyEl = document.createElement("div");
+          latencyEl.classList.add("loop-latencies");
+          latencyEl.style.fontStyle = "italic";
+          latencyEl.style.fontSize = "0.8em";
+          latencyEl.style.opacity = "0.8";
+          latencyEl.style.marginTop = "4px";
+          lastBubble.appendChild(latencyEl);
+      }
+      latencyEl.textContent = `⚡ Interrupted after ${Math.round(elapsed_ms)}ms`;
+      latencyEl.style.color = "#f59e0b";
   }
 
   private handleServerMessage(message: any) {
@@ -578,7 +597,13 @@ class WebsocketClientApp {
               this.lastTTSLatency = null;
               this.lastTurnUsage = null;
           }
+          if (ttft !== undefined && ttft !== null) {
+              this.lastLLMLatency = ttft;
+          }
           this.appendChatMessage(role, text, ttft);
+          if (role === "bot" && this.lastLLMLatency !== null) {
+              this.tryUpdateBubbleLatencies();
+          }
       }
 
       // Handle Transcription Replace (parallel STT updates the placeholder)
@@ -597,6 +622,9 @@ class WebsocketClientApp {
           switch (payload.type) {
               case "interruption":
                   this.interruptCount += (payload.count || 1);
+                  if (payload.elapsed_ms !== undefined) {
+                      this.markInterruptionLatency(payload.elapsed_ms);
+                  }
                   break;
               case "turn_complete":
                   this.turnCount++;
@@ -1062,12 +1090,6 @@ class WebsocketClientApp {
           <button id="diag-close-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;">✕</button>
         </div>
       </div>
-      <div style="display: flex; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.1); overflow-x: auto; flex-shrink: 0;">
-        <button class="diag-tab-btn active" data-tab="all" style="flex: 1; background: rgba(56,189,248,0.2); border: none; color: #38bdf8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer; border-bottom: 2px solid #38bdf8;">📄 All Logs</button>
-        <button class="diag-tab-btn" data-tab="mem0" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">🧠 Mem0</button>
-        <button class="diag-tab-btn" data-tab="identity" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">👤 Multi-Tenant</button>
-        <button class="diag-tab-btn" data-tab="latency" style="flex: 1; background: none; border: none; color: #94a3b8; padding: 12px 16px; font-size: 13px; font-weight: 700; cursor: pointer;">⚡ Latency</button>
-      </div>
       <div id="diag-log-feed" style="padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.6; color: #e2e8f0; background: rgba(0,0,0,0.15);">
         <div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Connecting to Cloud Run live stream...</div>
       </div>
@@ -1077,7 +1099,6 @@ class WebsocketClientApp {
     container.appendChild(badge);
     document.body.appendChild(container);
 
-    let currentTab = "all";
     let isOpen = false;
 
     badge.addEventListener("click", () => {
@@ -1112,27 +1133,12 @@ class WebsocketClientApp {
       if (this.debugLog) this.debugLog.innerHTML = "";
     });
 
-    dialog.querySelectorAll(".diag-tab-btn").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        dialog.querySelectorAll(".diag-tab-btn").forEach((b) => {
-          (b as HTMLElement).style.background = "none";
-          (b as HTMLElement).style.color = "#94a3b8";
-          (b as HTMLElement).style.borderBottom = "none";
-        });
-        const target = e.currentTarget as HTMLElement;
-        target.style.background = "rgba(56,189,248,0.2)";
-        target.style.color = "#38bdf8";
-        target.style.borderBottom = "2px solid #38bdf8";
-        currentTab = target.getAttribute("data-tab") || "all";
-      });
-    });
-
     setInterval(async () => {
       try {
         const res = await fetch(`${getApiBaseUrl()}/api/logs`);
         if (!res.ok) return;
         const data = await res.json();
-        const logs: Array<{ timestamp: string; level: string; message: string; tab: string; badge: string; ttfb_ms?: number }> = data.logs || [];
+        const logs: Array<{ timestamp: string; level: string; message: string; ttfb_ms?: number }> = data.logs || [];
 
         // Check latest TTFB
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -1150,46 +1156,41 @@ class WebsocketClientApp {
         if (!feed) return;
 
         const isNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
-        const filtered = currentTab === "all" ? logs : logs.filter((l) => l.tab === currentTab || l.tab === "latency");
-        if (countSpan) countSpan.innerText = String(filtered.length);
+        if (countSpan) countSpan.innerText = String(logs.length);
 
-        if (filtered.length === 0) {
-          feed.innerHTML = `<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">No logs recorded yet for tab [${currentTab}]...</div>`;
+        if (logs.length === 0) {
+          feed.innerHTML = `<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">No logs recorded yet...</div>`;
           return;
         }
 
-        feed.innerHTML = filtered.map((item) => {
+        feed.innerHTML = logs.map((item) => {
           let cardBg = "rgba(15, 23, 42, 0.6)";
           let borderLeftColor = "#475569";
+          let badgeText = item.level || "INFO";
           let badgeStyle = "background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3);";
 
-          if (item.message.includes("STAGE 3:")) {
-            cardBg = "rgba(6, 182, 212, 0.08)";
-            borderLeftColor = "#06b6d4";
-            badgeStyle = "background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid #0891b2;";
-          } else if (item.message.includes("STAGE 4:")) {
-            cardBg = "rgba(16, 185, 129, 0.08)";
-            borderLeftColor = "#10b981";
-            badgeStyle = "background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #059669;";
-          } else if (item.tab === "identity" || item.message.includes("Identity Switch")) {
-            cardBg = "rgba(168, 85, 247, 0.08)";
-            borderLeftColor = "#a855f7";
-            badgeStyle = "background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid #9333ea;";
-          } else if (item.tab === "latency" || item.ttfb_ms) {
-            cardBg = "rgba(234, 179, 8, 0.08)";
-            borderLeftColor = "#eab308";
-            badgeStyle = "background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid #ca8a04;";
-          } else if (item.level === "ERROR") {
+          if (item.level === "ERROR" || item.message.toLowerCase().includes("error") || item.message.toLowerCase().includes("exception")) {
             cardBg = "rgba(239, 68, 68, 0.12)";
             borderLeftColor = "#ef4444";
+            badgeText = "ERROR";
             badgeStyle = "background: rgba(239, 68, 68, 0.25); color: #f87171; border: 1px solid #dc2626;";
+          } else if (item.level === "WARNING" || item.message.toLowerCase().includes("warn")) {
+            cardBg = "rgba(234, 179, 8, 0.08)";
+            borderLeftColor = "#eab308";
+            badgeText = "WARN";
+            badgeStyle = "background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid #ca8a04;";
+          } else if (item.ttfb_ms || item.message.includes("TTFB")) {
+            cardBg = "rgba(56, 189, 248, 0.08)";
+            borderLeftColor = "#38bdf8";
+            badgeText = "⚡ LATENCY";
+            badgeStyle = "background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid #0284c7;";
           }
 
           const textColor = item.level === "ERROR" ? "#fca5a5" : item.level === "WARNING" ? "#fde047" : "#f1f5f9";
           return `<div class="diag-card" style="margin-bottom: 10px; padding: 10px 14px; background: ${cardBg}; border-radius: 8px; border-left: 4px solid ${borderLeftColor}; border-top: 1px solid rgba(255,255,255,0.05); border-right: 1px solid rgba(255,255,255,0.05); border-bottom: 1px solid rgba(255,255,255,0.05);">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
               <span style="font-size: 11px; color: #94a3b8; font-weight: 600;">⏱️ ${item.timestamp}</span>
-              <span style="padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; ${badgeStyle}">${item.badge}</span>
+              <span style="padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; ${badgeStyle}">${badgeText}</span>
             </div>
             <div style="color: ${textColor}; word-break: break-word; font-family: monospace;">${item.message}</div>
           </div>`;

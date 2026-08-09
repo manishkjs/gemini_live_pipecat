@@ -207,7 +207,6 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     # Dynamically determine WebSocket scheme (ws vs wss) and host
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     ws_scheme = "wss" if scheme == "https" else "ws"
-    
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     
     ws_url = f"{ws_scheme}://{host}/ws?{query_params}"

@@ -179,9 +179,7 @@ gcloud config set project $PROJECT_ID
 ### 2. Deploy to Cloud Run
 
 From the root directory of the project, run the following command.
-This command builds the container from the Dockerfile and deploys it.
-Replace <your-service-name>, <your-region>, and <your-gcp-project> with your specific values.
-code
+This command builds the container from the Dockerfile and deploys it securely using Google Secret Manager.
 
 ```bash
 gcloud run deploy <your-service-name> \
@@ -189,11 +187,12 @@ gcloud run deploy <your-service-name> \
   --platform managed \
   --region <your-region> \
   --allow-unauthenticated \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=<your-gcp-project>,GEMINI_API_KEY=<your-gemini-api-key>"
+  --set-env-vars="GCP_PROJECT_ID=<your-gcp-project>,GCP_LOCATION=us-central1,USE_VERTEXAI=true" \
+  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
 ```
 
-> [!IMPORTANT]
-> In order for **Gemini Live 3.1 (AI Studio)** models to authenticate and connect successfully, you **must** pass your `GEMINI_API_KEY` inside the `--set-env-vars` parameter of the deploy command as shown above.
+> [!TIP]
+> **Secret Manager Best Practice:** Storing `GEMINI_API_KEY` in Google Cloud Secret Manager and mounting it via `--set-secrets` ensures zero plain-text API keys are stored in code, `.env` files, or Git commits. Local development automatically reads from Secret Manager via Application Default Credentials (ADC).
 
 How to run UI:
 

@@ -144,7 +144,17 @@ class GeminiSessionLoggerMixin:
             self._current_turn_ttft = time.time() - self._my_ttfb_start
             logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
             ttfb_ms = self._current_turn_ttft * 1000.0
-            append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms, user_id=os.getenv("ACTIVE_USER_ID", "default_user"))
+            append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+            
+            # Stream llm_latency metric frame to UI client
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
+                }
+            }))
             self._my_ttfb_start = None
 
     # Max wall-clock time a tool lock may suppress interruptions before self-healing.
@@ -245,13 +255,23 @@ class GeminiSessionLoggerMixin:
             self._repeat_on_filler_pending = True
             logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
             
+            elapsed_ms = None
+            if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+                elapsed_ms = round((time.time() - self._my_ttfb_start) * 1000.0, 1)
+                append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
+                self._my_ttfb_start = None
+
             # Metric Streaming: Interruption
+            metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
+            if elapsed_ms is not None:
+                metric_payload['elapsed_ms'] = elapsed_ms
+
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
                 "data": {
                     'type': 'metrics',
-                    'payload': {'type': 'interruption', 'count': 1}
+                    'payload': metric_payload
                 }
             }))
 
@@ -346,6 +366,24 @@ class GeminiSessionLoggerMixin:
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
             text = message.server_content.output_transcription.text
             logger.debug(f"[Transcription] Bot: {text}")
+            
+            # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
+            if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
+                self._current_turn_ttft = time.time() - self._my_ttfb_start
+                ttfb_ms = self._current_turn_ttft * 1000.0
+                append_diagnostic_log("⚡ TTFB Latency", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+                self._my_ttfb_start = None
+                
+                # Also push metric frame immediately
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
+                    }
+                }))
+
             ttft = getattr(self, '_current_turn_ttft', None)
             message_data = {
                 'type': 'transcription',
@@ -708,6 +746,21 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
     if model == "gemini-3.1-flash-live-preview":
+        # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            try:
+                from google.cloud import secretmanager
+                sm_client = secretmanager.SecretManagerServiceClient()
+                sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                if gemini_api_key:
+                    os.environ["GEMINI_API_KEY"] = gemini_api_key
+                    logger.info("[SecretManager] Successfully retrieved GEMINI_API_KEY from Google Cloud Secret Manager.")
+            except Exception as sm_err:
+                logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{model}",
             system_instruction=prompt_text,
@@ -717,7 +770,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             context_window_compression=cwc
         )
         ai_studio_params = {
-            "api_key": os.getenv("GEMINI_API_KEY"),
+            "api_key": gemini_api_key,
             "tools": tools_schema,
             "transcribe_model_audio": True,
             "settings": settings,
