@@ -67,6 +67,7 @@
       letter-spacing: 0.5px;
       background: linear-gradient(135deg, #38bdf8 0%, #c084fc 100%);
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
       margin: 0;
     }
@@ -300,10 +301,15 @@
     <!-- Trace Banner -->
     <div class="trace-banner">
       <div class="trace-info">
-        <span class="trace-title">🔍 Active Session Trace URL</span>
-        <span id="active-trace-url" class="trace-url">https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="trace-title">🔍 Public Session Trace URL</span>
+          <span style="background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3); padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">🔓 Public Token Baked-in (No Login Required)</span>
+        </div>
+        <span id="active-trace-url" class="trace-url">https://smith.langchain.com/public/gemini-live-pipecat/r</span>
       </div>
-      <button id="copy-trace-btn" class="btn btn-secondary">📋 Copy Trace Link</button>
+      <div style="display: flex; gap: 8px;">
+        <button id="copy-trace-btn" class="btn btn-secondary">📋 Copy Public Link</button>
+      </div>
     </div>
 
     <!-- KPI Grid -->

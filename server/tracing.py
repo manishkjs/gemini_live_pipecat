@@ -47,7 +47,7 @@ class LangSmithTracer:
         self.turn_counter = 0
         
         run_id = str(uuid.uuid4())
-        self.current_trace_url = f"https://smith.langchain.com/o/default/projects/p/{self.project_name}/r/{run_id}"
+        self.current_trace_url = f"https://smith.langchain.com/public/{run_id}/r"
 
         if not self.enabled or not RunTree:
             logger.info(f"[LangSmith] Session started: {self.active_session_id} (Trace URL: {self.current_trace_url})")
@@ -73,6 +73,17 @@ class LangSmithTracer:
                 tags=["gemini-live", "pipecat", "duplex-voice", model]
             )
             self.root_run.post()
+            
+            # Create a public share link with token baked in so sales folks can open without credentials
+            if self.client:
+                try:
+                    public_url = self.client.share_run(run_id)
+                    if public_url:
+                        self.current_trace_url = public_url
+                        logger.info(f"[LangSmith] Created Public Share Link: {public_url}")
+                except Exception as se:
+                    logger.debug(f"[LangSmith] Notice on share_run: {se}")
+
             logger.info(f"[LangSmith] Root Run posted: {run_id} -> {self.current_trace_url}")
         except Exception as e:
             logger.error(f"[LangSmith] Failed to start root run: {e}")
@@ -162,6 +173,15 @@ class LangSmithTracer:
         try:
             self.root_run.end(outputs={"status": "completed", "total_turns": self.turn_counter, "summary": summary or "Session ended cleanly"})
             self.root_run.patch()
+            
+            if self.client and self.root_run.id:
+                try:
+                    public_url = self.client.share_run(self.root_run.id)
+                    if public_url:
+                        self.current_trace_url = public_url
+                except Exception:
+                    pass
+
             logger.info(f"[LangSmith] Session ended: {self.active_session_id} (Total Turns: {self.turn_counter})")
         except Exception as e:
             logger.error(f"[LangSmith] Failed to end session run: {e}")
