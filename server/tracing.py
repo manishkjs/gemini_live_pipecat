@@ -6,6 +6,7 @@ TTFT turnaround latencies, token consumption, tool executions, and user interrup
 import os
 import time
 import uuid
+import threading
 from typing import Optional, Dict, Any
 from datetime import datetime
 from loguru import logger
@@ -42,6 +43,35 @@ class LangSmithTracer:
     def get_current_trace_url(self) -> Optional[str]:
         return self.current_trace_url
 
+    def _start_background_share(self, run_id: str):
+        """Asynchronously retry public sharing until LangSmith ingestion commits the run."""
+        def _share_worker():
+            for attempt in range(6):
+                time.sleep(1.0 + attempt * 0.8)
+                if not self.client:
+                    return
+                try:
+                    url = self.client.share_run(run_id)
+                    if url:
+                        self.current_trace_url = url
+                        logger.info(f"[LangSmith] 🎉 Public Share URL confirmed on attempt {attempt+1}: {url}")
+                        return
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "already shared" in err_str or "409" in err_str or "conflict" in err_str:
+                        try:
+                            url = self.client.read_run_shared_link(run_id)
+                            if url:
+                                self.current_trace_url = url
+                                logger.info(f"[LangSmith] 🎉 Public Share URL retrieved on attempt {attempt+1}: {url}")
+                                return
+                        except Exception:
+                            pass
+                    logger.debug(f"[LangSmith] Background share attempt {attempt+1}/6 waiting for ingestion...")
+
+        t = threading.Thread(target=_share_worker, daemon=True)
+        t.start()
+
     def start_session(self, session_id: str, model: str, voice: Optional[str], language: str, extra_metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
         self.active_session_id = session_id or str(uuid.uuid4())
         self.turn_counter = 0
@@ -74,15 +104,9 @@ class LangSmithTracer:
             )
             self.root_run.post()
             
-            # Create a public share link with token baked in so sales folks can open without credentials
+            # Start background share retry to capture the public token once LangSmith commits the run
             if self.client:
-                try:
-                    public_url = self.client.share_run(run_id)
-                    if public_url:
-                        self.current_trace_url = public_url
-                        logger.info(f"[LangSmith] Created Public Share Link: {public_url}")
-                except Exception as se:
-                    logger.debug(f"[LangSmith] Notice on share_run: {se}")
+                self._start_background_share(run_id)
 
             logger.info(f"[LangSmith] Root Run posted: {run_id} -> {self.current_trace_url}")
         except Exception as e:
