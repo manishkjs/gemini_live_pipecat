@@ -37,8 +37,11 @@ def append_raw_log_entry(message: str, level: str = "INFO"):
     }
     DIAGNOSTIC_LOG_BUFFER.append(entry)
 
-def append_diagnostic_log(event_type: str, details: str, ttfb_ms: Optional[float] = None):
-    msg = f"[{event_type}] {details}"
+def append_diagnostic_log(event_type: str, details: str, ttfb_ms: Optional[float] = None, user_id: Optional[str] = None, **kwargs):
+    if user_id:
+        msg = f"[{event_type}] ({user_id}) {details}"
+    else:
+        msg = f"[{event_type}] {details}"
     clean_msg = msg.strip()
     entry = {
         "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
