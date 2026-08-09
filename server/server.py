@@ -219,6 +219,11 @@ async def clear_diagnostic_logs_endpoint():
     clear_diagnostic_logs()
     return {"status": "cleared"}
 
+@app.get("/api/trace/current")
+async def get_current_trace_endpoint():
+    from tracing import GLOBAL_LANGSMITH_TRACER
+    return {"trace_url": GLOBAL_LANGSMITH_TRACER.get_current_trace_url()}
+
 # Mount the static files directory
 possible_dist_dirs = [
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist")),
@@ -231,6 +236,13 @@ client_dist_dir = next((d for d in possible_dist_dirs if os.path.exists(d)), Non
 if client_dist_dir:
     app.mount("/assets", StaticFiles(directory=os.path.join(client_dist_dir, "assets")), name="assets")
     
+    @app.get("/diagnostics")
+    async def read_diagnostics():
+        diag_path = os.path.join(client_dist_dir, "diagnostics.html")
+        if os.path.exists(diag_path):
+            return FileResponse(diag_path)
+        return FileResponse(os.path.join(client_dist_dir, "index.html"))
+
     @app.get("/{catch_all:path}")
     async def read_index(catch_all: str):
         return FileResponse(os.path.join(client_dist_dir, "index.html"))

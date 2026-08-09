@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚡ Telemetry & LangSmith Tracing Console | Gemini Live</title>
+  <link rel="stylesheet" href="./style.css" />
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --card-bg: rgba(15, 23, 42, 0.85);
+      --card-border: rgba(56, 189, 248, 0.2);
+      --accent-cyan: #38bdf8;
+      --accent-purple: #c084fc;
+      --accent-green: #4ade80;
+      --accent-amber: #fbbf24;
+      --accent-red: #f87171;
+    }
+    body {
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(192, 132, 252, 0.08) 0px, transparent 50%);
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+    }
+    .diag-container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .diag-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 24px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      backdrop-filter: blur(12px);
+      margin-bottom: 24px;
+    }
+    .diag-title-area {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      background: var(--accent-green);
+      border-radius: 50%;
+      box-shadow: 0 0 12px var(--accent-green);
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.25); opacity: 0.7; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .diag-title {
+      font-size: 1.25rem;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      background: linear-gradient(135deg, #38bdf8 0%, #c084fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin: 0;
+    }
+    .diag-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn {
+      padding: 9px 18px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      transition: all 0.2s ease;
+      border: none;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #0284c7 0%, #9333ea 100%);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35);
+    }
+    .btn-primary:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(147, 51, 234, 0.45);
+    }
+    .btn-secondary {
+      background: rgba(30, 41, 59, 0.9);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .btn-secondary:hover {
+      background: rgba(51, 65, 85, 0.9);
+      color: #ffffff;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .kpi-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      backdrop-filter: blur(10px);
+    }
+    .kpi-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .kpi-value {
+      font-size: 1.8rem;
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .kpi-sub {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 4px;
+    }
+    .trace-banner {
+      background: linear-gradient(90deg, rgba(14, 165, 233, 0.12) 0%, rgba(168, 85, 247, 0.12) 100%);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 14px;
+      padding: 16px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .trace-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .trace-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+    .trace-url {
+      font-family: monospace;
+      font-size: 12px;
+      color: #94a3b8;
+      word-break: break-all;
+    }
+    .log-panel {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      backdrop-filter: blur(12px);
+    }
+    .log-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .filter-pills {
+      display: flex;
+      gap: 8px;
+    }
+    .filter-pill {
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      background: rgba(30, 41, 59, 0.7);
+      color: #94a3b8;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .filter-pill.active {
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #38bdf8;
+    }
+    .search-input {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 8px;
+      padding: 8px 14px;
+      color: #f8fafc;
+      font-size: 13px;
+      outline: none;
+      min-width: 240px;
+    }
+    .search-input:focus {
+      border-color: var(--accent-cyan);
+    }
+    .log-feed {
+      max-height: 550px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 6px;
+    }
+    .log-feed::-webkit-scrollbar {
+      width: 6px;
+    }
+    .log-feed::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.5);
+    }
+    .log-feed::-webkit-scrollbar-thumb {
+      background: rgba(56, 189, 248, 0.3);
+      border-radius: 4px;
+    }
+    .log-card {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-left-width: 4px;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: background 0.15s ease;
+    }
+    .log-card:hover {
+      background: rgba(30, 41, 59, 0.85);
+    }
+    .log-card.level-INFO { border-left-color: var(--accent-cyan); }
+    .log-card.level-ERROR { border-left-color: var(--accent-red); background: rgba(239, 68, 68, 0.08); }
+    .log-card.level-LATENCY { border-left-color: var(--accent-amber); }
+    .log-card.level-SPEECH { border-left-color: var(--accent-green); }
+    .log-card.level-TOOL { border-left-color: var(--accent-purple); }
+    .log-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #64748b;
+      font-family: monospace;
+    }
+    .log-badge {
+      font-weight: 800;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+    }
+    .log-card.level-INFO .log-badge { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .log-card.level-ERROR .log-badge { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+    .log-card.level-LATENCY .log-badge { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+    .log-card.level-SPEECH .log-badge { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+    .log-card.level-TOOL .log-badge { background: rgba(192, 132, 252, 0.15); color: #c084fc; }
+    .log-msg {
+      color: #cbd5e1;
+      line-height: 1.45;
+      font-family: monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+  <div class="diag-container">
+    <!-- Header -->
+    <header class="diag-header">
+      <div class="diag-title-area">
+        <div class="pulse-dot"></div>
+        <h1 class="diag-title">⚡ Gemini Live Telemetry & LangSmith Traces</h1>
+      </div>
+      <div class="diag-header-actions">
+        <a id="langsmith-trace-btn" href="https://smith.langchain.com/" target="_blank" class="btn btn-primary">
+          <span>↗️ Open in LangSmith</span>
+        </a>
+        <a href="/" class="btn btn-secondary">
+          <span>← Back to Voice Demo</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Trace Banner -->
+    <div class="trace-banner">
+      <div class="trace-info">
+        <span class="trace-title">🔍 Active Session Trace URL</span>
+        <span id="active-trace-url" class="trace-url">https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat</span>
+      </div>
+      <button id="copy-trace-btn" class="btn btn-secondary">📋 Copy Trace Link</button>
+    </div>
+
+    <!-- KPI Grid -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">
+          <span>⚡ Live TTFB Latency</span>
+          <span style="color: var(--accent-cyan)">First Audio/Text</span>
+        </div>
+        <div id="kpi-ttfb" class="kpi-value">-- ms</div>
+        <div class="kpi-sub">Turn turnaround turnaround</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">
+          <span>📊 Token Consumption</span>
+          <span style="color: var(--accent-purple)">Gemini Live</span>
+        </div>
+        <div id="kpi-tokens" class="kpi-value">0</div>
+        <div id="kpi-tokens-sub" class="kpi-sub">In: 0 | Out: 0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">
+          <span>🔄 Conversational Turns</span>
+          <span style="color: var(--accent-green)">Duplex</span>
+        </div>
+        <div id="kpi-turns" class="kpi-value">0</div>
+        <div class="kpi-sub">Completed exchanges</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">
+          <span>⚡ User Interruptions</span>
+          <span style="color: var(--accent-amber)">VAD Shield</span>
+        </div>
+        <div id="kpi-interrupts" class="kpi-value">0</div>
+        <div class="kpi-sub">Spoken barging events</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">
+          <span>🛠️ Tool Invocations</span>
+          <span style="color: var(--accent-cyan)">Real-Time</span>
+        </div>
+        <div id="kpi-tools" class="kpi-value">0</div>
+        <div class="kpi-sub">Function calls handled</div>
+      </div>
+    </div>
+
+    <!-- Live Event Stream Console -->
+    <div class="log-panel">
+      <div class="log-controls">
+        <div class="filter-pills">
+          <button class="filter-pill active" data-filter="ALL">ALL</button>
+          <button class="filter-pill" data-filter="SPEECH">💬 SPEECH</button>
+          <button class="filter-pill" data-filter="LATENCY">⚡ LATENCY</button>
+          <button class="filter-pill" data-filter="TOOL">🛠️ TOOLS</button>
+          <button class="filter-pill" data-filter="ERROR">⚠️ ERRORS</button>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input id="log-search" type="text" class="search-input" placeholder="Search live telemetry logs..." />
+          <button id="clear-logs-btn" class="btn btn-secondary" style="padding: 7px 12px; font-size: 12px;">🗑️ Clear</button>
+        </div>
+      </div>
+
+      <!-- Feed list -->
+      <div id="log-feed" class="log-feed">
+        <div style="color: #64748b; font-size: 13px; text-align: center; padding: 40px 0;">Connecting to Cloud Run telemetry stream...</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/diagnostics.ts"></script>
+</body>
+</html>

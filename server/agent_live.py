@@ -12,6 +12,7 @@ import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
 from diagnostic_buffer import append_diagnostic_log
+from tracing import GLOBAL_LANGSMITH_TRACER
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -251,6 +252,7 @@ class GeminiSessionLoggerMixin:
         clean_sentence = sentence.strip()
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
+            GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -361,6 +363,11 @@ class GeminiSessionLoggerMixin:
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
             append_diagnostic_log("🤖 Bot Response", f'"{full_bot_text}"')
+            GLOBAL_LANGSMITH_TRACER.record_bot_turn(
+                full_bot_text,
+                ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
+                token_usage=getattr(self, '_last_turn_usage', None)
+            )
             self._bot_turn_text_buffer = ""
 
     async def _send_repeat_instruction(self, filler_text: str):
@@ -806,6 +813,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         context_aggregator.assistant(),
     ])
 
+    session_id = f"session_{int(time.time()*1000)}"
+    trace_url = GLOBAL_LANGSMITH_TRACER.start_session(session_id, model=model, voice=voice, language=language)
+
     task = PipelineTask(pipeline, params=PipelineParams(
         enable_metrics=True,
         enable_usage_metrics=True,
@@ -815,12 +825,18 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info("Pipecat Client connected")
-        # Defer greeting until start_trigger message is received
+        logger.info(f"Pipecat Client connected. Trace URL: {trace_url}")
+        if trace_url:
+            await transport.output().push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {"type": "trace_url", "url": trace_url}
+            }))
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Pipecat Client disconnected")
+        GLOBAL_LANGSMITH_TRACER.end_session()
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

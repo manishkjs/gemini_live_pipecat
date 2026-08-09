@@ -481,7 +481,7 @@ class WebsocketClientApp {
         const parts = [];
         if (this.lastLLMLatency !== null)
             parts.push(`⚡ Live TTFB: ${Math.round(this.lastLLMLatency * 1000)}ms`);
-        if (this.lastTTSLatency !== null)
+        if (this.lastTTSLatency !== null && this.activeTab === "tts-llm-stt")
             parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
         if (this.lastTurnUsage !== null) {
             let detailsStr = `Tokens: ${this.lastTurnUsage.total_token_count}`;
@@ -546,6 +546,14 @@ class WebsocketClientApp {
             const { participant, text } = message;
             const role = (participant === "User" || participant === "user") ? "user" : "bot";
             this.replaceChatMessage(role, text);
+        }
+        // Handle LangSmith Trace URL
+        if (message.type === "trace_url") {
+            const url = message.url;
+            const lsBtn = document.getElementById("diag-langsmith-btn");
+            if (lsBtn && url)
+                lsBtn.href = url;
+            this.log(`LangSmith Trace active: ${url}`, "info");
         }
         // Handle Metrics
         // Case 1: OutputTransportMessageFrame format
@@ -948,21 +956,24 @@ class WebsocketClientApp {
         document.head.appendChild(styleTag);
         const badge = document.createElement("div");
         badge.id = "floating-diag-badge";
-        badge.style.cssText = "background: linear-gradient(135deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.96) 100%); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.6); border-radius: 50px; padding: 10px 20px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 700; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); animation: diag-glow 4s infinite ease-in-out; backdrop-filter: blur(10px);";
+        badge.style.cssText = "background: linear-gradient(135deg, rgba(15, 23, 42, 0.96) 0%, rgba(30, 41, 59, 0.96) 100%); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.6); border-radius: 50px; padding: 10px 18px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 700; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); animation: diag-glow 4s infinite ease-in-out; backdrop-filter: blur(10px);";
         badge.innerHTML = `
       <div style="width: 10px; height: 10px; background: #4ade80; border-radius: 50%; animation: diag-pulse 2s infinite;"></div>
       <span style="letter-spacing: 0.5px;">⚡ DIAGNOSTIC ENGINE</span>
-      <div id="diag-ttfb-pill" style="background: rgba(56, 189, 248, 0.18); color: #7dd3fc; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 800; border: 1px solid rgba(56, 189, 248, 0.3); margin-left: 4px;">TTFB: -- ms</div>
+      <div id="diag-ttfb-pill" style="background: rgba(56, 189, 248, 0.18); color: #7dd3fc; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 800; border: 1px solid rgba(56, 189, 248, 0.3); margin-left: 2px;">TTFB: -- ms</div>
+      <a href="/diagnostics" target="_blank" onclick="event.stopPropagation()" style="background: linear-gradient(135deg, rgba(192, 132, 252, 0.25) 0%, rgba(56, 189, 248, 0.25) 100%); color: #e2e8f0; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; border: 1px solid rgba(192, 132, 252, 0.4); text-decoration: none; margin-left: 4px; display: inline-flex; align-items: center; gap: 4px;"><span>↗ Full Dashboard</span></a>
     `;
         const dialog = document.createElement("div");
         dialog.id = "floating-diag-dialog";
         dialog.style.cssText = "display: none; width: 860px; height: 640px; max-height: 88vh; max-width: 92vw; background: rgba(15, 23, 42, 0.97); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); overflow: hidden; flex-direction: column; margin-bottom: 16px;";
         dialog.innerHTML = `
-      <div style="background: rgba(0,0,0,0.5); padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.12); display: flex; justify-content: space-between; align-items: center;">
+      <div style="background: rgba(0,0,0,0.5); padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.12); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
         <span style="color: #f8fafc; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
           <span>🖥️</span> Cloud Run Live Diagnostic Feed (<span id="diag-log-count" style="color: #38bdf8;">0</span> items)
         </span>
         <div style="display: flex; gap: 8px; align-items: center;">
+          <a id="diag-langsmith-btn" href="https://smith.langchain.com/" target="_blank" style="background: linear-gradient(135deg, #0284c7 0%, #9333ea 100%); color: #ffffff; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"><span>↗️ LangSmith Trace</span></a>
+          <a href="/diagnostics" target="_blank" style="background: rgba(192,132,252,0.18); border: 1px solid rgba(192,132,252,0.35); color: #c084fc; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 600; text-decoration: none;">Full Console</a>
           <button id="diag-copy-btn" style="background: rgba(56,189,248,0.15); border: 1px solid rgba(56,189,248,0.3); color: #38bdf8; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600;"><i class="fas fa-copy"></i> Copy</button>
           <button id="diag-clear-btn" style="background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #f87171; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; font-weight: 600;"><i class="fas fa-trash"></i> Clear</button>
           <button id="diag-close-btn" style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #e2e8f0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;">✕</button>
