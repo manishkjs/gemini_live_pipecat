@@ -255,6 +255,11 @@ class GeminiSessionLoggerMixin:
             self._repeat_on_filler_pending = True
             logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
             
+            if getattr(self, '_bot_turn_text_buffer', '').strip():
+                interrupted_text = self._bot_turn_text_buffer.strip()
+                append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                self._bot_turn_text_buffer = ""
+
             elapsed_ms = None
             if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
                 elapsed_ms = round((time.time() - self._my_ttfb_start) * 1000.0, 1)
@@ -277,17 +282,24 @@ class GeminiSessionLoggerMixin:
 
         await super().process_frame(frame, direction)
 
+    async def _push_user_transcription(self, sentence: str, result=None):
+        """Emit consolidated complete sentences for user speech."""
+        await super()._push_user_transcription(sentence, result=result)
+        clean_sentence = sentence.strip()
+        if clean_sentence:
+            append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'transcription',
+                    'participant': 'User',
+                    'text': clean_sentence
+                }
+            }))
+
     async def _handle_msg_input_transcription(self, message):
-        """Override to detect ≤2-word fillers after an interruption and auto-repeat.
-
-        The API sends transcription in chunks (fragments). We accumulate text
-        in our own buffer and check once a complete sentence is formed (sentence-
-        ending punctuation detected). This avoids false positives from partial
-        chunks like "अच्छा," arriving before the rest of a longer sentence.
-
-        We ALWAYS let the parent handle sentence buffering and TranscriptionFrame
-        emission first, then evaluate the filler logic.
-        """
+        """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
@@ -305,20 +317,8 @@ class GeminiSessionLoggerMixin:
                 f"(buffer: '{self._post_interruption_buffer.strip()}')"
             )
 
-        # ALWAYS let parent handle normally (sentence buffering, TranscriptionFrame)
+        # Let parent handle sentence buffering and trigger _push_user_transcription on full sentence
         await super()._handle_msg_input_transcription(message)
-
-        # Send transcription to UI
-        logger.debug(f"[Transcription] User: {text}")
-        await self.push_frame(OutputTransportMessageFrame(message={
-            "label": "rtvi-ai",
-            "type": "server-message",
-            "data": {
-                'type': 'transcription',
-                'participant': 'User',
-                'text': text
-            }
-        }))
 
         # After parent processes, check if our buffer forms a complete sentence
         if getattr(self, '_repeat_on_filler_pending', False):
@@ -326,7 +326,6 @@ class GeminiSessionLoggerMixin:
             if not buffer:
                 return
 
-            import re
             has_sentence_end = bool(re.search(r'[.।!?\n]', buffer))
             user_stopped = not getattr(self, '_user_is_speaking', True)
 
@@ -340,16 +339,6 @@ class GeminiSessionLoggerMixin:
                         f"[RepeatOnFiller] Filler detected: '{buffer}' "
                         f"({word_count} word(s)). Sending repeat instruction."
                     )
-                    self._repeat_on_filler_pending = False
-                    await self.push_frame(OutputTransportMessageFrame(message={
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {
-                            'type': 'transcription',
-                            'participant': 'Bot',
-                            'text': text
-                        }
-                    }))
                     self._repeat_on_filler_pending = False
                     self._post_interruption_buffer = ""
                     await self._send_repeat_instruction(buffer)
@@ -365,7 +354,11 @@ class GeminiSessionLoggerMixin:
         await super()._handle_msg_output_transcription(message)
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
             text = message.server_content.output_transcription.text
-            logger.debug(f"[Transcription] Bot: {text}")
+            
+            # Accumulate text for the complete bot turn
+            if not hasattr(self, '_bot_turn_text_buffer'):
+                self._bot_turn_text_buffer = ""
+            self._bot_turn_text_buffer += text
             
             # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
             if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
@@ -399,6 +392,13 @@ class GeminiSessionLoggerMixin:
                 "type": "server-message",
                 "data": message_data
             }))
+
+    async def _handle_msg_turn_complete(self, message):
+        await super()._handle_msg_turn_complete(message)
+        if getattr(self, '_bot_turn_text_buffer', '').strip():
+            full_bot_text = self._bot_turn_text_buffer.strip()
+            append_diagnostic_log("🤖 Bot Response", f'"{full_bot_text}"')
+            self._bot_turn_text_buffer = ""
 
     async def _send_repeat_instruction(self, filler_text: str):
         """Send a user-role prompt telling the model to repeat itself."""
