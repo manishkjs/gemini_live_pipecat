@@ -306,10 +306,10 @@ async def run_agent(
 
     stt = None
     if not skip_stt:
-        stt_location = location if ("chirp_2" in stt_model or "gemini" in stt_model) else "us"
+        stt_loc = "us-central1" if ("chirp" in stt_model) else ("global" if "gemini" in stt_model else "us")
         stt = GoogleSTTService(
             vertexai_project=project_id,
-            location=stt_location,
+            location=stt_loc,
             settings=GoogleSTTService.Settings(
                 languages=[Language(lang) for lang in stt_language.split(',')] if stt_language else [Language("en-US")],
                 model=stt_model,

@@ -306,7 +306,7 @@ class WebsocketClientApp {
         const option = document.createElement("option");
         option.value = voice.value;
         option.textContent = voice.label;
-        if (model.startsWith("gemini") && voice.value === "Kore") {
+        if (model.startsWith("gemini") && voice.value === "Aoede") {
           option.selected = true;
         }
         ttsVoiceSelect.appendChild(option);
