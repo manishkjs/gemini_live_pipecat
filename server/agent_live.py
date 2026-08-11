@@ -719,8 +719,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "gemini-3.5-live-preview",
         "gemini-3.5-live-extended-thinking-preview",
         "gemini-3.1-flash-live-preview",
-        "gemini-2.0-flash-exp",
-        "gemini-2.0-flash-realtime-exp",
     }
     is_ai_studio = model.endswith("-aistudio") or model in AI_STUDIO_MODELS
     clean_model = model[:-9] if model.endswith("-aistudio") else model
