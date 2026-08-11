@@ -707,7 +707,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     
     voice_name = voice if not use_external_tts else None
     if not voice_name and not use_external_tts:
-        voice_name = "Zephyr" if "gemini-3.1" in model else "Aoede"
+        voice_name = "Aoede"
 
     cwc = {}
     if context_compression:
@@ -715,11 +715,14 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if context_compression_trigger_tokens is not None:
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
-    is_ai_studio = model.endswith("-aistudio") or model in [
+    AI_STUDIO_MODELS = {
+        "gemini-3.5-live-preview",
+        "gemini-3.5-live-extended-thinking-preview",
         "gemini-3.1-flash-live-preview",
         "gemini-2.0-flash-exp",
         "gemini-2.0-flash-realtime-exp",
-    ]
+    }
+    is_ai_studio = model.endswith("-aistudio") or model in AI_STUDIO_MODELS
     clean_model = model[:-9] if model.endswith("-aistudio") else model
 
     if is_ai_studio:
@@ -755,7 +758,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
-        live_location = "global" if any(k in clean_model for k in ["gemini-3.6"]) else location
+        live_location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or location or "us-central1"
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{clean_model}",
             system_instruction=prompt_text,
@@ -773,7 +776,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if clean_model in ["gemini-2.5-flash-native-audio-eap-11-2025", "gemini-3.5-flash-live-preview", "gemini-live-2.5-flash-preview-native-audio-09-2025"]:
+        if any(k in clean_model for k in ["3.5", "3.1", "eap", "preview"]):
             vertex_params["http_options"] = HttpOptions(api_version="v1beta")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 

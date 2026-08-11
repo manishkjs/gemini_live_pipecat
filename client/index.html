@@ -156,9 +156,10 @@
                   <div class="setting">
                     <label for="stt-model-select">Model</label>
                     <select id="stt-model-select">
+                      <option value="gemini-3.5-transcribe-live-preview" selected>gemini-3.5-transcribe-live-preview</option>
+                      <option value="chirp_3">chirp_3</option>
                       <option value="latest_long">latest_long</option>
                       <option value="telephony">telephony</option>
-                      <option value="chirp_3" selected>chirp_3</option>
                     </select>
                   </div>
                   <div class="setting">
@@ -255,30 +256,31 @@
               <div class="setting">
                 <label for="gemini-model-select">Model</label>
                 <select id="gemini-model-select">
-                  <option value="gemini-3.5-flash-live-preview" selected>
-                    gemini-3.5-flash-live-preview (Vertex AI - native audio)
-                  </option>
-                  <option value="gemini-live-2.5-flash-native-audio">
-                    gemini-live-2.5-flash-native-audio (Vertex AI - native audio)
-                  </option>
-                  <option value="gemini-live-2.5-flash">
-                    gemini-live-2.5-flash (Vertex AI - cascaded model)
-                  </option>
-                  <option value="gemini-live-2.5-flash-preview-native-audio-09-2025">
-                    gemini-live-2.5-flash-preview-native-audio-09-2025 (Vertex AI)
-                  </option>
-                  <option value="gemini-2.5-flash-native-audio-eap-11-2025">
-                    gemini-2.5-flash-native-audio-eap-11-2025 (Vertex AI EAP)
-                  </option>
-                  <option value="gemini-3.5-flash-live-preview-aistudio">
-                    gemini-3.5-flash-live-preview (AI Studio)
-                  </option>
-                  <option value="gemini-3.1-flash-live-preview">
-                    gemini-3.1-flash-live-preview (AI Studio)
-                  </option>
-                  <option value="gemini-2.0-flash-exp">
-                    gemini-2.0-flash-exp (AI Studio)
-                  </option>
+                  <optgroup label="Vertex AI (Gemini Live)">
+                    <option value="gemini-3.5-flash-live-preview" selected>
+                      gemini-3.5-flash-live-preview (Vertex AI Live)
+                    </option>
+                    <option value="gemini-3.5-flash-lite-live-preview">
+                      gemini-3.5-flash-lite-live-preview (Vertex AI Live Lite)
+                    </option>
+                    <option value="gemini-live-2.5-flash-native-audio">
+                      gemini-live-2.5-flash-native-audio (Vertex AI)
+                    </option>
+                    <option value="gemini-live-2.5-flash">
+                      gemini-live-2.5-flash (Vertex AI Cascaded)
+                    </option>
+                  </optgroup>
+                  <optgroup label="AI Studio (Gemini Live)">
+                    <option value="gemini-3.5-live-preview">
+                      gemini-3.5-live-preview (AI Studio)
+                    </option>
+                    <option value="gemini-3.5-live-extended-thinking-preview">
+                      gemini-3.5-live-extended-thinking-preview (AI Studio Thinking)
+                    </option>
+                    <option value="gemini-3.1-flash-live-preview">
+                      gemini-3.1-flash-live-preview (AI Studio)
+                    </option>
+                  </optgroup>
                 </select>
               </div>
               <div class="setting">

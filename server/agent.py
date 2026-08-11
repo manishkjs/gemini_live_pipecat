@@ -306,7 +306,7 @@ async def run_agent(
 
     stt = None
     if not skip_stt:
-        stt_location = location if "chirp_2" in stt_model else "us"
+        stt_location = location if ("chirp_2" in stt_model or "gemini" in stt_model) else "us"
         stt = GoogleSTTService(
             vertexai_project=project_id,
             location=stt_location,
@@ -327,7 +327,7 @@ async def run_agent(
     llm_location = "global" if any(k in llm_model for k in ["gemini-3", "3.6", "3.5"]) else location
     
     thinking_config = None
-    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.5-pro", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3-pro-preview", "gemini-3.1-pro-preview"]):
+    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
 
     llm = CustomGoogleVertexLLMService(
@@ -343,7 +343,7 @@ async def run_agent(
 
     if tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
-        tts_location = "global" if any(k in tts_model for k in ["gemini-3", "3.5"]) else location
+        tts_location = "global" if "gemini-3" in tts_model else location
         
         tts_lang = "hi-IN"
         if stt_language:
