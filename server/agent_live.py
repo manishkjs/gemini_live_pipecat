@@ -752,7 +752,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             "tools": tools_schema,
             "transcribe_model_audio": True,
             "settings": settings,
-            "http_options": HttpOptions(api_version="v1beta")
+            "http_options": HttpOptions(api_version="v1alpha")
         }
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
@@ -774,8 +774,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if any(k in clean_model for k in ["3.5", "3.1", "eap", "preview"]):
-            vertex_params["http_options"] = HttpOptions(api_version="v1beta")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     llm.register_function("get_current_time", get_current_time)
