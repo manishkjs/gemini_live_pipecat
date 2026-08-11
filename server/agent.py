@@ -15,13 +15,14 @@ from pipecat.processors.aggregators.llm_response_universal import LLMContextAggr
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
+from pipecat.services.stt_service import STTService
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.frames.frames import (Frame, TranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
+from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
                                    TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
-                                   InputTransportMessageFrame, LLMContextFrame)
+                                   InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.transcriptions.language import Language
@@ -201,6 +202,106 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
         }))
 
 
+class GeminiLiveSTTService(STTService):
+    def __init__(
+        self,
+        *,
+        model: str = "gemini-3.5-transcribe-live-preview",
+        project_id: Optional[str] = None,
+        location: str = "us-central1",
+        api_key: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(sample_rate=16000, **kwargs)
+        self._model = model
+        self._project_id = project_id or "deep-clock-339817"
+        self._location = location
+        self._api_key = api_key
+        self._client = None
+        self._session = None
+        self._audio_queue = asyncio.Queue(maxsize=200)
+        self._sender_task = None
+        self._receiver_task = None
+        self._running = False
+
+    async def start(self, frame_processor):
+        await super().start(frame_processor)
+        self._running = True
+        self._sender_task = self.create_task(self._session_loop())
+
+    async def _session_loop(self):
+        try:
+            if self._api_key:
+                self._client = genai.Client(api_key=self._api_key, http_options={"api_version": "v1alpha"})
+            else:
+                self._client = genai.Client(vertexai=True, project=self._project_id, location=self._location)
+
+            config = types.LiveConnectConfig(
+                response_modalities=["TEXT"],
+            )
+            model_target = self._model
+            if not model_target.startswith("models/") and not model_target.startswith("projects/") and not model_target.startswith("publishers/"):
+                model_target = f"models/{model_target}" if self._api_key else f"publishers/google/models/{model_target}"
+
+            logger.info(f"GeminiLiveSTTService connecting to {model_target}...")
+            async with self._client.aio.live.connect(model=model_target, config=config) as session:
+                self._session = session
+                logger.info(f"GeminiLiveSTTService connected successfully to {model_target}")
+                self._receiver_task = self.create_task(self._receive_loop())
+
+                while self._running:
+                    chunk = await self._audio_queue.get()
+                    if chunk is None:
+                        break
+                    await session.send_realtime_input(media_chunks=[{"data": chunk, "mime_type": "audio/pcm"}])
+        except Exception as e:
+            logger.warning(f"GeminiLiveSTTService session note: {e}")
+        finally:
+            if self._receiver_task:
+                await self.cancel_task(self._receiver_task)
+
+    async def _receive_loop(self):
+        try:
+            if not self._session:
+                return
+            async for response in self._session.receive():
+                sc = getattr(response, "server_content", None)
+                if not sc:
+                    continue
+                # Interim transcription
+                if getattr(sc, "interim_input_transcription", None) and sc.interim_input_transcription.text:
+                    txt = sc.interim_input_transcription.text
+                    await self.push_frame(InterimTranscriptionFrame(text=txt, user_id="user", timestamp=time.strftime("%H:%M:%S")))
+                # Final transcription
+                elif getattr(sc, "input_transcription", None) and sc.input_transcription.text:
+                    txt = sc.input_transcription.text
+                    await self.push_frame(TranscriptionFrame(text=txt, user_id="user", timestamp=time.strftime("%H:%M:%S")))
+                elif getattr(sc, "model_turn", None):
+                    for part in sc.model_turn.parts:
+                        if getattr(part, "text", None):
+                            await self.push_frame(TranscriptionFrame(text=part.text, user_id="user", timestamp=time.strftime("%H:%M:%S")))
+        except Exception as e:
+            logger.debug(f"GeminiLiveSTTService receive loop note: {e}")
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (AudioRawFrame, UserAudioRawFrame)):
+            if self._audio_queue.full():
+                try:
+                    self._audio_queue.get_nowait()
+                except Exception: pass
+            await self._audio_queue.put(frame.audio)
+        await self.push_frame(frame, direction)
+
+    async def stop(self, frame_processor):
+        self._running = False
+        if self._audio_queue:
+            await self._audio_queue.put(None)
+        if self._sender_task:
+            await self.cancel_task(self._sender_task)
+        await super().stop(frame_processor)
+
+
 class TranscriptionBroadcaster(FrameProcessor):
     def __init__(self, participant: str):
         super().__init__()
@@ -306,18 +407,36 @@ async def run_agent(
 
     stt = None
     if not skip_stt:
-        valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
-        clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
-        stt_loc = "us-central1" if ("chirp" in clean_stt_model) else "us"
-        stt = GoogleSTTService(
-            vertexai_project=project_id,
-            location=stt_loc,
-            settings=GoogleSTTService.Settings(
-                languages=[Language(lang) for lang in stt_language.split(',')] if stt_language else [Language("en-US")],
-                model=clean_stt_model,
-                enable_interim_results=True,
+        if "transcribe" in stt_model or "gemini" in stt_model:
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_api_key:
+                try:
+                    from google.cloud import secretmanager
+                    sm_client = secretmanager.SecretManagerServiceClient()
+                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                    gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                except Exception:
+                    pass
+            stt = GeminiLiveSTTService(
+                model=stt_model,
+                project_id=project_id,
+                location=location,
+                api_key=gemini_api_key
             )
-        )
+        else:
+            valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
+            clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
+            stt_loc = "us-central1" if ("chirp" in clean_stt_model) else "us"
+            stt = GoogleSTTService(
+                vertexai_project=project_id,
+                location=stt_loc,
+                settings=GoogleSTTService.Settings(
+                    languages=[Language(lang) for lang in stt_language.split(',')] if stt_language else [Language("en-US")],
+                    model=clean_stt_model,
+                    enable_interim_results=True,
+                )
+            )
 
     final_system_instruction = system_instruction or SYSTEM_PROMPT
     if tts_model.startswith("gemini"):
