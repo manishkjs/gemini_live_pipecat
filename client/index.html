@@ -198,12 +198,16 @@
                     <option value="gemini-3.6-flash">gemini-3.6-flash</option>
                     <option value="gemini-3.5-flash-lite" selected>gemini-3.5-flash-lite</option>
                     <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                    <option value="gemini-3.5-pro">gemini-3.5-pro</option>
+                    <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview</option>
+                    <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+                    <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                    <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
                     <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                     <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
                     <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                    <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                    <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
-                    <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                    <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
                   </select>
                 </div>
               </div>
@@ -214,10 +218,11 @@
                 <div class="setting">
                   <label for="tts-model-select">Model</label>
                   <select id="tts-model-select">
-                    <option value="gemini-3.1-flash-tts-preview" selected>gemini-3.1-flash-tts-preview (Gemini)</option>
-                    <option value="gemini-2.5-flash-lite-preview-tts">gemini-2.5-flash-lite-preview-tts (Gemini)</option>
-                    <option value="gemini-2.5-flash-preview-tts">gemini-2.5-flash-preview-tts (Gemini)</option>
-                    <option value="gemini-2.5-pro-preview-tts">gemini-2.5-pro-preview-tts (Gemini)</option>
+                    <option value="gemini-3.5-flash-tts-preview" selected>gemini-3.5-flash-tts-preview (Gemini 3.5)</option>
+                    <option value="gemini-3.1-flash-tts-preview">gemini-3.1-flash-tts-preview (Gemini 3.1)</option>
+                    <option value="gemini-2.5-flash-lite-preview-tts">gemini-2.5-flash-lite-preview-tts (Gemini 2.5)</option>
+                    <option value="gemini-2.5-flash-preview-tts">gemini-2.5-flash-preview-tts (Gemini 2.5)</option>
+                    <option value="gemini-2.5-pro-preview-tts">gemini-2.5-pro-preview-tts (Gemini 2.5)</option>
                     <option value="google-tts">Google TTS - Chirp 3 HD</option>
                   </select>
                   </div>
@@ -250,17 +255,29 @@
               <div class="setting">
                 <label for="gemini-model-select">Model</label>
                 <select id="gemini-model-select">
+                  <option value="gemini-3.5-flash-live-preview" selected>
+                    gemini-3.5-flash-live-preview (Vertex AI - native audio)
+                  </option>
+                  <option value="gemini-live-2.5-flash-native-audio">
+                    gemini-live-2.5-flash-native-audio (Vertex AI - native audio)
+                  </option>
                   <option value="gemini-live-2.5-flash">
                     gemini-live-2.5-flash (Vertex AI - cascaded model)
                   </option>
-                  <option value="gemini-live-2.5-flash-native-audio" selected>
-                    gemini-live-2.5-flash-native-audio (Vertex AI)
-                  </option>
                   <option value="gemini-live-2.5-flash-preview-native-audio-09-2025">
-                    gemini-live-2.5-flash-preview-native-audio-09-2025 (Vertex AI - native audio)
+                    gemini-live-2.5-flash-preview-native-audio-09-2025 (Vertex AI)
+                  </option>
+                  <option value="gemini-2.5-flash-native-audio-eap-11-2025">
+                    gemini-2.5-flash-native-audio-eap-11-2025 (Vertex AI EAP)
+                  </option>
+                  <option value="gemini-3.5-flash-live-preview-aistudio">
+                    gemini-3.5-flash-live-preview (AI Studio)
                   </option>
                   <option value="gemini-3.1-flash-live-preview">
                     gemini-3.1-flash-live-preview (AI Studio)
+                  </option>
+                  <option value="gemini-2.0-flash-exp">
+                    gemini-2.0-flash-exp (AI Studio)
                   </option>
                 </select>
               </div>

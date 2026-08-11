@@ -91,8 +91,7 @@ app.add_middleware(
 async def websocket_endpoint(
     websocket: WebSocket,
     bot_type: str = "tts-llm-stt",
-    model: str = "gemini-live-2.5-flash-native-audio",
-    #gemini-2.5-flash-native-audio-preview-09-2025
+    model: str = "gemini-3.5-flash-live-preview",
     voice: Optional[str] = "Puck",
     language: str = "en-US",
     system_instruction: Optional[str] = None,

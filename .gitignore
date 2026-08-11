@@ -8,6 +8,8 @@ node_modules/
 build/
 dist/
 **/dist/
+client/src/*.js
+client/src/*.js.map
 .DS_Store
 
 # Misc / Agent logs & scratch

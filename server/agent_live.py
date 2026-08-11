@@ -705,7 +705,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
     
-    voice_name = "Zephyr" if (model == "gemini-3.1-flash-live-preview" and not use_external_tts) else (voice if not use_external_tts else None)
+    voice_name = voice if not use_external_tts else None
+    if not voice_name and not use_external_tts:
+        voice_name = "Zephyr" if "gemini-3.1" in model else "Aoede"
 
     cwc = {}
     if context_compression:
@@ -713,7 +715,14 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if context_compression_trigger_tokens is not None:
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
-    if model == "gemini-3.1-flash-live-preview":
+    is_ai_studio = model.endswith("-aistudio") or model in [
+        "gemini-3.1-flash-live-preview",
+        "gemini-2.0-flash-exp",
+        "gemini-2.0-flash-realtime-exp",
+    ]
+    clean_model = model[:-9] if model.endswith("-aistudio") else model
+
+    if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         if not gemini_api_key:
@@ -730,7 +739,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
         settings = GeminiLiveLLMService.Settings(
-            model=f"models/{model}",
+            model=f"models/{clean_model}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
@@ -746,9 +755,9 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
-        live_location = "global" if any(k in model for k in ["gemini-3", "3.6"]) else location
+        live_location = "global" if any(k in clean_model for k in ["gemini-3.6"]) else location
         settings = GeminiLiveVertexLLMService.Settings(
-            model=f"google/{model}",
+            model=f"google/{clean_model}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
@@ -764,7 +773,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        if model == "gemini-2.5-flash-native-audio-eap-11-2025":
+        if clean_model in ["gemini-2.5-flash-native-audio-eap-11-2025", "gemini-3.5-flash-live-preview", "gemini-live-2.5-flash-preview-native-audio-09-2025"]:
             vertex_params["http_options"] = HttpOptions(api_version="v1beta")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 

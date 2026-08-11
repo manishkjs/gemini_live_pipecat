@@ -327,7 +327,7 @@ async def run_agent(
     llm_location = "global" if any(k in llm_model for k in ["gemini-3", "3.6", "3.5"]) else location
     
     thinking_config = None
-    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]):
+    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.5-pro", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3-pro-preview", "gemini-3.1-pro-preview"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
 
     llm = CustomGoogleVertexLLMService(
@@ -343,7 +343,7 @@ async def run_agent(
 
     if tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
-        tts_location = "global" if "gemini-3" in tts_model else location
+        tts_location = "global" if any(k in tts_model for k in ["gemini-3", "3.5"]) else location
         
         tts_lang = "hi-IN"
         if stt_language:
