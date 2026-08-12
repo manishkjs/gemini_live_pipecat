@@ -379,15 +379,9 @@ class StartTriggerProcessor(FrameProcessor):
                 if not self.triggered:
                     self.triggered = True
                     logger.info("[StartTriggerProcessor] start_trigger received. Queueing initial greeting turn.")
-                    if self.skip_stt:
-                        await self.push_frame(LLMContextFrame(self.context))
-                        await self.push_frame(LLMRunFrame())
-                    else:
-                        await self.push_frame(self.context_aggregator.user()._get_context_frame())
-                        await self.push_frame(LLMRunFrame())
+                    await self.push_frame(LLMRunFrame())
                 return
         await super().process_frame(frame, direction)
-        await self.push_frame(frame, direction)
 
 
 async def run_agent(

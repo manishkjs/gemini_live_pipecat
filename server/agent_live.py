@@ -611,7 +611,6 @@ class StartTriggerProcessor(FrameProcessor):
                     await self.push_frame(LLMRunFrame())
                 return
         await super().process_frame(frame, direction)
-        await self.push_frame(frame, direction)
 
 
 async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = None):

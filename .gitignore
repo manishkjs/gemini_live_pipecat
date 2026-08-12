@@ -34,3 +34,5 @@ server/voice_cloning_key_*.txt
 server/user_memories*.json
 server/rag_last_result.txt
 server/data/
+*.key
+*sa_key*.json
