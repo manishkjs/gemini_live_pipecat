@@ -417,36 +417,22 @@ async def run_agent(
 
     stt = None
     if not skip_stt:
-        if "transcribe" in stt_model or "gemini" in stt_model:
-            gemini_api_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_api_key:
-                try:
-                    from google.cloud import secretmanager
-                    sm_client = secretmanager.SecretManagerServiceClient()
-                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                    gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
-                except Exception:
-                    pass
-            stt = GeminiLiveSTTService(
-                model=stt_model,
-                project_id=project_id,
-                location=location,
-                api_key=gemini_api_key
+        valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
+        clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
+        # chirp_3 is hosted in US multi-region ("us"), while chirp_2 is in us-central1
+        stt_loc = "us-central1" if ("chirp_2" in clean_stt_model) else "us"
+        
+        stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
+        
+        stt = GoogleSTTService(
+            vertexai_project=project_id,
+            location=stt_loc,
+            settings=GoogleSTTService.Settings(
+                languages=stt_languages,
+                model=clean_stt_model,
+                enable_interim_results=True,
             )
-        else:
-            valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
-            clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
-            stt_loc = "us-central1" if ("chirp_2" in clean_stt_model) else "us"
-            stt = GoogleSTTService(
-                vertexai_project=project_id,
-                location=stt_loc,
-                settings=GoogleSTTService.Settings(
-                    languages=[Language(lang) for lang in stt_language.split(',')] if stt_language else [Language("en-US")],
-                    model=clean_stt_model,
-                    enable_interim_results=True,
-                )
-            )
+        )
 
     final_system_instruction = system_instruction or SYSTEM_PROMPT
     if tts_model.startswith("gemini"):

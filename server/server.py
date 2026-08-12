@@ -100,7 +100,7 @@ async def websocket_endpoint(
     tts_model: str = "gemini-3.1-flash-tts-preview",
     tts_pace: float = 0.80,
     llm_model: str = "gemini-3.5-flash-lite",
-    stt_model: str = "gemini-3.5-transcribe-live-preview",
+    stt_model: str = "chirp_3",
     stt_language: str = "en-US",
     tools: Optional[str] = None,
     skip_stt: bool = False,
