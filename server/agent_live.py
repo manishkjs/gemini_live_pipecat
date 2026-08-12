@@ -59,6 +59,7 @@ from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
+from evaluator import VoiceEvaluatorProcessor
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -802,6 +803,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
+    evaluator = VoiceEvaluatorProcessor()
+
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(language=language),
@@ -809,6 +812,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
+        evaluator,
         transport.output(),
         context_aggregator.assistant(),
     ])
