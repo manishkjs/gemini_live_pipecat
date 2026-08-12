@@ -90,10 +90,10 @@ app.add_middleware(
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    bot_type: str = "tts-llm-stt",
-    model: str = "gemini-3.5-flash-live-preview",
-    voice: Optional[str] = "Puck",
-    language: str = "en-US",
+    bot_type: str = "gemini-live",
+    model: str = "gemini-3.5-live-extended-thinking-preview",
+    voice: Optional[str] = "Aoede",
+    language: str = "hi-IN",
     system_instruction: Optional[str] = None,
     tts: bool = False,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",

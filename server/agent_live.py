@@ -11,6 +11,17 @@ from datetime import datetime
 import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
+from tools.financial_math import (
+    calculate_stl_returns,
+    calculate_mtl_returns,
+    calculate_manual_lending,
+    calculate_sip_returns,
+    get_product_recommendation,
+)
+from tools.navigation import (
+    get_kyc_guidance,
+    get_app_screen_flow,
+)
 from diagnostic_buffer import append_diagnostic_log
 from tracing import GLOBAL_LANGSMITH_TRACER
 
@@ -516,6 +527,198 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 
 
+# ── Cymbal Lending Deterministic Tool Schemas ───────────────────────
+
+calculate_stl_returns_schema = FunctionSchema(
+    name="calculate_stl_returns",
+    description="Calculate exact returns for Short Term Lumpsum (STL 5M & 7M) plans on Cymbal Lending (12%-18% annualized XIRR).",
+    properties={
+        "amount": {
+            "type": "number",
+            "description": "Investment amount in rupees (Min ₹25,000, Max ₹25,00,000)."
+        },
+        "tenure_months": {
+            "type": "integer",
+            "description": "Tenure in months (3, 4, 5 for STL 5M; 4, 5, 6 for STL 7M). Optional - defaults to 5 months."
+        }
+    },
+    required=["amount"]
+)
+
+calculate_mtl_returns_schema = FunctionSchema(
+    name="calculate_mtl_returns",
+    description="Calculate exact returns for Medium Term Lumpsum (MTL 14M) plans (12-month tenure, 16%-24% annualized XIRR).",
+    properties={
+        "amount": {
+            "type": "number",
+            "description": "Investment amount in rupees (Min ₹1,00,000)."
+        },
+        "repayment_type": {
+            "type": "string",
+            "enum": ["monthly", "daily"],
+            "description": "'monthly' for MTL 14M Monthly (21-24% XIRR EMI), 'daily' for MTL 14M Daily EDI (16-18% XIRR low risk)."
+        }
+    },
+    required=["amount"]
+)
+
+calculate_manual_lending_schema = FunctionSchema(
+    name="calculate_manual_lending",
+    description="Calculate returns for Manual Lending (Standard 18%-24% XIRR or Custom Portfolio Rule 4 Step A-G breakdown with NPA and fee deductions).",
+    properties={
+        "amount": {
+            "type": "number",
+            "description": "Investment amount in rupees (Min ₹250, Max ₹50,00,000)."
+        },
+        "tenure_months": {
+            "type": "integer",
+            "description": "Tenure in months (2, 3, 4, 5, 6, or 12 months)."
+        },
+        "custom_borrower_rate_pct": {
+            "type": "number",
+            "description": "Optional custom borrower interest rate % (e.g. 40.0, 48.0) if user asks for custom portfolio math."
+        },
+        "custom_npa_rate_pct": {
+            "type": "number",
+            "description": "Optional custom NPA / default rate % (defaults to 3.5%)."
+        }
+    },
+    required=["amount"]
+)
+
+calculate_sip_returns_schema = FunctionSchema(
+    name="calculate_sip_returns",
+    description="Calculate Systematic Investment Plan (SIP) compounding growth.",
+    properties={
+        "monthly_amount": {
+            "type": "number",
+            "description": "Monthly investment amount in rupees."
+        },
+        "annual_rate": {
+            "type": "number",
+            "description": "Annual return rate percentage."
+        },
+        "years": {
+            "type": "integer",
+            "description": "Investment duration in years."
+        }
+    },
+    required=["monthly_amount", "annual_rate", "years"]
+)
+
+get_product_recommendation_schema = FunctionSchema(
+    name="get_product_recommendation",
+    description="Validate investment parameters and get the best recommended Cymbal Lending product.",
+    properties={
+        "amount": {
+            "type": "number",
+            "description": "Planned investment amount in rupees."
+        },
+        "risk_appetite": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "User's risk appetite: 'low' (AAA daily), 'medium' (AA monthly), 'high' (A STL)."
+        },
+        "tenure_months": {
+            "type": "integer",
+            "description": "Desired tenure in months (3, 4, 5, 6, or 12). Note: 9 months is not available."
+        }
+    },
+    required=["amount"]
+)
+
+get_kyc_guidance_schema = FunctionSchema(
+    name="get_kyc_guidance",
+    description="Get step-by-step KYC verification guidance for PAN, Aadhaar OTP, or Bank penny-drop linking.",
+    properties={
+        "step_or_doc": {
+            "type": "string",
+            "description": "Specific document or step: 'pan', 'aadhaar', 'bank', or 'all'."
+        }
+    },
+    required=[]
+)
+
+get_app_screen_flow_schema = FunctionSchema(
+    name="get_app_screen_flow",
+    description="Get mobile app UI navigation steps for depositing funds, selecting STL/MTL plans, or manual lending.",
+    properties={
+        "target_flow": {
+            "type": "string",
+            "description": "Flow to navigate: 'deposit', 'lumpsum', 'manual', or 'general'."
+        }
+    },
+    required=["target_flow"]
+)
+
+# ── Cymbal Lending Async Tool Handlers ──────────────────────────────
+
+async def handle_calculate_stl_returns(params: FunctionCallParams):
+    args = params.arguments
+    amount = float(args.get("amount", 50000))
+    tenure = args.get("tenure_months")
+    tenure_months = int(tenure) if tenure is not None else None
+    result = calculate_stl_returns(amount=amount, tenure_months=tenure_months)
+    logger.info(f"[Tool:calculate_stl_returns] amount={amount}, tenure={tenure_months} -> {result}")
+    await params.result_callback(result)
+
+async def handle_calculate_mtl_returns(params: FunctionCallParams):
+    args = params.arguments
+    amount = float(args.get("amount", 100000))
+    repayment_type = str(args.get("repayment_type", "monthly"))
+    result = calculate_mtl_returns(amount=amount, repayment_type=repayment_type)
+    logger.info(f"[Tool:calculate_mtl_returns] amount={amount}, repayment={repayment_type} -> {result}")
+    await params.result_callback(result)
+
+async def handle_calculate_manual_lending(params: FunctionCallParams):
+    args = params.arguments
+    amount = float(args.get("amount", 50000))
+    tenure = int(args.get("tenure_months", 12))
+    borrower_rate = args.get("custom_borrower_rate_pct")
+    npa_rate = args.get("custom_npa_rate_pct")
+    result = calculate_manual_lending(
+        amount=amount,
+        tenure_months=tenure,
+        custom_borrower_rate_pct=float(borrower_rate) if borrower_rate is not None else None,
+        custom_npa_rate_pct=float(npa_rate) if npa_rate is not None else None,
+    )
+    logger.info(f"[Tool:calculate_manual_lending] amount={amount}, tenure={tenure} -> {result}")
+    await params.result_callback(result)
+
+async def handle_calculate_sip_returns(params: FunctionCallParams):
+    args = params.arguments
+    monthly_amount = float(args.get("monthly_amount", 5000))
+    annual_rate = float(args.get("annual_rate", 15.0))
+    years = int(args.get("years", 3))
+    result = calculate_sip_returns(monthly_amount=monthly_amount, annual_rate=annual_rate, years=years)
+    logger.info(f"[Tool:calculate_sip_returns] monthly={monthly_amount}, rate={annual_rate}, years={years} -> {result}")
+    await params.result_callback(result)
+
+async def handle_get_product_recommendation(params: FunctionCallParams):
+    args = params.arguments
+    amount = float(args.get("amount", 50000))
+    risk_appetite = str(args.get("risk_appetite", "medium"))
+    tenure = args.get("tenure_months")
+    tenure_months = int(tenure) if tenure is not None else None
+    result = get_product_recommendation(amount=amount, risk_appetite=risk_appetite, tenure_months=tenure_months)
+    logger.info(f"[Tool:get_product_recommendation] amount={amount}, risk={risk_appetite}, tenure={tenure_months} -> {result}")
+    await params.result_callback(result)
+
+async def handle_get_kyc_guidance(params: FunctionCallParams):
+    args = params.arguments
+    step = str(args.get("step_or_doc", "all"))
+    result = get_kyc_guidance(step_or_doc=step)
+    logger.info(f"[Tool:get_kyc_guidance] step={step} -> {result}")
+    await params.result_callback(result)
+
+async def handle_get_app_screen_flow(params: FunctionCallParams):
+    args = params.arguments
+    flow = str(args.get("target_flow", "general"))
+    result = get_app_screen_flow(target_flow=flow)
+    logger.info(f"[Tool:get_app_screen_flow] flow={flow} -> {result}")
+    await params.result_callback(result)
+
+
 async def dynamic_tool_handler(params: FunctionCallParams):
     logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
     await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
@@ -670,6 +873,13 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             required=["is_explicit_request"]
         ),
         search_knowledge_base_schema,
+        calculate_stl_returns_schema,
+        calculate_mtl_returns_schema,
+        calculate_manual_lending_schema,
+        calculate_sip_returns_schema,
+        get_product_recommendation_schema,
+        get_kyc_guidance_schema,
+        get_app_screen_flow_schema,
     ]
 
     if tools:
@@ -716,6 +926,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
     AI_STUDIO_MODELS = {
+        "gemini-3.5-live-preview",
+        "gemini-3.5-live-extended-thinking-preview",
         "gemini-3.1-flash-live-preview",
         "gemini-3.5-live-translate-preview",
         "gemini-2.5-flash-native-audio-latest",
@@ -796,9 +1008,26 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    llm.register_function("calculate_stl_returns", handle_calculate_stl_returns)
+    llm.register_function("calculate_mtl_returns", handle_calculate_mtl_returns)
+    llm.register_function("calculate_manual_lending", handle_calculate_manual_lending)
+    llm.register_function("calculate_sip_returns", handle_calculate_sip_returns)
+    llm.register_function("get_product_recommendation", handle_get_product_recommendation)
+    llm.register_function("get_kyc_guidance", handle_get_kyc_guidance)
+    llm.register_function("get_app_screen_flow", handle_get_app_screen_flow)
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base"}
+    built_in_tools = {
+        "get_current_time",
+        "search_knowledge_base",
+        "calculate_stl_returns",
+        "calculate_mtl_returns",
+        "calculate_manual_lending",
+        "calculate_sip_returns",
+        "get_product_recommendation",
+        "get_kyc_guidance",
+        "get_app_screen_flow",
+    }
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
