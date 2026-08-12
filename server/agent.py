@@ -283,6 +283,16 @@ class GeminiLiveSTTService(STTService):
         except Exception as e:
             logger.debug(f"GeminiLiveSTTService receive loop note: {e}")
 
+    async def run_stt(self, audio: bytes):
+        if self._running:
+            if self._audio_queue.full():
+                try:
+                    self._audio_queue.get_nowait()
+                except Exception:
+                    pass
+            await self._audio_queue.put(audio)
+        yield None
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, (AudioRawFrame, UserAudioRawFrame)):
@@ -427,7 +437,7 @@ async def run_agent(
         else:
             valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
             clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
-            stt_loc = "us-central1" if ("chirp" in clean_stt_model) else "us"
+            stt_loc = "us-central1" if ("chirp_2" in clean_stt_model) else "us"
             stt = GoogleSTTService(
                 vertexai_project=project_id,
                 location=stt_loc,

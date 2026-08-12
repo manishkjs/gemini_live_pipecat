@@ -716,12 +716,26 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             cwc["trigger_tokens"] = context_compression_trigger_tokens
 
     AI_STUDIO_MODELS = {
+        "gemini-3.1-flash-live-preview",
+        "gemini-3.5-live-translate-preview",
+        "gemini-2.5-flash-native-audio-latest",
+        "gemini-2.5-flash-native-audio-preview-09-2025",
+        "gemini-2.5-flash-native-audio-preview-12-2025",
+    }
+    VERTEX_LIVE_MODELS = {
+        "gemini-3.5-flash-live-preview",
+        "gemini-3.5-flash-lite-live-preview",
         "gemini-3.5-live-preview",
         "gemini-3.5-live-extended-thinking-preview",
-        "gemini-3.1-flash-live-preview",
+        "gemini-live-2.5-flash-native-audio",
+        "gemini-live-2.5-flash",
     }
-    is_ai_studio = model.endswith("-aistudio") or model in AI_STUDIO_MODELS
+
     clean_model = model[:-9] if model.endswith("-aistudio") else model
+    if clean_model in AI_STUDIO_MODELS or (model.endswith("-aistudio") and clean_model not in VERTEX_LIVE_MODELS):
+        is_ai_studio = True
+    else:
+        is_ai_studio = False
 
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
@@ -757,8 +771,12 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         llm = CustomGeminiLiveLLMService(**ai_studio_params)
     else:
         live_location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or location or "us-central1"
+        vertex_model_name = clean_model
+        if clean_model in ["gemini-3.5-live-preview", "gemini-3.5-live-extended-thinking-preview"]:
+            vertex_model_name = "gemini-3.5-flash-live-preview"
+
         settings = GeminiLiveVertexLLMService.Settings(
-            model=f"google/{clean_model}",
+            model=f"google/{vertex_model_name}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
@@ -770,7 +788,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             "location": live_location,
             "tools": tools_schema,
             "transcribe_model_audio": True,
-            "settings": settings
+            "settings": settings,
         }
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
