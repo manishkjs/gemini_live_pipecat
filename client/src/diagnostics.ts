@@ -143,7 +143,7 @@ class DiagnosticsApp {
       if (log.ttfb_ms) {
         ttfbSum += log.ttfb_ms;
         ttfbCount++;
-      } else if (msg.includes("TTFB") || msg.includes("turnaround")) {
+      } else if (msg.includes("TTFB") || msg.includes("Latency") || msg.includes("turnaround")) {
         const match = msg.match(/(\d+(\.\d+)?)\s*ms/);
         if (match) {
           ttfbSum += parseFloat(match[1]);
@@ -160,7 +160,7 @@ class DiagnosticsApp {
       if (msg.includes("Tool Output") || msg.includes("Function call")) {
         tools++;
       }
-      if (msg.includes("Turn Token Usage")) {
+      if (msg.includes("Turn Token Usage") || msg.includes("LLM Token Usage")) {
         const totalMatch = msg.match(/Total:\s*(\d+)/);
         const promptMatch = msg.match(/Prompt:\s*(\d+)/);
         const respMatch = msg.match(/Response:\s*(\d+)/);
@@ -189,7 +189,7 @@ class DiagnosticsApp {
 
       // Pill filter
       if (this.activeFilter === "ERROR" && level !== "ERROR") return false;
-      if (this.activeFilter === "LATENCY" && !msg.includes("ttfb") && !msg.includes("latency") && !log.ttfb_ms) return false;
+      if (this.activeFilter === "LATENCY" && !msg.includes("ttfb") && !msg.includes("latency") && !msg.includes("stt") && !log.ttfb_ms) return false;
       if (this.activeFilter === "SPEECH" && !msg.includes("user speech") && !msg.includes("bot response")) return false;
       if (this.activeFilter === "TOOL" && !msg.includes("tool")) return false;
 

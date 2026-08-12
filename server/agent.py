@@ -6,26 +6,26 @@ import re
 from loguru import logger
 
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.parallel_pipeline import ParallelPipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-# Obsolete context aggregator imports removed
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
-from pipecat.services.stt_service import STTService
 from pipecat.services.google.stt import GoogleSTTService
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
                                    TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
-                                   InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame)
+                                   InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
+                                   UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
+                                   VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.transcriptions.language import Language
+from pipecat.utils.time import time_now_iso8601
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from fastapi import WebSocket
@@ -39,6 +39,120 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None  # Don't serialize these frames
         return await super().serialize(frame)
+
+
+class CustomGoogleSTTService(GoogleSTTService):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._stream_start_wall_time = None
+        self._user_started_speaking_time = None
+        self._user_stopped_speaking_time = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            self._user_started_speaking_time = time.time()
+            self._user_stopped_speaking_time = None
+        elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
+            self._user_stopped_speaking_time = time.time()
+        await super().process_frame(frame, direction)
+
+    async def _request_generator(self):
+        self._stream_start_wall_time = time.time()
+        async for req in super()._request_generator():
+            yield req
+
+    async def _process_responses(self, streaming_recognize):
+        try:
+            async for response in streaming_recognize:
+                if (int(time.time() * 1000) - self._stream_start_time) > self.STREAMING_LIMIT:
+                    logger.debug("Stream timeout reached in response processing")
+                    break
+
+                if not response.results:
+                    continue
+
+                for result in response.results:
+                    if not result.alternatives:
+                        continue
+
+                    transcript = result.alternatives[0].transcript
+                    if not transcript:
+                        continue
+
+                    primary_language = self._get_language_codes()[0]
+
+                    if result.is_final:
+                        now = time.time()
+                        stt_latency = None
+
+                        try:
+                            if getattr(result, "result_end_offset", None) and self._stream_start_wall_time:
+                                dur = result.result_end_offset
+                                if hasattr(dur, "total_seconds"):
+                                    offset_secs = dur.total_seconds()
+                                elif hasattr(dur, "seconds") and hasattr(dur, "nanos"):
+                                    offset_secs = float(dur.seconds) + float(dur.nanos) / 1e9
+                                else:
+                                    offset_secs = float(dur)
+
+                                speech_ended_wall = self._stream_start_wall_time + offset_secs
+                                elapsed = now - speech_ended_wall
+                                if 0.05 <= elapsed <= 15.0:
+                                    stt_latency = elapsed
+
+                            if stt_latency is None:
+                                if self._user_stopped_speaking_time:
+                                    elapsed = now - self._user_stopped_speaking_time
+                                    if 0.05 <= elapsed <= 15.0:
+                                        stt_latency = elapsed
+                                elif self._user_started_speaking_time:
+                                    elapsed = now - self._user_started_speaking_time
+                                    if 0.05 <= elapsed <= 15.0:
+                                        stt_latency = elapsed
+                        except Exception as calc_err:
+                            logger.warning(f"STT Latency calculation warning: {calc_err}")
+
+                        if stt_latency is not None:
+                            logger.info(f"STT Latency (Cloud Speech v2): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
+                            await self.push_frame(OutputTransportMessageFrame(message={
+                                "label": "rtvi-ai",
+                                "type": "server-message",
+                                "data": {
+                                    'type': 'metrics',
+                                    'payload': {'type': 'stt_latency', 'value': stt_latency}
+                                }
+                            }))
+
+                        self._last_transcript_was_final = True
+                        await self.push_frame(
+                            TranscriptionFrame(
+                                transcript,
+                                self._user_id,
+                                time_now_iso8601(),
+                                primary_language,
+                                result=result,
+                            )
+                        )
+                        await self.stop_processing_metrics()
+                        await self._handle_transcription(
+                            transcript,
+                            is_final=True,
+                            language=primary_language,
+                        )
+                    else:
+                        self._last_transcript_was_final = False
+                        await self.push_frame(
+                            InterimTranscriptionFrame(
+                                transcript,
+                                self._user_id,
+                                time_now_iso8601(),
+                                primary_language,
+                                result=result,
+                            )
+                        )
+        except Exception as e:
+            logger.debug(f"CustomGoogleSTTService response note: {e}")
+            raise
 
 
 class CustomVertexGeminiTTSService(GeminiTTSService):
@@ -56,23 +170,25 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
         self._language_code = language_code
 
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        if not getattr(self, '_my_ttfb_start', None):
+            self._my_ttfb_start = time.time()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
-        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+        if getattr(self, '_my_ttfb_start', None):
             latency = time.time() - self._my_ttfb_start
-            logger.info(f"TTS Latency: {latency}s")
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'tts_latency', 'value': latency}
-                }
-            }))
             self._my_ttfb_start = None
+            if latency < 15.0:
+                logger.info(f"TTS Latency: {latency:.3f}s")
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': {'type': 'tts_latency', 'value': latency}
+                    }
+                }))
 
     async def run_tts(self, text: str, context_id: str):
         logger.debug(f"{self}: Generating TTS [{text}]")
@@ -136,43 +252,47 @@ Pace: Conversational.
 
 class CustomGoogleTTSService(GoogleTTSService):
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        if not getattr(self, '_my_ttfb_start', None):
+            self._my_ttfb_start = time.time()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
-        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+        if getattr(self, '_my_ttfb_start', None):
             latency = time.time() - self._my_ttfb_start
-            logger.info(f"TTS Latency: {latency}s")
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'tts_latency', 'value': latency}
-                }
-            }))
             self._my_ttfb_start = None
+            if latency < 15.0:
+                logger.info(f"TTS Latency: {latency:.3f}s")
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': {'type': 'tts_latency', 'value': latency}
+                    }
+                }))
 
 class CustomGoogleVertexLLMService(GoogleVertexLLMService):
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        if not getattr(self, '_my_ttfb_start', None):
+            self._my_ttfb_start = time.time()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
-        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+        if getattr(self, '_my_ttfb_start', None):
             latency = time.time() - self._my_ttfb_start
-            logger.info(f"LLM Latency: {latency}s")
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'llm_latency', 'value': latency}
-                }
-            }))
             self._my_ttfb_start = None
+            if latency < 15.0:
+                logger.info(f"LLM Latency: {latency:.3f}s")
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': {'type': 'llm_latency', 'value': latency}
+                    }
+                }))
 
     async def start_llm_usage_metrics(self, metrics):
         await super().start_llm_usage_metrics(metrics)
@@ -202,127 +322,16 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
         }))
 
 
-class GeminiLiveSTTService(STTService):
-    def __init__(
-        self,
-        *,
-        model: str = "gemini-3.5-transcribe-live-preview",
-        project_id: Optional[str] = None,
-        location: str = "us-central1",
-        api_key: Optional[str] = None,
-        **kwargs
-    ):
-        super().__init__(sample_rate=16000, **kwargs)
-        self._model = model
-        self._project_id = project_id or "deep-clock-339817"
-        self._location = location
-        self._api_key = api_key
-        self._client = None
-        self._session = None
-        self._audio_queue = asyncio.Queue(maxsize=200)
-        self._sender_task = None
-        self._receiver_task = None
-        self._running = False
-
-    async def start(self, frame_processor):
-        await super().start(frame_processor)
-        self._running = True
-        self._sender_task = self.create_task(self._session_loop())
-
-    async def _session_loop(self):
-        try:
-            if self._api_key:
-                self._client = genai.Client(api_key=self._api_key, http_options={"api_version": "v1alpha"})
-            else:
-                self._client = genai.Client(vertexai=True, project=self._project_id, location=self._location)
-
-            config = types.LiveConnectConfig(
-                response_modalities=["TEXT"],
-            )
-            model_target = self._model
-            if not model_target.startswith("models/") and not model_target.startswith("projects/") and not model_target.startswith("publishers/"):
-                model_target = f"models/{model_target}" if self._api_key else f"publishers/google/models/{model_target}"
-
-            logger.info(f"GeminiLiveSTTService connecting to {model_target}...")
-            async with self._client.aio.live.connect(model=model_target, config=config) as session:
-                self._session = session
-                logger.info(f"GeminiLiveSTTService connected successfully to {model_target}")
-                self._receiver_task = self.create_task(self._receive_loop())
-
-                while self._running:
-                    chunk = await self._audio_queue.get()
-                    if chunk is None:
-                        break
-                    await session.send_realtime_input(media_chunks=[{"data": chunk, "mime_type": "audio/pcm"}])
-        except Exception as e:
-            logger.warning(f"GeminiLiveSTTService session note: {e}")
-        finally:
-            if self._receiver_task:
-                await self.cancel_task(self._receiver_task)
-
-    async def _receive_loop(self):
-        try:
-            if not self._session:
-                return
-            async for response in self._session.receive():
-                sc = getattr(response, "server_content", None)
-                if not sc:
-                    continue
-                # Interim transcription
-                if getattr(sc, "interim_input_transcription", None) and sc.interim_input_transcription.text:
-                    txt = sc.interim_input_transcription.text
-                    await self.push_frame(InterimTranscriptionFrame(text=txt, user_id="user", timestamp=time.strftime("%H:%M:%S")))
-                # Final transcription
-                elif getattr(sc, "input_transcription", None) and sc.input_transcription.text:
-                    txt = sc.input_transcription.text
-                    await self.push_frame(TranscriptionFrame(text=txt, user_id="user", timestamp=time.strftime("%H:%M:%S")))
-                elif getattr(sc, "model_turn", None):
-                    for part in sc.model_turn.parts:
-                        if getattr(part, "text", None):
-                            await self.push_frame(TranscriptionFrame(text=part.text, user_id="user", timestamp=time.strftime("%H:%M:%S")))
-        except Exception as e:
-            logger.debug(f"GeminiLiveSTTService receive loop note: {e}")
-
-    async def run_stt(self, audio: bytes):
-        if self._running:
-            if self._audio_queue.full():
-                try:
-                    self._audio_queue.get_nowait()
-                except Exception:
-                    pass
-            await self._audio_queue.put(audio)
-        yield None
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, (AudioRawFrame, UserAudioRawFrame)):
-            if self._audio_queue.full():
-                try:
-                    self._audio_queue.get_nowait()
-                except Exception: pass
-            await self._audio_queue.put(frame.audio)
-        await self.push_frame(frame, direction)
-
-    async def stop(self, frame_processor):
-        self._running = False
-        if self._audio_queue:
-            await self._audio_queue.put(None)
-        if self._sender_task:
-            await self.cancel_task(self._sender_task)
-        await super().stop(frame_processor)
-
-
 class TranscriptionBroadcaster(FrameProcessor):
     def __init__(self, participant: str):
         super().__init__()
         self.participant = participant
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM:
             text = ""
-            if isinstance(frame, TranscriptionFrame):
-                text = frame.text
-            elif isinstance(frame, TextFrame):
+            if isinstance(frame, (TranscriptionFrame, TextFrame)):
                 text = frame.text
 
             if text:
@@ -339,20 +348,6 @@ class TranscriptionBroadcaster(FrameProcessor):
                         }
                     }))
 
-        await super().process_frame(frame, direction)
-        await self.push_frame(frame, direction)
-
-
-class ContextLogger(FrameProcessor):
-    def __init__(self, logger_name: str):
-        super().__init__()
-        self.logger_name = logger_name
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        from pipecat.frames.frames import LLMContextFrame
-        if isinstance(frame, LLMContextFrame):
-            logger.info(f"ContextLogger [{self.logger_name}]: Received LLMContextFrame")
-        await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
 
 
@@ -419,7 +414,7 @@ async def run_agent(
         
         stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
         
-        stt = GoogleSTTService(
+        stt = CustomGoogleSTTService(
             vertexai_project=project_id,
             location=stt_loc,
             settings=GoogleSTTService.Settings(
@@ -560,7 +555,6 @@ async def run_agent(
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
-            ContextLogger(logger_name="UserToLLM"),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,

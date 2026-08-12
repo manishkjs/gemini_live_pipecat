@@ -34,6 +34,8 @@ class WebsocketClientApp {
   private tabs: NodeListOf<HTMLButtonElement> | null = null;
   private configPanels: NodeListOf<HTMLElement> | null = null;
   private activeTab: string = "gemini-live";
+  private selectedBotType: string = "gemini-live";
+  private connectedBotType: string = "gemini-live";
   private activePipeline: HTMLElement | null = null;
 
   // Observability UI Elements
@@ -52,6 +54,10 @@ class WebsocketClientApp {
   private tokenCount = 0;
   private lastLLMLatency: number | null = null;
   private lastTTSLatency: number | null = null;
+  private lastTurnSTTLatency: number | null = null;
+  private pendingLLMLatency: number | null = null;
+  private pendingTTSLatency: number | null = null;
+  private pendingSTTLatency: number | null = null;
   private lastTurnUsage: any = null;
   private lastPromptTokenCount = 0;
 
@@ -375,6 +381,7 @@ class WebsocketClientApp {
         return;
     }
 
+    this.selectedBotType = tabId;
     this.activeTab = tabId;
 
     this.tabs?.forEach((t) => t.classList.remove("active"));
@@ -390,7 +397,7 @@ class WebsocketClientApp {
 
     if (this.activePipeline) {
       if (tabId === "tts-llm-stt") {
-        this.activePipeline.textContent = "Active: TTS-LLM-STT Pipeline";
+        this.activePipeline.textContent = "Active: STT-LLM-TTS Pipeline";
       } else if (tabId === "gemini-live") {
         this.activePipeline.textContent = "Active: Gemini Live Pipeline";
       }
@@ -425,13 +432,18 @@ class WebsocketClientApp {
     this.debugLog.scrollTop = this.debugLog.scrollHeight;
   }
 
-  // --- Observability Helpers ---
-
   private resetMetrics() {
       this.turnCount = 0;
       this.interruptCount = 0;
       this.toolCallCount = 0;
       this.tokenCount = 0;
+      this.lastLLMLatency = null;
+      this.lastTTSLatency = null;
+      this.lastTurnSTTLatency = null;
+      this.pendingLLMLatency = null;
+      this.pendingTTSLatency = null;
+      this.pendingSTTLatency = null;
+      this.lastTurnUsage = null;
       this.lastPromptTokenCount = 0;
       this.updateMetricDisplay();
       if (this.chatWindow) this.chatWindow.innerHTML = "";
@@ -444,10 +456,93 @@ class WebsocketClientApp {
       if (this.metricTokenCount) this.metricTokenCount.textContent = this.tokenCount.toString();
   }
 
-  private appendChatMessage(role: "user" | "bot", text: string, ttft?: number) {
+  private updateBubbleLatencyDisplay(bubble: HTMLElement, updates?: { llmLatency?: number; ttsLatency?: number; sttLatency?: number; usage?: any }) {
+      if (!bubble) return;
+      if (updates) {
+          if (updates.llmLatency !== undefined) bubble.dataset.llmLatency = updates.llmLatency.toString();
+          if (updates.ttsLatency !== undefined) bubble.dataset.ttsLatency = updates.ttsLatency.toString();
+          if (updates.sttLatency !== undefined) bubble.dataset.sttLatency = updates.sttLatency.toString();
+          if (updates.usage !== undefined) bubble.dataset.usage = JSON.stringify(updates.usage);
+      }
+
+      let latencyEl = bubble.querySelector(".loop-latencies, .ttft-latency") as HTMLElement;
+      if (!latencyEl) {
+          latencyEl = document.createElement("div");
+          latencyEl.classList.add("loop-latencies");
+          latencyEl.style.fontStyle = "italic";
+          latencyEl.style.fontSize = "0.8em";
+          latencyEl.style.opacity = "0.7";
+          latencyEl.style.marginTop = "4px";
+          bubble.appendChild(latencyEl);
+      }
+
+      const parts: string[] = [];
+      const isCascade = this.connectedBotType === "tts-llm-stt";
+      const llmLabel = isCascade ? "⚡ LLM TTFB" : "⚡ Live TTFB";
+
+      const llmVal = bubble.dataset.llmLatency ? parseFloat(bubble.dataset.llmLatency) : null;
+      const ttsVal = bubble.dataset.ttsLatency ? parseFloat(bubble.dataset.ttsLatency) : null;
+      const sttVal = bubble.dataset.sttLatency ? parseFloat(bubble.dataset.sttLatency) : null;
+      let usageVal: any = null;
+      try {
+          if (bubble.dataset.usage) usageVal = JSON.parse(bubble.dataset.usage);
+      } catch (_) {}
+
+      if (sttVal !== null && isCascade) {
+          parts.push(`STT: ${Math.round(sttVal * 1000)}ms`);
+      }
+      if (llmVal !== null) {
+          parts.push(`${llmLabel}: ${Math.round(llmVal * 1000)}ms`);
+      }
+      if (ttsVal !== null && isCascade) {
+          parts.push(`TTS: ${Math.round(ttsVal * 1000)}ms`);
+      }
+      if (usageVal !== null) {
+          const formatModality = (details: any) => {
+              if (!details) return "";
+              const list = [];
+              if (details.text) list.push(`Text: ${details.text}`);
+              if (details.audio) list.push(`Audio: ${details.audio}`);
+              return list.length > 0 ? ` (${list.join(", ")})` : "";
+          };
+          const promptStr = `In: ${usageVal.prompt_token_count || 0}${formatModality(usageVal.prompt_details)}`;
+          const responseStr = `Out: ${usageVal.response_token_count || 0}${formatModality(usageVal.response_details)}`;
+          parts.push(`Tokens: ${usageVal.total_token_count || 0} [${promptStr} | ${responseStr}]`);
+      }
+
+      if (parts.length > 0) {
+          latencyEl.textContent = parts.join(" | ");
+      }
+  }
+
+  private updateUserBubbleSTT(bubble: HTMLElement, sttLatency: number) {
+      bubble.dataset.sttLatency = sttLatency.toString();
+      let sttEl = bubble.querySelector(".stt-latency") as HTMLElement;
+      if (!sttEl) {
+          sttEl = document.createElement("div");
+          sttEl.classList.add("stt-latency");
+          sttEl.style.fontStyle = "italic";
+          sttEl.style.fontSize = "0.8em";
+          sttEl.style.opacity = "0.7";
+          sttEl.style.marginTop = "4px";
+          bubble.appendChild(sttEl);
+      }
+      sttEl.textContent = `⚡ STT: ${Math.round(sttLatency * 1000)}ms`;
+  }
+
+  private appendChatMessage(role: "user" | "bot", text: string, ttft?: number, sttLatency?: number) {
     if (!this.chatWindow) return;
+
+    if (role === "user") {
+        this.pendingLLMLatency = null;
+        this.pendingTTSLatency = null;
+        if (sttLatency === undefined && this.pendingSTTLatency !== null) {
+            sttLatency = this.pendingSTTLatency;
+            this.pendingSTTLatency = null;
+        }
+    }
     
-    const lastBubble = this.chatWindow.lastElementChild;
+    const lastBubble = this.chatWindow.lastElementChild as HTMLElement | null;
     if (lastBubble && lastBubble.classList.contains(role)) {
       const timestamp = lastBubble.querySelector(".timestamp");
       if (timestamp) {
@@ -468,15 +563,15 @@ class WebsocketClientApp {
         lastBubble.textContent = (currentText + text).replace(/\[.*?\]/g, '').replace(/<transcription>.*?<\/transcription>/g, '');
       }
       
-      if (ttft !== undefined && !lastBubble.querySelector(".ttft-latency")) {
-        const ttftEl = document.createElement("div");
-        ttftEl.classList.add("ttft-latency");
-        ttftEl.style.fontStyle = "italic";
-        ttftEl.style.fontSize = "0.8em";
-        ttftEl.style.opacity = "0.7";
-        ttftEl.style.marginTop = "4px";
-        ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
-        lastBubble.appendChild(ttftEl);
+      if (role === "bot") {
+        const effTtft = ttft !== undefined ? ttft : (this.pendingLLMLatency !== null ? this.pendingLLMLatency : undefined);
+        if (effTtft !== undefined) {
+            this.pendingLLMLatency = null;
+            this.updateBubbleLatencyDisplay(lastBubble, { llmLatency: effTtft });
+        }
+      }
+      if (role === "user" && sttLatency !== undefined) {
+        this.updateUserBubbleSTT(lastBubble, sttLatency);
       }
       
       this.chatWindow.scrollTop = this.chatWindow.scrollHeight;
@@ -493,15 +588,23 @@ class WebsocketClientApp {
     timestamp.textContent = new Date().toLocaleTimeString();
     bubble.appendChild(timestamp);
 
-    if (ttft !== undefined) {
-        const ttftEl = document.createElement("div");
-        ttftEl.classList.add("ttft-latency");
-        ttftEl.style.fontStyle = "italic";
-        ttftEl.style.fontSize = "0.8em";
-        ttftEl.style.opacity = "0.7";
-        ttftEl.style.marginTop = "4px";
-        ttftEl.textContent = `Live model TTFB: ${Math.round(ttft * 1000)}ms`;
-        bubble.appendChild(ttftEl);
+    if (role === "bot") {
+      const effTtft = ttft !== undefined ? ttft : (this.pendingLLMLatency !== null ? this.pendingLLMLatency : undefined);
+      this.pendingLLMLatency = null;
+      const effTts = this.pendingTTSLatency !== null ? this.pendingTTSLatency : undefined;
+      this.pendingTTSLatency = null;
+      const effStt = (this.connectedBotType === "tts-llm-stt") ? (this.lastTurnSTTLatency || undefined) : undefined;
+      this.updateBubbleLatencyDisplay(bubble, { 
+          llmLatency: effTtft, 
+          ttsLatency: effTts,
+          sttLatency: effStt 
+      });
+    } else if (role === "user") {
+      const effStt = sttLatency !== undefined ? sttLatency : (this.pendingSTTLatency !== null ? this.pendingSTTLatency : undefined);
+      this.pendingSTTLatency = null;
+      if (effStt !== undefined) {
+        this.updateUserBubbleSTT(bubble, effStt);
+      }
     }
 
     this.chatWindow.appendChild(bubble);
@@ -512,7 +615,7 @@ class WebsocketClientApp {
     if (!this.chatWindow) return;
     const bubbles = this.chatWindow.querySelectorAll(`.chat-bubble.${role}`);
     if (bubbles.length === 0) return;
-    const lastBubble = bubbles[bubbles.length - 1];
+    const lastBubble = bubbles[bubbles.length - 1] as HTMLElement;
     lastBubble.setAttribute('data-text', text);
     const timestamp = lastBubble.querySelector(".timestamp");
     if (timestamp) {
@@ -523,49 +626,6 @@ class WebsocketClientApp {
         timestamp.before(document.createTextNode(text));
       }
     }
-  }
-
-  private tryUpdateBubbleLatencies() {
-      if (!this.chatWindow) return;
-      
-      const botBubbles = this.chatWindow.querySelectorAll(".chat-bubble.bot");
-      if (botBubbles.length === 0) return;
-      const lastBubble = botBubbles[botBubbles.length - 1] as HTMLElement;
-      
-      let latencyEl = lastBubble.querySelector(".loop-latencies, .ttft-latency") as HTMLElement;
-      if (!latencyEl) {
-          latencyEl = document.createElement("div");
-          latencyEl.classList.add("loop-latencies");
-          latencyEl.style.fontStyle = "italic";
-          latencyEl.style.fontSize = "0.8em";
-          latencyEl.style.opacity = "0.7";
-          latencyEl.style.marginTop = "4px";
-          lastBubble.appendChild(latencyEl);
-      }
-      
-      const parts = [];
-      if (this.lastLLMLatency !== null) parts.push(`⚡ Live TTFB: ${Math.round(this.lastLLMLatency * 1000)}ms`);
-      if (this.lastTTSLatency !== null && this.activeTab === "tts-llm-stt") parts.push(`TTS: ${Math.round(this.lastTTSLatency * 1000)}ms`);
-      if (this.lastTurnUsage !== null) {
-          let detailsStr = `Tokens: ${this.lastTurnUsage.total_token_count}`;
-          
-          const formatModality = (details: any) => {
-              if (!details) return "";
-              const list = [];
-              if (details.text) list.push(`Text: ${details.text}`);
-              if (details.audio) list.push(`Audio: ${details.audio}`);
-              return list.length > 0 ? ` (${list.join(", ")})` : "";
-          };
-          
-          const promptStr = `In: ${this.lastTurnUsage.prompt_token_count}${formatModality(this.lastTurnUsage.prompt_details)}`;
-          const responseStr = `Out: ${this.lastTurnUsage.response_token_count}${formatModality(this.lastTurnUsage.response_details)}`;
-          
-          parts.push(`${detailsStr} [${promptStr} | ${responseStr}]`);
-      }
-      
-      if (parts.length > 0) {
-          latencyEl.textContent = parts.join(" | ");
-      }
   }
 
   private markInterruptionLatency(elapsed_ms: number) {
@@ -590,20 +650,12 @@ class WebsocketClientApp {
   private handleServerMessage(message: any) {
       // Handle Transcription
       if (message.type === "transcription") {
-          const { participant, text, ttft } = message;
+          const { participant, text, ttft, stt_latency } = message;
           const role = (participant === "User" || participant === "user") ? "user" : "bot";
-          if (role === "user") {
-              this.lastLLMLatency = null;
-              this.lastTTSLatency = null;
-              this.lastTurnUsage = null;
+          if (role === "user" && stt_latency !== undefined) {
+              this.lastTurnSTTLatency = stt_latency;
           }
-          if (ttft !== undefined && ttft !== null) {
-              this.lastLLMLatency = ttft;
-          }
-          this.appendChatMessage(role, text, ttft);
-          if (role === "bot" && this.lastLLMLatency !== null) {
-              this.tryUpdateBubbleLatencies();
-          }
+          this.appendChatMessage(role, text, ttft, stt_latency);
       }
 
       // Handle Transcription Replace (parallel STT updates the placeholder)
@@ -627,6 +679,8 @@ class WebsocketClientApp {
           const payload = message.payload;
           if (!payload) return;
           
+          const lastChild = this.chatWindow?.lastElementChild as HTMLElement | null;
+
           switch (payload.type) {
               case "interruption":
                   this.interruptCount += (payload.count || 1);
@@ -639,12 +693,10 @@ class WebsocketClientApp {
                   break;
               case "tool_call":
                   this.toolCallCount++;
-                  // Optionally log tool details to chat or debug
                   this.log(`Tool Call: ${JSON.stringify(payload.tool)}`, "info");
                   break;
               case "usage":
                   if (payload.usage) {
-                      this.lastTurnUsage = payload.usage;
                       const promptTokens = payload.usage.prompt_token_count || 0;
                       if (this.lastPromptTokenCount > 0 && promptTokens < this.lastPromptTokenCount) {
                           const diff = this.lastPromptTokenCount - promptTokens;
@@ -656,16 +708,39 @@ class WebsocketClientApp {
                       if (payload.usage.total_token_count) {
                           this.tokenCount += payload.usage.total_token_count;
                       }
-                      this.tryUpdateBubbleLatencies();
+                      if (lastChild && lastChild.classList.contains("bot")) {
+                          this.updateBubbleLatencyDisplay(lastChild, { usage: payload.usage });
+                      } else {
+                          const botBubbles = this.chatWindow?.querySelectorAll(".chat-bubble.bot");
+                          const lastBotBubble = botBubbles && botBubbles.length > 0 ? (botBubbles[botBubbles.length - 1] as HTMLElement) : null;
+                          if (lastBotBubble) {
+                              this.updateBubbleLatencyDisplay(lastBotBubble, { usage: payload.usage });
+                          }
+                      }
                   }
                   break;
               case "llm_latency":
-                  this.lastLLMLatency = payload.value;
-                  this.tryUpdateBubbleLatencies();
+                  if (lastChild && lastChild.classList.contains("bot")) {
+                      this.updateBubbleLatencyDisplay(lastChild, { llmLatency: payload.value });
+                  } else {
+                      this.pendingLLMLatency = payload.value;
+                  }
                   break;
               case "tts_latency":
-                  this.lastTTSLatency = payload.value;
-                  this.tryUpdateBubbleLatencies();
+                  if (lastChild && lastChild.classList.contains("bot")) {
+                      this.updateBubbleLatencyDisplay(lastChild, { ttsLatency: payload.value });
+                  } else {
+                      this.pendingTTSLatency = payload.value;
+                  }
+                  break;
+              case "stt_latency":
+                  this.lastTurnSTTLatency = payload.value;
+                  this.pendingSTTLatency = payload.value;
+                  const userBubbles = this.chatWindow?.querySelectorAll(".chat-bubble.user");
+                  const lastUserBubble = userBubbles && userBubbles.length > 0 ? (userBubbles[userBubbles.length - 1] as HTMLElement) : null;
+                  if (lastUserBubble) {
+                      this.updateUserBubbleSTT(lastUserBubble, payload.value);
+                  }
                   break;
           }
           this.updateMetricDisplay();
@@ -709,7 +784,11 @@ class WebsocketClientApp {
                           if (data.usage.total_token_count) {
                               this.tokenCount += data.usage.total_token_count;
                           }
-                          this.tryUpdateBubbleLatencies();
+                          const botBubbles = this.chatWindow?.querySelectorAll(".chat-bubble.bot");
+                          const lastBotBubble = botBubbles && botBubbles.length > 0 ? (botBubbles[botBubbles.length - 1] as HTMLElement) : null;
+                          if (lastBotBubble) {
+                              this.updateBubbleLatencyDisplay(lastBotBubble, { usage: data.usage });
+                          }
                       }
                       break;
               }
@@ -854,10 +933,13 @@ class WebsocketClientApp {
 
       const transport = new WebSocketTransport();
 
-      let connectUrl = `/connect?bot_type=${this.activeTab}`;
+      const botTypeToConnect = this.selectedBotType || (this.activeTab !== "observability" ? this.activeTab : "gemini-live");
+      this.connectedBotType = botTypeToConnect;
+
+      let connectUrl = `/connect?bot_type=${botTypeToConnect}`;
       let systemInstructions = "";
 
-      if (this.activeTab === "tts-llm-stt") {
+      if (botTypeToConnect === "tts-llm-stt") {
         const ttsVoiceSelect = document.getElementById(
           "tts-voice-select"
         ) as HTMLSelectElement;
