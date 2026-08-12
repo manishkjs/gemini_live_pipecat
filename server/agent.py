@@ -365,6 +365,7 @@ class StartTriggerProcessor(FrameProcessor):
         self.triggered = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        await super().process_frame(frame, direction)
         if isinstance(frame, InputTransportMessageFrame):
             message = frame.message
             if isinstance(message, dict) and message.get("type") == "start_trigger":
@@ -381,7 +382,7 @@ class StartTriggerProcessor(FrameProcessor):
                     logger.info("[StartTriggerProcessor] start_trigger received. Queueing initial greeting turn.")
                     await self.push_frame(LLMRunFrame())
                 return
-        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
 
 
 async def run_agent(
