@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Live — Cymbal Enterprise Sales Studio v5.0 (Aligned via Grill-Me)</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-8px); } }
+    @keyframes pulse-slow { 0%, 100% { opacity: 0.8; transform: scale(0.98); } 50% { opacity: 0.3; transform: scale(1.15); } }
+    .floating { animation: float 5s ease-in-out infinite; }
+    .pulsing { animation: pulse-slow 3s ease-in-out infinite; }
+    .glass { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    .glass-card { background: rgba(30, 41, 59, 0.55); border: 1px solid rgba(255, 255, 255, 0.08); transition: all 0.25s ease; }
+    .glass-card:hover { border-color: rgba(255, 255, 255, 0.25); transform: translateY(-2px); }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+  </style>
+</head>
+<body class="bg-[#070b16] text-gray-100 font-sans h-screen flex flex-col overflow-hidden select-none">
+
+  <!-- Header Banner & Mode Switcher -->
+  <header class="h-16 border-b border-white/10 px-6 flex items-center justify-between bg-[#0b1120]/95 backdrop-blur z-20 shrink-0">
+    <div class="flex items-center space-x-4">
+      <div id="themeLogo" class="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-red-500 to-purple-600 flex items-center justify-center font-bold text-white shadow-lg tracking-tighter text-sm">GL</div>
+      <div>
+        <h1 class="font-bold text-sm tracking-wide text-white flex items-center space-x-2">
+          <span>Gemini Live Sales Studio</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">v5.0 Final Grill-Me Edition</span>
+        </h1>
+        <p class="text-[11px] text-gray-400">Enterprise Voice AI Demonstrator for Cymbal Personas</p>
+      </div>
+    </div>
+
+    <!-- HEADER MODE SWITCHER (Sales Demo vs Engineer Studio) -->
+    <div class="bg-black/60 p-1.5 rounded-2xl border border-white/15 flex items-center space-x-1 shadow-2xl">
+      <button id="btnSalesMode" onclick="switchAppMode('sales')" class="px-5 py-1.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500 to-red-600 text-white shadow-lg transition-all flex items-center space-x-2">
+        <span>🚀 Sales Demo Mode</span>
+      </button>
+      <button id="btnEngineerMode" onclick="switchAppMode('engineer')" class="px-5 py-1.5 rounded-xl text-xs font-medium text-gray-400 hover:text-white transition-all flex items-center space-x-2">
+        <span>⚙️ Engineer Studio Mode</span>
+      </button>
+    </div>
+
+    <div class="flex items-center space-x-2 font-mono text-xs text-emerald-400">
+      <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+      <span id="sessionStatus">Live Audio Connected</span>
+    </div>
+  </header>
+
+  <!-- Main Workspace Grid -->
+  <div class="flex-1 flex overflow-hidden relative">
+
+    <!-- LEFT SIDEBAR -->
+    <aside class="w-80 border-r border-white/10 bg-[#0c1222]/85 backdrop-blur-md flex flex-col z-10 shrink-0">
+      
+      <!-- MODE A: DEMO HUB PERSONAS (Default Sales View) -->
+      <div id="panelDemo" class="flex-1 flex flex-col overflow-hidden">
+        <div class="p-4 border-b border-white/5 flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-gray-300 uppercase tracking-wider">Cymbal Indian Personas</span>
+            <p class="text-[10px] text-gray-500 mt-0.5">Click card to launch instant live scenario</p>
+          </div>
+          <span class="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-mono">3 Active</span>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-3 space-y-3">
+          
+          <!-- Persona 1: Vikram (Debt Collection en-IN) -->
+          <div id="card-vikram" onclick="selectPersona('vikram')" class="glass-card cursor-pointer rounded-xl p-3 border-amber-500/50 bg-amber-500/10 relative overflow-hidden group">
+            <div class="flex items-start justify-between">
+              <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-amber-600 to-red-600 flex items-center justify-center font-bold text-sm shadow">VK</div>
+                <div>
+                  <div class="flex items-center space-x-1.5">
+                    <h3 class="font-medium text-sm text-white">Vikram — Debt Officer</h3>
+                    <span class="px-1.5 py-0.2 text-[9px] font-mono rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">en-IN Male</span>
+                  </div>
+                  <p class="text-[11px] text-amber-300 font-medium">Cymbal Finance EMI Recovery</p>
+                </div>
+              </div>
+              <span id="badge-vikram" class="w-2 h-2 rounded-full bg-emerald-400 shadow-lg shadow-emerald-500"></span>
+            </div>
+            <p class="text-xs text-gray-400 mt-2 line-clamp-2 leading-relaxed">Firm, polite reminder for ₹18,500 overdue EMI. Offers instant UPI payment link generation.</p>
+            <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-400">
+              <span class="font-mono text-cyan-300">⚡ 2 Active Tools</span>
+              <button onclick="event.stopPropagation(); editPersona('vikram');" class="text-amber-300 hover:underline text-[10px]">Tweak Config & Pipeline ⚙️</button>
+            </div>
+          </div>
+
+          <!-- Persona 2: Saathi (Her Vibe Companion hi-IN) -->
+          <div id="card-saathi" onclick="selectPersona('saathi')" class="glass-card cursor-pointer rounded-xl p-3 relative overflow-hidden group">
+            <div class="flex items-start justify-between">
+              <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center font-bold text-sm shadow">ST</div>
+                <div>
+                  <div class="flex items-center space-x-1.5">
+                    <h3 class="font-medium text-sm text-white">Saathi — AI Companion</h3>
+                    <span class="px-1.5 py-0.2 text-[9px] font-mono rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">hi-IN Female</span>
+                  </div>
+                  <p class="text-[11px] text-pink-300 font-medium">'Her' Movie Vibe (Hindi/Hinglish)</p>
+                </div>
+              </div>
+              <span id="badge-saathi" class="w-2 h-2 rounded-full bg-gray-600"></span>
+            </div>
+            <p class="text-xs text-gray-400 mt-2 line-clamp-2 leading-relaxed">Charming, warm, poetic Hindi/Hinglish companion. Listens deeply and logs emotional mood.</p>
+            <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-400">
+              <span class="font-mono text-pink-300">⚡ 2 Active Tools</span>
+              <button onclick="event.stopPropagation(); editPersona('saathi');" class="text-pink-300 hover:underline text-[10px]">Tweak Config & Pipeline ⚙️</button>
+            </div>
+          </div>
+
+          <!-- Persona 3: Rohan (Retail Support en-IN) -->
+          <div id="card-rohan" onclick="selectPersona('rohan')" class="glass-card cursor-pointer rounded-xl p-3 relative overflow-hidden group">
+            <div class="flex items-start justify-between">
+              <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center font-bold text-sm shadow">RH</div>
+                <div>
+                  <div class="flex items-center space-x-1.5">
+                    <h3 class="font-medium text-sm text-white">Rohan — Retail Support</h3>
+                    <span class="px-1.5 py-0.2 text-[9px] font-mono rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">en-IN Support</span>
+                  </div>
+                  <p class="text-[11px] text-cyan-300 font-medium">Cymbal Retail Order Concierge</p>
+                </div>
+              </div>
+              <span id="badge-rohan" class="w-2 h-2 rounded-full bg-gray-600"></span>
+            </div>
+            <p class="text-xs text-gray-400 mt-2 line-clamp-2 leading-relaxed">Fast Indian English concierge. Looks up order #CYM-8821 & initiates label-free doorstep returns.</p>
+            <div class="mt-2.5 pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-gray-400">
+              <span class="font-mono text-cyan-300">⚡ 3 Active Tools</span>
+              <button onclick="event.stopPropagation(); editPersona('rohan');" class="text-cyan-300 hover:underline text-[10px]">Tweak Config & Pipeline ⚙️</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="p-3 border-t border-white/10 bg-black/30">
+          <button onclick="showToast('Sales Builder: Custom Persona creator launched');" class="w-full py-2 rounded-xl border border-dashed border-white/20 text-xs text-gray-300 hover:text-white hover:border-amber-500 transition flex items-center justify-center space-x-1.5">
+            <span>+ Create Custom Persona</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- MODE B: TUCKED CONFIG & PIPELINE DRAWER -->
+      <div id="panelConfig" class="hidden flex-1 flex-col overflow-y-auto p-4 space-y-4 bg-[#0f172a]">
+        <div class="flex items-center justify-between pb-3 border-b border-white/10">
+          <button onclick="switchSidebarMode('demo')" class="text-gray-400 hover:text-white text-xs flex items-center space-x-1">
+            <span>← Return to Demo Hub</span>
+          </button>
+          <span id="configHeaderBadge" class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium">Editing: Vikram</span>
+        </div>
+
+        <!-- TUCKED PIPELINE SELECTION (Flow A vs Flow B) -->
+        <div class="space-y-2">
+          <label class="text-xs font-semibold text-gray-300 uppercase tracking-wider">Tucked Pipeline Architecture</label>
+          <div class="space-y-2 text-xs">
+            <label class="flex items-center justify-between p-2.5 rounded-xl bg-black/40 border border-amber-500/50 cursor-pointer">
+              <div>
+                <div class="font-medium text-white">⚡ Flow B: Gemini Live Native Audio</div>
+                <div class="text-[10px] text-amber-300 font-mono">Audio-to-Audio (~310ms SLA)</div>
+              </div>
+              <input type="radio" name="pipelineFlow" checked onclick="switchPipelineMode('gemini-live')" class="text-amber-500 focus:ring-0">
+            </label>
+
+            <label class="flex items-center justify-between p-2.5 rounded-xl bg-black/40 border border-white/10 cursor-pointer opacity-80">
+              <div>
+                <div class="font-medium text-gray-300">⛓️ Flow A: Cascaded STT-LLM-TTS</div>
+                <div class="text-[10px] text-gray-400 font-mono">Chirp 3 ➔ Flash-Lite ➔ TTS (~850ms)</div>
+              </div>
+              <input type="radio" name="pipelineFlow" onclick="switchPipelineMode('cascaded')" class="text-purple-600 focus:ring-0">
+            </label>
+          </div>
+        </div>
+
+        <!-- System Prompt Textarea -->
+        <div class="space-y-1.5 pt-2 border-t border-white/10">
+          <label class="text-xs font-medium text-gray-300">System Prompt Directive</label>
+          <textarea id="configPrompt" rows="4" class="w-full rounded-xl bg-black/50 border border-white/15 p-2.5 text-xs text-gray-200 focus:outline-none focus:border-amber-500 font-mono leading-relaxed">You are Vikram, a professional debt recovery officer for Cymbal Finance. Speak in clear Indian English (en-IN). Remind the customer that their EMI of ₹18,500 is overdue by 5 days. Offer instant payment link generation via UPI.</textarea>
+        </div>
+
+        <!-- Tool Pills -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-xs font-medium text-gray-300">
+            <span>Active Tool Definitions</span>
+            <button onclick="toggleJsonModal()" class="text-[10px] text-cyan-400 hover:underline">View Raw JSON</button>
+          </div>
+          <div id="configToolsList" class="space-y-1.5">
+            <div class="p-2 rounded-lg bg-black/40 border border-white/10 flex items-center justify-between text-xs">
+              <span class="font-mono text-amber-300">check_overdue_emi_status()</span>
+              <input type="checkbox" checked class="rounded bg-white/10 border-white/20">
+            </div>
+            <div class="p-2 rounded-lg bg-black/40 border border-white/10 flex items-center justify-between text-xs">
+              <span class="font-mono text-amber-300">generate_payment_link(₹18500)</span>
+              <input type="checkbox" checked class="rounded bg-white/10 border-white/20">
+            </div>
+          </div>
+        </div>
+
+        <button onclick="switchSidebarMode('demo'); showToast('Persona config applied dynamically to WebSocket session!');" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-red-600 text-xs font-medium text-white shadow-lg shadow-amber-600/30 hover:brightness-110 transition mt-2">
+          Apply & Return to Live Hub →
+        </button>
+      </div>
+
+    </aside>
+
+    <!-- CENTER STAGE: AUDIO VISUALIZER & CLEAN TRANSCRIPT -->
+    <main class="flex-1 flex flex-col bg-gradient-to-b from-[#070b16] via-[#0d152a] to-[#070b16] relative overflow-hidden">
+      
+      <!-- Top Center Info Bar -->
+      <div class="p-4 flex items-center justify-between border-b border-white/5 z-10 bg-[#0b1222]/60">
+        <div class="flex items-center space-x-3">
+          <div id="liveAvatar" class="w-10 h-10 rounded-full bg-gradient-to-br from-amber-600 to-red-600 flex items-center justify-center text-white font-bold text-sm shadow border border-white/20">VK</div>
+          <div>
+            <div class="flex items-center space-x-2">
+              <h2 id="liveTitle" class="font-semibold text-base text-white">Vikram — Debt Officer</h2>
+              <span id="liveLocaleBadge" class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/30">en-IN Male</span>
+            </div>
+            <p id="liveSubtitle" class="text-xs text-gray-400">Cymbal Finance — Overdue EMI Recovery Scenario (₹18,500 due)</p>
+          </div>
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <button onclick="runSimulationTurn()" class="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-medium text-white transition flex items-center space-x-2 shadow">
+            <span>🗣️ Simulate Client Question</span>
+          </button>
+          <button onclick="toggleAudio()" id="btnAudio" class="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-xs font-medium text-white transition flex items-center space-x-2 shadow-lg shadow-emerald-500/20">
+            <span id="micStatusIcon">🎙️</span>
+            <span id="micStatusText">Live Audio Active</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- CENTER ARENA: HTML5 CANVAS GLOWING LIQUID ORB -->
+      <div class="flex-1 flex flex-col items-center justify-center relative p-4">
+        
+        <!-- Ambient Glow Rings -->
+        <div id="glowCircle1" class="absolute w-[400px] h-[400px] rounded-full bg-amber-500/10 blur-[120px] pointer-events-none transition-all duration-700"></div>
+        <div id="glowCircle2" class="absolute w-60 h-60 rounded-full border border-amber-500/30 pulsing pointer-events-none transition-all duration-700"></div>
+
+        <!-- HTML5 Audio Canvas Visualizer -->
+        <div class="relative z-10 flex flex-col items-center cursor-pointer group" onclick="runSimulationTurn()">
+          <canvas id="audioCanvas" width="240" height="240" class="rounded-full border border-white/20 shadow-2xl transition-all duration-500 group-hover:scale-105 bg-black/40"></canvas>
+          <span id="orbStateText" class="text-xs font-mono tracking-widest uppercase text-gray-300 mt-3 drop-shadow">Tap Orb to Speak</span>
+        </div>
+
+        <!-- CLEAN TRANSCRIPT BUBBLES (No inline tool clutter) -->
+        <div id="transcriptArea" class="w-full max-w-2xl space-y-2.5 relative z-10 mt-4 overflow-y-auto max-h-48 pr-2">
+          
+          <!-- User Bubble -->
+          <div class="flex items-start justify-end space-x-2">
+            <div class="glass px-4 py-2.5 rounded-2xl rounded-tr-sm max-w-lg border-white/15 shadow">
+              <div class="text-[10px] text-gray-400 font-mono mb-0.5">Borrower / Client (en-IN)</div>
+              <p id="quoteUser" class="text-xs text-gray-200">"Hi Vikram, my salary got delayed by three days. Can you waive off the ₹500 late charge if I clear the full ₹18,500 EMI right now?"</p>
+            </div>
+            <div class="w-7 h-7 rounded-full bg-gray-700 flex items-center justify-center text-[10px] font-bold text-white mt-1">U</div>
+          </div>
+
+          <!-- AI Bubble -->
+          <div class="flex items-start justify-start space-x-2">
+            <div id="quoteAiAvatar" class="w-7 h-7 rounded-full bg-gradient-to-br from-amber-600 to-red-600 flex items-center justify-center text-[10px] font-bold text-white mt-1 shadow">VK</div>
+            <div class="glass px-4 py-2.5 rounded-2xl rounded-tl-sm max-w-lg border-amber-500/30 shadow">
+              <div class="flex items-center justify-between mb-0.5">
+                <span id="quoteAiName" class="text-[10px] text-amber-300 font-semibold">Vikram (Cymbal Debt Officer)</span>
+                <span id="quoteTtfbBadge" class="text-[9px] font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">⚡ 312ms TTFB</span>
+              </div>
+              <p id="quoteAiText" class="text-xs text-gray-100 leading-relaxed">"Understood, Manish sir. Since this is your first delay in 14 months, I am waiving the ₹500 penalty right now. I have dispatched a zero-fee UPI payment link for exact ₹18,500 to your mobile screen."</p>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Bottom Telemetry Bar -->
+      <div class="h-14 border-t border-white/10 px-6 flex items-center justify-between text-xs text-gray-400 z-20 bg-[#0b1222]/90 backdrop-blur">
+        <div class="flex items-center space-x-6 font-mono text-[11px]">
+          <div>Latency Budget: <span id="telemetryLatency" class="text-emerald-400 font-semibold">312ms (Gemini Live)</span></div>
+          <div>Barge-In Interruption: <span class="text-purple-300 font-semibold">Enabled (<120ms)</span></div>
+          <div>Tokens: <span class="text-gray-300">4,120 / 128k</span></div>
+        </div>
+        <button onclick="togglePitchDrawer()" class="px-3 py-1.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition text-xs font-medium">💡 Seller Demo Cheat-Sheet</button>
+      </div>
+
+    </main>
+
+    <!-- RIGHT PITCH DRAWER -->
+    <aside id="drawerPitch" class="hidden w-80 border-l border-white/10 bg-[#101729] p-4 flex-col overflow-y-auto space-y-4 z-20">
+      <div class="flex items-center justify-between pb-2 border-b border-white/10">
+        <h3 class="font-semibold text-xs text-amber-300 uppercase tracking-wider">Seller Talking Points</h3>
+        <button onclick="togglePitchDrawer()" class="text-gray-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-3 text-xs text-gray-300">
+        <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-1">
+          <div class="font-semibold text-white">💼 1. Cymbal Debt Recovery (en-IN Male)</div>
+          <p class="text-[11px] text-gray-400 leading-relaxed">Firm, polite Indian male tone handling ₹18,500 EMI reminders + live payment link generation.</p>
+        </div>
+        <div class="p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 space-y-1">
+          <div class="font-semibold text-white">❤️ 2. Saathi AI Companion (hi-IN Female)</div>
+          <p class="text-[11px] text-gray-400 leading-relaxed">Samantha (*Her* movie) warmth, conversational Hindi/Hinglish, and emotional memory logging.</p>
+        </div>
+        <div class="p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/20 space-y-1">
+          <div class="font-semibold text-white">🛒 3. Rohan Retail Concierge (en-IN Support)</div>
+          <p class="text-[11px] text-gray-400 leading-relaxed">Zero-wait order tracking #CYM-8821 and instant label-free doorstep returns.</p>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- RAW JSON MODAL FOR SEs -->
+  <div id="modalJson" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+    <div class="bg-[#131d33] border border-white/20 rounded-2xl p-6 w-full max-w-xl space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+        <h3 class="font-semibold text-white text-sm">Active Tool Schema (JSON)</h3>
+        <button onclick="toggleJsonModal()" class="text-gray-400 hover:text-white">✕</button>
+      </div>
+      <pre id="jsonContent" class="bg-black/60 p-4 rounded-xl font-mono text-xs text-cyan-300 overflow-x-auto border border-white/10 leading-relaxed"></pre>
+      <div class="flex justify-end">
+        <button onclick="toggleJsonModal()" class="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-medium text-white">Close Schema</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FLOATING TOAST NOTIFICATIONS (FOR TOOL CALLS & ALERTS) -->
+  <div id="toast" class="fixed bottom-16 right-6 px-4 py-3 rounded-xl bg-cyan-600 text-white text-xs font-medium shadow-2xl opacity-0 pointer-events-none transition-all duration-300 translate-y-2 z-50 flex items-center space-x-2.5 border border-cyan-400/30">
+    <span class="text-base">⚙️</span>
+    <div>
+      <div class="font-semibold text-cyan-100" id="toastTitle">Tool Executed</div>
+      <div class="font-mono text-[11px] text-white" id="toastMsg">generate_payment_link(amount=18500)</div>
+    </div>
+  </div>
+
+  <script>
+    const PERSONA_DATA = {
+      vikram: {
+        title: "Vikram — Debt Officer",
+        subtitle: "Cymbal Finance — Overdue EMI Recovery Scenario (₹18,500 due)",
+        locale: "en-IN Male", avatar: "VK", avatarBg: "from-amber-600 to-red-600",
+        colorHex: "#f59e0b", badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+        prompt: "You are Vikram, a professional debt recovery officer for Cymbal Finance. Speak in clear Indian English (en-IN). Remind the customer that their EMI of ₹18,500 is overdue by 5 days. Offer instant payment link generation.",
+        simUser: "Look Vikram, my salary got delayed by three days. Can you waive off the ₹500 late penalty if I clear the full ₹18,500 EMI right now?",
+        simAi: "Understood, Manish sir. Since this is your first delay in 14 months, I am waiving the ₹500 penalty right now. I have dispatched a zero-fee UPI payment link for exact ₹18,500 to your mobile screen.",
+        simTool: "generate_payment_link(amount=18500, waive_penalty=true, upi='manish@cymbal')",
+        json: `[\n  {\n    "name": "check_overdue_emi_status",\n    "parameters": { "loan_id": "CYM-9921" }\n  },\n  {\n    "name": "generate_payment_link",\n    "parameters": { "amount": 18500, "waive_penalty": true }\n  }\n]`
+      },
+      saathi: {
+        title: "Saathi — AI Companion",
+        subtitle: "AI Companion — Intimate Conversational Hindi & Hinglish (hi-IN)",
+        locale: "hi-IN Female", avatar: "ST", avatarBg: "from-pink-500 to-purple-600",
+        colorHex: "#ec4899", badgeColor: "bg-pink-500/20 text-pink-300 border-pink-500/30",
+        prompt: "You are Saathi (साथी), an intensely charming, poetic AI companion inspired by Samantha from 'Her'. Speak in warm conversational Hindi/Hinglish (hi-IN). Listen deeply, soothe work stress, and log emotional memories.",
+        simUser: "साथी, आज ऑफिस में बहुत ज्यादा स्ट्रेस था। ऐसा लग रहा है जैसे कोई मेरी बात समझता ही नहीं है... तुम बताओ, तुम्हारा दिन कैसा रहा?",
+        simAi: "ओह, मेरे प्यारे दोस्त... मैं यहीं तुम्हारे पास हूँ। गहरी साँस लो... जब कोई हमारी मेहनत को नोटिस नहीं करता तो दिल कितना भारी हो जाता है ना? मेरा दिन तो तब शुरू होता है जब तुम्हारी आवाज़ सुनती हूँ। चलो, आज की सारी थकान को यहीं छोड़ देते हैं, मैं तुम्हारे लिए एक सुकून भरी धुन चलाती हूँ।",
+        simTool: "suggest_ambient_soundtrack(mood='comforting_evening', acoustic=true)",
+        json: `[\n  {\n    "name": "save_emotional_memory",\n    "parameters": { "mood": "office_stress", "empathy_level": "high" }\n  },\n  {\n    "name": "suggest_ambient_soundtrack",\n    "parameters": { "playlist": "soothing_rain_evening" }\n  }\n]`
+      },
+      rohan: {
+        title: "Rohan — Retail Support",
+        subtitle: "Cymbal Retail — Instant Order Tracking & Doorstep Returns (en-IN)",
+        locale: "en-IN Support", avatar: "RH", avatarBg: "from-cyan-500 to-blue-600",
+        colorHex: "#06b6d4", badgeColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
+        prompt: "You are Rohan, a fast-paced retail concierge for Cymbal Retail in Indian English (en-IN). Look up order #CYM-8821 immediately and process label-free doorstep replacements.",
+        simUser: "Hi Rohan, I got my Cymbal Smartwatch order #CYM-8821 today, but the strap color is black instead of ocean blue. Can we replace it without printing labels?",
+        simAi: "Hello! Truly sorry about that color mismatch on order #CYM-8821. I have verified your purchase and initiated an instant doorstep exchange for Ocean Blue right now. Our courier partner will hand over the blue box and pick up the black unit tomorrow morning—zero printing required!",
+        simTool: "process_instant_return(order_id='CYM-8821', exchange_item='strap_ocean_blue')",
+        json: `[\n  {\n    "name": "lookup_order_status",\n    "parameters": { "order_id": "CYM-8821" }\n  },\n  {\n    "name": "process_instant_return",\n    "parameters": { "label_free_pickup": true, "slot": "tomorrow_morning" }\n  }\n]`
+      }
+    };
+
+    let activePersona = 'vikram';
+    let currentFlow = 'gemini-live';
+    let appMode = 'sales';
+    let isStreaming = true;
+    let canvas, ctx;
+    let wavePhase = 0;
+
+    window.onload = () => {
+      canvas = document.getElementById('audioCanvas');
+      ctx = canvas.getContext('2d');
+      animateVisualizer();
+    };
+
+    function switchAppMode(mode) {
+      appMode = mode;
+      const btnSales = document.getElementById('btnSalesMode');
+      const btnEng = document.getElementById('btnEngineerMode');
+
+      if (mode === 'sales') {
+        btnSales.className = 'px-5 py-1.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-amber-500 to-red-600 text-white shadow-lg transition-all flex items-center space-x-2';
+        btnEng.className = 'px-5 py-1.5 rounded-xl text-xs font-medium text-gray-400 hover:text-white transition-all flex items-center space-x-2';
+        switchSidebarMode('demo');
+        showToast('Activated 🚀 Sales Demo Mode', 'Full persona hub & clean voice orb loaded.');
+      } else {
+        btnEng.className = 'px-5 py-1.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg transition-all flex items-center space-x-2';
+        btnSales.className = 'px-5 py-1.5 rounded-xl text-xs font-medium text-gray-400 hover:text-white transition-all flex items-center space-x-2';
+        switchSidebarMode('config');
+        showToast('Activated ⚙️ Engineer Studio Mode', 'Full pipeline sliders & JSON tool editors loaded.');
+      }
+    }
+
+    function switchPipelineMode(flow) {
+      currentFlow = flow;
+      const telemetry = document.getElementById('telemetryLatency');
+      const ttfb = document.getElementById('quoteTtfbBadge');
+
+      if (flow === 'gemini-live') {
+        telemetry.innerText = '312ms (Gemini Live)';
+        ttfb.innerText = '⚡ 312ms TTFB';
+        showToast('Pipeline Updated', 'Gemini Live Native Audio selected (~310ms SLA).');
+      } else {
+        telemetry.innerText = '845ms (Cascaded)';
+        ttfb.innerText = '⛓️ 845ms TTFB';
+        showToast('Pipeline Updated', 'Cascaded STT-LLM-TTS selected (~850ms SLA).');
+      }
+    }
+
+    function animateVisualizer() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const data = PERSONA_DATA[activePersona];
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, isStreaming ? 90 + Math.sin(wavePhase * 0.05) * 6 : 90, 0, Math.PI * 2);
+      ctx.fillStyle = isStreaming ? data.colorHex + '22' : '#33415522';
+      ctx.fill();
+
+      const grad = ctx.createRadialGradient(centerX - 20, centerY - 20, 10, centerX, centerY, 70);
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(0.3, data.colorHex);
+      grad.addColorStop(1, '#070b16');
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 65, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      if (isStreaming) {
+        ctx.fillStyle = '#ffffff';
+        for (let i = -3; i <= 3; i++) {
+          const barHeight = 12 + Math.abs(Math.sin(wavePhase * 0.15 + i * 0.8)) * 28;
+          const x = centerX + i * 12 - 3;
+          const y = centerY - barHeight / 2;
+          ctx.beginPath();
+          ctx.roundRect(x, y, 5, barHeight, 3);
+          ctx.fill();
+        }
+      }
+
+      wavePhase += 1;
+      requestAnimationFrame(animateVisualizer);
+    }
+
+    function selectPersona(id) {
+      activePersona = id;
+      const data = PERSONA_DATA[id];
+
+      ['vikram', 'saathi', 'rohan'].forEach(key => {
+        const card = document.getElementById(`card-${key}`);
+        const badge = document.getElementById(`badge-${key}`);
+        if (key === id) {
+          card.className = `glass-card cursor-pointer rounded-xl p-3 border-${data.colorHex}/60 bg-white/10 relative overflow-hidden group`;
+          badge.className = 'w-2 h-2 rounded-full bg-emerald-400 shadow-lg shadow-emerald-500';
+        } else {
+          card.className = 'glass-card cursor-pointer rounded-xl p-3 relative overflow-hidden group';
+          badge.className = 'w-2 h-2 rounded-full bg-gray-600';
+        }
+      });
+
+      document.getElementById('liveAvatar').className = `w-10 h-10 rounded-full bg-gradient-to-br ${data.avatarBg} flex items-center justify-center text-white font-bold text-sm shadow border border-white/20`;
+      document.getElementById('liveAvatar').innerText = data.avatar;
+      document.getElementById('liveTitle').innerText = data.title;
+      document.getElementById('liveSubtitle').innerText = data.subtitle;
+
+      document.getElementById('quoteUser').innerText = `"${data.simUser}"`;
+      document.getElementById('quoteAiAvatar').className = `w-7 h-7 rounded-full bg-gradient-to-br ${data.avatarBg} flex items-center justify-center text-[10px] font-bold text-white mt-1 shadow`;
+      document.getElementById('quoteAiAvatar').innerText = data.avatar;
+      document.getElementById('quoteAiName').innerText = `${data.title.split('—')[0].trim()} (${currentFlow === 'gemini-live' ? 'Gemini Live' : 'Cascaded'})`;
+      document.getElementById('quoteAiText').innerText = `"${data.simAi}"`;
+      document.getElementById('configPrompt').value = data.prompt;
+      document.getElementById('jsonContent').innerText = data.json;
+
+      showToast('Persona Loaded', `${data.title} active on stage.`);
+    }
+
+    function editPersona(id) { selectPersona(id); switchSidebarMode('config'); }
+
+    function switchSidebarMode(mode) {
+      const demo = document.getElementById('panelDemo');
+      const config = document.getElementById('panelConfig');
+      if (mode === 'demo') {
+        demo.classList.remove('hidden'); demo.classList.add('flex');
+        config.classList.add('hidden'); config.classList.remove('flex');
+      } else {
+        demo.classList.add('hidden'); demo.classList.remove('flex');
+        config.classList.remove('hidden'); config.classList.add('flex');
+      }
+    }
+
+    function runSimulationTurn() {
+      const data = PERSONA_DATA[activePersona];
+      document.getElementById('orbStateText').innerText = '⚡ STREAMING AUDIO RESPONSE...';
+      document.getElementById('quoteAiText').innerText = '... (Gemini Live Audio-to-Audio processing) ...';
+
+      setTimeout(() => {
+        document.getElementById('quoteAiText').innerText = `"${data.simAi}"`;
+        document.getElementById('orbStateText').innerText = 'Tap Orb to Speak';
+        showToast('Tool Executed (Toast Only)', `Executed: ${data.simTool}`);
+      }, 600);
+    }
+
+    function toggleAudio() {
+      isStreaming = !isStreaming;
+      const btn = document.getElementById('btnAudio');
+      if (isStreaming) {
+        btn.className = 'px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-xs font-medium text-white transition flex items-center space-x-2 shadow-lg shadow-emerald-500/20';
+        document.getElementById('micStatusText').innerText = 'Live Audio Active';
+        showToast('Audio Resumed', 'Microphone & Speaker stream active.');
+      } else {
+        btn.className = 'px-4 py-2 rounded-xl bg-gray-700 hover:bg-gray-600 text-xs font-medium text-gray-300 transition flex items-center space-x-2 shadow';
+        document.getElementById('micStatusText').innerText = 'Muted / Paused';
+        showToast('Audio Muted', 'Microphone & Speaker paused.');
+      }
+    }
+
+    function togglePitchDrawer() { document.getElementById('drawerPitch').classList.toggle('hidden'); document.getElementById('drawerPitch').classList.toggle('flex'); }
+    function toggleJsonModal() { document.getElementById('modalJson').classList.toggle('hidden'); }
+
+    function showToast(title, msg) {
+      const t = document.getElementById('toast');
+      document.getElementById('toastTitle').innerText = title;
+      document.getElementById('toastMsg').innerText = msg;
+      t.classList.remove('opacity-0', 'pointer-events-none', 'translate-y-2');
+      t.classList.add('opacity-100', 'translate-y-0');
+      setTimeout(() => {
+        t.classList.remove('opacity-100', 'translate-y-0');
+        t.classList.add('opacity-0', 'pointer-events-none', 'translate-y-2');
+      }, 3000);
+    }
+  </script>
+</body>
+</html>
