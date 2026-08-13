@@ -44,6 +44,7 @@ graph TD
 ## 🌟 Key Features
 
 * **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`), achieving ~390ms–500ms Time-to-First-Byte (TTFB).
+* **⚙️ Async & Non-Blocking Tool Calling (OOTB):** Native out-of-the-box support for asynchronous non-blocking tool execution (`behavior: NON_BLOCKING` + `scheduling: WHEN_IDLE`) on **Vertex AI Gemini Live 2.5 Native Audio**. Long-running database lookups, CRM syncs, or APIs run in detached background tasks while the model continues speaking naturally without dead air or audio stalling.
 * **🔄 Dual Conversational Pipelines:**
   1. **Native Gemini Live Duplex Mode:** End-to-end multimodal audio-in / audio-out via WebSocket.
   2. **Cascaded Mode:** Speech-to-Text + LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Instant Custom Voice Cloning).
