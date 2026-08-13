@@ -21,7 +21,9 @@ from tools.financial_math import (
 from tools.navigation import (
     get_kyc_guidance,
     get_app_screen_flow,
+    get_consultative_guidance,
 )
+from phase_engine import ConsultativePhaseTracker, PhaseTransitionProcessor
 from diagnostic_buffer import append_diagnostic_log
 from tracing import GLOBAL_LANGSMITH_TRACER
 
@@ -641,11 +643,11 @@ get_kyc_guidance_schema = FunctionSchema(
 
 get_app_screen_flow_schema = FunctionSchema(
     name="get_app_screen_flow",
-    description="Get mobile app UI navigation steps for depositing funds, selecting STL/MTL plans, or manual lending.",
+    description="Get mobile app UI navigation steps for depositing funds, selecting STL/MTL plans, manual lending, or loan filter options.",
     properties={
         "target_flow": {
             "type": "string",
-            "description": "Flow to navigate: 'deposit', 'lumpsum', 'manual', or 'general'."
+            "description": "Flow to navigate: 'deposit', 'lumpsum', 'loan filter', 'manual', or 'general'."
         }
     },
     required=["target_flow"]
@@ -821,7 +823,7 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
-                    greeting_text = "नमस्ते!" if self.language == "hi-IN" else "Hello!"
+                    greeting_text = "नमस्ते!" if (self.language in ("hi-IN", "hi", "en-IN") or (isinstance(self.language, str) and self.language.startswith("hi"))) else "Hello!"
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
                     await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
                     await self.push_frame(LLMRunFrame())
@@ -829,7 +831,7 @@ class StartTriggerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = None):
+async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = 20000):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -929,8 +931,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
-        if context_compression_trigger_tokens is not None:
-            cwc["trigger_tokens"] = context_compression_trigger_tokens
+        cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 20000
 
     AI_STUDIO_MODELS = {
         "gemini-3.5-live-preview",
@@ -1064,9 +1065,13 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
+    phase_tracker = ConsultativePhaseTracker(gemini_service=llm)
+    phase_processor = PhaseTransitionProcessor(tracker=phase_tracker)
+
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(language=language),
+        phase_processor,
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,

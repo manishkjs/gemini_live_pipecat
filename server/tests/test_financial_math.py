@@ -234,6 +234,112 @@ class TestFinancialMath(unittest.TestCase):
         lumpsum_flow = get_app_screen_flow("lumpsum")
         self.assertIn("Lumpsum", lumpsum_flow["flow_name"])
 
+        filter_flow = get_app_screen_flow("loan filter")
+        self.assertIn("App Loan Filter Options", filter_flow["flow_name"])
+        self.assertEqual(len(filter_flow["available_filters"]), 8)
+
+    def test_loan_filter_eight_parameters_exact(self):
+        expected_filters = [
+            "1. Loan Tenure (2, 3, 4, 5, 6, 12 months)",
+            "2. Repayment Type (Monthly EMI vs Daily EDI)",
+            "3. Risk Category (AAA Low Risk, AA Medium Risk, A High Return, B, C)",
+            "4. Borrower Type (Salaried, Self-Employed, Business Owner)",
+            "5. Borrower Monthly Income Bracket (e.g. ₹25,000+, ₹50,000+, ₹1,00,000+)",
+            "6. Total Loan Amount Requested",
+            "7. Remaining Amount to be funded",
+            "8. Borrower Age Group (e.g. 21-35, 36-50, 50+)"
+        ]
+
+        for query in ["loan filter", "filter", "borrower filter", "LOAN FILTER", " App Loan Filter "]:
+            res = get_app_screen_flow(query)
+            self.assertEqual(res["flow_name"], "App Loan Filter Options")
+            self.assertIn("available_filters", res)
+            self.assertEqual(len(res["available_filters"]), 8)
+            self.assertEqual(res["available_filters"], expected_filters)
+            # Individually assert each parameter
+            self.assertEqual(res["available_filters"][0], "1. Loan Tenure (2, 3, 4, 5, 6, 12 months)")
+            self.assertEqual(res["available_filters"][1], "2. Repayment Type (Monthly EMI vs Daily EDI)")
+            self.assertEqual(res["available_filters"][2], "3. Risk Category (AAA Low Risk, AA Medium Risk, A High Return, B, C)")
+            self.assertEqual(res["available_filters"][3], "4. Borrower Type (Salaried, Self-Employed, Business Owner)")
+            self.assertEqual(res["available_filters"][4], "5. Borrower Monthly Income Bracket (e.g. ₹25,000+, ₹50,000+, ₹1,00,000+)")
+            self.assertEqual(res["available_filters"][5], "6. Total Loan Amount Requested")
+            self.assertEqual(res["available_filters"][6], "7. Remaining Amount to be funded")
+            self.assertEqual(res["available_filters"][7], "8. Borrower Age Group (e.g. 21-35, 36-50, 50+)")
+            self.assertIn("instructions_hinglish", res)
+            self.assertIn("8 exact options", res["instructions_hinglish"])
+
+    def test_kyc_guidance_all_steps_and_variations(self):
+        # Step 1: PAN Verification
+        for pan_query in ["pan", "PAN", "pan card", "PAN Verification", " My PAN "]:
+            pan_res = get_kyc_guidance(pan_query)
+            self.assertEqual(pan_res["step"], "PAN Verification")
+            self.assertIn("10-digit PAN", pan_res["instructions_hinglish"])
+            self.assertIn("Original PAN Card photo", pan_res["requirements"])
+
+        # Step 2: Aadhaar / Address Verification (including 'aadhar' spelling variant)
+        for aadhaar_query in ["aadhaar", "AADHAAR", "aadhar", "Aadhar", "address", "Aadhaar OTP"]:
+            aadhaar_res = get_kyc_guidance(aadhaar_query)
+            self.assertEqual(aadhaar_res["step"], "Aadhaar / Address Verification")
+            self.assertIn("12-digit Aadhaar", aadhaar_res["instructions_hinglish"])
+            self.assertIn("Digilocker", aadhaar_res["instructions_hinglish"])
+            self.assertIn("Mobile number must be linked with Aadhaar for OTP", aadhaar_res["requirements"])
+
+        # Step 3: Bank Account Linking & Penny Drop
+        for bank_query in ["bank", "BANK", "penny", "penny_drop", "penny drop", "account", "bank linking"]:
+            bank_res = get_kyc_guidance(bank_query)
+            self.assertEqual(bank_res["step"], "Bank Account Linking")
+            self.assertIn("Penny drop", bank_res["instructions_hinglish"])
+            self.assertIn("₹1", bank_res["instructions_hinglish"])
+            self.assertIn("Bank account name must match PAN card name", bank_res["requirements"])
+
+        # 3-Step Complete KYC Overview
+        for overview_query in ["all", "ALL", "", None, "kyc", "overview", "complete"]:
+            overview_res = get_kyc_guidance(overview_query)
+            self.assertEqual(overview_res["step"], "Complete KYC 3-Step Overview")
+            self.assertIn("3 simple steps", overview_res["instructions_hinglish"])
+            self.assertIn("PAN card", overview_res["instructions_hinglish"])
+            self.assertIn("Digilocker", overview_res["instructions_hinglish"])
+            self.assertIn("penny-drop", overview_res["instructions_hinglish"])
+            self.assertIn("requirements", overview_res)
+
+    def test_app_screen_flow_all_navigation_routes(self):
+        # Deposit Flow
+        for dep_query in ["deposit", "DEPOSIT", "fund", "add money", "pay", " Add Money "]:
+            dep_res = get_app_screen_flow(dep_query)
+            self.assertEqual(dep_res["flow_name"], "Adding Funds to Cymbal Escrow Wallet")
+            self.assertIn("Add Funds", dep_res["instructions_hinglish"])
+            self.assertIn("₹250", dep_res["instructions_hinglish"])
+            self.assertIn("₹25,000", dep_res["instructions_hinglish"])
+            self.assertIn("UPI", dep_res["instructions_hinglish"])
+            self.assertIn("NetBanking", dep_res["instructions_hinglish"])
+            self.assertIn("Escrow", dep_res["instructions_hinglish"])
+
+        # Lumpsum Flow (STL / MTL)
+        for lump_query in ["lumpsum", "LUMPSUM", "stl", "mtl", "stl 5m", "mtl 14m"]:
+            lump_res = get_app_screen_flow(lump_query)
+            self.assertEqual(lump_res["flow_name"], "Lumpsum Lending (STL / MTL)")
+            self.assertIn("Lumpsum Plans", lump_res["instructions_hinglish"])
+            self.assertIn("STL 5M", lump_res["instructions_hinglish"])
+            self.assertIn("STL 7M", lump_res["instructions_hinglish"])
+            self.assertIn("MTL 14M", lump_res["instructions_hinglish"])
+            self.assertIn("100+ verified borrowers", lump_res["instructions_hinglish"])
+
+        # Manual Lending Flow
+        for man_query in ["manual", "MANUAL", "manual lending", " Manual "]:
+            man_res = get_app_screen_flow(man_query)
+            self.assertEqual(man_res["flow_name"], "Manual Lending Selection")
+            self.assertIn("Manual Lending", man_res["instructions_hinglish"])
+            self.assertIn("₹250 se ₹4,000", man_res["instructions_hinglish"])
+            self.assertIn("A, AA, AAA", man_res["instructions_hinglish"])
+
+        # General / Default Navigation Flow
+        for gen_query in ["general", "GENERAL", "", None, "dashboard", "home", "portfolio"]:
+            gen_res = get_app_screen_flow(gen_query)
+            self.assertEqual(gen_res["flow_name"], "General App Navigation")
+            self.assertIn("Dashboard", gen_res["instructions_hinglish"])
+            self.assertIn("Invest", gen_res["instructions_hinglish"])
+            self.assertIn("Portfolio / Statement", gen_res["instructions_hinglish"])
+
 
 if __name__ == "__main__":
     unittest.main()

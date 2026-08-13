@@ -105,7 +105,7 @@ async def websocket_endpoint(
     tools: Optional[str] = None,
     skip_stt: bool = False,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = None,
+    context_compression_trigger_tokens: Optional[int] = 20000,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")

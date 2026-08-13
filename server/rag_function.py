@@ -11,6 +11,9 @@ except ImportError:
     vertexai = None
     rag = None
 import google.auth
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # RAG Configuration Helpers
 def get_rag_config():

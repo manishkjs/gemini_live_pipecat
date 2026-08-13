@@ -7,7 +7,10 @@ if server_dir not in sys.path:
     sys.path.insert(0, server_dir)
 
 from fastapi.testclient import TestClient
-from server import app
+try:
+    from server.server import app
+except ImportError:
+    from server import app
 from tracing import GLOBAL_LANGSMITH_TRACER
 
 class TestDiagnosticsAndTracing(unittest.TestCase):
