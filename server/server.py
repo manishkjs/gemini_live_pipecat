@@ -246,13 +246,15 @@ if client_dist_dir:
     @app.get("/diagnostics")
     async def read_diagnostics():
         diag_path = os.path.join(client_dist_dir, "diagnostics.html")
+        headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
         if os.path.exists(diag_path):
-            return FileResponse(diag_path)
-        return FileResponse(os.path.join(client_dist_dir, "index.html"))
+            return FileResponse(diag_path, headers=headers)
+        return FileResponse(os.path.join(client_dist_dir, "index.html"), headers=headers)
 
     @app.get("/{catch_all:path}")
     async def read_index(catch_all: str):
-        return FileResponse(os.path.join(client_dist_dir, "index.html"))
+        headers = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"}
+        return FileResponse(os.path.join(client_dist_dir, "index.html"), headers=headers)
 
 async def main():
     port = int(os.environ.get("PORT", 7860))
