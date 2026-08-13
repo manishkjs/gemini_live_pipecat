@@ -1,10 +1,16 @@
 import asyncio
 import os
+import sys
 import argparse
 import websockets
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from urllib.parse import quote
+
+# Ensure server dir is in sys.path
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
 
 import uvicorn
 from dotenv import load_dotenv

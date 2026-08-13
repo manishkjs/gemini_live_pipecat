@@ -123,15 +123,6 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
 
         logger.info(f"[RAG] Found {len(results)} results")
 
-        # Save result to file for inspection
-        try:
-            file_path = os.path.join(os.path.dirname(__file__), "rag_last_result.txt")
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(result)
-            logger.info(f"[RAG] Saved result to {file_path} (Length: {len(result)})")
-        except Exception as e:
-            logger.error(f"Failed to save RAG result: {e}")
-
     except Exception as e:
         logger.error(f"Knowledge base search error: {e}")
         result = "Knowledge base search failed. Please try again."

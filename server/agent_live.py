@@ -382,6 +382,16 @@ class GeminiSessionLoggerMixin:
                 token_usage=getattr(self, '_last_turn_usage', None)
             )
             self._bot_turn_text_buffer = ""
+        
+        # Metric Streaming: Turn Complete
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'turn_complete'}
+            }
+        }))
 
     async def _send_repeat_instruction(self, filler_text: str):
         """Send a user-role prompt telling the model to repeat itself."""
@@ -461,19 +471,6 @@ class GeminiSessionLoggerMixin:
                     'type': 'usage',
                     'usage': usage_dict
                 }
-            }
-        }))
-
-    async def _handle_msg_turn_complete(self, message):
-        await super()._handle_msg_turn_complete(message)
-        
-        # Metric Streaming: Turn Complete
-        await self.push_frame(OutputTransportMessageFrame(message={
-            "label": "rtvi-ai",
-            "type": "server-message",
-            "data": {
-                'type': 'metrics',
-                'payload': {'type': 'turn_complete'}
             }
         }))
 
@@ -1071,10 +1068,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(language=language),
-        phase_processor,
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
+        phase_processor,
         *([tts_service] if tts_service else []),
         transport.output(),
         context_aggregator.assistant(),
