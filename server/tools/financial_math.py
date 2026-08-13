@@ -154,6 +154,8 @@ def calculate_manual_lending(
         return {"error": "Minimum manual lending amount is ₹250."}
     if amount > 5000000:
         return {"error": "Maximum platform lending limit is ₹50,00,000 (50 Lakhs)."}
+    if tenure_months <= 0:
+        return {"error": f"Invalid tenure {tenure_months} months. Tenure must be a positive integer (e.g. 2, 3, 4, 5, 6, or 12 months)."}
 
     # Fee lookup table by tenure
     fee_map = {2: 1.0, 3: 1.0, 4: 4.0, 5: 4.0, 6: 3.0, 12: 6.0}
@@ -180,7 +182,12 @@ def calculate_manual_lending(
 
     # Custom Portfolio Breakdown (Rule 4 Steps A-G)
     borrower_rate = float(custom_borrower_rate_pct)
+    if borrower_rate < 0:
+        return {"error": "Borrower interest rate percentage cannot be negative."}
+
     npa_rate = float(custom_npa_rate_pct if custom_npa_rate_pct is not None else 3.5)
+    if npa_rate < 0 or npa_rate > 100:
+        return {"error": "NPA rate percentage must be between 0% and 100%."}
 
     step_a_principal = amount
     step_b_npa_loss = step_a_principal * (npa_rate / 100.0)
@@ -218,6 +225,13 @@ def calculate_manual_lending(
 
 def calculate_sip_returns(monthly_amount: float, annual_rate: float, years: int) -> Dict[str, Any]:
     """Calculate Systematic Investment Plan (SIP) maturity value."""
+    if monthly_amount <= 0:
+        return {"error": "Monthly SIP amount must be greater than 0."}
+    if years <= 0:
+        return {"error": "SIP duration in years must be greater than 0."}
+    if annual_rate < 0:
+        return {"error": "Annual return rate percentage cannot be negative."}
+
     n = years * 12
     if annual_rate == 0:
         maturity = monthly_amount * n
@@ -248,6 +262,17 @@ def get_product_recommendation(
 ) -> Dict[str, Any]:
     """Validate investment parameters and recommend the best Cymbal Lending product."""
     risk = risk_appetite.lower()
+    
+    if amount < 250:
+        return {
+            "is_valid": False,
+            "error": "Minimum platform investment/lending amount is ₹250.",
+        }
+    if amount > 5000000:
+        return {
+            "is_valid": False,
+            "error": "Maximum platform lending limit is ₹50,00,000 (50 Lakhs).",
+        }
     
     if tenure_months == 9:
         return {

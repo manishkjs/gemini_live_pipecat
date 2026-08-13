@@ -118,6 +118,45 @@ class TestFinancialMath(unittest.TestCase):
         res_stl = get_product_recommendation(50000, "medium", 6)
         self.assertEqual(res_stl["recommended_product"], "STL 7M")
 
+    def test_sip_returns(self):
+        # 5,000 per month for 3 years at 12% p.a. (Annuity due / start-of-month compounding)
+        # r = 12 / (12 * 100) = 0.01, n = 36
+        # maturity = 5000 * (((1.01)^36 - 1) / 0.01) * 1.01 = 217,538.24
+        res = calculate_sip_returns(5000, 12.0, 3)
+        self.assertEqual(res["total_invested_rupees"], 180000.0)
+        self.assertAlmostEqual(res["maturity_value_rupees"], 217538.24, places=1)
+        self.assertAlmostEqual(res["wealth_gained_rupees"], 37538.24, places=1)
+
+        # 0% interest rate SIP
+        res_zero = calculate_sip_returns(5000, 0.0, 3)
+        self.assertEqual(res_zero["total_invested_rupees"], 180000.0)
+        self.assertEqual(res_zero["maturity_value_rupees"], 180000.0)
+        self.assertEqual(res_zero["wealth_gained_rupees"], 0.0)
+
+    def test_sip_invalid_inputs(self):
+        self.assertIn("error", calculate_sip_returns(0, 12.0, 3))
+        self.assertIn("error", calculate_sip_returns(5000, 12.0, 0))
+        self.assertIn("error", calculate_sip_returns(5000, -5.0, 3))
+
+    def test_manual_lending_validation(self):
+        # Non-positive tenure
+        self.assertIn("error", calculate_manual_lending(50000, 0))
+        self.assertIn("error", calculate_manual_lending(50000, -2))
+
+        # Negative borrower rate or invalid NPA rate
+        self.assertIn("error", calculate_manual_lending(50000, 12, custom_borrower_rate_pct=-5))
+        self.assertIn("error", calculate_manual_lending(50000, 12, custom_borrower_rate_pct=30, custom_npa_rate_pct=-1))
+        self.assertIn("error", calculate_manual_lending(50000, 12, custom_borrower_rate_pct=30, custom_npa_rate_pct=150))
+
+    def test_product_recommendation_limits(self):
+        # Under ₹250 platform minimum
+        res_under = get_product_recommendation(100)
+        self.assertFalse(res_under["is_valid"])
+
+        # Over ₹50L platform limit
+        res_over = get_product_recommendation(6000000)
+        self.assertFalse(res_over["is_valid"])
+
     def test_navigation_guidance(self):
         pan_guide = get_kyc_guidance("pan")
         self.assertIn("PAN", pan_guide["step"])
