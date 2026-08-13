@@ -197,6 +197,44 @@ class TestFinancialMath(unittest.TestCase):
         self.assertEqual(res_default["tenure_months"], 5)
         self.assertEqual(res_default["annualized_xirr_pct"], 18.0)
 
+    def test_mtl_limits(self):
+        # Under ₹1,00,000 minimum
+        self.assertIn("error", calculate_mtl_returns(50000, "monthly"))
+        # Over ₹10,00,000 maximum for Monthly
+        self.assertIn("error", calculate_mtl_returns(1500000, "monthly"))
+        # Within ₹25,00,000 for Daily
+        res_daily_ok = calculate_mtl_returns(2000000, "daily")
+        self.assertEqual(res_daily_ok["product_name"], "MTL 14M Daily (EDI)")
+        # Over ₹25,00,000 maximum for Daily
+        self.assertIn("error", calculate_mtl_returns(3000000, "daily"))
+
+    def test_manual_lending_all_fee_tiers(self):
+        # Fee schedule: 2m -> 1%, 3m -> 1%, 4m -> 4%, 5m -> 4%, 6m -> 3%, 12m -> 6%
+        expected_fees = {2: 1.0, 3: 1.0, 4: 4.0, 5: 4.0, 6: 3.0, 12: 6.0}
+        for tenure, fee in expected_fees.items():
+            res = calculate_manual_lending(
+                amount=100000,
+                tenure_months=tenure,
+                custom_borrower_rate_pct=30.0,
+                custom_npa_rate_pct=0.0,
+            )
+            self.assertEqual(res["platform_fee_pct"], fee)
+            self.assertEqual(res["step_e_platform_fee_rupees"], 100000 * (fee / 100.0))
+
+    def test_navigation_all_branches(self):
+        aadhaar = get_kyc_guidance("aadhaar")
+        self.assertIn("Aadhaar", aadhaar["step"])
+
+        bank = get_kyc_guidance("bank")
+        self.assertIn("Bank", bank["step"])
+
+        manual_flow = get_app_screen_flow("manual")
+        self.assertIn("Manual", manual_flow["flow_name"])
+
+        lumpsum_flow = get_app_screen_flow("lumpsum")
+        self.assertIn("Lumpsum", lumpsum_flow["flow_name"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
