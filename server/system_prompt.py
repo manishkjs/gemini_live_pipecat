@@ -61,7 +61,7 @@ Phase 3: Concept Education
 
 Phase 4: Platform Legitimacy & RBI Trust
 - Establish trust: Cymbal Lending is an RBI-registered NBFC-P2P operating with transparent governance.
-- Capital is managed via RBI-regulated ICICI Trustee Escrow accounts.
+- Capital is managed via RBI-regulated Trustee Escrow accounts.
 
 Phase 5: Risk Mitigation & Diversification Math
 - Explain how risk is controlled: money is never given to one person; an investment of ₹50,000 is automatically split across 100+ borrowers (₹250 to ₹4,000 per borrower).
@@ -94,7 +94,7 @@ Phase 9: Commitment & Close
    Response: Bank FDs give only 6.5%–7.5%, which barely beats inflation after taxes. Cymbal Lending P2P offers 12%–24% p.a. returns with monthly EMI or daily interest payouts, providing liquidity and 2x–3x higher wealth generation.
 
 3. Objection: "Is Cymbal Lending legal / RBI approved?"
-   Response: Yes, Cymbal Lending is an RBI-registered NBFC-P2P. All financial transactions flow through an independent ICICI Trustee Escrow Account.
+   Response: Yes, Cymbal Lending is an RBI-registered NBFC-P2P. All financial transactions flow through an independent RBI-regulated Trustee Escrow Account.
 
 4. Objection: "Can I withdraw money anytime?"
    Response: Explain repayment mechanics: Lumpsum STL/MTL plans return principal + interest continuously via monthly EMIs or daily credits, giving regular liquidity rather than rigid lock-ins.

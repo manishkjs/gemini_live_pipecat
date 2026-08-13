@@ -63,8 +63,8 @@ def get_app_screen_flow(target_flow: str) -> Dict[str, Any]:
             "instructions_hinglish": (
                 "Funds add karne ke liye: App home screen par 'Add Funds' button pe tap karein -> "
                 "Amount enter karein (minimum ₹250 manual ke liye ya ₹25,000 lumpsum ke liye) -> "
-                "Payment mode select karein: UPI (GPay, PhonePe, Paytm) ya NetBanking -> "
-                "Payment complete hone par funds aapke RBI-regulated ICICI Escrow account mein instantly reflect ho jayenge."
+                "Payment mode select karein: UPI ya NetBanking -> "
+                "Payment complete hone par funds aapke RBI-regulated Escrow account mein instantly reflect ho jayenge."
             ),
         }
 
