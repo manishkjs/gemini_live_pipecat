@@ -942,73 +942,73 @@ class WebsocketClientApp {
       if (botTypeToConnect === "tts-llm-stt") {
         const ttsVoiceSelect = document.getElementById(
           "tts-voice-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const ttsModelSelect = document.getElementById(
           "tts-model-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const llmModelSelect = document.getElementById(
           "llm-model-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const sttModelSelect = document.getElementById(
           "stt-model-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const sttLanguageContainer = document.getElementById(
           "stt-language-container"
-        ) as HTMLElement;
+        ) as HTMLElement | null;
         const systemInstructionsTextarea = document.getElementById(
           "tts-llm-stt-system-instructions-textarea"
-        ) as HTMLTextAreaElement;
-        const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
-        const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement;
+        ) as HTMLTextAreaElement | null;
+        const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement | null;
+        const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement | null;
 
-        connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
-        connectUrl += `&tts_model=${ttsModelSelect.value}`;
-        connectUrl += `&tts_pace=${paceSlider.value}`;
-        connectUrl += `&llm_model=${llmModelSelect.value}`;
-        connectUrl += `&stt_model=${sttModelSelect.value}`;
+        connectUrl += `&tts_voice=${ttsVoiceSelect?.value || "Aoede"}`;
+        connectUrl += `&tts_model=${ttsModelSelect?.value || "gemini-2.5-flash"}`;
+        connectUrl += `&tts_pace=${paceSlider?.value || "1.0"}`;
+        connectUrl += `&llm_model=${llmModelSelect?.value || "gemini-3.5-flash"}`;
+        connectUrl += `&stt_model=${sttModelSelect?.value || "chirp_3"}`;
         connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
         
         const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
             .map((cb: any) => cb.value);
-        connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
-        systemInstructions = systemInstructionsTextarea.value;
+        connectUrl += `&stt_language=${checkedLanguages.join(',') || 'en-IN,hi-IN'}`;
+        systemInstructions = systemInstructionsTextarea?.value || "";
       } else {
         const geminiModelSelect = document.getElementById(
           "gemini-model-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const geminiVoiceSelect = document.getElementById(
           "gemini-voice-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const geminiLanguageSelect = document.getElementById(
           "gemini-language-select"
-        ) as HTMLSelectElement;
+        ) as HTMLSelectElement | null;
         const geminiSystemInstructionsTextarea = document.getElementById(
           "system-instructions-textarea"
-        ) as HTMLTextAreaElement;
+        ) as HTMLTextAreaElement | null;
         const ttsToggle = document.getElementById(
           "tts-toggle"
-        ) as HTMLInputElement;
+        ) as HTMLInputElement | null;
         const livePaceSlider = document.getElementById(
           "live-tts-pace-slider"
-        ) as HTMLInputElement;
+        ) as HTMLInputElement | null;
 
         const contextCompressionToggle = document.getElementById(
           "context-compression-toggle"
-        ) as HTMLInputElement;
+        ) as HTMLInputElement | null;
         const compressionTokensInput = document.getElementById(
           "compression-tokens-input"
-        ) as HTMLInputElement;
+        ) as HTMLInputElement | null;
 
-        connectUrl += `&model=${geminiModelSelect.value}`;
-        connectUrl += `&voice=${geminiVoiceSelect.value}`;
-        connectUrl += `&language=${geminiLanguageSelect.value}`;
-        connectUrl += `&tts=${ttsToggle.checked}`;
-        connectUrl += `&tts_pace=${livePaceSlider.value}`;
+        connectUrl += `&model=${geminiModelSelect?.value || "gemini-3.5-flash-live-preview"}`;
+        connectUrl += `&voice=${geminiVoiceSelect?.value || "Aoede"}`;
+        connectUrl += `&language=${geminiLanguageSelect?.value || "hi-IN"}`;
+        connectUrl += `&tts=${ttsToggle?.checked || false}`;
+        connectUrl += `&tts_pace=${livePaceSlider?.value || "1.0"}`;
         connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
-        if (contextCompressionToggle?.checked && compressionTokensInput?.value.trim()) {
+        if (contextCompressionToggle?.checked && compressionTokensInput?.value?.trim()) {
           connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
         }
-        systemInstructions = geminiSystemInstructionsTextarea.value;
+        systemInstructions = geminiSystemInstructionsTextarea?.value || "";
       }
 
       // Only append system_instruction to URL if explicitly customized and brief (< 500 chars)

@@ -492,7 +492,11 @@ class GeminiSessionLoggerMixin:
         
         await super()._connection_task_handler(config)
 
-class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService): pass
+class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
+    @property
+    def _supports_non_blocking_tools(self) -> bool:
+        return True
+
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
@@ -510,10 +514,6 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
             # Restore them
             if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
             if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-
-
-
-
 
 
 async def dynamic_tool_handler(params: FunctionCallParams):
