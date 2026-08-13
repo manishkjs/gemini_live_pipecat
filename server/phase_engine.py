@@ -10,6 +10,7 @@ Implements Google Gemini Live API Prompt Yielding Best Practices:
 """
 
 import asyncio
+import re
 from typing import Any, Dict, Optional
 from loguru import logger
 
@@ -189,14 +190,8 @@ class PhaseTransitionProcessor(FrameProcessor):
         if isinstance(frame, TranscriptionFrame) and getattr(frame, "user_id", "") == "user":
             text = (frame.text or "").strip().lower()
             
-            # Phase 1 -> 2: User gives consent
-            if self.tracker.current_phase == 1 and any(
-                w in text for w in ["हाँ", "haan", "yes", "batao", "bataiye", "sure", "theek hai", "boliye", "batao", "ha"]
-            ):
-                await self.tracker.transition_to(2, trigger_reason="User confirmed availability")
-
-            # Jump to Phase 8: KYC / Document queries
-            elif any(w in text for w in ["kyc", "documents", "aadhaar", "pan card", "bank account", "penny drop", "digilocker"]):
+            # Jump to Phase 8: KYC / Document queries (Highest specificity)
+            if any(w in text for w in ["kyc", "documents", "aadhaar", "pan card", "bank account", "penny drop", "digilocker"]):
                 await self.tracker.transition_to(8, trigger_reason="User asked for KYC / account setup")
 
             # Jump to Phase 4: RBI / Escrow / Trust / Penalty
@@ -208,8 +203,15 @@ class PhaseTransitionProcessor(FrameProcessor):
                 await self.tracker.transition_to(5, trigger_reason="User asked about credit risk & diversification")
 
             # Jump to Phase 7: Returns / Calculations
-            elif any(w in text for w in ["kitna milega", "return kitna", "profit", "monthly payout", "emi kitna"]):
+            elif any(w in text for w in ["kitna milega", "return kitna", "profit", "monthly payout", "emi kitna", "calculate"]):
                 await self.tracker.transition_to(7, trigger_reason="User asked for returns / calculation")
+
+            # Phase 1 -> 2: User gives consent (Word-boundary matching)
+            elif self.tracker.current_phase == 1 and (
+                "हाँ" in text or
+                any(re.search(rf"\b{re.escape(w)}\b", text) for w in ["haan", "yes", "batao", "bataiye", "sure", "theek hai", "boliye", "bataiye", "ok", "okay"])
+            ):
+                await self.tracker.transition_to(2, trigger_reason="User confirmed availability")
 
         # ── Trigger B: Intercept Functional Tool Executions ───────────
         elif isinstance(frame, FunctionCallResultFrame):

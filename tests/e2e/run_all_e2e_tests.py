@@ -89,6 +89,7 @@ def main():
         ("Tier 3: Cross-Feature Combinations (Pairwise)", "tier3_cross_feature_test"),
         ("Tier 4: Real-World Application Workloads", "tier4_real_world_scenarios_test"),
         ("Backend: Financial Math Unit Tests", "tests.test_financial_math"),
+        ("Backend: Phase Engine & Prompt Yielding", "tests.test_phase_engine"),
         ("Backend: Routes & Diagnostics Integration", "test_routes"),
     ]
 
