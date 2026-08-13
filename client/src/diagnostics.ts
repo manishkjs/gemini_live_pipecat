@@ -23,6 +23,7 @@ class DiagnosticsApp {
   private activeFilter: string = "ALL";
   private searchQuery: string = "";
   private currentTraceUrl: string = "https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat";
+  private selectedLatencyStage: string = "total"; // "total" | "llm" | "stt" | "tts" | "live_ttfb"
 
   // KPIs
   private lastTtfbList: number[] = [];
@@ -55,7 +56,7 @@ class DiagnosticsApp {
   }
 
   private bindEvents() {
-    // Filter pills
+    // Filter pills for logs
     document.querySelectorAll(".filter-pill").forEach(pill => {
       pill.addEventListener("click", (e) => {
         document.querySelectorAll(".filter-pill").forEach(p => p.classList.remove("active"));
@@ -63,6 +64,31 @@ class DiagnosticsApp {
         target.classList.add("active");
         this.activeFilter = target.dataset.filter || "ALL";
         this.renderLogs();
+      });
+    });
+
+    // Stage filter pills for Latency Benchmarks
+    const updatePillStyles = (activeStage: string) => {
+      this.selectedLatencyStage = activeStage;
+      document.querySelectorAll(".full-lat-pill").forEach(p => {
+        const stage = (p as HTMLElement).dataset.stage;
+        if (stage === activeStage) {
+          (p as HTMLElement).style.background = "#0284c7";
+          (p as HTMLElement).style.color = "#ffffff";
+          (p as HTMLElement).style.borderColor = "#38bdf8";
+        } else {
+          (p as HTMLElement).style.background = "rgba(30, 41, 59, 0.8)";
+          (p as HTMLElement).style.color = "#cbd5e1";
+          (p as HTMLElement).style.borderColor = "rgba(255, 255, 255, 0.15)";
+        }
+      });
+      this.fetchTelemetry();
+    };
+
+    document.querySelectorAll(".full-lat-pill").forEach(p => {
+      p.addEventListener("click", (e) => {
+        const stage = (e.currentTarget as HTMLElement).dataset.stage || "total";
+        updatePillStyles(stage);
       });
     });
 
@@ -138,7 +164,37 @@ class DiagnosticsApp {
     const totalStat = summary.total_turnaround || {};
     const turns = summary.turns || [];
 
-    const primary = (liveStat.count && liveStat.count > 0) ? liveStat : (llmStat.count && llmStat.count > 0 ? llmStat : totalStat);
+    // Update pill counters
+    const cTotal = document.getElementById("full-count-total");
+    const cLlm = document.getElementById("full-count-llm");
+    const cStt = document.getElementById("full-count-stt");
+    const cTts = document.getElementById("full-count-tts");
+    const cLive = document.getElementById("full-count-live");
+    if (cTotal) cTotal.innerText = String(totalStat.count || 0);
+    if (cLlm) cLlm.innerText = String(llmStat.count || 0);
+    if (cStt) cStt.innerText = String(sttStat.count || 0);
+    if (cTts) cTts.innerText = String(ttsStat.count || 0);
+    if (cLive) cLive.innerText = String(liveStat.count || 0);
+
+    // Select stat according to active filter
+    let activeStat = totalStat;
+    let stageLabel = "Total Turnaround (E2E)";
+    if (this.selectedLatencyStage === "llm") {
+      activeStat = llmStat;
+      stageLabel = "LLM TTFB (Reasoning Stream)";
+    } else if (this.selectedLatencyStage === "stt") {
+      activeStat = sttStat;
+      stageLabel = "STT Chirp Latency";
+    } else if (this.selectedLatencyStage === "tts") {
+      activeStat = ttsStat;
+      stageLabel = "TTS Audio Synthesis";
+    } else if (this.selectedLatencyStage === "live_ttfb") {
+      activeStat = liveStat;
+      stageLabel = "Gemini Live Native TTFB";
+    }
+
+    const titleEl = document.getElementById("full-lat-title");
+    if (titleEl) titleEl.innerHTML = `⚡ Session Latency: <span style="color: #f8fafc;">${stageLabel}</span>`;
 
     const p50El = document.getElementById("full-lat-p50");
     const p90El = document.getElementById("full-lat-p90");
@@ -147,26 +203,26 @@ class DiagnosticsApp {
     const minmaxEl = document.getElementById("full-lat-minmax");
     const badgeEl = document.getElementById("full-diag-turn-count-badge");
 
-    if (p50El && primary.p50 !== undefined) p50El.textContent = `${primary.p50} ms`;
-    if (p90El && primary.p90 !== undefined) p90El.textContent = `${primary.p90} ms`;
-    if (p95El && primary.p95 !== undefined) p95El.textContent = `${primary.p95} ms`;
-    if (meanEl && primary.mean !== undefined) meanEl.textContent = `${primary.mean} ms`;
-    if (minmaxEl && primary.min !== undefined) minmaxEl.textContent = `Min: ${primary.min}ms / Max: ${primary.max}ms`;
-    if (badgeEl) badgeEl.textContent = `${turns.length} Turn Latencies Recorded`;
+    if (p50El) p50El.textContent = activeStat.p50 !== undefined && activeStat.count > 0 ? `${activeStat.p50} ms` : "-- ms";
+    if (p90El) p90El.textContent = activeStat.p90 !== undefined && activeStat.count > 0 ? `${activeStat.p90} ms` : "-- ms";
+    if (p95El) p95El.textContent = activeStat.p95 !== undefined && activeStat.count > 0 ? `${activeStat.p95} ms` : "-- ms";
+    if (meanEl) meanEl.textContent = activeStat.mean !== undefined && activeStat.count > 0 ? `${activeStat.mean} ms` : "-- ms";
+    if (minmaxEl) minmaxEl.textContent = activeStat.count > 0 ? `Min: ${activeStat.min}ms / Max: ${activeStat.max}ms` : "Min: -- / Max: --";
+    if (badgeEl) badgeEl.textContent = `${activeStat.count || 0} Turns (${stageLabel})`;
 
     const tbody = document.getElementById("full-latency-breakdown-tbody");
     if (tbody) {
       const rows = [
-        { name: "⚡ Gemini Live TTFB (Native Audio)", stat: liveStat, color: "#38bdf8" },
-        { name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
-        { name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
-        { name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
-        { name: "🔄 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+        { stageKey: "total", name: "🌟 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+        { stageKey: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
+        { stageKey: "stt", name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
+        { stageKey: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
+        { stageKey: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Audio)", stat: liveStat, color: "#38bdf8" },
       ].filter(r => r.stat && r.stat.count > 0);
 
       if (rows.length > 0) {
         tbody.innerHTML = rows.map(r => `
-          <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+          <tr class="full-breakdown-row" data-stage="${r.stageKey}" style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace; cursor: pointer; transition: background 0.15s ease;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
             <td style="padding: 10px 14px; font-weight: 700; color: ${r.color};">${r.name}</td>
             <td style="padding: 10px 14px; font-weight: 800; color: #38bdf8;">${r.stat.p50} ms</td>
             <td style="padding: 10px 14px; font-weight: 800; color: #c084fc;">${r.stat.p90} ms</td>
@@ -176,6 +232,25 @@ class DiagnosticsApp {
             <td style="padding: 10px 14px; color: #cbd5e1; font-weight: 700;">${r.stat.count}</td>
           </tr>
         `).join("");
+
+        tbody.querySelectorAll(".full-breakdown-row").forEach(row => {
+          row.addEventListener("click", (e) => {
+            const stage = (e.currentTarget as HTMLElement).dataset.stage || "total";
+            this.selectedLatencyStage = stage;
+            document.querySelectorAll(".full-lat-pill").forEach(p => {
+              if ((p as HTMLElement).dataset.stage === stage) {
+                (p as HTMLElement).style.background = "#0284c7";
+                (p as HTMLElement).style.color = "#ffffff";
+                (p as HTMLElement).style.borderColor = "#38bdf8";
+              } else {
+                (p as HTMLElement).style.background = "rgba(30, 41, 59, 0.8)";
+                (p as HTMLElement).style.color = "#cbd5e1";
+                (p as HTMLElement).style.borderColor = "rgba(255, 255, 255, 0.15)";
+              }
+            });
+            this.renderLatencyBenchmarks(summary);
+          });
+        });
       }
     }
   }

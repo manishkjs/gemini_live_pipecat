@@ -358,11 +358,35 @@
 
     <!-- Latency Benchmarks Statistical Suite -->
     <div class="log-panel" style="margin-bottom: 24px; border-color: rgba(192, 132, 252, 0.35);">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 1.1rem; font-weight: 800; color: #c084fc;">⚡ Session Latency Benchmarks (P50 / P90 / P95 / Mean)</span>
+          <span id="full-lat-title" style="font-size: 1.1rem; font-weight: 800; color: #c084fc;">⚡ Session Latency: <span style="color: #f8fafc;">Total Turnaround (E2E)</span></span>
         </div>
         <span id="full-diag-turn-count-badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 20px; padding: 4px 12px; font-size: 12px; font-weight: 800;">0 Turns Recorded</span>
+      </div>
+
+      <!-- Interactive Stage Filter Pills -->
+      <div id="full-lat-stage-pills" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px;">
+        <button class="full-lat-pill active" data-stage="total" style="background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s ease;">
+          <span>🌟 Total (E2E)</span>
+          <span id="full-count-total" style="background: rgba(255,255,255,0.25); border-radius: 10px; padding: 1px 6px; font-size: 11px;">0</span>
+        </button>
+        <button class="full-lat-pill" data-stage="llm" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(192, 132, 252, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s ease;">
+          <span style="color: #c084fc;">🧠 LLM TTFB</span>
+          <span id="full-count-llm" style="background: rgba(192, 132, 252, 0.2); color: #e9d5ff; border-radius: 10px; padding: 1px 6px; font-size: 11px;">0</span>
+        </button>
+        <button class="full-lat-pill" data-stage="stt" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(251, 191, 36, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s ease;">
+          <span style="color: #fbbf24;">🎙️ STT Chirp</span>
+          <span id="full-count-stt" style="background: rgba(251, 191, 36, 0.2); color: #fef08a; border-radius: 10px; padding: 1px 6px; font-size: 11px;">0</span>
+        </button>
+        <button class="full-lat-pill" data-stage="tts" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(74, 222, 128, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s ease;">
+          <span style="color: #4ade80;">🔊 TTS Audio</span>
+          <span id="full-count-tts" style="background: rgba(74, 222, 128, 0.2); color: #bbf7d0; border-radius: 10px; padding: 1px 6px; font-size: 11px;">0</span>
+        </button>
+        <button class="full-lat-pill" data-stage="live_ttfb" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(56, 189, 248, 0.3); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: all 0.15s ease;">
+          <span style="color: #38bdf8;">⚡ Gemini Live TTFB</span>
+          <span id="full-count-live" style="background: rgba(56, 189, 248, 0.2); color: #bae6fd; border-radius: 10px; padding: 1px 6px; font-size: 11px;">0</span>
+        </button>
       </div>
 
       <!-- 4 Percentile KPI Cards -->

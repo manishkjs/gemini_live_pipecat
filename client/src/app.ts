@@ -1193,32 +1193,56 @@ class WebsocketClientApp {
         <div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Connecting to Cloud Run live stream...</div>
       </div>
       <div id="diag-latency-panel" style="display: none; padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.5; color: #e2e8f0; background: rgba(0,0,0,0.15); flex-direction: column; gap: 16px;">
-        <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
-            <span>📊</span> Session Latency Benchmarks (Cloud Run)
+        <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <span id="latency-active-title" style="font-weight: 800; color: #38bdf8; display: flex; align-items: center; gap: 6px; font-size: 13px;">
+            <span>📊</span> Session Latency Benchmarks (Total Turnaround)
           </span>
-          <span id="latency-turn-count-badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 800;">0 Turns Recorded</span>
+          <span id="latency-turn-count-badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 800;">0 Turns</span>
+        </div>
+
+        <!-- Interactive Stage Selector Pills -->
+        <div id="latency-filter-pills" style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <button class="lat-stage-pill" data-stage="total" style="background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
+            <span>🌟 Total (E2E)</span>
+            <span id="pill-count-total" style="background: rgba(255,255,255,0.25); border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
+          </button>
+          <button class="lat-stage-pill" data-stage="llm" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(192, 132, 252, 0.3); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
+            <span style="color: #c084fc;">🧠 LLM TTFB</span>
+            <span id="pill-count-llm" style="background: rgba(192, 132, 252, 0.2); color: #e9d5ff; border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
+          </button>
+          <button class="lat-stage-pill" data-stage="stt" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(251, 191, 36, 0.3); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
+            <span style="color: #fbbf24;">🎙️ STT Chirp</span>
+            <span id="pill-count-stt" style="background: rgba(251, 191, 36, 0.2); color: #fef08a; border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
+          </button>
+          <button class="lat-stage-pill" data-stage="tts" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(74, 222, 128, 0.3); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
+            <span style="color: #4ade80;">🔊 TTS Audio</span>
+            <span id="pill-count-tts" style="background: rgba(74, 222, 128, 0.2); color: #bbf7d0; border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
+          </button>
+          <button class="lat-stage-pill" data-stage="live_ttfb" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(56, 189, 248, 0.3); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
+            <span style="color: #38bdf8;">⚡ Gemini Live TTFB</span>
+            <span id="pill-count-live" style="background: rgba(56, 189, 248, 0.2); color: #bae6fd; border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
+          </button>
         </div>
 
         <!-- 4 KPI Percentile Cards -->
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
           <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
-            <div style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase;">P50 (Median)</div>
+            <div id="lat-p50-label" style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase;">P50 (Median)</div>
             <div id="lat-p50-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
             <div style="font-size: 10px; color: #64748b;">50% faster than this</div>
           </div>
           <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
-            <div style="font-size: 11px; font-weight: 700; color: #c084fc; text-transform: uppercase;">P90 (Tail)</div>
+            <div id="lat-p90-label" style="font-size: 11px; font-weight: 700; color: #c084fc; text-transform: uppercase;">P90 (Tail)</div>
             <div id="lat-p90-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
             <div style="font-size: 10px; color: #64748b;">90% faster than this</div>
           </div>
           <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
-            <div style="font-size: 11px; font-weight: 700; color: #fbbf24; text-transform: uppercase;">P95 (Peak Tail)</div>
+            <div id="lat-p95-label" style="font-size: 11px; font-weight: 700; color: #fbbf24; text-transform: uppercase;">P95 (Peak Tail)</div>
             <div id="lat-p95-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
             <div style="font-size: 10px; color: #64748b;">95% faster than this</div>
           </div>
           <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
-            <div style="font-size: 11px; font-weight: 700; color: #4ade80; text-transform: uppercase;">Mean (Average)</div>
+            <div id="lat-mean-label" style="font-size: 11px; font-weight: 700; color: #4ade80; text-transform: uppercase;">Mean (Average)</div>
             <div id="lat-mean-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
             <div id="lat-minmax-val" style="font-size: 10px; color: #64748b;">Min: -- / Max: --</div>
           </div>
@@ -1226,8 +1250,9 @@ class WebsocketClientApp {
 
         <!-- Stage Percentile Breakdown Table -->
         <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; overflow: hidden;">
-          <div style="padding: 8px 12px; background: rgba(255,255,255,0.03); font-weight: 700; font-size: 12px; color: #cbd5e1; border-bottom: 1px solid rgba(255, 255, 255, 0.08);">
-            ⚡ Pipeline Stage Statistical Breakdown
+          <div style="padding: 8px 12px; background: rgba(255,255,255,0.03); font-weight: 700; font-size: 12px; color: #cbd5e1; border-bottom: 1px solid rgba(255, 255, 255, 0.08); display: flex; justify-content: space-between; align-items: center;">
+            <span>⚡ Pipeline Stage Statistical Breakdown</span>
+            <span style="font-size: 10px; color: #94a3b8; font-weight: 600;">Click any row to filter</span>
           </div>
           <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
             <thead>
@@ -1280,6 +1305,7 @@ class WebsocketClientApp {
 
     let isOpen = false;
     let activeTab: "logs" | "latency" = "logs";
+    let selectedLatencyStage: string = "total"; // "total" | "llm" | "stt" | "tts" | "live_ttfb"
 
     const logsTabBtn = dialog.querySelector("#diag-tab-logs-btn") as HTMLElement;
     const latencyTabBtn = dialog.querySelector("#diag-tab-latency-btn") as HTMLElement;
@@ -1312,6 +1338,30 @@ class WebsocketClientApp {
     logsTabBtn.addEventListener("click", () => setTab("logs"));
     latencyTabBtn.addEventListener("click", () => setTab("latency"));
 
+    // Stage filter pills event listeners
+    const updatePillStyles = (activeStage: string) => {
+      selectedLatencyStage = activeStage;
+      dialog.querySelectorAll(".lat-stage-pill").forEach(p => {
+        const stage = (p as HTMLElement).dataset.stage;
+        if (stage === activeStage) {
+          (p as HTMLElement).style.background = "#0284c7";
+          (p as HTMLElement).style.color = "#ffffff";
+          (p as HTMLElement).style.borderColor = "#38bdf8";
+        } else {
+          (p as HTMLElement).style.background = "rgba(30, 41, 59, 0.8)";
+          (p as HTMLElement).style.color = "#cbd5e1";
+          (p as HTMLElement).style.borderColor = "rgba(255, 255, 255, 0.15)";
+        }
+      });
+    };
+
+    dialog.querySelectorAll(".lat-stage-pill").forEach(p => {
+      p.addEventListener("click", (e) => {
+        const stage = (e.currentTarget as HTMLElement).dataset.stage || "total";
+        updatePillStyles(stage);
+      });
+    });
+
     badge.addEventListener("click", () => {
       isOpen = !isOpen;
       dialog.style.display = isOpen ? "flex" : "none";
@@ -1341,18 +1391,6 @@ class WebsocketClientApp {
       if (this.debugLog) this.debugLog.innerHTML = "";
     });
 
-    // Helper to calculate percentiles locally from an array of numbers
-    const calcP = (arr: number[], p: number): number => {
-      if (!arr || arr.length === 0) return 0;
-      const sorted = [...arr].sort((a, b) => a - b);
-      if (sorted.length === 1) return sorted[0];
-      const index = (p / 100.0) * (sorted.length - 1);
-      const lower = Math.floor(index);
-      const upper = Math.ceil(index);
-      const weight = index - lower;
-      return sorted[lower] * (1.0 - weight) + sorted[upper] * weight;
-    };
-
     setInterval(async () => {
       try {
         const res = await fetch(`${getApiBaseUrl()}/api/logs`);
@@ -1373,7 +1411,7 @@ class WebsocketClientApp {
         const countSpan = document.getElementById("diag-log-count");
         if (countSpan) countSpan.innerText = String(logs.length);
 
-        // Update Latency Benchmarks Dashboard if data available
+        // Update Latency Benchmarks Dashboard with Stage Filtering
         if (latencySummary) {
           const liveStat = latencySummary.live_ttfb || {};
           const llmStat = latencySummary.llm || {};
@@ -1382,8 +1420,37 @@ class WebsocketClientApp {
           const totalStat = latencySummary.total_turnaround || {};
           const turns: Array<{ timestamp: string; stage: string; value_ms: number; details: string }> = latencySummary.turns || [];
 
-          // Determine primary metric to highlight in the 4 top cards
-          const primary = (liveStat.count && liveStat.count > 0) ? liveStat : (llmStat.count && llmStat.count > 0 ? llmStat : totalStat);
+          // Update stage pill count badges
+          const cTotal = document.getElementById("pill-count-total");
+          const cLlm = document.getElementById("pill-count-llm");
+          const cStt = document.getElementById("pill-count-stt");
+          const cTts = document.getElementById("pill-count-tts");
+          const cLive = document.getElementById("pill-count-live");
+          if (cTotal) cTotal.innerText = String(totalStat.count || 0);
+          if (cLlm) cLlm.innerText = String(llmStat.count || 0);
+          if (cStt) cStt.innerText = String(sttStat.count || 0);
+          if (cTts) cTts.innerText = String(ttsStat.count || 0);
+          if (cLive) cLive.innerText = String(liveStat.count || 0);
+
+          // Select stat according to active filter pill
+          let activeStat = totalStat;
+          let stageLabel = "Total Turnaround (E2E)";
+          if (selectedLatencyStage === "llm") {
+            activeStat = llmStat;
+            stageLabel = "LLM TTFB (Reasoning Stream)";
+          } else if (selectedLatencyStage === "stt") {
+            activeStat = sttStat;
+            stageLabel = "STT Chirp Latency";
+          } else if (selectedLatencyStage === "tts") {
+            activeStat = ttsStat;
+            stageLabel = "TTS Audio Synthesis";
+          } else if (selectedLatencyStage === "live_ttfb") {
+            activeStat = liveStat;
+            stageLabel = "Gemini Live Native TTFB";
+          }
+
+          const titleEl = document.getElementById("latency-active-title");
+          if (titleEl) titleEl.innerHTML = `<span>📊</span> Session Latency: <span style="color: #f8fafc; margin-left: 4px;">${stageLabel}</span>`;
 
           const p50El = document.getElementById("lat-p50-val");
           const p90El = document.getElementById("lat-p90-val");
@@ -1392,27 +1459,27 @@ class WebsocketClientApp {
           const minmaxEl = document.getElementById("lat-minmax-val");
           const badgeEl = document.getElementById("latency-turn-count-badge");
 
-          if (p50El && primary.p50 !== undefined) p50El.innerText = `${primary.p50} ms`;
-          if (p90El && primary.p90 !== undefined) p90El.innerText = `${primary.p90} ms`;
-          if (p95El && primary.p95 !== undefined) p95El.innerText = `${primary.p95} ms`;
-          if (meanEl && primary.mean !== undefined) meanEl.innerText = `${primary.mean} ms`;
-          if (minmaxEl && primary.min !== undefined) minmaxEl.innerText = `Min: ${primary.min}ms / Max: ${primary.max}ms`;
-          if (badgeEl) badgeEl.innerText = `${turns.length} Turn Latencies Recorded`;
+          if (p50El) p50El.innerText = activeStat.p50 !== undefined && activeStat.count > 0 ? `${activeStat.p50} ms` : "-- ms";
+          if (p90El) p90El.innerText = activeStat.p90 !== undefined && activeStat.count > 0 ? `${activeStat.p90} ms` : "-- ms";
+          if (p95El) p95El.innerText = activeStat.p95 !== undefined && activeStat.count > 0 ? `${activeStat.p95} ms` : "-- ms";
+          if (meanEl) meanEl.innerText = activeStat.mean !== undefined && activeStat.count > 0 ? `${activeStat.mean} ms` : "-- ms";
+          if (minmaxEl) minmaxEl.innerText = activeStat.count > 0 ? `Min: ${activeStat.min}ms / Max: ${activeStat.max}ms` : "Min: -- / Max: --";
+          if (badgeEl) badgeEl.innerText = `${activeStat.count || 0} Turns (${stageLabel})`;
 
           // Populate Breakdown Table
           const tbody = document.getElementById("latency-breakdown-tbody");
           if (tbody) {
             const rows = [
-              { name: "⚡ Gemini Live TTFB (Native Duplex)", stat: liveStat, color: "#38bdf8" },
-              { name: "🧠 LLM TTFB (Reasoning / Streaming)", stat: llmStat, color: "#c084fc" },
-              { name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
-              { name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
-              { name: "🔄 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+              { stageKey: "total", name: "🌟 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+              { stageKey: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
+              { stageKey: "stt", name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
+              { stageKey: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
+              { stageKey: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Duplex)", stat: liveStat, color: "#38bdf8" },
             ].filter(r => r.stat && r.stat.count > 0);
 
             if (rows.length > 0) {
               tbody.innerHTML = rows.map(r => `
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+                <tr class="lat-breakdown-row" data-stage="${r.stageKey}" style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace; cursor: pointer; transition: background 0.15s ease;" onmouseover="this.style.background='rgba(255,255,255,0.05)'" onmouseout="this.style.background='transparent'">
                   <td style="padding: 8px 12px; font-weight: 700; color: ${r.color};">${r.name}</td>
                   <td style="padding: 8px 12px; font-weight: 800; color: #38bdf8;">${r.stat.p50} ms</td>
                   <td style="padding: 8px 12px; font-weight: 800; color: #c084fc;">${r.stat.p90} ms</td>
@@ -1422,28 +1489,44 @@ class WebsocketClientApp {
                   <td style="padding: 8px 12px; color: #cbd5e1; font-weight: 700;">${r.stat.count}</td>
                 </tr>
               `).join("");
+
+              tbody.querySelectorAll(".lat-breakdown-row").forEach(row => {
+                row.addEventListener("click", (e) => {
+                  const stage = (e.currentTarget as HTMLElement).dataset.stage || "total";
+                  updatePillStyles(stage);
+                });
+              });
             }
           }
 
-          // Populate Waterfall Turns Table
+          // Populate Waterfall Turns Table with Filter
           const turnsTbody = document.getElementById("latency-turns-tbody");
-          if (turnsTbody && turns.length > 0) {
-            turnsTbody.innerHTML = [...turns].reverse().slice(0, 30).map(t => {
-              let stageBadge = `<span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">${t.stage.toUpperCase()}</span>`;
-              if (t.stage === "llm") stageBadge = `<span style="background: rgba(192, 132, 252, 0.18); color: #c084fc; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">LLM TTFB</span>`;
-              if (t.stage === "stt") stageBadge = `<span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">STT CHIRP</span>`;
-              if (t.stage === "tts") stageBadge = `<span style="background: rgba(74, 222, 128, 0.18); color: #4ade80; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">TTS AUDIO</span>`;
+          if (turnsTbody) {
+            const filteredTurns = turns.filter(t => {
+              if (selectedLatencyStage === "total") return true;
+              return t.stage === selectedLatencyStage;
+            });
 
-              return `
-                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
-                  <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">⏱️ ${t.timestamp}</td>
-                  <td style="padding: 6px 12px;">${stageBadge}</td>
-                  <td style="padding: 6px 12px; font-weight: 800; color: #f8fafc;">${t.value_ms} ms</td>
-                  <td style="padding: 6px 12px; color: #7dd3fc;">${(t.value_ms / 1000).toFixed(3)}s</td>
-                  <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">${t.details || "-"}</td>
-                </tr>
-              `;
-            }).join("");
+            if (filteredTurns.length === 0) {
+              turnsTbody.innerHTML = `<tr><td colspan="5" style="padding: 16px; text-align: center; color: #64748b; font-style: italic;">No recorded turns for stage: ${stageLabel}</td></tr>`;
+            } else {
+              turnsTbody.innerHTML = [...filteredTurns].reverse().slice(0, 30).map(t => {
+                let stageBadge = `<span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">${t.stage.toUpperCase()}</span>`;
+                if (t.stage === "llm") stageBadge = `<span style="background: rgba(192, 132, 252, 0.18); color: #c084fc; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">LLM TTFB</span>`;
+                if (t.stage === "stt") stageBadge = `<span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">STT CHIRP</span>`;
+                if (t.stage === "tts") stageBadge = `<span style="background: rgba(74, 222, 128, 0.18); color: #4ade80; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">TTS AUDIO</span>`;
+
+                return `
+                  <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+                    <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">⏱️ ${t.timestamp}</td>
+                    <td style="padding: 6px 12px;">${stageBadge}</td>
+                    <td style="padding: 6px 12px; font-weight: 800; color: #f8fafc;">${t.value_ms} ms</td>
+                    <td style="padding: 6px 12px; color: #7dd3fc;">${(t.value_ms / 1000).toFixed(3)}s</td>
+                    <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">${t.details || "-"}</td>
+                  </tr>
+                `;
+              }).join("");
+            }
           }
         }
 
