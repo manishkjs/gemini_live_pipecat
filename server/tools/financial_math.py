@@ -75,7 +75,7 @@ def calculate_stl_returns(amount: float, tenure_months: Optional[int] = None) ->
     }
 
 
-def calculate_mtl_returns(amount: float, repayment_type: str = "monthly") -> Dict[str, Any]:
+def calculate_mtl_returns(amount: float, repayment_type: Optional[str] = "monthly") -> Dict[str, Any]:
     """Calculate returns for Medium Term Lumpsum (MTL 14M) products.
     
     MTL 14M Monthly: 12 months @ 21%-24% p.a. XIRR (Monthly EMI, AA Medium Risk)
@@ -89,7 +89,8 @@ def calculate_mtl_returns(amount: float, repayment_type: str = "monthly") -> Dic
         }
 
     tenure = 12
-    is_daily = "daily" in repayment_type.lower() or "edi" in repayment_type.lower()
+    rep_str = (repayment_type or "monthly").lower()
+    is_daily = "daily" in rep_str or "edi" in rep_str
 
     if is_daily:
         product_code = "MTL 14M Daily (EDI)"
@@ -156,6 +157,10 @@ def calculate_manual_lending(
         return {"error": "Maximum platform lending limit is ₹50,00,000 (50 Lakhs)."}
     if tenure_months <= 0:
         return {"error": f"Invalid tenure {tenure_months} months. Tenure must be a positive integer (e.g. 2, 3, 4, 5, 6, or 12 months)."}
+    if tenure_months == 9:
+        return {"error": "9-month tenure is strictly not available on Cymbal Lending for new loans. Available tenures are 2, 3, 4, 5, 6, or 12 months."}
+    if tenure_months not in (2, 3, 4, 5, 6, 12):
+        return {"error": f"Invalid tenure {tenure_months} months for Manual Lending. Available tenures are 2, 3, 4, 5, 6, or 12 months."}
 
     # Fee lookup table by tenure
     fee_map = {2: 1.0, 3: 1.0, 4: 4.0, 5: 4.0, 6: 3.0, 12: 6.0}
@@ -257,11 +262,11 @@ def calculate_sip_returns(monthly_amount: float, annual_rate: float, years: int)
 
 def get_product_recommendation(
     amount: float,
-    risk_appetite: str = "medium",
+    risk_appetite: Optional[str] = "medium",
     tenure_months: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Validate investment parameters and recommend the best Cymbal Lending product."""
-    risk = risk_appetite.lower()
+    risk = (risk_appetite or "medium").lower()
     
     if amount < 250:
         return {

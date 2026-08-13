@@ -164,6 +164,39 @@ class TestFinancialMath(unittest.TestCase):
         deposit_guide = get_app_screen_flow("deposit")
         self.assertIn("Funds", deposit_guide["flow_name"])
 
+    def test_none_input_resilience(self):
+        # Tools must never raise AttributeError when passed None for optional string params
+        mtl_res = calculate_mtl_returns(100000, None)
+        self.assertEqual(mtl_res["product_name"], "MTL 14M Monthly (EMI)")
+
+        rec_res = get_product_recommendation(50000, None)
+        self.assertTrue(rec_res["is_valid"])
+
+        kyc_res = get_kyc_guidance(None)
+        self.assertIn("3-Step", kyc_res["step"])
+
+        flow_res = get_app_screen_flow(None)
+        self.assertIn("General App Navigation", flow_res["flow_name"])
+
+    def test_manual_lending_unsupported_tenures(self):
+        # 9-month tenure strictly unavailable
+        res_9m = calculate_manual_lending(50000, 9)
+        self.assertIn("error", res_9m)
+        self.assertIn("9-month", res_9m["error"])
+
+        # Non-standard tenures (e.g. 1 month or 8 months) rejected
+        res_1m = calculate_manual_lending(50000, 1)
+        self.assertIn("error", res_1m)
+
+        res_8m = calculate_manual_lending(50000, 8)
+        self.assertIn("error", res_8m)
+
+    def test_stl_default_tenure(self):
+        res_default = calculate_stl_returns(50000, None)
+        self.assertEqual(res_default["product_name"], "STL 7M")
+        self.assertEqual(res_default["tenure_months"], 5)
+        self.assertEqual(res_default["annualized_xirr_pct"], 18.0)
+
 
 if __name__ == "__main__":
     unittest.main()

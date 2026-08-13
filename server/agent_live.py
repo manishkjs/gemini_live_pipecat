@@ -652,68 +652,80 @@ get_app_screen_flow_schema = FunctionSchema(
 )
 
 # ── Cymbal Lending Async Tool Handlers ──────────────────────────────
-
+ 
 async def handle_calculate_stl_returns(params: FunctionCallParams):
-    args = params.arguments
-    amount = float(args.get("amount", 50000))
-    tenure = args.get("tenure_months")
-    tenure_months = int(tenure) if tenure is not None else None
+    args = params.arguments or {}
+    raw_amount = args.get("amount")
+    amount = float(raw_amount) if raw_amount is not None else 50000.0
+    raw_tenure = args.get("tenure_months")
+    tenure_months = int(raw_tenure) if raw_tenure is not None else None
     result = calculate_stl_returns(amount=amount, tenure_months=tenure_months)
     logger.info(f"[Tool:calculate_stl_returns] amount={amount}, tenure={tenure_months} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_calculate_mtl_returns(params: FunctionCallParams):
-    args = params.arguments
-    amount = float(args.get("amount", 100000))
-    repayment_type = str(args.get("repayment_type", "monthly"))
+    args = params.arguments or {}
+    raw_amount = args.get("amount")
+    amount = float(raw_amount) if raw_amount is not None else 100000.0
+    raw_rep = args.get("repayment_type")
+    repayment_type = str(raw_rep) if raw_rep is not None else "monthly"
     result = calculate_mtl_returns(amount=amount, repayment_type=repayment_type)
     logger.info(f"[Tool:calculate_mtl_returns] amount={amount}, repayment={repayment_type} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_calculate_manual_lending(params: FunctionCallParams):
-    args = params.arguments
-    amount = float(args.get("amount", 50000))
-    tenure = int(args.get("tenure_months", 12))
-    borrower_rate = args.get("custom_borrower_rate_pct")
-    npa_rate = args.get("custom_npa_rate_pct")
+    args = params.arguments or {}
+    raw_amount = args.get("amount")
+    amount = float(raw_amount) if raw_amount is not None else 50000.0
+    raw_tenure = args.get("tenure_months")
+    tenure = int(raw_tenure) if raw_tenure is not None else 12
+    raw_borrower_rate = args.get("custom_borrower_rate_pct")
+    raw_npa_rate = args.get("custom_npa_rate_pct")
     result = calculate_manual_lending(
         amount=amount,
         tenure_months=tenure,
-        custom_borrower_rate_pct=float(borrower_rate) if borrower_rate is not None else None,
-        custom_npa_rate_pct=float(npa_rate) if npa_rate is not None else None,
+        custom_borrower_rate_pct=float(raw_borrower_rate) if raw_borrower_rate is not None else None,
+        custom_npa_rate_pct=float(raw_npa_rate) if raw_npa_rate is not None else None,
     )
     logger.info(f"[Tool:calculate_manual_lending] amount={amount}, tenure={tenure} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_calculate_sip_returns(params: FunctionCallParams):
-    args = params.arguments
-    monthly_amount = float(args.get("monthly_amount", 5000))
-    annual_rate = float(args.get("annual_rate", 15.0))
-    years = int(args.get("years", 3))
+    args = params.arguments or {}
+    raw_amount = args.get("monthly_amount")
+    monthly_amount = float(raw_amount) if raw_amount is not None else 5000.0
+    raw_rate = args.get("annual_rate")
+    annual_rate = float(raw_rate) if raw_rate is not None else 15.0
+    raw_years = args.get("years")
+    years = int(raw_years) if raw_years is not None else 3
     result = calculate_sip_returns(monthly_amount=monthly_amount, annual_rate=annual_rate, years=years)
     logger.info(f"[Tool:calculate_sip_returns] monthly={monthly_amount}, rate={annual_rate}, years={years} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_get_product_recommendation(params: FunctionCallParams):
-    args = params.arguments
-    amount = float(args.get("amount", 50000))
-    risk_appetite = str(args.get("risk_appetite", "medium"))
-    tenure = args.get("tenure_months")
-    tenure_months = int(tenure) if tenure is not None else None
+    args = params.arguments or {}
+    raw_amount = args.get("amount")
+    amount = float(raw_amount) if raw_amount is not None else 50000.0
+    raw_risk = args.get("risk_appetite")
+    risk_appetite = str(raw_risk) if raw_risk is not None else "medium"
+    raw_tenure = args.get("tenure_months")
+    tenure_months = int(raw_tenure) if raw_tenure is not None else None
     result = get_product_recommendation(amount=amount, risk_appetite=risk_appetite, tenure_months=tenure_months)
     logger.info(f"[Tool:get_product_recommendation] amount={amount}, risk={risk_appetite}, tenure={tenure_months} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_get_kyc_guidance(params: FunctionCallParams):
-    args = params.arguments
-    step = str(args.get("step_or_doc", "all"))
+    args = params.arguments or {}
+    raw_step = args.get("step_or_doc")
+    step = str(raw_step) if raw_step is not None else "all"
     result = get_kyc_guidance(step_or_doc=step)
     logger.info(f"[Tool:get_kyc_guidance] step={step} -> {result}")
     await params.result_callback(result)
-
+ 
 async def handle_get_app_screen_flow(params: FunctionCallParams):
-    args = params.arguments
-    flow = str(args.get("target_flow", "general"))
+    args = params.arguments or {}
+    raw_flow = args.get("target_flow")
+    flow = str(raw_flow) if raw_flow is not None else "general"
     result = get_app_screen_flow(target_flow=flow)
     logger.info(f"[Tool:get_app_screen_flow] flow={flow} -> {result}")
     await params.result_callback(result)

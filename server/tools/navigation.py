@@ -1,12 +1,12 @@
 """App navigation and KYC guidance for Cymbal Lending mobile/web application."""
 
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
-def get_kyc_guidance(step_or_doc: str = "all") -> Dict[str, Any]:
+def get_kyc_guidance(step_or_doc: Optional[str] = "all") -> Dict[str, Any]:
     """Provide step-by-step guidance for KYC verification on Cymbal Lending app."""
-    query = step_or_doc.lower()
+    query = (step_or_doc or "all").lower()
     
     if "pan" in query:
         return {
@@ -53,9 +53,9 @@ def get_kyc_guidance(step_or_doc: str = "all") -> Dict[str, Any]:
     }
 
 
-def get_app_screen_flow(target_flow: str) -> Dict[str, Any]:
+def get_app_screen_flow(target_flow: Optional[str] = "general") -> Dict[str, Any]:
     """Provide screen guidance for lending, deposits, and auto-invest."""
-    flow = target_flow.lower()
+    flow = (target_flow or "general").lower()
 
     if "deposit" in flow or "fund" in flow or "add money" in flow or "pay" in flow:
         return {
