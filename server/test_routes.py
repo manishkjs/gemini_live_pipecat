@@ -20,9 +20,26 @@ class TestDiagnosticsAndTracing(unittest.TestCase):
         self.assertIn("Gemini Live Telemetry & LangSmith Traces", r.text)
 
     def test_logs_endpoint(self):
+        from diagnostic_buffer import append_raw_log_entry, record_turn_latency
+        record_turn_latency("live_ttfb", 380.0, "Test Turn 1")
+        append_raw_log_entry("LLM Latency: 0.450s")
         r = self.client.get("/api/logs")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("logs", r.json())
+        data = r.json()
+        self.assertIn("logs", data)
+        self.assertIn("latency_summary", data)
+        self.assertIn("live_ttfb", data["latency_summary"])
+        self.assertIn("p50", data["latency_summary"]["live_ttfb"])
+
+    def test_latency_metrics_endpoint(self):
+        r = self.client.get("/api/metrics/latency")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("live_ttfb", data)
+        self.assertIn("llm", data)
+        self.assertIn("stt", data)
+        self.assertIn("tts", data)
+        self.assertIn("total_turnaround", data)
 
     def test_trace_endpoint(self):
         r = self.client.get("/api/trace/current")

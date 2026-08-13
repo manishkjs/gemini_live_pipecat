@@ -1168,13 +1168,19 @@ class WebsocketClientApp {
 
     const dialog = document.createElement("div");
     dialog.id = "floating-diag-dialog";
-    dialog.style.cssText = "display: none; width: 860px; height: 640px; max-height: 88vh; max-width: 92vw; background: rgba(15, 23, 42, 0.97); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); overflow: hidden; flex-direction: column; margin-bottom: 16px;";
+    dialog.style.cssText = "display: none; width: 880px; height: 660px; max-height: 88vh; max-width: 94vw; background: rgba(15, 23, 42, 0.98); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.7); overflow: hidden; flex-direction: column; margin-bottom: 16px;";
 
     dialog.innerHTML = `
-      <div style="background: rgba(0,0,0,0.5); padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.12); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-        <span style="color: #f8fafc; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px;">
-          <span>🖥️</span> Cloud Run Live Diagnostic Feed (<span id="diag-log-count" style="color: #38bdf8;">0</span> items)
-        </span>
+      <div style="background: rgba(0,0,0,0.5); padding: 12px 18px; border-bottom: 1px solid rgba(255,255,255,0.12); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="color: #f8fafc; font-size: 13px; font-weight: 800; display: flex; align-items: center; gap: 6px;">
+            <span>🖥️</span> Diagnostic Feed
+          </span>
+          <div style="display: inline-flex; background: rgba(0,0,0,0.45); padding: 2px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);">
+            <button id="diag-tab-logs-btn" style="background: rgba(56, 189, 248, 0.22); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;">📜 Logs (<span id="diag-log-count">0</span>)</button>
+            <button id="diag-tab-latency-btn" style="background: transparent; color: #94a3b8; border: 1px solid transparent; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer;">⚡ Latency Benchmarks</button>
+          </div>
+        </div>
         <div style="display: flex; gap: 8px; align-items: center;">
           <a id="diag-langsmith-btn" href="https://smith.langchain.com/" target="_blank" style="background: linear-gradient(135deg, #0284c7 0%, #9333ea 100%); color: #ffffff; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;"><span>↗️ LangSmith Trace</span></a>
           <a href="/diagnostics" target="_blank" style="background: rgba(192,132,252,0.18); border: 1px solid rgba(192,132,252,0.35); color: #c084fc; border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 600; text-decoration: none;">Full Console</a>
@@ -1186,6 +1192,86 @@ class WebsocketClientApp {
       <div id="diag-log-feed" style="padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.6; color: #e2e8f0; background: rgba(0,0,0,0.15);">
         <div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Connecting to Cloud Run live stream...</div>
       </div>
+      <div id="diag-latency-panel" style="display: none; padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.5; color: #e2e8f0; background: rgba(0,0,0,0.15); flex-direction: column; gap: 16px;">
+        <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+            <span>📊</span> Session Latency Benchmarks (Cloud Run)
+          </span>
+          <span id="latency-turn-count-badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 800;">0 Turns Recorded</span>
+        </div>
+
+        <!-- 4 KPI Percentile Cards -->
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+          <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #38bdf8; text-transform: uppercase;">P50 (Median)</div>
+            <div id="lat-p50-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+            <div style="font-size: 10px; color: #64748b;">50% faster than this</div>
+          </div>
+          <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #c084fc; text-transform: uppercase;">P90 (Tail)</div>
+            <div id="lat-p90-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+            <div style="font-size: 10px; color: #64748b;">90% faster than this</div>
+          </div>
+          <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #fbbf24; text-transform: uppercase;">P95 (Peak Tail)</div>
+            <div id="lat-p95-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+            <div style="font-size: 10px; color: #64748b;">95% faster than this</div>
+          </div>
+          <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 10px; padding: 12px; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; color: #4ade80; text-transform: uppercase;">Mean (Average)</div>
+            <div id="lat-mean-val" style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+            <div id="lat-minmax-val" style="font-size: 10px; color: #64748b;">Min: -- / Max: --</div>
+          </div>
+        </div>
+
+        <!-- Stage Percentile Breakdown Table -->
+        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; overflow: hidden;">
+          <div style="padding: 8px 12px; background: rgba(255,255,255,0.03); font-weight: 700; font-size: 12px; color: #cbd5e1; border-bottom: 1px solid rgba(255, 255, 255, 0.08);">
+            ⚡ Pipeline Stage Statistical Breakdown
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <thead>
+              <tr style="background: rgba(0,0,0,0.3); color: #94a3b8; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 8px 12px;">Stage / Metric</th>
+                <th style="padding: 8px 12px; color: #38bdf8;">P50</th>
+                <th style="padding: 8px 12px; color: #c084fc;">P90</th>
+                <th style="padding: 8px 12px; color: #fbbf24;">P95</th>
+                <th style="padding: 8px 12px; color: #4ade80;">Mean</th>
+                <th style="padding: 8px 12px;">Min / Max</th>
+                <th style="padding: 8px 12px;">Turns</th>
+              </tr>
+            </thead>
+            <tbody id="latency-breakdown-tbody">
+              <tr>
+                <td colspan="7" style="padding: 16px; text-align: center; color: #64748b; font-style: italic;">No turn latencies recorded yet. Start speaking to populate.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Turn Waterfall History -->
+        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; overflow: hidden;">
+          <div style="padding: 8px 12px; background: rgba(255,255,255,0.03); font-weight: 700; font-size: 12px; color: #cbd5e1; border-bottom: 1px solid rgba(255, 255, 255, 0.08);">
+            ⏱️ Chronological Turn Waterfall History
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+            <thead>
+              <tr style="background: rgba(0,0,0,0.3); color: #94a3b8; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 8px 12px;">Time</th>
+                <th style="padding: 8px 12px;">Stage</th>
+                <th style="padding: 8px 12px;">Latency (ms)</th>
+                <th style="padding: 8px 12px;">Latency (sec)</th>
+                <th style="padding: 8px 12px;">Details</th>
+              </tr>
+            </thead>
+            <tbody id="latency-turns-tbody">
+              <tr>
+                <td colspan="5" style="padding: 16px; text-align: center; color: #64748b; font-style: italic;">Waiting for voice turns...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     `;
 
     container.appendChild(dialog);
@@ -1193,6 +1279,38 @@ class WebsocketClientApp {
     document.body.appendChild(container);
 
     let isOpen = false;
+    let activeTab: "logs" | "latency" = "logs";
+
+    const logsTabBtn = dialog.querySelector("#diag-tab-logs-btn") as HTMLElement;
+    const latencyTabBtn = dialog.querySelector("#diag-tab-latency-btn") as HTMLElement;
+    const logsFeed = dialog.querySelector("#diag-log-feed") as HTMLElement;
+    const latencyPanel = dialog.querySelector("#diag-latency-panel") as HTMLElement;
+
+    const setTab = (tab: "logs" | "latency") => {
+      activeTab = tab;
+      if (tab === "logs") {
+        logsTabBtn.style.background = "rgba(56, 189, 248, 0.22)";
+        logsTabBtn.style.color = "#38bdf8";
+        logsTabBtn.style.borderColor = "rgba(56, 189, 248, 0.4)";
+        latencyTabBtn.style.background = "transparent";
+        latencyTabBtn.style.color = "#94a3b8";
+        latencyTabBtn.style.borderColor = "transparent";
+        logsFeed.style.display = "block";
+        latencyPanel.style.display = "none";
+      } else {
+        latencyTabBtn.style.background = "rgba(192, 132, 252, 0.22)";
+        latencyTabBtn.style.color = "#c084fc";
+        latencyTabBtn.style.borderColor = "rgba(192, 132, 252, 0.4)";
+        logsTabBtn.style.background = "transparent";
+        logsTabBtn.style.color = "#94a3b8";
+        logsTabBtn.style.borderColor = "transparent";
+        logsFeed.style.display = "none";
+        latencyPanel.style.display = "flex";
+      }
+    };
+
+    logsTabBtn.addEventListener("click", () => setTab("logs"));
+    latencyTabBtn.addEventListener("click", () => setTab("latency"));
 
     badge.addEventListener("click", () => {
       isOpen = !isOpen;
@@ -1205,26 +1323,35 @@ class WebsocketClientApp {
     });
 
     dialog.querySelector("#diag-copy-btn")?.addEventListener("click", async (e) => {
-      const feed = document.getElementById("diag-log-feed");
-      if (feed) {
-        await navigator.clipboard.writeText(feed.innerText || "");
-        const btn = e.currentTarget as HTMLElement;
-        const orig = btn.innerHTML;
-        btn.innerHTML = '<i class="fas fa-check"></i> Copied';
-        setTimeout(() => { btn.innerHTML = orig; }, 1500);
-      }
+      const textToCopy = activeTab === "logs" ? (logsFeed.innerText || "") : (latencyPanel.innerText || "");
+      await navigator.clipboard.writeText(textToCopy);
+      const btn = e.currentTarget as HTMLElement;
+      const orig = btn.innerHTML;
+      btn.innerHTML = '<i class="fas fa-check"></i> Copied';
+      setTimeout(() => { btn.innerHTML = orig; }, 1500);
     });
 
     dialog.querySelector("#diag-clear-btn")?.addEventListener("click", async () => {
       try {
         await fetch(`${getApiBaseUrl()}/api/logs/clear`, { method: "POST" });
       } catch (err) {}
-      const feed = document.getElementById("diag-log-feed");
-      if (feed) feed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
+      logsFeed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
       const countSpan = document.getElementById("diag-log-count");
       if (countSpan) countSpan.innerText = "0";
       if (this.debugLog) this.debugLog.innerHTML = "";
     });
+
+    // Helper to calculate percentiles locally from an array of numbers
+    const calcP = (arr: number[], p: number): number => {
+      if (!arr || arr.length === 0) return 0;
+      const sorted = [...arr].sort((a, b) => a - b);
+      if (sorted.length === 1) return sorted[0];
+      const index = (p / 100.0) * (sorted.length - 1);
+      const lower = Math.floor(index);
+      const upper = Math.ceil(index);
+      const weight = index - lower;
+      return sorted[lower] * (1.0 - weight) + sorted[upper] * weight;
+    };
 
     setInterval(async () => {
       try {
@@ -1232,6 +1359,7 @@ class WebsocketClientApp {
         if (!res.ok) return;
         const data = await res.json();
         const logs: Array<{ timestamp: string; level: string; message: string; ttfb_ms?: number }> = data.logs || [];
+        const latencySummary = data.latency_summary || null;
 
         // Check latest TTFB
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -1242,14 +1370,89 @@ class WebsocketClientApp {
           }
         }
 
-        if (!isOpen) return;
+        const countSpan = document.getElementById("diag-log-count");
+        if (countSpan) countSpan.innerText = String(logs.length);
+
+        // Update Latency Benchmarks Dashboard if data available
+        if (latencySummary) {
+          const liveStat = latencySummary.live_ttfb || {};
+          const llmStat = latencySummary.llm || {};
+          const sttStat = latencySummary.stt || {};
+          const ttsStat = latencySummary.tts || {};
+          const totalStat = latencySummary.total_turnaround || {};
+          const turns: Array<{ timestamp: string; stage: string; value_ms: number; details: string }> = latencySummary.turns || [];
+
+          // Determine primary metric to highlight in the 4 top cards
+          const primary = (liveStat.count && liveStat.count > 0) ? liveStat : (llmStat.count && llmStat.count > 0 ? llmStat : totalStat);
+
+          const p50El = document.getElementById("lat-p50-val");
+          const p90El = document.getElementById("lat-p90-val");
+          const p95El = document.getElementById("lat-p95-val");
+          const meanEl = document.getElementById("lat-mean-val");
+          const minmaxEl = document.getElementById("lat-minmax-val");
+          const badgeEl = document.getElementById("latency-turn-count-badge");
+
+          if (p50El && primary.p50 !== undefined) p50El.innerText = `${primary.p50} ms`;
+          if (p90El && primary.p90 !== undefined) p90El.innerText = `${primary.p90} ms`;
+          if (p95El && primary.p95 !== undefined) p95El.innerText = `${primary.p95} ms`;
+          if (meanEl && primary.mean !== undefined) meanEl.innerText = `${primary.mean} ms`;
+          if (minmaxEl && primary.min !== undefined) minmaxEl.innerText = `Min: ${primary.min}ms / Max: ${primary.max}ms`;
+          if (badgeEl) badgeEl.innerText = `${turns.length} Turn Latencies Recorded`;
+
+          // Populate Breakdown Table
+          const tbody = document.getElementById("latency-breakdown-tbody");
+          if (tbody) {
+            const rows = [
+              { name: "⚡ Gemini Live TTFB (Native Duplex)", stat: liveStat, color: "#38bdf8" },
+              { name: "🧠 LLM TTFB (Reasoning / Streaming)", stat: llmStat, color: "#c084fc" },
+              { name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
+              { name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
+              { name: "🔄 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+            ].filter(r => r.stat && r.stat.count > 0);
+
+            if (rows.length > 0) {
+              tbody.innerHTML = rows.map(r => `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+                  <td style="padding: 8px 12px; font-weight: 700; color: ${r.color};">${r.name}</td>
+                  <td style="padding: 8px 12px; font-weight: 800; color: #38bdf8;">${r.stat.p50} ms</td>
+                  <td style="padding: 8px 12px; font-weight: 800; color: #c084fc;">${r.stat.p90} ms</td>
+                  <td style="padding: 8px 12px; font-weight: 800; color: #fbbf24;">${r.stat.p95} ms</td>
+                  <td style="padding: 8px 12px; font-weight: 800; color: #4ade80;">${r.stat.mean} ms</td>
+                  <td style="padding: 8px 12px; color: #94a3b8;">${r.stat.min} - ${r.stat.max} ms</td>
+                  <td style="padding: 8px 12px; color: #cbd5e1; font-weight: 700;">${r.stat.count}</td>
+                </tr>
+              `).join("");
+            }
+          }
+
+          // Populate Waterfall Turns Table
+          const turnsTbody = document.getElementById("latency-turns-tbody");
+          if (turnsTbody && turns.length > 0) {
+            turnsTbody.innerHTML = [...turns].reverse().slice(0, 30).map(t => {
+              let stageBadge = `<span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">${t.stage.toUpperCase()}</span>`;
+              if (t.stage === "llm") stageBadge = `<span style="background: rgba(192, 132, 252, 0.18); color: #c084fc; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">LLM TTFB</span>`;
+              if (t.stage === "stt") stageBadge = `<span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">STT CHIRP</span>`;
+              if (t.stage === "tts") stageBadge = `<span style="background: rgba(74, 222, 128, 0.18); color: #4ade80; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">TTS AUDIO</span>`;
+
+              return `
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+                  <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">⏱️ ${t.timestamp}</td>
+                  <td style="padding: 6px 12px;">${stageBadge}</td>
+                  <td style="padding: 6px 12px; font-weight: 800; color: #f8fafc;">${t.value_ms} ms</td>
+                  <td style="padding: 6px 12px; color: #7dd3fc;">${(t.value_ms / 1000).toFixed(3)}s</td>
+                  <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">${t.details || "-"}</td>
+                </tr>
+              `;
+            }).join("");
+          }
+        }
+
+        if (!isOpen || activeTab !== "logs") return;
 
         const feed = document.getElementById("diag-log-feed");
-        const countSpan = document.getElementById("diag-log-count");
         if (!feed) return;
 
         const isNearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
-        if (countSpan) countSpan.innerText = String(logs.length);
 
         if (logs.length === 0) {
           feed.innerHTML = `<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">No logs recorded yet...</div>`;
@@ -1272,7 +1475,7 @@ class WebsocketClientApp {
             borderLeftColor = "#eab308";
             badgeText = "WARN";
             badgeStyle = "background: rgba(234, 179, 8, 0.2); color: #facc15; border: 1px solid #ca8a04;";
-          } else if (item.ttfb_ms || item.message.includes("TTFB")) {
+          } else if (item.ttfb_ms || item.message.includes("TTFB") || item.message.includes("Latency")) {
             cardBg = "rgba(56, 189, 248, 0.08)";
             borderLeftColor = "#38bdf8";
             badgeText = "⚡ LATENCY";

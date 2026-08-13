@@ -209,8 +209,16 @@ async def get_system_prompt():
 
 @app.get("/api/logs")
 async def get_diagnostic_logs(limit: int = 500):
-    from diagnostic_buffer import get_recent_diagnostic_logs
-    return {"logs": get_recent_diagnostic_logs(limit)}
+    from diagnostic_buffer import get_recent_diagnostic_logs, get_latency_summary
+    return {
+        "logs": get_recent_diagnostic_logs(limit),
+        "latency_summary": get_latency_summary()
+    }
+
+@app.get("/api/metrics/latency")
+async def get_latency_metrics_endpoint():
+    from diagnostic_buffer import get_latency_summary
+    return get_latency_summary()
 
 @app.post("/api/logs/clear")
 async def clear_diagnostic_logs_endpoint():

@@ -104,7 +104,7 @@ class DiagnosticsApp {
         const data = await res.json();
         if (Array.isArray(data.logs)) {
           this.allLogs = data.logs;
-          this.computeMetrics();
+          this.computeMetrics(data.latency_summary);
           this.renderLogs();
         }
       }
@@ -128,7 +128,59 @@ class DiagnosticsApp {
     }
   }
 
-  private computeMetrics() {
+  private renderLatencyBenchmarks(summary: any) {
+    if (!summary) return;
+
+    const liveStat = summary.live_ttfb || {};
+    const llmStat = summary.llm || {};
+    const sttStat = summary.stt || {};
+    const ttsStat = summary.tts || {};
+    const totalStat = summary.total_turnaround || {};
+    const turns = summary.turns || [];
+
+    const primary = (liveStat.count && liveStat.count > 0) ? liveStat : (llmStat.count && llmStat.count > 0 ? llmStat : totalStat);
+
+    const p50El = document.getElementById("full-lat-p50");
+    const p90El = document.getElementById("full-lat-p90");
+    const p95El = document.getElementById("full-lat-p95");
+    const meanEl = document.getElementById("full-lat-mean");
+    const minmaxEl = document.getElementById("full-lat-minmax");
+    const badgeEl = document.getElementById("full-diag-turn-count-badge");
+
+    if (p50El && primary.p50 !== undefined) p50El.textContent = `${primary.p50} ms`;
+    if (p90El && primary.p90 !== undefined) p90El.textContent = `${primary.p90} ms`;
+    if (p95El && primary.p95 !== undefined) p95El.textContent = `${primary.p95} ms`;
+    if (meanEl && primary.mean !== undefined) meanEl.textContent = `${primary.mean} ms`;
+    if (minmaxEl && primary.min !== undefined) minmaxEl.textContent = `Min: ${primary.min}ms / Max: ${primary.max}ms`;
+    if (badgeEl) badgeEl.textContent = `${turns.length} Turn Latencies Recorded`;
+
+    const tbody = document.getElementById("full-latency-breakdown-tbody");
+    if (tbody) {
+      const rows = [
+        { name: "⚡ Gemini Live TTFB (Native Audio)", stat: liveStat, color: "#38bdf8" },
+        { name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
+        { name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
+        { name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
+        { name: "🔄 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+      ].filter(r => r.stat && r.stat.count > 0);
+
+      if (rows.length > 0) {
+        tbody.innerHTML = rows.map(r => `
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
+            <td style="padding: 10px 14px; font-weight: 700; color: ${r.color};">${r.name}</td>
+            <td style="padding: 10px 14px; font-weight: 800; color: #38bdf8;">${r.stat.p50} ms</td>
+            <td style="padding: 10px 14px; font-weight: 800; color: #c084fc;">${r.stat.p90} ms</td>
+            <td style="padding: 10px 14px; font-weight: 800; color: #fbbf24;">${r.stat.p95} ms</td>
+            <td style="padding: 10px 14px; font-weight: 800; color: #4ade80;">${r.stat.mean} ms</td>
+            <td style="padding: 10px 14px; color: #94a3b8;">${r.stat.min} - ${r.stat.max} ms</td>
+            <td style="padding: 10px 14px; color: #cbd5e1; font-weight: 700;">${r.stat.count}</td>
+          </tr>
+        `).join("");
+      }
+    }
+  }
+
+  private computeMetrics(latencySummary?: any) {
     let ttfbSum = 0;
     let ttfbCount = 0;
     let turns = 0;
@@ -137,6 +189,10 @@ class DiagnosticsApp {
     let tokens = 0;
     let inTokens = 0;
     let outTokens = 0;
+
+    if (latencySummary) {
+      this.renderLatencyBenchmarks(latencySummary);
+    }
 
     for (const log of this.allLogs) {
       const msg = log.message || "";

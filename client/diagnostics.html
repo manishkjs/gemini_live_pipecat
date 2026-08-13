@@ -320,7 +320,7 @@
           <span style="color: var(--accent-cyan)">First Audio/Text</span>
         </div>
         <div id="kpi-ttfb" class="kpi-value">-- ms</div>
-        <div class="kpi-sub">Turn turnaround turnaround</div>
+        <div class="kpi-sub">Turn turnaround time</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">
@@ -353,6 +353,62 @@
         </div>
         <div id="kpi-tools" class="kpi-value">0</div>
         <div class="kpi-sub">Function calls handled</div>
+      </div>
+    </div>
+
+    <!-- Latency Benchmarks Statistical Suite -->
+    <div class="log-panel" style="margin-bottom: 24px; border-color: rgba(192, 132, 252, 0.35);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 1.1rem; font-weight: 800; color: #c084fc;">⚡ Session Latency Benchmarks (P50 / P90 / P95 / Mean)</span>
+        </div>
+        <span id="full-diag-turn-count-badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 20px; padding: 4px 12px; font-size: 12px; font-weight: 800;">0 Turns Recorded</span>
+      </div>
+
+      <!-- 4 Percentile KPI Cards -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
+        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 12px; padding: 16px; text-align: center;">
+          <div style="font-size: 12px; font-weight: 700; color: #38bdf8; text-transform: uppercase;">P50 (Median)</div>
+          <div id="full-lat-p50" style="font-size: 2rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+          <div style="font-size: 11px; color: #64748b;">50% of turns are faster</div>
+        </div>
+        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 12px; padding: 16px; text-align: center;">
+          <div style="font-size: 12px; font-weight: 700; color: #c084fc; text-transform: uppercase;">P90 (Tail Latency)</div>
+          <div id="full-lat-p90" style="font-size: 2rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+          <div style="font-size: 11px; color: #64748b;">90% of turns are faster</div>
+        </div>
+        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 12px; padding: 16px; text-align: center;">
+          <div style="font-size: 12px; font-weight: 700; color: #fbbf24; text-transform: uppercase;">P95 (Tail Spike)</div>
+          <div id="full-lat-p95" style="font-size: 2rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+          <div style="font-size: 11px; color: #64748b;">95% of turns are faster</div>
+        </div>
+        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 12px; padding: 16px; text-align: center;">
+          <div style="font-size: 12px; font-weight: 700; color: #4ade80; text-transform: uppercase;">Mean (Average)</div>
+          <div id="full-lat-mean" style="font-size: 2rem; font-weight: 800; color: #f8fafc; margin: 4px 0;">-- ms</div>
+          <div id="full-lat-minmax" style="font-size: 11px; color: #64748b;">Min: -- / Max: --</div>
+        </div>
+      </div>
+
+      <!-- Stage Statistical Table -->
+      <div style="border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; overflow: hidden; background: rgba(15, 23, 42, 0.8);">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+          <thead>
+            <tr style="background: rgba(0,0,0,0.4); color: #94a3b8; font-size: 11px; text-transform: uppercase;">
+              <th style="padding: 10px 14px;">Pipeline Stage</th>
+              <th style="padding: 10px 14px; color: #38bdf8;">P50</th>
+              <th style="padding: 10px 14px; color: #c084fc;">P90</th>
+              <th style="padding: 10px 14px; color: #fbbf24;">P95</th>
+              <th style="padding: 10px 14px; color: #4ade80;">Mean</th>
+              <th style="padding: 10px 14px;">Min / Max</th>
+              <th style="padding: 10px 14px;">Sample Turns</th>
+            </tr>
+          </thead>
+          <tbody id="full-latency-breakdown-tbody">
+            <tr>
+              <td colspan="7" style="padding: 18px; text-align: center; color: #64748b; font-style: italic;">No turn latencies recorded yet. Start talking with the assistant to generate live benchmarks.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
