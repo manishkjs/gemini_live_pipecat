@@ -429,13 +429,30 @@ class GeminiSessionLoggerMixin:
 
     async def _push_user_transcription(self, text: str, result=None):
         await super()._push_user_transcription(text, result)
-        if hasattr(self, "phase_tracker") and self.phase_tracker and text and text.strip():
+        if text and text.strip():
             clean_text = text.strip()
             logger.info(f"🎙️ [PhaseEngine:LiveUserTranscription] User spoke: '{clean_text}'")
-            try:
-                await self.phase_tracker.handle_user_transcript(clean_text)
-            except Exception as e:
-                logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
+
+            # 1. Stream User Transcription to UI so user chat bubbles render cleanly
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'transcription',
+                    'participant': 'User',
+                    'text': clean_text
+                }
+            }))
+
+            # 2. Record User Turn in LangSmith Tracer
+            GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_text)
+
+            # 3. Update Consultative Phase Tracker
+            if hasattr(self, "phase_tracker") and self.phase_tracker:
+                try:
+                    await self.phase_tracker.handle_user_transcript(clean_text)
+                except Exception as e:
+                    logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
 
     # ── Session ID & token usage logging ──────────────────────────────
 
@@ -820,7 +837,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
-    phase_tracker = ConsultativePhaseTracker(gemini_service=llm)
+    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=False)
     llm.phase_tracker = phase_tracker
     phase_processor = PhaseTransitionProcessor(tracker=phase_tracker)
 
