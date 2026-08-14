@@ -334,3 +334,76 @@ def get_product_recommendation(
         "expected_xirr": "15% - 18% p.a.",
         "payout": "Monthly EMI payout",
     }
+
+
+def calculate_reducing_balance_loan(
+    principal: float,
+    annual_rate_pct: float,
+    tenure_months: int,
+    processing_fee_pct: float = 2.0,
+    gst_rate_pct: float = 18.0
+) -> Dict[str, Any]:
+    """Computes exact institutional reducing balance loan EMI, total interest,
+    processing fee with GST, and month-by-month amortization schedule.
+    """
+    from decimal import Decimal, ROUND_HALF_EVEN
+
+    P = Decimal(str(principal))
+    r = Decimal(str(annual_rate_pct)) / Decimal("1200")
+    n = int(tenure_months)
+
+    if n <= 0:
+        return {"error": "Tenure must be at least 1 month."}
+
+    # EMI = P * [r * (1 + r)^n] / [(1 + r)^n - 1]
+    if r == Decimal("0"):
+        emi = P / Decimal(str(n))
+    else:
+        factor = (Decimal("1") + r) ** n
+        emi = (P * r * factor) / (factor - Decimal("1"))
+
+    emi = emi.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+    schedule = []
+    balance = P
+    total_interest = Decimal("0")
+
+    for month in range(1, n + 1):
+        interest_k = (balance * r).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+        principal_k = (emi - interest_k).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+
+        if month == n:
+            principal_k = balance
+            emi_k = principal_k + interest_k
+        else:
+            emi_k = emi
+
+        balance = balance - principal_k
+        total_interest += interest_k
+
+        schedule.append({
+            "month": month,
+            "opening_balance": float(balance + principal_k),
+            "emi": float(emi_k),
+            "principal_repayment": float(principal_k),
+            "interest_repayment": float(interest_k),
+            "closing_balance": max(0.0, float(balance))
+        })
+
+    base_fee = (P * (Decimal(str(processing_fee_pct)) / Decimal("100"))).quantize(Decimal("0.01"))
+    gst_fee = (base_fee * (Decimal(str(gst_rate_pct)) / Decimal("100"))).quantize(Decimal("0.01"))
+    total_fee_with_gst = base_fee + gst_fee
+
+    return {
+        "principal": float(P),
+        "annual_interest_rate": float(annual_rate_pct),
+        "tenure_months": int(tenure_months),
+        "monthly_emi": float(emi),
+        "total_interest_payable": float(total_interest),
+        "total_repayment_amount": float(P + total_interest),
+        "processing_fee_base": float(base_fee),
+        "gst_on_fee": float(gst_fee),
+        "total_processing_fee": float(total_fee_with_gst),
+        "net_disbursed_amount": float(P - total_fee_with_gst),
+        "amortization_schedule": schedule
+    }
