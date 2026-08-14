@@ -225,9 +225,10 @@ Sales Funnel Phases:
 Respond in JSON ONLY:
 {{"target_phase": int, "confidence": float, "reason": str}}
 """
+            classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-2.5-flash-lite")
             res = await asyncio.wait_for(
                 client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model=classifier_model,
                     contents=prompt,
                     config={"response_mime_type": "application/json"}
                 ),
