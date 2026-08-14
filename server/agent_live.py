@@ -10,7 +10,7 @@ from fastapi import WebSocket
 from datetime import datetime
 import time
 
-from tool_definitions import (
+from tools.tool_definitions import (
     get_standard_tools,
     register_all_tools,
     calculate_returns_schema,
