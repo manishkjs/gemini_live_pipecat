@@ -21,6 +21,10 @@ from pipecat.frames.frames import (
     Frame,
     TranscriptionFrame,
     FunctionCallResultFrame,
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
     LLMMessagesAppendFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
@@ -147,15 +151,29 @@ def get_ai_classifier_client() -> Client:
 class ConsultativePhaseTracker:
     """Manages active consultative sales phase and yields prompt cards to Gemini Live."""
 
-    def __init__(self, gemini_service, enable_client_content: Optional[bool] = None):
+    def __init__(self, gemini_service, enable_client_content: bool = True):
         self.gemini_service = gemini_service
         self.current_phase = 1
         self._turn_seq = 0
+        self._is_bot_speaking = False
+        self._pending_phase: Optional[int] = None
+        self._pending_reason: Optional[str] = None
         self._lock = asyncio.Lock()
-        if enable_client_content is not None:
-            self.enable_client_content = enable_client_content
-        else:
-            self.enable_client_content = os.getenv("ENABLE_DYNAMIC_CLIENT_CONTENT", "false").lower() in ("true", "1")
+        self.enable_client_content = enable_client_content
+
+    def set_bot_speaking(self, speaking: bool):
+        self._is_bot_speaking = speaking
+
+    async def on_bot_stopped_speaking(self):
+        """Called when bot finishes speaking. Safely flushes pending prompt card without audio interruption."""
+        self._is_bot_speaking = False
+        if self._pending_phase is not None:
+            phase = self._pending_phase
+            reason = self._pending_reason
+            self._pending_phase = None
+            self._pending_reason = None
+            logger.info(f"⚡ [PhaseEngine] Delivering queued Phase {phase} Prompt Card now that bot has finished speaking.")
+            await self._yield_prompt_to_gemini(phase, reason)
 
     async def transition_to(self, target_phase: int, trigger_reason: str):
         """Transition to a new phase and yield its prompt card."""
@@ -170,10 +188,15 @@ class ConsultativePhaseTracker:
                 f"({PHASE_PROMPT_CARDS[target_phase]['title']}) | Reason: {trigger_reason}"
             )
 
-            await self._yield_prompt_to_gemini(target_phase, trigger_reason)
+            if self._is_bot_speaking:
+                logger.info(f"⏳ [PhaseEngine] Bot is actively speaking. Queuing Phase {target_phase} prompt card for delivery after speech.")
+                self._pending_phase = target_phase
+                self._pending_reason = trigger_reason
+            else:
+                await self._yield_prompt_to_gemini(target_phase, trigger_reason)
 
     async def _yield_prompt_to_gemini(self, target_phase: int, trigger_reason: str):
-        """Log phase transition and optionally send realtime clientContent if enabled."""
+        """Send realtime clientContent turn to Gemini Live WebSocket."""
         card = PHASE_PROMPT_CARDS[target_phase]
         directive_text = (
             f"[ACTIVE_PHASE_DIRECTIVE: Phase {target_phase} - {card['title']}]\n"
@@ -182,18 +205,18 @@ class ConsultativePhaseTracker:
             f"Rule: Always use Devanagari for Hindi words and Latin for English financial terms."
         )
 
-        logger.info(
-            f"🎯 [PhaseEngine:ActivePhase] Transitioned to Phase {target_phase} ({card['title']}) | Reason: {trigger_reason}"
-        )
-
-        # In Gemini Live full-duplex audio mode, sending clientContent via WebSocket
-        # while audio is actively streaming causes the server to interrupt its own speech.
-        # Guard this behind an environment flag so duplex speech is uninterrupted by default.
         if self.enable_client_content:
             session = getattr(self.gemini_service, "_session", None)
             if session and hasattr(session, "send_client_content"):
                 try:
-                    logger.info(f"📡 [GeminiLive:send_client_content] Dispatching Phase {target_phase} Prompt Card to Gemini Live.")
+                    logger.info(
+                        f"📡 [GeminiLive:send_client_content] Dispatching Realtime Phase Prompt Card to Gemini Live:\n"
+                        f"   ├─ target_phase: Phase {target_phase} ({card['title']})\n"
+                        f"   ├─ trigger_reason: {trigger_reason}\n"
+                        f"   ├─ turn_complete: False (dynamic attention steering without forcing speech)\n"
+                        f"   └─ payload:\n"
+                        f"      {directive_text}"
+                    )
                     await session.send_client_content(
                         turns=[
                             Content(
@@ -305,8 +328,15 @@ class PhaseTransitionProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         await super().process_frame(frame, direction)
 
+        # Track bot speaking state to prevent mid-turn WebSocket interruption
+        if isinstance(frame, (BotStartedSpeakingFrame, TTSStartedFrame)):
+            self.tracker.set_bot_speaking(True)
+
+        elif isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
+            await self.tracker.on_bot_stopped_speaking()
+
         # ── Trigger A: Intercept User Speech Transcript ───────────────
-        if isinstance(frame, TranscriptionFrame):
+        elif isinstance(frame, TranscriptionFrame):
             text = (getattr(frame, "text", "") or "").strip()
             if text:
                 await self.tracker.handle_user_transcript(text)
