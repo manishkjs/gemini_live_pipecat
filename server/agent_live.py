@@ -425,6 +425,18 @@ class GeminiSessionLoggerMixin:
         except Exception as e:
             logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
 
+    # ── Live User Transcription Direct Hook for Phase Engine ────────────
+
+    async def _push_user_transcription(self, text: str, result=None):
+        await super()._push_user_transcription(text, result)
+        if hasattr(self, "phase_tracker") and self.phase_tracker and text and text.strip():
+            clean_text = text.strip()
+            logger.info(f"🎙️ [PhaseEngine:LiveUserTranscription] User spoke: '{clean_text}'")
+            try:
+                await self.phase_tracker.handle_user_transcript(clean_text)
+            except Exception as e:
+                logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
+
     # ── Session ID & token usage logging ──────────────────────────────
 
     async def _handle_session_ready(self, session):
