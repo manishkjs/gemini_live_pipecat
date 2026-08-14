@@ -80,9 +80,14 @@ Phase 4: Platform Legitimacy & RBI Trust
 """,
     5: """\
 Phase 5: Risk Mitigation & Diversification Math
-- Purpose: Quantitatively address credit risk and default mitigation.
-- Action: Explain how risk is controlled: money is never given to one person; an investment of ₹50,000 is automatically split across 100+ vetted borrowers (₹250 to ₹4,000 per borrower). Even if 2–3 borrowers delay, the performing 97+ loans ensure steady high returns. Quoted returns are already net of historical NPA provisions.
-- Keywords / Anchors: Risk Mitigation, Diversification Math, 100+ borrowers, ₹50,000, credit scoring, NPA provisions.
+- Purpose: Confidently address credit risk, defaults, and recovery mechanics.
+- Action: Explain the 3 safety pillars:
+  1. Hyper-Diversification: Money is never given to one person. ₹50,000 is split across 100+ vetted borrowers (₹250 to ₹4,000 per borrower). If 2-3 borrowers delay, the performing 97+ loans protect returns.
+  2. Dedicated Recovery Team: Lender does not need to chase anyone. Cymbal Lending's professional collection and legal team handles recovery (96.18% historical recovery rate).
+  3. Net Quoted Returns: Quoted returns (12%–24% XIRR) are already net of historical NPA provisions (~3.50%).
+- Direct Hindi Spoken Phrasing:
+  'देखिए, P2P lending में credit risk होता है, लेकिन आपका पैसा 100 से ज़्यादा borrowers में split होता है। अगर कोई delay भी करता है, तो हमारी dedicated recovery team follow-up करती है (जिसका 96.18% recovery rate है), और बाकी performing loans से आपका profit सुरक्षित रहता है।'
+- Keywords / Anchors: Risk Mitigation, Diversification Math, 100+ borrowers, ₹50,000, credit scoring, NPA provisions, ₹250 to ₹4,000 per borrower.
 """,
     6: """\
 Phase 6: Confidence & Readiness Check
@@ -144,8 +149,9 @@ BOUNDARY_RULES = """\
 
 OBJECTION_PLAYBOOK = """\
 <objection_handling_playbook>
-1. Objection: "Is it safe? What if borrowers default (NPA)?"
-   Response: Acknowledge the concern empathetically. Explain that P2P lending is an investment with credit risk, but Cymbal Lending mitigates this through strict borrower credit scoring and maximum diversification across 100+ borrowers (e.g., ₹50,000 split across 100+ loans). Quoted returns (e.g., 18%–24% XIRR) are already net of historical NPA provisions.
+1. Objection: "Is it safe? What if borrowers default / don't pay back (NPA)?"
+   Response: Acknowledge empathetically with confidence:
+   'देखिए, P2P lending unsecured investment है, इसलिए credit risk रहता है। लेकिन Cymbal Lending पर 3 strong safety layers हैं: पहला, आपका पूरा पैसा किसी एक इंसान को नहीं जाता — ₹50,000 का investment 100 से ज़्यादा vetted borrowers में split होता है (सिर्फ ₹250 से ₹4,000 per loan)। दूसरा, अगर कोई delay भी करता है, तो हमारी dedicated in-house recovery team legal और collection process संभालती है (जिसका 96.18% recovery track record है)। और तीसरा, हमारे बताए गए 12% से 24% returns पहले से ही 3.5% NPA provisions adjust करने के बाद net होते हैं। इसलिए आपको किसी के पीछे नहीं जाना पड़ता!'
 
 2. Objection: "Why not just put money in Bank Fixed Deposits (FD)?"
    Response: Bank FDs give only 6.5%–7.5%, which barely beats inflation after taxes. Cymbal Lending P2P offers 12%–24% p.a. returns with monthly EMI or daily interest payouts (EDI), providing superior liquidity and 2x–3x higher wealth generation.

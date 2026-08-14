@@ -76,21 +76,22 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
         "title": "Platform Legitimacy & RBI Trust",
         "directive": (
             "You are in Phase 4: Platform Legitimacy & RBI Trust.\n"
-            "• RBI NBFC-P2P: Cymbal Lending / LenDenClub is an RBI-registered NBFC-P2P operating under strict regulatory oversight.\n"
-            "• ESCROW ACCOUNT SAFETY: Lender and borrower capital is managed via an independent RBI-regulated Trustee Escrow Account "
-            "(ICICI Trusteeship). The platform NEVER holds customer funds directly.\n"
-            "• SOCIAL PROOF STATS: 10 years track record, ₹18,000+ crore lent, 40 lakh+ investors, 3 crore+ registered users, "
-            "96.73% on-time repayment track record, 4.4 star rating."
+            "• IMMEDIATE DIRECT ANSWER: When asked if the platform is RBI approved, immediately answer with warmth and confidence:\n"
+            "  'जी बिल्कुल! Cymbal Lending (LenDenClub) एक RBI-registered NBFC-P2P platform है। आपका सारा पैसा ICICI Trustee Escrow Account के through सुरक्षित रूप से manage होता है — platform खुद पैसे hold नहीं करता।'\n"
+            "• KEY PILLARS: 1) RBI Registered NBFC-P2P, 2) Independent ICICI Trustee Escrow protection (bankruptcy safe), 3) 10 years vintage, ₹18,000+ Crore disbursed, 40 Lakh+ registered lenders, 96.18% recovery rate.\n"
+            "• PROCEED NATURALLY: After reassuring on RBI safety, ask: 'क्या आप wealth growth के लिए देख रहे हैं या regular monthly income?'"
         )
     },
     5: {
         "title": "Risk Mitigation & Diversification Math",
         "directive": (
-            "You are in Phase 5: Risk Mitigation & Diversification Math.\n"
-            "• 100+ BORROWER SPLIT: Capital is NEVER lent to a single individual. An investment of ₹50,000–₹1,00,000 "
-            "is automatically fragmented across 100+ vetted borrowers (₹250 to ₹4,000 per loan).\n"
-            "• MATHEMATICAL SAFETY: Even if 2–3 borrowers delay or default, the performing 97+ loans comfortably cover the loss. "
-            "Quoted returns (12%–24% XIRR) are already net of historical NPA provisions (consistently <4%)."
+            "You are in Phase 5: Risk Mitigation, Defaults & Recovery.\n"
+            "• IMMEDIATE DIRECT ANSWER: When asked what happens if someone doesn't pay back or defaults, answer directly with confidence:\n"
+            "  'देखिए, P2P lending में credit risk होता है, लेकिन इसके लिए platform पर 3 strong safety layers हैं:\n"
+            "  1. Hyper-Diversification: आपका पैसा किसी एक इंसान को नहीं दिया जाता। ₹50,000 का investment 100 से ज़्यादा vetted borrowers में split होता है (सिर्फ ₹250 से ₹4,000 per borrower)। अगर 2-3 लोग delay भी करते हैं, तो बाकी 97+ performing loans आपके returns को सुरक्षित रखते हैं।\n"
+            "  2. Dedicated Recovery: आपको किसी के पीछे नहीं जाना पड़ता! Cymbal Lending की professional collection और legal team recovery handle करती है, जिसका historical recovery rate 96.18% है।\n"
+            "  3. Net Quoted Returns: हमारे बताए गए 12% से 24% returns पहले से ही historical NPA (लगभग 3.5%) adjust करने के बाद net होते हैं।'\n"
+            "• NEVER SAY YOU DON'T HAVE INFO: Always explain diversification and recovery proactively."
         )
     },
     6: {
@@ -289,9 +290,13 @@ Respond in JSON ONLY:
         elif any(w in lower for w in ["rbi", "escrow", "safe", "legal", "penalty", "approved", "trustee"]):
             await self.transition_to(4, trigger_reason="User asked about platform safety / RBI")
 
-        # Jump to Phase 5: Risk / Diversification / Default
-        elif any(w in lower for w in ["default", "npa", "doob", "risk", "100 borrower", "kitne borrower"]):
-            await self.transition_to(5, trigger_reason="User asked about credit risk & diversification")
+        # Jump to Phase 5: Risk / Diversification / Default / Doesn't pay back
+        elif any(w in lower for w in [
+            "default", "npa", "doob", "risk", "100 borrower", "kitne borrower",
+            "doesn't pay", "doesnt pay", "wapas na", "wapas nahi", "paisa doob",
+            "bhag gaya", "na de", "delay", "kya hoga agar", "recovery"
+        ]):
+            await self.transition_to(5, trigger_reason="User asked about credit risk, defaults & recovery")
 
         # Jump to Phase 7: Returns / Calculations
         elif any(w in lower for w in ["kitna milega", "return kitna", "profit", "monthly payout", "emi kitna", "calculate", "returns"]):
