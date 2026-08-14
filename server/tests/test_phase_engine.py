@@ -39,7 +39,7 @@ class TestPhaseEngine(unittest.IsolatedAsyncioTestCase):
 
     async def test_state_transition_and_client_content_call(self):
         service = MockGeminiService()
-        tracker = ConsultativePhaseTracker(gemini_service=service)
+        tracker = ConsultativePhaseTracker(gemini_service=service, enable_client_content=True)
 
         # Transition to Phase 2
         await tracker.transition_to(2, trigger_reason="User gave consent")
@@ -54,7 +54,7 @@ class TestPhaseEngine(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_spurious_retransition(self):
         service = MockGeminiService()
-        tracker = ConsultativePhaseTracker(gemini_service=service)
+        tracker = ConsultativePhaseTracker(gemini_service=service, enable_client_content=True)
 
         await tracker.transition_to(2, trigger_reason="First transition")
         self.assertEqual(service._session.send_client_content.call_count, 1)

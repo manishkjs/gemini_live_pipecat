@@ -147,11 +147,15 @@ def get_ai_classifier_client() -> Client:
 class ConsultativePhaseTracker:
     """Manages active consultative sales phase and yields prompt cards to Gemini Live."""
 
-    def __init__(self, gemini_service):
+    def __init__(self, gemini_service, enable_client_content: Optional[bool] = None):
         self.gemini_service = gemini_service
         self.current_phase = 1
         self._turn_seq = 0
         self._lock = asyncio.Lock()
+        if enable_client_content is not None:
+            self.enable_client_content = enable_client_content
+        else:
+            self.enable_client_content = os.getenv("ENABLE_DYNAMIC_CLIENT_CONTENT", "false").lower() in ("true", "1")
 
     async def transition_to(self, target_phase: int, trigger_reason: str):
         """Transition to a new phase and yield its prompt card."""
@@ -169,7 +173,7 @@ class ConsultativePhaseTracker:
             await self._yield_prompt_to_gemini(target_phase, trigger_reason)
 
     async def _yield_prompt_to_gemini(self, target_phase: int, trigger_reason: str):
-        """Send realtime clientContent turn to Gemini Live WebSocket."""
+        """Log phase transition and optionally send realtime clientContent if enabled."""
         card = PHASE_PROMPT_CARDS[target_phase]
         directive_text = (
             f"[ACTIVE_PHASE_DIRECTIVE: Phase {target_phase} - {card['title']}]\n"
@@ -178,29 +182,30 @@ class ConsultativePhaseTracker:
             f"Rule: Always use Devanagari for Hindi words and Latin for English financial terms."
         )
 
-        session = getattr(self.gemini_service, "_session", None)
-        if session and hasattr(session, "send_client_content"):
-            try:
-                logger.info(
-                    f"📡 [GeminiLive:send_client_content] Dispatching Realtime Phase Prompt Card to Gemini Live:\n"
-                    f"   ├─ target_phase: Phase {target_phase} ({card['title']})\n"
-                    f"   ├─ trigger_reason: {trigger_reason}\n"
-                    f"   ├─ turn_complete: False (dynamic attention steering without forcing speech)\n"
-                    f"   └─ payload:\n"
-                    f"      {directive_text}"
-                )
-                await session.send_client_content(
-                    turns=[
-                        Content(
-                            role="user",
-                            parts=[Part(text=directive_text)]
-                        )
-                    ],
-                    turn_complete=False  # Steers model's attention without forcing an immediate reply turn
-                )
-                logger.info(f"⚡ [PhaseEngine] Prompt card for Phase {target_phase} successfully yielded to Gemini Live.")
-            except Exception as e:
-                logger.warning(f"[PhaseEngine] Failed to yield prompt via send_client_content: {e}")
+        logger.info(
+            f"🎯 [PhaseEngine:ActivePhase] Transitioned to Phase {target_phase} ({card['title']}) | Reason: {trigger_reason}"
+        )
+
+        # In Gemini Live full-duplex audio mode, sending clientContent via WebSocket
+        # while audio is actively streaming causes the server to interrupt its own speech.
+        # Guard this behind an environment flag so duplex speech is uninterrupted by default.
+        if self.enable_client_content:
+            session = getattr(self.gemini_service, "_session", None)
+            if session and hasattr(session, "send_client_content"):
+                try:
+                    logger.info(f"📡 [GeminiLive:send_client_content] Dispatching Phase {target_phase} Prompt Card to Gemini Live.")
+                    await session.send_client_content(
+                        turns=[
+                            Content(
+                                role="user",
+                                parts=[Part(text=directive_text)]
+                            )
+                        ],
+                        turn_complete=False
+                    )
+                    logger.info(f"⚡ [PhaseEngine] Prompt card for Phase {target_phase} successfully yielded to Gemini Live.")
+                except Exception as e:
+                    logger.warning(f"[PhaseEngine] Failed to yield prompt via send_client_content: {e}")
 
     async def _async_ai_classify_intent(self, text: str, initial_phase: int, turn_id: int):
         """Asynchronous Tier-2 Semantic Intent Classification via Gemini Flash AI."""
