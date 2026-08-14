@@ -74,7 +74,7 @@ FrameProcessor._FrameProcessor__input_frame_task_handler = patched_input_frame_t
 
 from agent_live import run_agent_live
 from agent import run_agent
-from system_prompt import SYSTEM_PROMPT, tts_prompt
+from system_prompt import SYSTEM_PROMPT, get_chained_system_prompt, tts_prompt
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -211,7 +211,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 
 @app.get("/connect/system-prompt")
 async def get_system_prompt():
-    return {"system_prompt": SYSTEM_PROMPT}
+    return {"system_prompt": get_chained_system_prompt(phase=1)}
 
 @app.get("/api/logs")
 async def get_diagnostic_logs(limit: int = 500):
