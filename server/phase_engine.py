@@ -162,6 +162,14 @@ class ConsultativePhaseTracker:
         session = getattr(self.gemini_service, "_session", None)
         if session and hasattr(session, "send_client_content"):
             try:
+                logger.info(
+                    f"📡 [GeminiLive:send_client_content] Dispatching Realtime Phase Prompt Card to Gemini Live:\n"
+                    f"   ├─ target_phase: Phase {target_phase} ({card['title']})\n"
+                    f"   ├─ trigger_reason: {trigger_reason}\n"
+                    f"   ├─ turn_complete: False (dynamic attention steering without forcing speech)\n"
+                    f"   └─ payload:\n"
+                    f"      {directive_text}"
+                )
                 await session.send_client_content(
                     turns=[
                         Content(
@@ -176,6 +184,44 @@ class ConsultativePhaseTracker:
                 logger.warning(f"[PhaseEngine] Failed to yield prompt via send_client_content: {e}")
 
 
+    async def handle_user_transcript(self, text: str):
+        """Evaluate transcribed user utterance and trigger phase transitions."""
+        if not text:
+            return
+        lower = text.strip().lower()
+
+        # Jump to Phase 8: KYC / Document queries (Highest specificity)
+        if any(w in lower for w in ["kyc", "documents", "document", "aadhaar", "pan card", "bank account", "penny drop", "digilocker"]):
+            await self.transition_to(8, trigger_reason="User asked for KYC / account setup")
+
+        # Jump to Phase 4: RBI / Escrow / Trust / Penalty
+        elif any(w in lower for w in ["rbi", "escrow", "safe", "legal", "penalty", "approved", "trustee"]):
+            await self.transition_to(4, trigger_reason="User asked about platform safety / RBI")
+
+        # Jump to Phase 5: Risk / Diversification / Default
+        elif any(w in lower for w in ["default", "npa", "doob", "risk", "100 borrower", "kitne borrower"]):
+            await self.transition_to(5, trigger_reason="User asked about credit risk & diversification")
+
+        # Jump to Phase 7: Returns / Calculations
+        elif any(w in lower for w in ["kitna milega", "return kitna", "profit", "monthly payout", "emi kitna", "calculate", "returns"]):
+            await self.transition_to(7, trigger_reason="User asked for returns / calculation")
+
+        # Jump to Phase 3: Educational Comparison (FD / Mutual Funds vs P2P)
+        elif any(w in lower for w in ["fd", "fixed deposit", "mutual fund", "7%", "18%", "24%", "kaise possible"]):
+            await self.transition_to(3, trigger_reason="User compared returns / asked about mechanism")
+
+        # Phase 1 -> 2: User gives consent / confirms availability
+        elif self.current_phase == 1 and (
+            "हाँ" in text or "हां" in text or
+            any(re.search(rf"\b{re.escape(w)}\b", lower) for w in ["haan", "yes", "batao", "bataiye", "sure", "theek hai", "boliye", "ok", "okay"])
+        ):
+            await self.transition_to(2, trigger_reason="User confirmed availability")
+
+        # Phase 2 -> 3: User shares investment background
+        elif self.current_phase == 2 and any(w in lower for w in ["suna hai", "explore", "invest", "pehli baar", "first time", "kabhi invest nahi kiya"]):
+            await self.transition_to(3, trigger_reason="User shared P2P familiarity")
+
+
 class PhaseTransitionProcessor(FrameProcessor):
     """Pipeline processor that intercepts conversational triggers & tool executions to drive phase transitions."""
 
@@ -187,31 +233,10 @@ class PhaseTransitionProcessor(FrameProcessor):
         await super().process_frame(frame, direction)
 
         # ── Trigger A: Intercept User Speech Transcript ───────────────
-        if isinstance(frame, TranscriptionFrame) and getattr(frame, "user_id", "") == "user":
-            text = (frame.text or "").strip().lower()
-            
-            # Jump to Phase 8: KYC / Document queries (Highest specificity)
-            if any(w in text for w in ["kyc", "documents", "aadhaar", "pan card", "bank account", "penny drop", "digilocker"]):
-                await self.tracker.transition_to(8, trigger_reason="User asked for KYC / account setup")
-
-            # Jump to Phase 4: RBI / Escrow / Trust / Penalty
-            elif any(w in text for w in ["rbi", "escrow", "safe", "legal", "penalty", "approved", "trustee"]):
-                await self.tracker.transition_to(4, trigger_reason="User asked about platform safety / RBI")
-
-            # Jump to Phase 5: Risk / Diversification / Default
-            elif any(w in text for w in ["default", "npa", "doob", "risk", "100 borrower", "kitne borrower"]):
-                await self.tracker.transition_to(5, trigger_reason="User asked about credit risk & diversification")
-
-            # Jump to Phase 7: Returns / Calculations
-            elif any(w in text for w in ["kitna milega", "return kitna", "profit", "monthly payout", "emi kitna", "calculate"]):
-                await self.tracker.transition_to(7, trigger_reason="User asked for returns / calculation")
-
-            # Phase 1 -> 2: User gives consent (Word-boundary matching)
-            elif self.tracker.current_phase == 1 and (
-                "हाँ" in text or
-                any(re.search(rf"\b{re.escape(w)}\b", text) for w in ["haan", "yes", "batao", "bataiye", "sure", "theek hai", "boliye", "bataiye", "ok", "okay"])
-            ):
-                await self.tracker.transition_to(2, trigger_reason="User confirmed availability")
+        if isinstance(frame, TranscriptionFrame):
+            text = (getattr(frame, "text", "") or "").strip()
+            if text:
+                await self.tracker.handle_user_transcript(text)
 
         # ── Trigger B: Intercept Functional Tool Executions ───────────
         elif isinstance(frame, FunctionCallResultFrame):

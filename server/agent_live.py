@@ -276,6 +276,9 @@ class GeminiSessionLoggerMixin:
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
+            tracker = getattr(self, "phase_tracker", None)
+            if tracker and hasattr(tracker, "handle_user_transcript"):
+                await tracker.handle_user_transcript(clean_sentence)
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -806,6 +809,7 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         return False
 
     phase_tracker = ConsultativePhaseTracker(gemini_service=llm)
+    llm.phase_tracker = phase_tracker
     phase_processor = PhaseTransitionProcessor(tracker=phase_tracker)
 
     pipeline = Pipeline([
