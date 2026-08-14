@@ -9,7 +9,10 @@ Implements Google Gemini Live API Prompt Yielding Best Practices:
   without breaking duplex audio or forcing unnatural turns.
 """
 
+from __future__ import annotations
 import asyncio
+import os
+import json
 import re
 from typing import Any, Dict, Optional
 from loguru import logger
@@ -21,6 +24,7 @@ from pipecat.frames.frames import (
     LLMMessagesAppendFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from google.genai import Client
 from google.genai.types import Content, Part
 
 
@@ -126,12 +130,27 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
 }
 
 
+# Lazy initialized Vertex AI Client for async classification
+_AI_CLASSIFIER_CLIENT: Optional[Client] = None
+
+def get_ai_classifier_client() -> Client:
+    global _AI_CLASSIFIER_CLIENT
+    if _AI_CLASSIFIER_CLIENT is None:
+        import os
+        from google.genai import Client
+        project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+        location = os.getenv("GCP_LOCATION") or "us-central1"
+        _AI_CLASSIFIER_CLIENT = Client(project=project, location=location, vertexai=True)
+    return _AI_CLASSIFIER_CLIENT
+
+
 class ConsultativePhaseTracker:
     """Manages active consultative sales phase and yields prompt cards to Gemini Live."""
 
     def __init__(self, gemini_service):
         self.gemini_service = gemini_service
         self.current_phase = 1
+        self._turn_seq = 0
         self._lock = asyncio.Lock()
 
     async def transition_to(self, target_phase: int, trigger_reason: str):
@@ -183,13 +202,56 @@ class ConsultativePhaseTracker:
             except Exception as e:
                 logger.warning(f"[PhaseEngine] Failed to yield prompt via send_client_content: {e}")
 
+    async def _async_ai_classify_intent(self, text: str, initial_phase: int, turn_id: int):
+        """Asynchronous Tier-2 Semantic Intent Classification via Gemini Flash AI."""
+        try:
+            client = get_ai_classifier_client()
+            prompt = f"""\
+You are an intent classifier for Cymbal Lending P2P voicebot consultative sales funnel.
+Current Active Phase: {initial_phase}
+User Utterance: "{text}"
+
+Sales Funnel Phases:
+1: Time Check & Availability (consent to talk)
+2: Discovery & P2P Familiarity (investor background)
+3: Educational Pivot (FD 7% vs P2P 18-24% spread)
+4: Platform Legitimacy & RBI Trust (RBI NBFC-P2P, ICICI escrow)
+5: Risk Mitigation & Diversification (defaults, credit underwriting, ₹500/borrower)
+6: Liquidity & Cash Flow (monthly EMI, daily EDI payouts)
+7: Return Calculation & Financial Math (exact investment amounts, SIP, tenure)
+8: App & KYC Navigation (PAN, Aadhaar OTP, Bank penny drop)
+9: Commitment & Activation Close (starting deposit, activation date)
+
+Respond in JSON ONLY:
+{{"target_phase": int, "confidence": float, "reason": str}}
+"""
+            res = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config={"response_mime_type": "application/json"}
+                ),
+                timeout=2.0
+            )
+            data = json.loads(res.text)
+            target = data.get("target_phase")
+            confidence = float(data.get("confidence", 0.0))
+            reason = data.get("reason", "Semantic match")
+
+            if self.current_phase == initial_phase and confidence >= 0.75 and target in PHASE_PROMPT_CARDS and target != self.current_phase:
+                logger.info(f"🧠 [GeminiFlashAI:IntentClassifier] Classified intent: Phase {target} (Confidence: {confidence:.2f}) | Reason: {reason}")
+                await self.transition_to(target, trigger_reason=f"Gemini Flash AI: {reason}")
+        except Exception as e:
+            logger.debug(f"[PhaseEngine:FlashClassifier] Background classification skipped or timed out: {e}")
 
     async def handle_user_transcript(self, text: str):
         """Evaluate transcribed user utterance and trigger phase transitions."""
         if not text:
             return
         lower = text.strip().lower()
+        initial_phase = self.current_phase
 
+        # ── Tier 1: Fast-Path Rule Check (Instant 0ms) ───────────────
         # Jump to Phase 8: KYC / Document queries (Highest specificity)
         if any(w in lower for w in ["kyc", "documents", "document", "aadhaar", "pan card", "bank account", "penny drop", "digilocker"]):
             await self.transition_to(8, trigger_reason="User asked for KYC / account setup")
@@ -220,6 +282,11 @@ class ConsultativePhaseTracker:
         # Phase 2 -> 3: User shares investment background
         elif self.current_phase == 2 and any(w in lower for w in ["suna hai", "explore", "invest", "pehli baar", "first time", "kabhi invest nahi kiya"]):
             await self.transition_to(3, trigger_reason="User shared P2P familiarity")
+
+        # ── Tier 2: Async Gemini Flash AI Classifier for Subtle Phrasings ─
+        if self.current_phase == initial_phase and len(text.strip()) > 6:
+            self._turn_seq += 1
+            asyncio.create_task(self._async_ai_classify_intent(text, initial_phase, self._turn_seq))
 
 
 class PhaseTransitionProcessor(FrameProcessor):
