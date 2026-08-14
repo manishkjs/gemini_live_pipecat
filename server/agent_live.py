@@ -45,7 +45,6 @@ from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 
-from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (
     EndTaskFrame,
@@ -1084,8 +1083,6 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         enable_metrics=True,
         enable_usage_metrics=True,
     ))
-    
-    task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
