@@ -217,9 +217,9 @@ class PhaseTransitionProcessor(FrameProcessor):
         elif isinstance(frame, FunctionCallResultFrame):
             tool_name = getattr(frame, "function_name", "")
             
-            if tool_name in ["calculate_stl_returns", "calculate_mtl_returns", "calculate_manual_lending", "calculate_sip_returns"]:
+            if tool_name in ["calculate_returns", "calculate_stl_returns", "calculate_mtl_returns", "calculate_manual_lending", "calculate_sip_returns"]:
                 await self.tracker.transition_to(7, trigger_reason=f"Financial calculation tool executed ({tool_name})")
-            elif tool_name in ["get_kyc_guidance", "get_app_screen_flow"]:
+            elif tool_name in ["get_onboarding_guide", "get_kyc_guidance", "get_app_screen_flow"]:
                 await self.tracker.transition_to(8, trigger_reason=f"KYC/App navigation tool executed ({tool_name})")
             elif tool_name == "search_knowledge_base":
                 if self.tracker.current_phase < 4:

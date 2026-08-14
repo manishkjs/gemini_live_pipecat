@@ -1,7 +1,14 @@
-"""App navigation and KYC guidance for Cymbal Lending mobile/web application."""
-
 from __future__ import annotations
 from typing import Any, Dict, Optional
+
+
+def get_onboarding_guide(topic: Optional[str] = "all") -> Dict[str, Any]:
+    """Unified onboarding guide for KYC (PAN/Aadhaar/Bank) or App deposit/navigation flows."""
+    t = (topic or "all").lower().strip()
+    if any(k in t for k in ["pan", "aadhaar", "aadhar", "bank", "penny", "kyc"]):
+        return get_kyc_guidance(step_or_doc=t)
+    return get_app_screen_flow(target_flow=t)
+
 
 
 def get_kyc_guidance(step_or_doc: Optional[str] = "all") -> Dict[str, Any]:

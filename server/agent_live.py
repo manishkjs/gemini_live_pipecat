@@ -17,11 +17,13 @@ from tools.financial_math import (
     calculate_manual_lending,
     calculate_sip_returns,
     get_product_recommendation,
+    calculate_returns,
 )
 from tools.navigation import (
     get_kyc_guidance,
     get_app_screen_flow,
     get_consultative_guidance,
+    get_onboarding_guide,
 )
 from phase_engine import ConsultativePhaseTracker, PhaseTransitionProcessor
 from diagnostic_buffer import append_diagnostic_log
@@ -527,6 +529,47 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 # ── Cymbal Lending Deterministic Tool Schemas ───────────────────────
 
+calculate_returns_schema = FunctionSchema(
+    name="calculate_returns",
+    description="Calculate exact deterministic returns, profit, and monthly EMI for Cymbal Lending plans (STL 3-6m, MTL 12m, Manual Lending, or custom Rule 4 NPA).",
+    properties={
+        "amount": {
+            "type": "number",
+            "description": "Investment amount in rupees (Min ₹250, Max ₹50,00,000)."
+        },
+        "tenure_months": {
+            "type": "integer",
+            "description": "Desired tenure in months (3, 4, 5, 6, 12). Note: 9 months is not available."
+        },
+        "repayment_type": {
+            "type": "string",
+            "enum": ["monthly", "daily"],
+            "description": "'monthly' for monthly EMI (STL / MTL Monthly), 'daily' for daily EDI."
+        },
+        "custom_borrower_rate_pct": {
+            "type": "number",
+            "description": "Optional custom borrower interest % (e.g. 40.0) for Rule 4 custom math."
+        },
+        "custom_npa_rate_pct": {
+            "type": "number",
+            "description": "Optional custom NPA / default rate % (defaults to 3.5%)."
+        }
+    },
+    required=["amount"]
+)
+
+get_onboarding_guide_schema = FunctionSchema(
+    name="get_onboarding_guide",
+    description="Get step-by-step guidance for KYC verification (PAN, Aadhaar OTP, Bank penny-drop) or App deposit navigation (UPI, NetBanking).",
+    properties={
+        "topic": {
+            "type": "string",
+            "description": "Topic: 'pan', 'aadhaar', 'bank', 'all_kyc', 'deposit', 'lumpsum', or 'loan_filter'."
+        }
+    },
+    required=["topic"]
+)
+
 calculate_stl_returns_schema = FunctionSchema(
     name="calculate_stl_returns",
     description="Calculate exact returns for Short Term Lumpsum (STL 5M & 7M) plans on Cymbal Lending (12%-18% annualized XIRR).",
@@ -651,6 +694,32 @@ get_app_screen_flow_schema = FunctionSchema(
 
 # ── Cymbal Lending Async Tool Handlers ──────────────────────────────
  
+async def handle_calculate_returns(params: FunctionCallParams):
+    args = params.arguments or {}
+    raw_amount = args.get("amount")
+    amount = float(raw_amount) if raw_amount is not None else 50000.0
+    raw_tenure = args.get("tenure_months")
+    tenure = int(raw_tenure) if raw_tenure is not None else None
+    repayment_type = args.get("repayment_type", "monthly")
+    raw_rate = args.get("custom_borrower_rate_pct")
+    raw_npa = args.get("custom_npa_rate_pct")
+    result = calculate_returns(
+        amount=amount,
+        tenure_months=tenure,
+        repayment_type=repayment_type,
+        custom_borrower_rate_pct=float(raw_rate) if raw_rate is not None else None,
+        custom_npa_rate_pct=float(raw_npa) if raw_npa is not None else None,
+    )
+    logger.info(f"[Tool:calculate_returns] amount={amount}, tenure={tenure} -> {result}")
+    await params.result_callback(result)
+
+async def handle_get_onboarding_guide(params: FunctionCallParams):
+    args = params.arguments or {}
+    topic = args.get("topic") or args.get("step_or_doc") or args.get("target_flow") or "all"
+    result = get_onboarding_guide(topic=str(topic))
+    logger.info(f"[Tool:get_onboarding_guide] topic={topic} -> {result}")
+    await params.result_callback(result)
+
 async def handle_calculate_stl_returns(params: FunctionCallParams):
     args = params.arguments or {}
     raw_amount = args.get("amount")
@@ -878,6 +947,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             required=["is_explicit_request"]
         ),
         search_knowledge_base_schema,
+        calculate_returns_schema,
+        get_onboarding_guide_schema,
         calculate_stl_returns_schema,
         calculate_mtl_returns_schema,
         calculate_manual_lending_schema,
@@ -1012,6 +1083,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    llm.register_function("calculate_returns", handle_calculate_returns)
+    llm.register_function("get_onboarding_guide", handle_get_onboarding_guide)
     llm.register_function("calculate_stl_returns", handle_calculate_stl_returns)
     llm.register_function("calculate_mtl_returns", handle_calculate_mtl_returns)
     llm.register_function("calculate_manual_lending", handle_calculate_manual_lending)
@@ -1024,6 +1097,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     built_in_tools = {
         "get_current_time",
         "search_knowledge_base",
+        "calculate_returns",
+        "get_onboarding_guide",
         "calculate_stl_returns",
         "calculate_mtl_returns",
         "calculate_manual_lending",

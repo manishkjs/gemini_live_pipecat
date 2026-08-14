@@ -11,7 +11,31 @@ Handles:
 """
 
 from __future__ import annotations
-from typing import Any, Dict, Optional
+from decimal import Decimal, ROUND_HALF_EVEN
+from typing import Any, Dict, List, Optional
+
+
+def calculate_returns(
+    amount: float,
+    tenure_months: Optional[int] = None,
+    repayment_type: Optional[str] = "monthly",
+    custom_borrower_rate_pct: Optional[float] = None,
+    custom_npa_rate_pct: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Unified deterministic return calculator for Cymbal Lending (STL, MTL, Manual, or Rule 4 NPA)."""
+    if custom_borrower_rate_pct is not None or custom_npa_rate_pct is not None or (tenure_months and tenure_months not in (3, 4, 5, 6, 12)):
+        return calculate_manual_lending(
+            amount=amount,
+            tenure_months=tenure_months or 12,
+            custom_borrower_rate_pct=custom_borrower_rate_pct,
+            custom_npa_rate_pct=custom_npa_rate_pct,
+        )
+    if tenure_months == 12:
+        return calculate_mtl_returns(amount=amount, repayment_type=repayment_type or "monthly")
+    if amount < 25000:
+        return calculate_manual_lending(amount=amount, tenure_months=tenure_months or 6)
+    return calculate_stl_returns(amount=amount, tenure_months=tenure_months)
+
 
 
 def calculate_stl_returns(amount: float, tenure_months: Optional[int] = None) -> Dict[str, Any]:
