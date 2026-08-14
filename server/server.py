@@ -116,7 +116,19 @@ async def websocket_endpoint(
     await websocket.accept()
     print("WebSocket connection accepted")
     try:
-        if bot_type == "gemini-live":
+        if bot_type == "tts-llm-stt":
+            await run_agent(
+                websocket,
+                tts_voice=tts_voice,
+                tts_pace=tts_pace,
+                llm_model=llm_model,
+                stt_model=stt_model,
+                stt_language=stt_language,
+                tts_model=tts_model,
+                system_instruction=system_instruction,
+                skip_stt=skip_stt,
+            )
+        else:
             await run_agent_live(
                 websocket,
                 model=model,
@@ -128,18 +140,6 @@ async def websocket_endpoint(
                 tools=tools,
                 context_compression=context_compression,
                 context_compression_trigger_tokens=context_compression_trigger_tokens,
-            )
-        elif bot_type == "tts-llm-stt":
-            await run_agent(
-                websocket,
-                tts_voice=tts_voice,
-                tts_pace=tts_pace,
-                llm_model=llm_model,
-                stt_model=stt_model,
-                stt_language=stt_language,
-                tts_model=tts_model,
-                system_instruction=system_instruction,
-                skip_stt=skip_stt,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")

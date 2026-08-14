@@ -933,7 +933,7 @@ class WebsocketClientApp {
 
       const transport = new WebSocketTransport();
 
-      const botTypeToConnect = this.selectedBotType || (this.activeTab !== "observability" ? this.activeTab : "gemini-live");
+      const botTypeToConnect = (this.selectedBotType && this.selectedBotType !== "observability") ? this.selectedBotType : "gemini-live";
       this.connectedBotType = botTypeToConnect;
 
       let connectUrl = `/connect?bot_type=${botTypeToConnect}`;
