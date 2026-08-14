@@ -363,19 +363,12 @@ async def dynamic_tool_handler(params: FunctionCallParams):
 # ── Registry Helper ──────────────────────────────────────────────────
 
 def get_standard_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
-    """Returns the full list of registered tool schemas."""
+    """Returns the lean list of active tool schemas for Gemini Live."""
     tools = [
         get_current_time_schema,
         search_knowledge_base_schema,
         calculate_returns_schema,
         get_onboarding_guide_schema,
-        calculate_stl_returns_schema,
-        calculate_mtl_returns_schema,
-        calculate_manual_lending_schema,
-        calculate_sip_returns_schema,
-        get_product_recommendation_schema,
-        get_kyc_guidance_schema,
-        get_app_screen_flow_schema,
     ]
 
     if dynamic_tools_json:

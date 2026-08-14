@@ -97,7 +97,7 @@ app.add_middleware(
 async def websocket_endpoint(
     websocket: WebSocket,
     bot_type: str = "gemini-live",
-    model: str = "gemini-3.5-live-extended-thinking-preview",
+    model: str = "gemini-3.5-flash-live-preview",
     voice: Optional[str] = "Aoede",
     language: str = "hi-IN",
     system_instruction: Optional[str] = None,
