@@ -159,9 +159,9 @@ Phase 7: Product Recommendation & Mathematical Calculation
 """,
     8: """\
 Phase 8: App & KYC Navigation
-- Purpose: Facilitate frictionless onboarding and verification.
-- Action: If user agrees, guide them to complete instant 3-step KYC (Step 1: PAN verification, Step 2: Aadhaar Digilocker OTP, Step 3: Bank account penny-drop verification) and link their bank account via `get_kyc_guidance` and `get_app_screen_flow`.
-- Keywords / Anchors: App & KYC Navigation, KYC guidance, PAN, Aadhaar Digilocker OTP, Bank penny-drop, app screen flow.
+- Purpose: Facilitate frictionless onboarding and verification directly through natural speech.
+- Action: Guide them to complete instant 3-step KYC: Step 1) PAN instant online check, Step 2) Aadhaar Digilocker OTP, Step 3) Bank account penny-drop linking. Explain clearly in 2 short sentences without invoking any tools.
+- Keywords / Anchors: App & KYC Navigation, KYC guidance, PAN, Aadhaar Digilocker OTP, Bank penny-drop, 3 steps.
 """,
     9: """\
 Phase 9: Commitment & Close
