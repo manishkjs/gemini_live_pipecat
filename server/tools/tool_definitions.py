@@ -585,13 +585,11 @@ async def dynamic_tool_handler(params: FunctionCallParams):
 def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
     """Returns only instantaneous, non-blocking tools for Gemini Live duplex audio stream.
     
-    Memory retrieval, intent classification, and KYC guides run asynchronously in background
-    tasks ('downcar' pattern) and yield dynamic context via send_client_content(role='system')
-    so that Gemini Live never pauses or interrupts its live speech.
+    Memory extraction runs asynchronously post-call ('downcar' pattern) via Gemini 3.5 Flash-Lite
+    so Gemini Live only ever invokes in-flight math calculations (calculate_returns) and never pauses.
     """
     tools = [
         calculate_returns_schema,
-        save_memory_schema,
     ]
 
     if dynamic_tools_json:
