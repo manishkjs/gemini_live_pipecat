@@ -15,6 +15,7 @@ from memory_downcar import run_post_session_downcar
 from tools.tool_definitions import (
     _GLOBAL_MEMORY_BANK,
     get_standard_tools,
+    get_live_streaming_tools,
     register_all_tools,
     retrieve_memory_schema,
     handle_retrieve_memory,
@@ -338,6 +339,13 @@ class GeminiSessionLoggerMixin:
                 except Exception as e:
                     logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
 
+            # Check for memory query keywords to trigger async downcar memory retrieval in background
+            lower_s = clean_sentence.lower()
+            memory_inquiry_anchors = ["last time", "pehle", "pichli baar", "purani baat", "previous discussion", "yaad", "record", "baat hui thi"]
+            if any(k in lower_s for k in memory_inquiry_anchors) and hasattr(self, "_async_retrieve_and_yield_memory"):
+                user_to_query = getattr(self, "active_user_id", "default_user")
+                asyncio.create_task(self._async_retrieve_and_yield_memory(user_to_query, clean_sentence))
+
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -347,6 +355,33 @@ class GeminiSessionLoggerMixin:
                     'text': clean_sentence
                 }
             }))
+
+    async def _async_retrieve_and_yield_memory(self, user_id: str, query: str):
+        """Asynchronously retrieves past memories in the background (downcar) and injects into live system prompt."""
+        try:
+            mb = getattr(self, "memory_bank", None)
+            if not mb or not user_id or user_id in ["user_anonymous", "default_user"]:
+                return
+            res = mb.search_memories(user_id=user_id, query=query, threshold=0.40, limit=3)
+            if asyncio.iscoroutine(res):
+                res = await res
+            if res:
+                mem_texts = [m.get("content", str(m)) if isinstance(m, dict) else str(m) for m in res]
+                payload = (
+                    f"[ASYNC_RETRIEVED_MEMORY: User '{user_id}']\n"
+                    f"Relevant Prior Discussions: {'; '.join(mem_texts)}\n"
+                    f"Directive: Use these retrieved facts naturally in your response without mentioning technical retrieval or database."
+                )
+                session = getattr(self, "_session", None)
+                if session and hasattr(session, "send_client_content"):
+                    from google.genai.types import Content, Part
+                    await session.send_client_content(
+                        turns=[Content(role="system", parts=[Part(text=payload)])],
+                        turn_complete=False,
+                    )
+                    logger.info(f"⚡ [MemoryBank:AsyncDowncar] Injected retrieved memories into Gemini Live system prompt for '{user_id}'.")
+        except Exception as e:
+            logger.warning(f"[MemoryBank:AsyncDowncar] Error in async retrieval: {e}")
 
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
@@ -759,8 +794,8 @@ async def run_agent_live(
         )
     )
 
-    # Tool Schemas & Dynamic Registration
-    standard_tools = get_standard_tools(dynamic_tools_json=tools)
+    # Tool Schemas & Dynamic Registration (Live streaming tools only; background downcar handles intelligence async)
+    standard_tools = get_live_streaming_tools(dynamic_tools_json=tools)
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
     use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])

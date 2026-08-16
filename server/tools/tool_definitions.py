@@ -582,8 +582,38 @@ async def dynamic_tool_handler(params: FunctionCallParams):
 
 # ── Registry Helper ──────────────────────────────────────────────────
 
+def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
+    """Returns only instantaneous, non-blocking tools for Gemini Live duplex audio stream.
+    
+    Memory retrieval, intent classification, and KYC guides run asynchronously in background
+    tasks ('downcar' pattern) and yield dynamic context via send_client_content(role='system')
+    so that Gemini Live never pauses or interrupts its live speech.
+    """
+    tools = [
+        calculate_returns_schema,
+        save_memory_schema,
+    ]
+
+    if dynamic_tools_json:
+        try:
+            tools_data = json.loads(dynamic_tools_json)
+            if isinstance(tools_data, list):
+                for tool in tools_data:
+                    if "name" in tool:
+                        tools.append(FunctionSchema(
+                            name=tool.get("name"),
+                            description=tool.get("description", ""),
+                            properties=tool.get("properties", {}),
+                            required=tool.get("required", [])
+                        ))
+        except Exception as e:
+            logger.error(f"Failed to parse dynamic tools: {e}")
+
+    return tools
+
+
 def get_standard_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
-    """Returns the active tool schemas for Gemini Live."""
+    """Returns the active tool schemas (full suite)."""
     tools = [
         get_current_time_schema,
         search_knowledge_base_schema,
