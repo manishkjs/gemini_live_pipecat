@@ -26,6 +26,7 @@ import json
 import math
 import os
 import re
+import threading
 import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -702,6 +703,9 @@ class MemoryBank:
             except Exception as e:
                 logger.warning(f"[MemoryBank] Could not initialize GCP cloud bank: {e}")
 
+        # Thread-safety lock for cross-thread access between asyncio loop and worker pools
+        self._lock = threading.RLock()
+
         # user_id -> List of memory records
         self._memories: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         # user_id -> Dict of content_hash -> memory record
@@ -721,22 +725,23 @@ class MemoryBank:
             if not isinstance(data, dict):
                 return
             users_data = data.get("users", {})
-            for uid, udata in users_data.items():
-                if "fact_store" in udata and udata["fact_store"]:
-                    self._fact_stores[uid] = FactStore.from_dict(udata["fact_store"])
-                mems = udata.get("memories", [])
-                for m in mems:
-                    if isinstance(m, dict) and "content" in m:
-                        if "embedding" not in m or not m["embedding"]:
-                            m["embedding"] = self.embedder.embed(m["content"])
-                        self._memories[uid].append(m)
-                        h_val = m.get("content_hash") or hashlib.md5(m["content"].encode("utf-8")).hexdigest()
-                        self._hash_index[uid][h_val] = m
+            with self._lock:
+                for uid, udata in users_data.items():
+                    if "fact_store" in udata and udata["fact_store"]:
+                        self._fact_stores[uid] = FactStore.from_dict(udata["fact_store"])
+                    mems = udata.get("memories", [])
+                    for m in mems:
+                        if isinstance(m, dict) and "content" in m:
+                            if "embedding" not in m or not m["embedding"]:
+                                m["embedding"] = self.embedder.embed(m["content"])
+                            self._memories[uid].append(m)
+                            h_val = m.get("content_hash") or hashlib.md5(m["content"].encode("utf-8")).hexdigest()
+                            self._hash_index[uid][h_val] = m
         except Exception:
             pass
 
     def _save_to_disk(self) -> None:
-        """Persists memories and fact stores to disk atomically."""
+        """Persists memories and fact stores to disk atomically with thread-safety."""
         if not self.storage_path:
             return
         try:
@@ -744,23 +749,24 @@ class MemoryBank:
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
             users_data = {}
-            all_uids = set(self._memories.keys()) | set(self._fact_stores.keys())
-            for uid in all_uids:
-                users_data[uid] = {
-                    "fact_store": self._fact_stores[uid].to_dict() if uid in self._fact_stores else {},
-                    "memories": [
-                        {
-                            "id": m.get("id"),
-                            "user_id": m.get("user_id"),
-                            "content": m.get("content"),
-                            "metadata": m.get("metadata", {}),
-                            "content_hash": m.get("content_hash"),
-                            "created_at": m.get("created_at"),
-                            "updated_at": m.get("updated_at"),
-                        }
-                        for m in self._memories[uid]
-                    ]
-                }
+            with self._lock:
+                all_uids = set(self._memories.keys()) | set(self._fact_stores.keys())
+                for uid in all_uids:
+                    users_data[uid] = {
+                        "fact_store": self._fact_stores[uid].to_dict() if uid in self._fact_stores else {},
+                        "memories": [
+                            {
+                                "id": m.get("id"),
+                                "user_id": m.get("user_id"),
+                                "content": m.get("content"),
+                                "metadata": m.get("metadata", {}),
+                                "content_hash": m.get("content_hash"),
+                                "created_at": m.get("created_at"),
+                                "updated_at": m.get("updated_at"),
+                            }
+                            for m in self._memories[uid]
+                        ]
+                    }
             tmp_path = f"{self.storage_path}.tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump({"users": users_data, "updated_at": datetime.now(timezone.utc).isoformat()}, f, indent=2, ensure_ascii=False)
@@ -769,14 +775,16 @@ class MemoryBank:
             pass
 
     def get_all_user_ids(self) -> List[str]:
-        """Returns all distinct registered user IDs in the Memory Bank."""
-        uids = set(self._memories.keys()) | set(self._fact_stores.keys())
-        return [u for u in uids if u and u not in ("user_anonymous", "default_user")]
+        """Returns all distinct registered user IDs in the Memory Bank with thread-safety."""
+        with self._lock:
+            uids = set(self._memories.keys()) | set(self._fact_stores.keys())
+            return [u for u in uids if u and u not in ("user_anonymous", "default_user")]
 
     def get_fact_store(self, user_id: str) -> FactStore:
-        """Retrieves or creates the FactStore instance for a specific user."""
+        """Retrieves or creates the FactStore instance for a specific user with thread-safety."""
         uid = normalize_lexical_user_id(user_id, memory_bank=self)
-        return self._fact_stores[uid]
+        with self._lock:
+            return self._fact_stores[uid]
 
     def save_facts_and_sync(self, user_id: str, facts: Dict[str, Any], turn_id: int = 0) -> None:
         """Sets confirmed facts on user's FactStore and flushes to storage."""

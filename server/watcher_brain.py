@@ -116,6 +116,7 @@ class WatcherBrain:
         transcript_history: List[Dict[str, str]],
         user_id: str = "default_user",
         user_profile: Optional[Dict[str, Any]] = None,
+        phase_tracker: Optional[Any] = None,
     ) -> bool:
         """Evaluates dialogue turn in background and injects hint into Gemini Live session if justified."""
         if not session or not transcript_history:
@@ -159,6 +160,14 @@ class WatcherBrain:
                 f"   ├─ Text: {hint_text}\n"
                 f"   └─ Reason: {reasoning}"
             )
+
+            # Safely dispatch via phase tracker (buffers when bot is actively speaking)
+            if phase_tracker and hasattr(phase_tracker, "yield_copilot_hint"):
+                success = await phase_tracker.yield_copilot_hint(hint_payload)
+                if success:
+                    self._last_injected_hint = hint_text
+                    self._last_injected_turn_count = current_turn_count
+                    return True
 
             if hasattr(session, "send_client_content"):
                 try:

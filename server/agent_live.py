@@ -316,22 +316,17 @@ class GeminiSessionLoggerMixin:
                     }
                 }))
 
-            tracker = getattr(self, "phase_tracker", None)
-            if tracker and hasattr(tracker, "handle_user_transcript"):
-                try:
-                    await tracker.handle_user_transcript(clean_sentence, history=getattr(self, "transcript_history", []))
-                except Exception as e:
-                    logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
-
             # Trigger Continuous Watcher Brain in the background (Gemini 3.5 Flash-Lite downcar co-pilot)
             wb = getattr(self, "watcher_brain", None)
             if wb and hasattr(wb, "maybe_whisper_to_live"):
                 sess = getattr(self, "_session", None)
                 if sess:
+                    tracker = getattr(self, "phase_tracker", None)
                     asyncio.create_task(wb.maybe_whisper_to_live(
                         session=sess,
-                        transcript_history=self.transcript_history,
+                        transcript_history=list(self.transcript_history),
                         user_id=getattr(self, "active_user_id", "default_user"),
+                        phase_tracker=tracker,
                     ))
 
             # Check for memory query keywords to trigger async downcar memory retrieval in background
@@ -867,14 +862,17 @@ async def run_agent_live(
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         if not gemini_api_key:
             try:
-                from google.cloud import secretmanager
-                sm_client = secretmanager.SecretManagerServiceClient()
-                sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                def _fetch_sm_key():
+                    from google.cloud import secretmanager
+                    sm_client = secretmanager.SecretManagerServiceClient()
+                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                    return sm_res.payload.data.decode("UTF-8").strip()
+
+                gemini_api_key = await asyncio.to_thread(_fetch_sm_key)
                 if gemini_api_key:
                     os.environ["GEMINI_API_KEY"] = gemini_api_key
-                    logger.info("[SecretManager] Successfully retrieved GEMINI_API_KEY from Google Cloud Secret Manager.")
+                    logger.info("[SecretManager] Successfully retrieved GEMINI_API_KEY asynchronously from Google Cloud Secret Manager.")
             except Exception as sm_err:
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 

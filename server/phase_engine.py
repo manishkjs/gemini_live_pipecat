@@ -208,7 +208,7 @@ class ConsultativePhaseTracker:
         self._is_bot_speaking = speaking
 
     async def on_bot_stopped_speaking(self):
-        """Called when bot finishes speaking. Safely flushes pending prompt card without audio interruption."""
+        """Called when bot finishes speaking. Safely flushes pending prompt card and copilot hints without audio interruption."""
         self._is_bot_speaking = False
         if self._pending_phase is not None:
             phase = self._pending_phase
@@ -217,6 +217,39 @@ class ConsultativePhaseTracker:
             self._pending_reason = None
             logger.info(f"⚡ [PhaseEngine] Delivering queued Phase {phase} Prompt Card now that bot has finished speaking.")
             await self._yield_prompt_to_gemini(phase, reason)
+
+        if getattr(self, "_pending_hint", None) is not None:
+            hint = self._pending_hint
+            self._pending_hint = None
+            logger.info("⚡ [PhaseEngine] Delivering queued Copilot hint now that bot has finished speaking.")
+            await self._dispatch_raw_system_content(hint, tag="QueuedCopilotHint")
+
+    async def yield_copilot_hint(self, hint_payload: str) -> bool:
+        """Safely dispatches a Copilot hint respecting bot speaking state to prevent mid-speech VAD barge-in."""
+        if not self.enable_client_content:
+            return False
+
+        if self._is_bot_speaking:
+            logger.info("⏳ [PhaseEngine] Bot is actively speaking. Queuing Copilot hint for delivery after speech.")
+            self._pending_hint = hint_payload
+            return True
+
+        return await self._dispatch_raw_system_content(hint_payload, tag="CopilotHint")
+
+    async def _dispatch_raw_system_content(self, text: str, tag: str = "SystemContent") -> bool:
+        """Dispatches a raw system content WebSocket turn to Gemini Live."""
+        session = getattr(self.gemini_service, "_session", None)
+        if session and hasattr(session, "send_client_content"):
+            try:
+                await session.send_client_content(
+                    turns=[Content(role="system", parts=[Part(text=text)])],
+                    turn_complete=False
+                )
+                logger.info(f"⚡ [PhaseEngine] Dispatched {tag} to Gemini Live.")
+                return True
+            except Exception as e:
+                logger.warning(f"[PhaseEngine] Failed to dispatch {tag}: {e}")
+        return False
 
     async def transition_to(self, target_phase: int, trigger_reason: str):
         """Transition to a new phase and yield its prompt card."""
