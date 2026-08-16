@@ -177,3 +177,18 @@ def get_consultative_guidance(phase_or_topic: Optional[str] = "overview") -> Dic
         "rule": "Always respect customer time and use deterministic tools for exact numbers."
     }
 
+
+def get_navigation_guidance(target_flow: Optional[str] = "general") -> Dict[str, Any]:
+    """Unified navigation guidance endpoint routing to KYC, deposit, lumpsum, or loan filter flows."""
+    return get_onboarding_guide(topic=target_flow)
+
+
+__all__ = [
+    "get_onboarding_guide",
+    "get_kyc_guidance",
+    "get_app_screen_flow",
+    "get_consultative_guidance",
+    "get_navigation_guidance",
+]
+
+

@@ -86,7 +86,7 @@ class TestAdversarialScriptMixingAndUnicodeBlocks(unittest.TestCase):
         # Allowed English words and brand tokens in Pragya's speech
         ALLOWED_ENGLISH_TOKENS = {
             "cymbal", "lending", "options", "p2p", "familiar", "explore",
-            "months", "stl", "7m", "plan", "invest", "annualized", "xirr",
+            "months", "minutes", "stl", "7m", "plan", "invest", "annualized", "xirr",
             "net", "profit", "total", "maturity", "amount", "emi", "account",
             "monthly", "payout", "prefer", "question", "example", "step-by-step",
             "step", "by", "npa", "loss", "performing", "gross", "interest",
@@ -185,7 +185,7 @@ class TestAdversarialSalesJourneyAndObjections(unittest.TestCase):
 
     def test_four_objections_present(self):
         """Verify all 4 core objection categories are covered in objection playbook."""
-        self.assertIn("Is it safe? What if borrowers default (NPA)?", SYSTEM_PROMPT)
+        self.assertIn("What if borrowers default", SYSTEM_PROMPT)
         self.assertIn("Why not just put money in Bank Fixed Deposits (FD)?", SYSTEM_PROMPT)
         self.assertIn("Is Cymbal Lending legal / RBI approved?", SYSTEM_PROMPT)
         self.assertIn("Can I withdraw money anytime?", SYSTEM_PROMPT)

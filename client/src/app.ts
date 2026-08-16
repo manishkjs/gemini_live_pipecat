@@ -665,6 +665,12 @@ class WebsocketClientApp {
           this.replaceChatMessage(role, text);
       }
 
+      // Handle User Identity Locking & Persistence
+      if (message.type === "user_identity" && message.user_id) {
+          localStorage.setItem("active_user_id", message.user_id);
+          this.log(`User identity locked and persisted: ${message.user_id}`, "info");
+      }
+
       // Handle LangSmith Trace URL
       if (message.type === "trace_url") {
           const url = message.url;
@@ -940,75 +946,34 @@ class WebsocketClientApp {
       let systemInstructions = "";
 
       if (botTypeToConnect === "tts-llm-stt") {
-        const ttsVoiceSelect = document.getElementById(
-          "tts-voice-select"
-        ) as HTMLSelectElement;
-        const ttsModelSelect = document.getElementById(
-          "tts-model-select"
-        ) as HTMLSelectElement;
-        const llmModelSelect = document.getElementById(
-          "llm-model-select"
-        ) as HTMLSelectElement;
-        const sttModelSelect = document.getElementById(
-          "stt-model-select"
-        ) as HTMLSelectElement;
-        const sttLanguageContainer = document.getElementById(
-          "stt-language-container"
-        ) as HTMLElement;
-        const systemInstructionsTextarea = document.getElementById(
-          "tts-llm-stt-system-instructions-textarea"
-        ) as HTMLTextAreaElement;
-        const paceSlider = document.getElementById("tts-pace-slider") as HTMLInputElement;
-        const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement;
+        const ttsVoice = (document.getElementById("tts-voice-select") as HTMLSelectElement)?.value || "en-US-Chirp3-HD-Aoede";
+        const ttsModel = (document.getElementById("tts-model-select") as HTMLSelectElement)?.value || "gemini-3.1-flash-tts-preview";
+        const pace = (document.getElementById("tts-pace-slider") as HTMLInputElement)?.value || "0.80";
+        const llmModel = (document.getElementById("llm-model-select") as HTMLSelectElement)?.value || "gemini-3.5-flash-lite";
+        const sttModel = (document.getElementById("stt-model-select") as HTMLSelectElement)?.value || "chirp_3";
+        const skipStt = (document.getElementById("skip-stt-toggle") as HTMLInputElement)?.checked || false;
+        const sttLanguageContainer = document.getElementById("stt-language-container");
+        const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || []).map((cb: any) => cb.value);
 
-        connectUrl += `&tts_voice=${ttsVoiceSelect.value}`;
-        connectUrl += `&tts_model=${ttsModelSelect.value}`;
-        connectUrl += `&tts_pace=${paceSlider.value}`;
-        connectUrl += `&llm_model=${llmModelSelect.value}`;
-        connectUrl += `&stt_model=${sttModelSelect.value}`;
-        connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
-        
-        const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
-            .map((cb: any) => cb.value);
-        connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
-        systemInstructions = systemInstructionsTextarea.value;
+        connectUrl += `&tts_voice=${ttsVoice}&tts_model=${ttsModel}&tts_pace=${pace}&llm_model=${llmModel}&stt_model=${sttModel}&skip_stt=${skipStt}`;
+        if (checkedLanguages.length > 0) {
+          connectUrl += `&stt_language=${checkedLanguages.join(',')}`;
+        }
+        systemInstructions = (document.getElementById("tts-llm-stt-system-instructions-textarea") as HTMLTextAreaElement)?.value || "";
       } else {
-        const geminiModelSelect = document.getElementById(
-          "gemini-model-select"
-        ) as HTMLSelectElement;
-        const geminiVoiceSelect = document.getElementById(
-          "gemini-voice-select"
-        ) as HTMLSelectElement;
-        const geminiLanguageSelect = document.getElementById(
-          "gemini-language-select"
-        ) as HTMLSelectElement;
-        const geminiSystemInstructionsTextarea = document.getElementById(
-          "system-instructions-textarea"
-        ) as HTMLTextAreaElement;
-        const ttsToggle = document.getElementById(
-          "tts-toggle"
-        ) as HTMLInputElement;
-        const livePaceSlider = document.getElementById(
-          "live-tts-pace-slider"
-        ) as HTMLInputElement;
+        const model = (document.getElementById("gemini-model-select") as HTMLSelectElement)?.value || "gemini-3.5-flash-live-preview";
+        const voice = (document.getElementById("gemini-voice-select") as HTMLSelectElement)?.value || "Aoede";
+        const language = (document.getElementById("gemini-language-select") as HTMLSelectElement)?.value || "hi-IN";
+        const tts = (document.getElementById("tts-toggle") as HTMLInputElement)?.checked || false;
+        const pace = (document.getElementById("live-tts-pace-slider") as HTMLInputElement)?.value || "1.0";
+        const contextCompression = (document.getElementById("context-compression-toggle") as HTMLInputElement)?.checked || false;
+        const compressionTokensInput = document.getElementById("compression-tokens-input") as HTMLInputElement;
 
-        const contextCompressionToggle = document.getElementById(
-          "context-compression-toggle"
-        ) as HTMLInputElement;
-        const compressionTokensInput = document.getElementById(
-          "compression-tokens-input"
-        ) as HTMLInputElement;
-
-        connectUrl += `&model=${geminiModelSelect.value}`;
-        connectUrl += `&voice=${geminiVoiceSelect.value}`;
-        connectUrl += `&language=${geminiLanguageSelect.value}`;
-        connectUrl += `&tts=${ttsToggle.checked}`;
-        connectUrl += `&tts_pace=${livePaceSlider.value}`;
-        connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
-        if (contextCompressionToggle?.checked && compressionTokensInput?.value.trim()) {
+        connectUrl += `&model=${model}&voice=${voice}&language=${language}&tts=${tts}&tts_pace=${pace}&context_compression=${contextCompression}`;
+        if (contextCompression && compressionTokensInput?.value.trim()) {
           connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
         }
-        systemInstructions = geminiSystemInstructionsTextarea.value;
+        systemInstructions = (document.getElementById("system-instructions-textarea") as HTMLTextAreaElement)?.value || "";
       }
 
       // Only append system_instruction to URL if explicitly customized and brief (< 500 chars)
@@ -1017,6 +982,11 @@ class WebsocketClientApp {
         connectUrl += `&system_instruction=${encodeURIComponent(
           systemInstructions
         )}`;
+      }
+
+      const storedUserId = localStorage.getItem("active_user_id");
+      if (storedUserId) {
+        connectUrl += `&user_id=${encodeURIComponent(storedUserId)}`;
       }
 
       // Handle Dynamic Tools

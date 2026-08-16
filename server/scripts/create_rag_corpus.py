@@ -16,7 +16,7 @@ for reg in regions:
         vertexai.init(project=project_id, location=reg)
         corpus = rag.create_corpus(
             display_name=f"ldc_p2p_kb_{reg}",
-            description="LenDenClub Cymbal Lending P2P Knowledge Base from Google Sheet",
+            description="Cymbal Lending P2P Knowledge Base from Google Sheet",
             vector_db=rag.RagManagedDb(),
         )
         print(f"✅ SUCCESS! Created corpus in {reg}: {corpus.name}", flush=True)
@@ -28,7 +28,7 @@ for reg in regions:
         try:
             corpus = rag.create_corpus(
                 display_name=f"ldc_p2p_kb_{reg}",
-                description="LenDenClub Cymbal Lending P2P Knowledge Base from Google Sheet",
+                description="Cymbal Lending P2P Knowledge Base from Google Sheet",
             )
             print(f"✅ SUCCESS (default db) in {reg}: {corpus.name}", flush=True)
             created_corpus = corpus

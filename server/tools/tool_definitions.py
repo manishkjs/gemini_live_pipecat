@@ -5,12 +5,25 @@ out of agent_live.py for maximum modularity, testability, and clean architecture
 """
 
 from __future__ import annotations
+import asyncio
 import json
 from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.llm_service import FunctionCallParams
+
+try:
+    from memory_bank import MemoryBank, normalize_lexical_user_id, _get_default_storage_path
+except ImportError:
+    try:
+        from ..memory_bank import MemoryBank, normalize_lexical_user_id, _get_default_storage_path
+    except Exception:
+        MemoryBank = None
+        normalize_lexical_user_id = lambda name: f"user_{str(name).lower().replace(' ', '_')}" if name else "user_anonymous"
+        _get_default_storage_path = lambda: None
+
+_GLOBAL_MEMORY_BANK = MemoryBank(storage_path=_get_default_storage_path() if _get_default_storage_path else None) if MemoryBank is not None else None
 
 try:
     from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
@@ -57,15 +70,11 @@ except ImportError:
 
 get_current_time_schema = FunctionSchema(
     name="get_current_time",
-    description="Get the current time.",
+    description="Get current time.",
     properties={
         "is_explicit_request": {
             "type": "boolean",
-            "description": (
-                "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                "- Explaining schedules or timelines.\n"
-                "- Mentioning time casually in conversation."
-            )
+            "description": "True if user asks for current time/date."
         }
     },
     required=["is_explicit_request"]
@@ -76,28 +85,28 @@ get_current_time_schema = FunctionSchema(
 
 calculate_returns_schema = FunctionSchema(
     name="calculate_returns",
-    description="Calculate exact deterministic returns, profit, and monthly EMI for Cymbal Lending plans (STL 3-6m, MTL 12m, Manual Lending, or custom Rule 4 NPA).",
+    description="Calculate exact returns, profit, and monthly EMI for Cymbal Lending plans.",
     properties={
         "amount": {
             "type": "number",
-            "description": "Investment amount in rupees (Min ₹250, Max ₹50,00,000)."
+            "description": "Investment ₹ (250 to 50,00,000)."
         },
         "tenure_months": {
             "type": "integer",
-            "description": "Desired tenure in months (3, 4, 5, 6, 12). Note: 9 months is not available."
+            "description": "Months: 3, 4, 5, 6, 12 (9m unavailable)."
         },
         "repayment_type": {
             "type": "string",
             "enum": ["monthly", "daily"],
-            "description": "'monthly' for monthly EMI (STL / MTL Monthly), 'daily' for daily EDI."
+            "description": "'monthly' EMI or 'daily' EDI."
         },
         "custom_borrower_rate_pct": {
             "type": "number",
-            "description": "Optional custom borrower interest % (e.g. 40.0) for Rule 4 custom math."
+            "description": "Custom borrower rate % (e.g. 40.0)."
         },
         "custom_npa_rate_pct": {
             "type": "number",
-            "description": "Optional custom NPA / default rate % (defaults to 3.5%)."
+            "description": "Custom NPA % (default 3.5%)."
         }
     },
     required=["amount"]
@@ -105,7 +114,7 @@ calculate_returns_schema = FunctionSchema(
 
 get_onboarding_guide_schema = FunctionSchema(
     name="get_onboarding_guide",
-    description="Get step-by-step guidance for KYC verification (PAN, Aadhaar OTP, Bank penny-drop) or App deposit navigation (UPI, NetBanking).",
+    description="Get step-by-step KYC verification or App deposit navigation.",
     properties={
         "topic": {
             "type": "string",
@@ -120,15 +129,15 @@ get_onboarding_guide_schema = FunctionSchema(
 
 calculate_stl_returns_schema = FunctionSchema(
     name="calculate_stl_returns",
-    description="Calculate exact returns for Short Term Lumpsum (STL 5M & 7M) plans on Cymbal Lending (12%-18% annualized XIRR).",
+    description="Calculate returns for Short Term Lumpsum (STL 5M & 7M, 12-18% XIRR).",
     properties={
         "amount": {
             "type": "number",
-            "description": "Investment amount in rupees (Min ₹25,000, Max ₹25,00,000)."
+            "description": "Investment ₹ (25,000 to 25,00,000)."
         },
         "tenure_months": {
             "type": "integer",
-            "description": "Tenure in months (3, 4, 5 for STL 5M; 4, 5, 6 for STL 7M). Optional - defaults to 5 months."
+            "description": "Months (3 to 6)."
         }
     },
     required=["amount"]
@@ -136,16 +145,16 @@ calculate_stl_returns_schema = FunctionSchema(
 
 calculate_mtl_returns_schema = FunctionSchema(
     name="calculate_mtl_returns",
-    description="Calculate exact returns for Medium Term Lumpsum (MTL 14M) plans (12-month tenure, 16%-24% annualized XIRR).",
+    description="Calculate returns for Medium Term Lumpsum (MTL 14M, 16-24% XIRR).",
     properties={
         "amount": {
             "type": "number",
-            "description": "Investment amount in rupees (Min ₹1,00,000)."
+            "description": "Investment ₹ (min 1,00,000)."
         },
         "repayment_type": {
             "type": "string",
             "enum": ["monthly", "daily"],
-            "description": "'monthly' for MTL 14M Monthly (21-24% XIRR EMI), 'daily' for MTL 14M Daily EDI (16-18% XIRR low risk)."
+            "description": "'monthly' EMI or 'daily' EDI."
         }
     },
     required=["amount"]
@@ -153,23 +162,23 @@ calculate_mtl_returns_schema = FunctionSchema(
 
 calculate_manual_lending_schema = FunctionSchema(
     name="calculate_manual_lending",
-    description="Calculate returns for Manual Lending (Standard 18%-24% XIRR or Custom Portfolio Rule 4 Step A-G breakdown with NPA and fee deductions).",
+    description="Calculate returns for Manual Lending portfolio (18-24% XIRR or custom NPA math).",
     properties={
         "amount": {
             "type": "number",
-            "description": "Investment amount in rupees (Min ₹250, Max ₹50,00,000)."
+            "description": "Investment ₹ (250 to 50,00,000)."
         },
         "tenure_months": {
             "type": "integer",
-            "description": "Tenure in months (2, 3, 4, 5, 6, or 12 months)."
+            "description": "Months: 2, 3, 4, 5, 6, 12."
         },
         "custom_borrower_rate_pct": {
             "type": "number",
-            "description": "Optional custom borrower interest rate % (e.g. 40.0, 48.0) if user asks for custom portfolio math."
+            "description": "Custom borrower rate % (e.g. 40.0)."
         },
         "custom_npa_rate_pct": {
             "type": "number",
-            "description": "Optional custom NPA / default rate % (defaults to 3.5%)."
+            "description": "Custom default % (default 3.5%)."
         }
     },
     required=["amount"]
@@ -177,19 +186,19 @@ calculate_manual_lending_schema = FunctionSchema(
 
 calculate_sip_returns_schema = FunctionSchema(
     name="calculate_sip_returns",
-    description="Calculate Systematic Investment Plan (SIP) compounding growth.",
+    description="Calculate SIP compounding growth.",
     properties={
         "monthly_amount": {
             "type": "number",
-            "description": "Monthly investment amount in rupees."
+            "description": "Monthly investment ₹."
         },
         "annual_rate": {
             "type": "number",
-            "description": "Annual return rate percentage."
+            "description": "Annual return %."
         },
         "years": {
             "type": "integer",
-            "description": "Investment duration in years."
+            "description": "Duration in years."
         }
     },
     required=["monthly_amount", "annual_rate", "years"]
@@ -197,20 +206,20 @@ calculate_sip_returns_schema = FunctionSchema(
 
 get_product_recommendation_schema = FunctionSchema(
     name="get_product_recommendation",
-    description="Validate investment parameters and get the best recommended Cymbal Lending product.",
+    description="Get recommended Cymbal Lending product based on parameters.",
     properties={
         "amount": {
             "type": "number",
-            "description": "Planned investment amount in rupees."
+            "description": "Planned investment ₹."
         },
         "risk_appetite": {
             "type": "string",
             "enum": ["low", "medium", "high"],
-            "description": "User's risk appetite: 'low' (AAA daily), 'medium' (AA monthly), 'high' (A STL)."
+            "description": "Risk: 'low' (AAA daily), 'medium' (AA monthly), 'high' (A STL)."
         },
         "tenure_months": {
             "type": "integer",
-            "description": "Desired tenure in months (3, 4, 5, 6, or 12). Note: 9 months is not available."
+            "description": "Months (3,4,5,6,12)."
         }
     },
     required=["amount"]
@@ -218,11 +227,11 @@ get_product_recommendation_schema = FunctionSchema(
 
 get_kyc_guidance_schema = FunctionSchema(
     name="get_kyc_guidance",
-    description="Get step-by-step KYC verification guidance for PAN, Aadhaar OTP, or Bank penny-drop linking.",
+    description="Get KYC verification steps (PAN, Aadhaar OTP, Bank penny-drop).",
     properties={
         "step_or_doc": {
             "type": "string",
-            "description": "Specific document or step: 'pan', 'aadhaar', 'bank', or 'all'."
+            "description": "Document/step: 'pan', 'aadhaar', 'bank', or 'all'."
         }
     },
     required=[]
@@ -230,14 +239,63 @@ get_kyc_guidance_schema = FunctionSchema(
 
 get_app_screen_flow_schema = FunctionSchema(
     name="get_app_screen_flow",
-    description="Get mobile app UI navigation steps for depositing funds, selecting STL/MTL plans, manual lending, or loan filter options.",
+    description="Get mobile app UI navigation steps.",
     properties={
         "target_flow": {
             "type": "string",
-            "description": "Flow to navigate: 'deposit', 'lumpsum', 'loan filter', 'manual', or 'general'."
+            "description": "Flow: 'deposit', 'lumpsum', 'loan filter', 'manual', or 'general'."
         }
     },
     required=["target_flow"]
+)
+
+retrieve_memory_schema = FunctionSchema(
+    name="retrieve_memory",
+    description="Retrieve customer facts and previous discussion history from GCP Memory Bank whenever user asks what happened last time or in prior calls.",
+    properties={
+        "user_id": {
+            "type": "string",
+            "description": "Customer name or user ID (use 'current_user' if not known).",
+        },
+        "query": {
+            "type": "string",
+            "description": "Search query or 'previous discussion'.",
+        },
+    },
+    required=["user_id", "query"],
+)
+
+save_memory_schema = FunctionSchema(
+    name="save_memory",
+    description="Persist customer financial facts or commitment into GCP Memory Bank.",
+    properties={
+        "user_id": {
+            "type": "string",
+            "description": "Customer name or user ID.",
+        },
+        "amount": {
+            "type": "number",
+            "description": "Investment ₹.",
+        },
+        "tenure_months": {
+            "type": "integer",
+            "description": "Months: 3, 6, 12.",
+        },
+        "risk_preference": {
+            "type": "string",
+            "enum": ["low", "medium", "high"],
+            "description": "Risk appetite.",
+        },
+        "goal": {
+            "type": "string",
+            "description": "Customer wealth goal.",
+        },
+        "note": {
+            "type": "string",
+            "description": "Summary note or commitment.",
+        },
+    },
+    required=["note"],
 )
 
 
@@ -355,6 +413,166 @@ async def handle_get_app_screen_flow(params: FunctionCallParams):
     await params.result_callback(result)
 
 
+async def handle_retrieve_memory(params: FunctionCallParams, memory_bank: Optional[Any] = None):
+    """Async tool handler for retrieving customer memory and profile facts."""
+    try:
+        args = params.arguments or {}
+        raw_user_id = args.get("user_id")
+        if not raw_user_id or not isinstance(raw_user_id, str) or not raw_user_id.strip() or raw_user_id.lower() in ["current_user", "user", "anonymous", "default", "default_user", "unknown"]:
+            import os
+            raw_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
+
+        user_id = normalize_lexical_user_id(raw_user_id) if normalize_lexical_user_id else f"user_{str(raw_user_id).lower().replace(' ', '_')}"
+        query = str(args.get("query") or "").strip()
+
+        # Extract memory bank from parameter, params.context, or global fallback
+        mb = memory_bank
+        if mb is None and hasattr(params, "context") and params.context:
+            mb = getattr(params.context, "memory_bank", None) or getattr(params.context, "mb", None)
+            if mb is None and isinstance(params.context, dict):
+                mb = params.context.get("memory_bank") or params.context.get("mb")
+        if mb is None:
+            mb = _GLOBAL_MEMORY_BANK
+
+        if mb is None:
+            await params.result_callback({
+                "status": "empty",
+                "user_id": user_id,
+                "message": "Memory bank is not initialized.",
+                "facts": {},
+                "memories": [],
+                "count": 0,
+            })
+            return
+
+        # Retrieve active structured facts
+        facts = {}
+        if hasattr(mb, "get_fact_store"):
+            fact_store = mb.get_fact_store(user_id)
+            if fact_store and hasattr(fact_store, "get_all_facts"):
+                facts = fact_store.get_all_facts() or {}
+
+        # Retrieve episodic memories
+        memories = []
+        if query:
+            if hasattr(mb, "search_memories"):
+                res = mb.search_memories(user_id=user_id, query=query, threshold=0.40, limit=5)
+                if asyncio.iscoroutine(res):
+                    memories = await res
+                else:
+                    memories = res
+        else:
+            if hasattr(mb, "hydrate_user_profile"):
+                profile = mb.hydrate_user_profile(user_id=user_id)
+                if asyncio.iscoroutine(profile):
+                    profile = await profile
+                memories = profile.get("recent_memories", []) if isinstance(profile, dict) else []
+
+        if not facts and not memories:
+            result = {
+                "status": "empty",
+                "user_id": user_id,
+                "message": f"No prior memory found for {raw_user_id}.",
+                "summary_hinglish": f"{raw_user_id} जी, हमारे पास आपका कोई पुराना discussion record नहीं है, चलिए fresh start करते हैं।",
+                "facts": {},
+                "memories": [],
+                "count": 0,
+            }
+        else:
+            formatted_memories = [
+                m.get("content", "") if isinstance(m, dict) else str(m)
+                for m in memories
+            ]
+            facts_str = ", ".join(f"{k}: {v}" for k, v in facts.items()) if facts else "None"
+            mems_str = "; ".join(formatted_memories[:2]) if formatted_memories else "None"
+            result = {
+                "status": "success",
+                "user_id": user_id,
+                "facts": facts,
+                "memories": formatted_memories,
+                "count": len(formatted_memories),
+                "summary": f"User {user_id}: {len(facts)} active facts, {len(memories)} matching memories.",
+                "summary_hinglish": f"हाँ बिल्कुल {raw_user_id} जी! हमारी पहले बात हुई थी... हाँ, मुझे याद आ रहा है। आपके details: {facts_str}. Previous discussion: {mems_str}.",
+            }
+
+        logger.info(
+            f"🧠 [Tool:retrieve_memory] Retrieved for '{user_id}':\n"
+            f"   ├─ Active Facts: {json.dumps(facts, ensure_ascii=False)}\n"
+            f"   └─ Episodic Memories ({len(result['memories'])}): {result['memories']}"
+        )
+        await params.result_callback(result)
+    except Exception as e:
+        logger.error(f"[Tool:retrieve_memory] Error: {e}")
+        await params.result_callback({
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to retrieve memories safely.",
+            "facts": {},
+            "memories": [],
+            "count": 0,
+        })
+
+
+async def handle_save_memory(params: FunctionCallParams, memory_bank: Optional[Any] = None):
+    """Saves confirmed investor facts and episodic memory note to GCP Cloud Memory Bank."""
+    args = params.arguments or {}
+    raw_user_id = args.get("user_id", "")
+    note = args.get("note", "").strip()
+
+    if not raw_user_id or not raw_user_id.strip():
+        import os
+        raw_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
+
+    user_id = normalize_lexical_user_id(raw_user_id)
+    mb = memory_bank or _GLOBAL_MEMORY_BANK
+
+    try:
+        facts_to_save: Dict[str, Any] = {}
+        for key in ["amount", "tenure_months", "risk_preference", "goal", "city", "occupation", "experience"]:
+            if key in args and args[key] is not None:
+                facts_to_save[key] = args[key]
+
+        if mb:
+            # 1. Save structured facts if any
+            if facts_to_save and hasattr(mb, "save_facts_and_sync"):
+                mb.save_facts_and_sync(user_id=user_id, facts=facts_to_save)
+            elif facts_to_save and hasattr(mb, "get_fact_store"):
+                fs = mb.get_fact_store(user_id)
+                for k, v in facts_to_save.items():
+                    try:
+                        fs.set_fact(k, v, turn_id=1, is_hypothetical=False)
+                    except ValueError:
+                        pass
+
+            # 2. Add episodic note into GCP Cloud Memory Bank & local store
+            if note and hasattr(mb, "add_memory"):
+                mb.add_memory(
+                    user_id=user_id,
+                    content=note,
+                    metadata={"facts": facts_to_save, "source": "tool:save_memory"},
+                )
+
+        result = {
+            "status": "success",
+            "user_id": user_id,
+            "facts_saved": facts_to_save,
+            "note_saved": note,
+            "message": f"Successfully saved memory and facts for {raw_user_id} in GCP Enterprise Memory Bank.",
+            "summary_hinglish": f"{raw_user_id} जी की details और memory save कर ली गई है।",
+        }
+        logger.info(f"[Tool:save_memory] user_id={user_id}, facts={facts_to_save}, note={note[:50]}...")
+        await params.result_callback(result)
+    except Exception as e:
+        logger.error(f"[Tool:save_memory] Error: {e}")
+        await params.result_callback({
+            "status": "error",
+            "error": str(e),
+            "message": "Failed to save memory safely.",
+            "facts_saved": {},
+            "summary_hinglish": "Memory save karte waqt issue aaya, details internally note kar li gayi hain.",
+        })
+
+
 async def dynamic_tool_handler(params: FunctionCallParams):
     logger.info(f"Dynamic tool called: {params.function_name} with args: {params.arguments}")
     await params.result_callback({"status": "success", "message": f"Tool {params.function_name} called successfully"})
@@ -363,12 +581,14 @@ async def dynamic_tool_handler(params: FunctionCallParams):
 # ── Registry Helper ──────────────────────────────────────────────────
 
 def get_standard_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
-    """Returns the lean list of active tool schemas for Gemini Live."""
+    """Returns the active tool schemas for Gemini Live."""
     tools = [
         get_current_time_schema,
         search_knowledge_base_schema,
         calculate_returns_schema,
         get_onboarding_guide_schema,
+        retrieve_memory_schema,
+        save_memory_schema,
     ]
 
     if dynamic_tools_json:
@@ -396,6 +616,8 @@ def register_all_tools(llm: Any, standard_tools: List[FunctionSchema], get_curre
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
     llm.register_function("calculate_returns", handle_calculate_returns)
     llm.register_function("get_onboarding_guide", handle_get_onboarding_guide)
+    llm.register_function("retrieve_memory", handle_retrieve_memory)
+    llm.register_function("save_memory", handle_save_memory)
     llm.register_function("calculate_stl_returns", handle_calculate_stl_returns)
     llm.register_function("calculate_mtl_returns", handle_calculate_mtl_returns)
     llm.register_function("calculate_manual_lending", handle_calculate_manual_lending)
@@ -409,6 +631,8 @@ def register_all_tools(llm: Any, standard_tools: List[FunctionSchema], get_curre
         "search_knowledge_base",
         "calculate_returns",
         "get_onboarding_guide",
+        "retrieve_memory",
+        "save_memory",
         "calculate_stl_returns",
         "calculate_mtl_returns",
         "calculate_manual_lending",
@@ -421,3 +645,4 @@ def register_all_tools(llm: Any, standard_tools: List[FunctionSchema], get_curre
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
+

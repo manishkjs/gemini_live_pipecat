@@ -10,9 +10,14 @@ from fastapi import WebSocket
 from datetime import datetime
 import time
 
+from memory_bank import MemoryBank, normalize_lexical_user_id
+from memory_downcar import run_post_session_downcar
 from tools.tool_definitions import (
+    _GLOBAL_MEMORY_BANK,
     get_standard_tools,
     register_all_tools,
+    retrieve_memory_schema,
+    handle_retrieve_memory,
     calculate_returns_schema,
     get_onboarding_guide_schema,
     calculate_stl_returns_schema,
@@ -245,6 +250,9 @@ class GeminiSessionLoggerMixin:
             if getattr(self, '_bot_turn_text_buffer', '').strip():
                 interrupted_text = self._bot_turn_text_buffer.strip()
                 append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                if not hasattr(self, 'transcript_history'):
+                    self.transcript_history = []
+                self.transcript_history.append({"role": "assistant", "text": interrupted_text})
                 self._bot_turn_text_buffer = ""
 
             elapsed_ms = None
@@ -270,15 +278,63 @@ class GeminiSessionLoggerMixin:
         await super().process_frame(frame, direction)
 
     async def _push_user_transcription(self, sentence: str, result=None):
-        """Emit consolidated complete sentences for user speech."""
+        """Emit consolidated complete sentences for user speech, record in transcript history and phase engine."""
         await super()._push_user_transcription(sentence, result=result)
-        clean_sentence = sentence.strip()
+        clean_sentence = sentence.strip() if sentence else ""
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
+            logger.info(f"🎙️ [PhaseEngine:LiveUserTranscription] User spoke: '{clean_sentence}'")
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
+
+            # Record turn in session transcript history
+            if not hasattr(self, 'transcript_history'):
+                self.transcript_history = []
+            self.transcript_history.append({"role": "user", "text": clean_sentence})
+
+            # Check if user mentioned their name for lexical identity resolution
+            norm_name = normalize_lexical_user_id(clean_sentence, memory_bank=getattr(self, "memory_bank", None))
+            if norm_name and norm_name != "user_anonymous" and not getattr(self, "_user_id_locked", False):
+                self.active_user_id = norm_name
+                self._user_id_locked = True
+                logger.info(f"🔒 [Identity] User identity locked to {norm_name} from: '{clean_sentence}'")
+
+                # Hydrate returning user profile facts & memories and yield dynamic clientContent
+                if hasattr(self, "memory_bank") and self.memory_bank:
+                    hydrated = self.memory_bank.hydrate_user_profile(norm_name)
+                    facts = hydrated.get("facts", {})
+                    mems = hydrated.get("episodic_memories", []) or hydrated.get("recent_memories", [])
+                    facts_count = len(facts)
+                    mem_count = len(mems)
+                    logger.info(
+                        f"🧠 [MemoryBank:LiveHydration] Profile hydrated for '{norm_name}':\n"
+                        f"   ├─ Active Facts ({facts_count}): {json.dumps(facts, ensure_ascii=False)}\n"
+                        f"   └─ Episodic Memories ({mem_count}): {mems}"
+                    )
+                    if facts_count > 0 or mem_count > 0:
+                        tracker = getattr(self, "phase_tracker", None)
+                        if tracker and hasattr(tracker, "yield_hydrated_context"):
+                            try:
+                                await tracker.yield_hydrated_context(norm_name, hydrated)
+                            except Exception as e:
+                                logger.error(f"[PhaseEngine:LiveHydration] Error yielding context: {e}")
+
+                # Inform client of locked identity for local storage persistence
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'user_identity',
+                        'user_id': norm_name
+                    }
+                }))
+
             tracker = getattr(self, "phase_tracker", None)
             if tracker and hasattr(tracker, "handle_user_transcript"):
-                await tracker.handle_user_transcript(clean_sentence)
+                try:
+                    await tracker.handle_user_transcript(clean_sentence)
+                except Exception as e:
+                    logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
+
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -389,6 +445,9 @@ class GeminiSessionLoggerMixin:
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
             append_diagnostic_log("🤖 Bot Response", f'"{full_bot_text}"')
+            if not hasattr(self, 'transcript_history'):
+                self.transcript_history = []
+            self.transcript_history.append({"role": "assistant", "text": full_bot_text})
             GLOBAL_LANGSMITH_TRACER.record_bot_turn(
                 full_bot_text,
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
@@ -424,35 +483,6 @@ class GeminiSessionLoggerMixin:
             logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
         except Exception as e:
             logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
-
-    # ── Live User Transcription Direct Hook for Phase Engine ────────────
-
-    async def _push_user_transcription(self, text: str, result=None):
-        await super()._push_user_transcription(text, result)
-        if text and text.strip():
-            clean_text = text.strip()
-            logger.info(f"🎙️ [PhaseEngine:LiveUserTranscription] User spoke: '{clean_text}'")
-
-            # 1. Stream User Transcription to UI so user chat bubbles render cleanly
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'transcription',
-                    'participant': 'User',
-                    'text': clean_text
-                }
-            }))
-
-            # 2. Record User Turn in LangSmith Tracer
-            GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_text)
-
-            # 3. Update Consultative Phase Tracker
-            if hasattr(self, "phase_tracker") and self.phase_tracker:
-                try:
-                    await self.phase_tracker.handle_user_transcript(clean_text)
-                except Exception as e:
-                    logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
 
     # ── Session ID & token usage logging ──────────────────────────────
 
@@ -666,15 +696,39 @@ class StartTriggerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = 20000):
+async def run_agent_live(
+    websocket: WebSocket,
+    model: str,
+    voice: Optional[str],
+    language: str,
+    system_instruction: Optional[str] = None,
+    tts: bool = True,
+    tts_pace: float = 0.80,
+    tools: Optional[str] = None,
+    context_compression: bool = True,
+    context_compression_trigger_tokens: Optional[int] = 20000,
+    initial_user_id: Optional[str] = None,
+):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
-    
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + f"\n\nIMPORTANT: You must converse in {language} language."
-    initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
+    default_instruction = get_chained_system_prompt(phase=1).replace("female", gender)
+    prompt_text = (system_instruction or default_instruction) + f"\n\nIMPORTANT: You must converse in {language} language."
+    active_initial_uid = initial_user_id or os.getenv("ACTIVE_USER_ID", "default_user")
+    initial_user_id = active_initial_uid
+    memory_bank = _GLOBAL_MEMORY_BANK or (MemoryBank() if MemoryBank is not None else None)
+    if memory_bank:
+        normalized_uid = normalize_lexical_user_id(initial_user_id)
+        hydrated_profile = memory_bank.hydrate_user_profile(normalized_uid)
+        facts = hydrated_profile.get("facts", {})
+        mems = hydrated_profile.get("episodic_memories", []) or hydrated_profile.get("recent_memories", [])
+        logger.info(
+            f"🧠 [MemoryBank:ConnectHydration] Profile hydrated on connect for '{normalized_uid}':\n"
+            f"   ├─ Active Facts ({len(facts)}): {json.dumps(facts, ensure_ascii=False)}\n"
+            f"   └─ Episodic Memories ({len(mems)}): {mems}"
+        )
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
     
@@ -837,8 +891,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
-    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=False)
+    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=True)
     llm.phase_tracker = phase_tracker
+    llm.memory_bank = memory_bank
+    llm.active_user_id = normalize_lexical_user_id(initial_user_id) if normalize_lexical_user_id else initial_user_id
     phase_processor = PhaseTransitionProcessor(tracker=phase_tracker)
 
     pipeline = Pipeline([
@@ -875,6 +931,21 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     async def on_client_disconnected(transport, client):
         logger.info("Pipecat Client disconnected")
         GLOBAL_LANGSMITH_TRACER.end_session()
+
+        # Trigger asynchronous post-session downcar memory extraction
+        session_transcripts = getattr(llm, "transcript_history", [])
+        active_uid = getattr(llm, "active_user_id", None) or initial_user_id
+        logger.info(
+            f"Triggering post-session downcar extraction for session {session_id}, "
+            f"user {active_uid} ({len(session_transcripts)} transcript turns)"
+        )
+        asyncio.create_task(run_post_session_downcar(
+            session_id=session_id,
+            user_id=active_uid,
+            transcript_history=session_transcripts,
+            memory_bank=memory_bank,
+        ))
+
         await task.cancel()
 
     await PipelineRunner(handle_sigint=False).run(task)

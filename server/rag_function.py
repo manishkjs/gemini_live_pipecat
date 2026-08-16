@@ -56,7 +56,7 @@ def initialize_vertex_if_needed():
 # ── Authoritative Grounded Domain Fallback ──────────────────────────────
 CANONICAL_DOMAIN_KNOWLEDGE: dict[str, str] = {
     "rbi": (
-        "Cymbal Lending (LenDenClub) is an RBI-registered NBFC-P2P platform operating under strict regulatory oversight. "
+        "Cymbal Lending is an RBI-registered NBFC-P2P platform operating under strict regulatory oversight. "
         "Funds are managed via an independent RBI-regulated Trustee Escrow Account (ICICI Trusteeship / IDBI Trustee). "
         "The platform never holds customer funds directly (lender -> escrow -> borrower)."
     ),
@@ -120,18 +120,18 @@ def _get_fallback_domain_knowledge(query: str) -> str:
 # Schema definition
 search_knowledge_base_schema = FunctionSchema(
     name="search_knowledge_base",
-    description="Retrieve factual information, policies, or technical data from the knowledge base.",
+    description="Query knowledge base for policies, regulations, or data.",
     properties={
         "query_for_vector_search": {
             "type": "string",
-            "description": "The search query translated to English if necessary."
+            "description": "Search query."
         },
         "total_records": {
             "type": "integer",
-            "description": "Number of records to retrieve (default: 5, use 10-15 for complex queries)."
+            "description": "Count (default 5)."
         },
     },
-    required=["query_for_vector_search", "total_records"],
+    required=["query_for_vector_search"],
 )
 
 async def search_knowledge_base_handler(params: FunctionCallParams):

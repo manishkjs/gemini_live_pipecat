@@ -112,6 +112,7 @@ async def websocket_endpoint(
     skip_stt: bool = False,
     context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = 20000,
+    user_id: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -140,6 +141,7 @@ async def websocket_endpoint(
                 tools=tools,
                 context_compression=context_compression,
                 context_compression_trigger_tokens=context_compression_trigger_tokens,
+                initial_user_id=user_id,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")
