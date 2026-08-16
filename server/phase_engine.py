@@ -31,15 +31,55 @@ from pipecat.frames.frames import (
     LLMMessagesAppendFrame,
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from google.genai import Client
+from google.genai import Client, types
 from google.genai.types import Content, Part
 from diagnostic_buffer import append_diagnostic_log
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# COMPREHENSIVE PHASE PROMPT CARDS (from LDC p2p_voicebot_agentic)
+# TIER-2 INTENT CLASSIFIER SYSTEM INSTRUCTION
 # ═══════════════════════════════════════════════════════════════════════
 
+INTENT_CLASSIFIER_SYSTEM_PROMPT = """\
+You are an expert real-time conversational intent classifier and sales funnel state-transition evaluator for the Cymbal Lending P2P voicebot.
+
+Your objective:
+Analyze the chronological multi-turn voice dialogue history and the latest customer utterance to determine the customer's true underlying intent and whether the conversation has progressed to a new sales funnel phase.
+
+Sales Funnel Phases (1-9):
+1: Time Check & Availability - Customer availability, callback requests, greetings, or busy signals.
+2: Discovery & P2P Familiarity - Customer investment background, awareness of P2P lending, wealth growth vs regular monthly income goals.
+3: Educational Pivot & Concept Education - How P2P lending works, disintermediation, comparison with Fixed Deposits (7%) vs P2P returns (18-24%).
+4: Platform Legitimacy & RBI Trust - RBI NBFC-P2P registration, ICICI escrow mechanism, 10-year track record, legal compliance.
+5: Risk Mitigation, Defaults & Recovery - Borrower credit risk, default handling, 100+ borrower diversification, 96.18% historical recovery rate.
+6: Confidence & Readiness Check - Customer target investment amount, tenure horizon, and risk appetite.
+7: Product Recommendation & Mathematical Calculation - Specific returns calculation, rupee profit, monthly payout, tenure options (3M STL 15%, 6M STL 18%, 12M MTL 24%).
+8: App & KYC Navigation - PAN card verification, Aadhaar OTP via DigiLocker, Penny-drop bank verification, mobile app steps.
+9: Commitment & Activation Close - Deposit commitment confirmation, payment method, activation timeline, concluding remarks.
+
+Classification Invariants:
+1. Contextual Coherence: Always evaluate the customer's utterance in the context of the Bot's preceding question (e.g., if Bot asked about P2P awareness in Phase 2 and Customer says "पहली बार सुन रहा हूँ", route to Phase 3 Concept Education).
+2. Confidence Calibration: Set confidence >= 0.70 only when the trajectory clearly indicates movement. If ambiguous, stay in the current active phase.
+3. Response Format: You MUST return a single JSON object strictly matching this schema:
+{
+  "target_phase": int,
+  "confidence": float,
+  "reason": str
+}
+"""
+
+# Lazy initialized Vertex AI Client for async classification
+_AI_CLASSIFIER_CLIENT: Optional[Client] = None
+
+def get_ai_classifier_client() -> Client:
+    global _AI_CLASSIFIER_CLIENT
+    if _AI_CLASSIFIER_CLIENT is None:
+        import os
+        from google.genai import Client
+        project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+        location = os.getenv("INTENT_CLASSIFIER_LOCATION") or "global"
+        _AI_CLASSIFIER_CLIENT = Client(project=project, location=location, vertexai=True)
+    return _AI_CLASSIFIER_CLIENT
 PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
     1: {
         "title": "Time Check & Availability",
@@ -319,8 +359,7 @@ class ConsultativePhaseTracker:
             phase_card = PHASE_PROMPT_CARDS.get(initial_phase, {})
             phase_title = phase_card.get("title", f"Phase {initial_phase}")
 
-            prompt = f"""\
-You are an intelligent conversational intent classifier for Cymbal Lending P2P voicebot.
+            user_query = f"""\
 Current Active Funnel Phase: Phase {initial_phase} ({phase_title})
 
 Conversation Dialogue Till This Point (in chronological order):
@@ -328,29 +367,17 @@ Conversation Dialogue Till This Point (in chronological order):
 
 Latest Customer Utterance: "{text}"
 
-Sales Funnel Phases:
-1: Time Check & Availability (asking if customer has 2 minutes to talk, scheduling callback)
-2: Discovery & P2P Familiarity (asking if user has heard of P2P before, wealth growth vs regular monthly income profiling)
-3: Educational Pivot & Concept Education (how P2P lending works, bank disintermediation, FD 7% vs P2P 18-24% spread)
-4: Platform Legitimacy & RBI Trust (RBI NBFC-P2P registration, ICICI escrow account protection, 10-year track record)
-5: Risk Mitigation, Defaults & Recovery (what if someone doesn't pay back, borrower defaults, 100+ borrower split, 96.18% recovery)
-6: Confidence & Readiness Check (asking customer's target investment amount and tenure horizon)
-7: Product Recommendation & Mathematical Calculation (returns calculation, rupee profit, monthly EMI, tenure 3, 6, 12 months)
-8: App & KYC Navigation (PAN card, Aadhaar Digilocker OTP, Bank account penny-drop, app screen navigation)
-9: Commitment & Activation Close (starting deposit confirmation, payment method, plan activation date)
-
-Instructions:
-1. Carefully evaluate the FULL conversation context and trajectory (what the Bot said, what the Customer replied).
-2. Determine if the customer's intent or the conversation flow naturally calls for transitioning to another phase or staying in the current active phase.
-3. Respond in JSON ONLY:
-{{"target_phase": int, "confidence": float, "reason": str}}
+Evaluate the full dialogue context and return the target phase decision in JSON.
 """
             classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-3.5-flash-lite")
             res = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=classifier_model,
-                    contents=prompt,
-                    config={"response_mime_type": "application/json"}
+                    contents=user_query,
+                    config=types.GenerateContentConfig(
+                        system_instruction=INTENT_CLASSIFIER_SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                    ),
                 ),
                 timeout=4.0
             )

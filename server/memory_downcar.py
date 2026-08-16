@@ -43,6 +43,14 @@ except ImportError:
         MemoryBank = None
         normalize_lexical_user_id = lambda name: f"user_{str(name).lower().replace(' ', '_')}" if name else "user_anonymous"
 
+try:
+    from system_prompt import MEMORY_DOWNCAR_SYSTEM_PROMPT
+except ImportError:
+    try:
+        from .system_prompt import MEMORY_DOWNCAR_SYSTEM_PROMPT
+    except Exception:
+        MEMORY_DOWNCAR_SYSTEM_PROMPT = """<memory_downcar_system_prompt>\nYou are an expert financial memory extractor for Cymbal Lending.\n</memory_downcar_system_prompt>"""
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1. TRANSCRIPT FORMATTING & LLM RESPONSE PARSING
@@ -333,23 +341,19 @@ async def run_post_session_downcar(
         project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
 
         if genai_client is not None:
-            extraction_prompt = (
-                "You are an expert financial memory extractor for Cymbal Lending.\n"
-                "Analyze the following conversation transcript and extract:\n"
-                "1. Structured facts (only include canonical keys: amount, tenure_months, risk_preference, timeline, goal, occupation, city, experience).\n"
-                "2. A concise 2-sentence episodic summary of the customer's intent, discussion, and KYC status.\n\n"
-                "Return ONLY a valid JSON object with the following schema:\n"
-                "{\n"
-                '  "facts": {"amount": float, "tenure_months": int, "risk_preference": string, ...},\n'
-                '  "summary": string\n'
-                "}\n\n"
-                f"Transcript:\n{transcript_text}"
-            )
+            user_prompt = f"Transcript:\n{transcript_text}"
+            try:
+                from google.genai import types
+                cfg = types.GenerateContentConfig(
+                    system_instruction=MEMORY_DOWNCAR_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                )
+            except Exception:
+                cfg = {"response_mime_type": "application/json"}
             response = await genai_client.models.generate_content(
                 model=downcar_model,
-                contents=[
-                    {"role": "user", "parts": [{"text": extraction_prompt}]}
-                ],
+                contents=user_prompt,
+                config=cfg,
             )
             raw_text = response.text if hasattr(response, "text") else str(response)
             parsed = parse_downcar_response(raw_text)
@@ -360,22 +364,22 @@ async def run_post_session_downcar(
             live_client = None
             if not os.getenv("HERMETIC_TEST_MODE"):
                 try:
-                    from google.genai import Client
+                    from google.genai import Client, types
                     live_client = Client(project=project, location=downcar_location, vertexai=True)
                 except Exception as client_err:
                     logger.debug(f"[Downcar] GenAI Client init notice: {client_err}")
 
             if live_client is not None:
                 try:
-                    extraction_prompt = (
-                        "Extract structured financial facts (amount, tenure_months, risk_preference, timeline, goal, occupation, city, experience) "
-                        "and episodic summary from this transcript as JSON:\n\n"
-                        f"{transcript_text}"
-                    )
+                    from google.genai import types
+                    user_prompt = f"Extract structured facts and episodic summary from this transcript:\n\n{transcript_text}"
                     response = await live_client.aio.models.generate_content(
                         model=downcar_model,
-                        contents=extraction_prompt,
-                        config={"response_mime_type": "application/json"},
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=MEMORY_DOWNCAR_SYSTEM_PROMPT,
+                            response_mime_type="application/json",
+                        ),
                     )
                     raw_text = response.text if hasattr(response, "text") else str(response)
                     parsed = parse_downcar_response(raw_text)
