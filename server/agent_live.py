@@ -786,17 +786,6 @@ async def run_agent_live(
     active_initial_uid = initial_user_id or os.getenv("ACTIVE_USER_ID", "default_user")
     initial_user_id = active_initial_uid
     memory_bank = _GLOBAL_MEMORY_BANK or (MemoryBank() if MemoryBank is not None else None)
-    if memory_bank:
-        normalized_uid = normalize_lexical_user_id(initial_user_id)
-        hydrated_profile = memory_bank.hydrate_user_profile(normalized_uid)
-        facts = hydrated_profile.get("facts", {})
-        mems = hydrated_profile.get("episodic_memories", []) or hydrated_profile.get("recent_memories", [])
-        logger.info(
-            f"🧠 [MemoryBank:ConnectHydration] Profile hydrated on connect for '{normalized_uid}':\n"
-            f"   ├─ Active Facts ({len(facts)}): {json.dumps(facts, ensure_ascii=False)}\n"
-            f"   └─ Episodic Memories ({len(mems)}): {mems}"
-        )
-    # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
     
     language_map = {
