@@ -452,21 +452,23 @@ async def handle_retrieve_memory(params: FunctionCallParams, memory_bank: Option
             if fact_store and hasattr(fact_store, "get_all_facts"):
                 facts = fact_store.get_all_facts() or {}
 
-        # Retrieve episodic memories
+        # Retrieve episodic memories (local-first or fast search)
         memories = []
-        if query:
-            if hasattr(mb, "search_memories"):
-                res = mb.search_memories(user_id=user_id, query=query, threshold=0.40, limit=5)
+        if hasattr(mb, "hydrate_user_profile"):
+            profile = mb.hydrate_user_profile(user_id=user_id)
+            if asyncio.iscoroutine(profile):
+                profile = await profile
+            memories = profile.get("recent_memories", []) if isinstance(profile, dict) else []
+        elif query and hasattr(mb, "search_memories"):
+            try:
+                res = mb.search_memories(user_id=user_id, query=query, threshold=0.40, limit=3)
                 if asyncio.iscoroutine(res):
-                    memories = await res
+                    memories = await asyncio.wait_for(res, timeout=0.5)
                 else:
                     memories = res
-        else:
-            if hasattr(mb, "hydrate_user_profile"):
-                profile = mb.hydrate_user_profile(user_id=user_id)
-                if asyncio.iscoroutine(profile):
-                    profile = await profile
-                memories = profile.get("recent_memories", []) if isinstance(profile, dict) else []
+            except Exception as e:
+                logger.warning(f"[Tool:retrieve_memory] Fast fallback: {e}")
+                memories = []
 
         if not facts and not memories:
             result = {
