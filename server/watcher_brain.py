@@ -35,7 +35,7 @@ class WatcherBrain:
         self.client: Optional[Client] = None
         self._last_injected_hint: Optional[str] = None
         self._last_injected_turn_count: int = 0
-        self._min_turn_interval: int = 1  # Debounce interval between consecutive hints
+        self._min_turn_interval: int = 4  # Strict cooldown: at least 4 turns between any intervention
         self._initialize_client()
 
     def _initialize_client(self) -> None:
@@ -123,8 +123,8 @@ class WatcherBrain:
 
         current_turn_count = len(transcript_history)
 
-        # Debounce check: don't inject hints on consecutive turns if recently injected
-        if (current_turn_count - self._last_injected_turn_count) < self._min_turn_interval:
+        # Debounce check: don't inject hints if recently injected within cooldown interval
+        if self._last_injected_turn_count > 0 and (current_turn_count - self._last_injected_turn_count) < self._min_turn_interval:
             return False
 
         # Fast skip on 1-word user fillers

@@ -1,7 +1,7 @@
 """Asynchronous Post-Session Memory Downcar Extraction Service.
 
 Extracts structured financial facts and episodic conversation summaries from
-multi-turn voice session transcripts using Gemini 2.5 Flash Lite with JSON schema
+multi-turn voice session transcripts using Gemini 3.5 Flash Lite with JSON schema
 enforcement and deterministic offline fallback.
 
 Key Responsibilities:
@@ -87,7 +87,7 @@ def parse_downcar_response(raw_text: str) -> Dict[str, Any]:
     Handles ```json ... ``` fences, raw JSON objects, and malformed responses.
 
     Args:
-        raw_text: Raw string response from Gemini 2.5 Flash Lite.
+        raw_text: Raw string response from Gemini 3.5 Flash Lite.
 
     Returns:
         Dictionary containing extracted 'facts' dict and 'summary' string.

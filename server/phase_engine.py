@@ -144,10 +144,10 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
         "directive": (
             "You are in Phase 7: Product Recommendation & Mathematical Calculation.\n"
             "• Goal: Deliver exact deterministic financial projections and persist selected plan.\n"
-            "• Tools: `calculate_returns` (Mandatory warm 1-sentence spoken preamble before calling math tools). `save_memory` (silently to record plan).\n"
-            "• 9-MONTH REJECTION (DO NOT CALL TOOLS): 9 months is strictly unavailable. Immediately speak: 'सिम्बल लेंडिंग पर 9 महीने का कोई प्लान नहीं है, आप 6 महीने (18% XIRR) या 12 महीने (24% XIRR) चुन सकते हैं।'\n"
+            "• Calculation: For valid amounts (₹25k+) and tenures (6M or 12M), speak a warm 1-sentence preamble and call `calculate_returns`.\n"
+            "• 9-Month Rejection: If customer asks for 9 months, speak immediately and fluidly: 'सिम्बल लेंडिंग पर 9 महीने का कोई प्लान नहीं है, आप 6 महीने (18% XIRR) या 12 महीने (24% XIRR) चुन सकते हैं।' DO NOT pause or hesitate.\n"
             "• Rules: State calculated profit, maturity value, and monthly EMI in Devanagari Hindi.\n"
-            "• Tenures: 3-6M STL (15-18%) | 12M MTL (21-24%)."
+            "• Tenures: 6M STL (18% XIRR) | 12M MTL (24% XIRR)."
         )
     },
     8: {
@@ -483,9 +483,9 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
             await self.transition_to(target_tier1, trigger_reason=f"Tier-1 Regex: {matched_rule}")
             return
 
-        # ── Tier 2: Async Gemini 2.5 Flash AI Classifier for Subtle Phrasings ─
+        # ── Tier 2: Async Gemini 3.5 Flash Lite AI Classifier for Subtle Phrasings ─
         if self.current_phase == initial_phase and len(text.strip()) > 4:
-            logger.info(f"🔍 [PhaseEngine:Classifier] Tier-1 Regex: No match for '{text}'. Dispatching to TIER-2 (Gemini 2.5 Flash Lite async with dialogue history)...")
+            logger.info(f"🔍 [PhaseEngine:Classifier] Tier-1 Regex: No match for '{text}'. Dispatching to TIER-2 (Gemini 3.5 Flash Lite async with dialogue history)...")
             self._turn_seq += 1
             asyncio.create_task(self._async_ai_classify_intent(text, initial_phase, self._turn_seq, history=history))
 

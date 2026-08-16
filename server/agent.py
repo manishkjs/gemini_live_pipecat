@@ -156,7 +156,7 @@ class CustomGoogleSTTService(GoogleSTTService):
 
 
 class CustomVertexGeminiTTSService(GeminiTTSService):
-    def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-2.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
+    def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-3.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
         # Pass a dummy API key since we're using Vertex.
         settings = GeminiTTSService.Settings(
             voice=voice_id,

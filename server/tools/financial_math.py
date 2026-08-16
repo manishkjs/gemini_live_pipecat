@@ -23,7 +23,17 @@ def calculate_returns(
     custom_npa_rate_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Unified deterministic return calculator for Cymbal Lending (STL, MTL, Manual, or Rule 4 NPA)."""
-    if custom_borrower_rate_pct is not None or custom_npa_rate_pct is not None or (tenure_months and tenure_months not in (3, 4, 5, 6, 12)):
+    # Explicit rejection for 9-month tenures
+    if tenure_months == 9:
+        return {
+            "status": "unavailable_tenure",
+            "message": "9-month tenure does not exist on Cymbal Lending. Available tenures are 6 months (18% XIRR) and 12 months (24% XIRR).",
+            "summary_hinglish": "सिम्बल लेंडिंग पर 9 महीने का कोई प्लान नहीं है। आप 6 महीने वाला STL प्लान (18% XIRR) या 12 महीने वाला MTL प्लान (24% XIRR) चुन सकते हैं।",
+            "available_tenures": [6, 12],
+            "tenure_months": 9,
+        }
+
+    if custom_borrower_rate_pct is not None or custom_npa_rate_pct is not None:
         return calculate_manual_lending(
             amount=amount,
             tenure_months=tenure_months or 12,
@@ -33,7 +43,12 @@ def calculate_returns(
     if tenure_months == 12:
         return calculate_mtl_returns(amount=amount, repayment_type=repayment_type or "monthly")
     if amount < 25000:
-        return calculate_manual_lending(amount=amount, tenure_months=tenure_months or 6)
+        return {
+            "status": "below_minimum",
+            "message": "Minimum investment amount for Cymbal Lending Lumpsum plans is ₹25,000.",
+            "summary_hinglish": f"{int(amount):,} रुपये के लिए: Cymbal Lending पर minimum investment 25,000 रुपये है। 25,000 रुपये पर 6 महीने में 2,250 रुपये (18%) या 12 महीने में 6,000 रुपये (24%) profit बनेगा।",
+            "min_amount": 25000,
+        }
     return calculate_stl_returns(amount=amount, tenure_months=tenure_months)
 
 
