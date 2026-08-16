@@ -1,0 +1,358 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1020" width="100%" height="100%" style="background:#0a0f1d; font-family:'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080c17" />
+      <stop offset="50%" stop-color="#0d1527" />
+      <stop offset="100%" stop-color="#080c17" />
+    </linearGradient>
+    
+    <linearGradient id="cardGradDark3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151e34" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <linearGradient id="cardGradAccent3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2942" />
+      <stop offset="100%" stop-color="#131c31" />
+    </linearGradient>
+
+    <linearGradient id="blueGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+
+    <linearGradient id="purpleGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#6d28d9" />
+    </linearGradient>
+
+    <linearGradient id="emeraldGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+
+    <linearGradient id="amberGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+
+    <linearGradient id="cyanGrad3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#0891b2" />
+    </linearGradient>
+
+    <!-- Drop Shadows -->
+    <filter id="shadowCard3" x="-10%" y="-5%" width="120%" height="115%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+
+    <!-- Markers -->
+    <marker id="arrowBlue3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#3b82f6" />
+    </marker>
+    <marker id="arrowPurple3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#8b5cf6" />
+    </marker>
+    <marker id="arrowEmerald3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#10b981" />
+    </marker>
+    <marker id="arrowCyan3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#06b6d4" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1020" fill="url(#bgGrad3)" />
+
+  <!-- Subtle Grid Pattern -->
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <pattern id="grid3" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" />
+    </pattern>
+    <rect width="1600" height="1020" fill="url(#grid3)" />
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER SECTION                                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(60, 40)">
+    <!-- Title Pill -->
+    <rect x="0" y="0" width="160" height="26" rx="13" fill="#1e293b" stroke="#8b5cf6" stroke-width="1.2" />
+    <text x="80" y="17" fill="#a78bfa" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1.5">INTELLIGENCE TRIAD</text>
+
+    <!-- Main Title -->
+    <text x="0" y="58" fill="#f8fafc" font-size="26" font-weight="800" letter-spacing="-0.5">Multi-Tiered AI Brain Triad Architecture</text>
+    <text x="0" y="82" fill="#94a3b8" font-size="14" font-weight="400">0ms Regex Fast-Path • &lt;120ms Async Semantic Intent Classifier • Continuous Watcher Sentry Sidecar</text>
+
+    <!-- Header Badges -->
+    <g transform="translate(1080, 10)">
+      <rect x="0" y="0" width="125" height="32" rx="8" fill="#0f2942" stroke="#3b82f6" stroke-width="1" />
+      <circle cx="16" cy="16" r="5" fill="#3b82f6" />
+      <text x="28" y="20" fill="#93c5fd" font-size="11" font-weight="600">Tier-1: 0.00ms</text>
+
+      <rect x="135" y="0" width="135" height="32" rx="8" fill="#1e1b4b" stroke="#8b5cf6" stroke-width="1" />
+      <circle cx="151" cy="16" r="5" fill="#a78bfa" />
+      <text x="163" y="20" fill="#ddd6fe" font-size="11" font-weight="600">Tier-2: &lt;120ms</text>
+
+      <rect x="280" y="0" width="120" height="32" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1" />
+      <circle cx="296" cy="16" r="5" fill="#34d399" />
+      <text x="308" y="20" fill="#a7f3d0" font-size="11" font-weight="600">Tier-3: Co-Pilot</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 3 MAIN VERTICAL PILLARS FOR THE TRIAD                               -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- PILLAR 1: TIER 1 - 0MS REGEX FAST-PATH -->
+  <g transform="translate(60, 140)" filter="url(#shadowCard3)">
+    <rect width="460" height="680" rx="16" fill="url(#cardGradDark3)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Header Banner -->
+    <path d="M 0 16 Q 0 0 16 0 L 444 0 Q 460 0 460 16 L 460 56 L 0 56 Z" fill="url(#blueGrad3)" />
+    <circle cx="30" cy="28" r="10" fill="#ffffff" opacity="0.2" />
+    <text x="30" y="33" fill="#ffffff" font-size="13" font-weight="800" text-anchor="middle">⚡</text>
+    <text x="50" y="33" fill="#ffffff" font-size="15" font-weight="800">Tier 1: 0ms Regex Fast-Path</text>
+    <rect x="360" y="18" width="85" height="20" rx="6" fill="#0f172a" opacity="0.6" />
+    <text x="402" y="32" fill="#93c5fd" font-size="10" font-weight="700" text-anchor="middle">0.00ms LATENCY</text>
+
+    <g transform="translate(20, 70)">
+      <text x="0" y="16" fill="#94a3b8" font-size="11.5">Deterministic keyword &amp; intent pattern matching evaluated immediately on speech transcript turn before invoking LLM calls.</text>
+
+      <!-- Keyword Rule Table -->
+      <g transform="translate(0, 36)">
+        <!-- Rule 1: KYC -->
+        <g transform="translate(0, 0)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">KYC &amp; Documents</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"kyc", "pan", "aadhaar", "penny drop"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 8 (KYC)</text>
+        </g>
+
+        <!-- Rule 2: Trust -->
+        <g transform="translate(0, 60)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">Safety &amp; Regulatory Trust</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"rbi", "escrow", "safe", "trustee"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 4 (Trust)</text>
+        </g>
+
+        <!-- Rule 3: Risk -->
+        <g transform="translate(0, 120)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">Credit Risk &amp; Defaults</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"default", "npa", "doob", "risk", "100"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 5 (Risk)</text>
+        </g>
+
+        <!-- Rule 4: Calc -->
+        <g transform="translate(0, 180)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">Calculations &amp; Returns</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"kitna milega", "return", "emi", "calc"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 7 (Calc)</text>
+        </g>
+
+        <!-- Rule 5: Asset -->
+        <g transform="translate(0, 240)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">Asset Comparisons</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"fd", "fixed deposit", "mutual fund"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 3 (Edu)</text>
+        </g>
+
+        <!-- Rule 6: Consent -->
+        <g transform="translate(0, 300)">
+          <rect width="420" height="50" rx="8" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+          <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">Consent &amp; Availability</text>
+          <text x="14" y="38" fill="#94a3b8" font-size="9" font-family="'JetBrains Mono', monospace">"हाँ", "yes", "sure", "theek hai", "boliye"</text>
+          <rect x="310" y="12" width="96" height="26" rx="6" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+          <text x="358" y="28" fill="#93c5fd" font-size="9.5" font-weight="700" text-anchor="middle">➔ Phase 2 (Disc)</text>
+        </g>
+      </g>
+
+      <!-- Bottom Card: Outcome -->
+      <g transform="translate(0, 420)">
+        <rect width="420" height="130" rx="10" fill="#0c1222" stroke="#1d4ed8" stroke-width="1" />
+        <text x="16" y="24" fill="#93c5fd" font-size="11" font-weight="700">FAST-PATH EXECUTION RESULT</text>
+        <text x="16" y="44" fill="#cbd5e1" font-size="10">✓ Immediate state transition without network roundtrip</text>
+        <text x="16" y="64" fill="#cbd5e1" font-size="10">✓ Injects tailored phase directives &amp; tool schemas</text>
+        <text x="16" y="84" fill="#cbd5e1" font-size="10">✓ Handles 65%+ of standard customer conversational turns</text>
+        <text x="16" y="104" fill="#34d399" font-size="10" font-weight="600">➔ If No Match: Dispatches to Tier-2 Classifier</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- PILLAR 2: TIER 2 - ASYNC SEMANTIC INTENT CLASSIFIER -->
+  <g transform="translate(570, 140)" filter="url(#shadowCard3)">
+    <rect width="460" height="680" rx="16" fill="url(#cardGradDark3)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Header Banner -->
+    <path d="M 0 16 Q 0 0 16 0 L 444 0 Q 460 0 460 16 L 460 56 L 0 56 Z" fill="url(#purpleGrad3)" />
+    <circle cx="30" cy="28" r="10" fill="#ffffff" opacity="0.2" />
+    <text x="30" y="33" fill="#ffffff" font-size="13" font-weight="800" text-anchor="middle">🧠</text>
+    <text x="50" y="33" fill="#ffffff" font-size="15" font-weight="800">Tier 2: Async Semantic Classifier</text>
+    <rect x="350" y="18" width="95" height="20" rx="6" fill="#0f172a" opacity="0.6" />
+    <text x="397" y="32" fill="#c7d2fe" font-size="10" font-weight="700" text-anchor="middle">&lt;120ms ASYNC</text>
+
+    <g transform="translate(20, 70)">
+      <text x="0" y="16" fill="#94a3b8" font-size="11.5">Deep contextual classification for complex, multi-clause, or ambiguous Hinglish utterances using lightweight Vertex AI model.</text>
+
+      <!-- Architecture Card -->
+      <g transform="translate(0, 36)">
+        <rect width="420" height="90" rx="10" fill="url(#cardGradAccent3)" stroke="#6d28d9" stroke-width="1" />
+        <text x="14" y="24" fill="#c084fc" font-size="11" font-weight="700">Vertex AI Flash-Lite Engine</text>
+        <text x="14" y="44" fill="#cbd5e1" font-size="10">Model: `gemini-2.5-flash-lite` / `gemini-3.5-flash-lite`</text>
+        <text x="14" y="64" fill="#94a3b8" font-size="9.5">Dispatched as non-blocking `asyncio.create_task`</text>
+        <text x="14" y="80" fill="#34d399" font-size="9.5" font-weight="600">Zero interruption to live audio streaming</text>
+      </g>
+
+      <!-- JSON Contract Box -->
+      <g transform="translate(0, 140)">
+        <rect width="420" height="150" rx="10" fill="#0f172a" stroke="#1e293b" />
+        <text x="14" y="24" fill="#a78bfa" font-size="11" font-weight="700">STRICT JSON OUTPUT SCHEMA</text>
+        
+        <rect x="14" y="34" width="392" height="102" rx="6" fill="#080c17" stroke="#1e293b" />
+        <text x="24" y="54" fill="#e2e8f0" font-size="9.5" font-family="'JetBrains Mono', monospace">{</text>
+        <text x="36" y="70" fill="#60a5fa" font-size="9.5" font-family="'JetBrains Mono', monospace">"target_phase": &lt;1-9&gt;,</text>
+        <text x="36" y="86" fill="#34d399" font-size="9.5" font-family="'JetBrains Mono', monospace">"confidence": 0.0 - 1.0,</text>
+        <text x="36" y="102" fill="#fbbf24" font-size="9.5" font-family="'JetBrains Mono', monospace">"reason": "Customer expressed..."</text>
+        <text x="24" y="118" fill="#e2e8f0" font-size="9.5" font-family="'JetBrains Mono', monospace">}</text>
+      </g>
+
+      <!-- Gating Rule Evaluation -->
+      <g transform="translate(0, 305)">
+        <rect width="420" height="120" rx="10" fill="url(#cardGradAccent3)" stroke="#273553" stroke-width="1" />
+        <text x="14" y="24" fill="#fbbf24" font-size="11" font-weight="700">CONFIDENCE GATING RULES</text>
+        
+        <rect x="14" y="36" width="392" height="34" rx="6" fill="#064e3b" stroke="#047857" />
+        <circle cx="26" cy="53" r="4" fill="#34d399" />
+        <text x="36" y="57" fill="#a7f3d0" font-size="10" font-weight="600">confidence &gt;= 0.70 ➔ Execute transition_to(phase)</text>
+
+        <rect x="14" y="76" width="392" height="34" rx="6" fill="#451a03" stroke="#b45309" />
+        <circle cx="26" cy="93" r="4" fill="#f59e0b" />
+        <text x="36" y="97" fill="#fde68a" font-size="10" font-weight="600">confidence &lt; 0.70 ➔ Maintain current active phase</text>
+      </g>
+
+      <!-- Bottom Card: Outcome -->
+      <g transform="translate(0, 440)">
+        <rect width="420" height="110" rx="10" fill="#141026" stroke="#6d28d9" stroke-width="1" />
+        <text x="16" y="24" fill="#c084fc" font-size="11" font-weight="700">SEMANTIC CLASSIFIER RESULT</text>
+        <text x="16" y="44" fill="#cbd5e1" font-size="10">✓ Accurately decodes nuanced user intent &amp; context shifts</text>
+        <text x="16" y="64" fill="#cbd5e1" font-size="10">✓ Prevents premature or unwarranted stage jumping</text>
+        <text x="16" y="84" fill="#34d399" font-size="10" font-weight="600">✓ Resilient against noisy conversational digressions</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- PILLAR 3: TIER 3 - CONTINUOUS WATCHER SENTRY BRAIN -->
+  <g transform="translate(1080, 140)" filter="url(#shadowCard3)">
+    <rect width="460" height="680" rx="16" fill="url(#cardGradDark3)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Header Banner -->
+    <path d="M 0 16 Q 0 0 16 0 L 444 0 Q 460 0 460 16 L 460 56 L 0 56 Z" fill="url(#emeraldGrad3)" />
+    <circle cx="30" cy="28" r="10" fill="#ffffff" opacity="0.2" />
+    <text x="30" y="33" fill="#ffffff" font-size="13" font-weight="800" text-anchor="middle">👁️</text>
+    <text x="50" y="33" fill="#ffffff" font-size="15" font-weight="800">Tier 3: Continuous Watcher Sentry</text>
+    <rect x="340" y="18" width="105" height="20" rx="6" fill="#0f172a" opacity="0.6" />
+    <text x="392" y="32" fill="#a7f3d0" font-size="10" font-weight="700" text-anchor="middle">CO-PILOT SIDECAR</text>
+
+    <g transform="translate(20, 70)">
+      <text x="0" y="16" fill="#94a3b8" font-size="11.5">Silent background watcher (`WatcherBrain`) analyzing sentiment, objections, and compliance, injecting real-time whispered hints.</text>
+
+      <!-- Sentry Capabilities -->
+      <g transform="translate(0, 36)">
+        <rect width="420" height="150" rx="10" fill="url(#cardGradAccent3)" stroke="#047857" stroke-width="1" />
+        <text x="14" y="24" fill="#34d399" font-size="11" font-weight="700">4 CORE SENTINEL ANALYSES</text>
+
+        <g transform="translate(14, 34)">
+          <rect width="190" height="46" rx="6" fill="#0f172a" stroke="#1e293b" />
+          <text x="10" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">1. Sentiment &amp; Hesitation</text>
+          <text x="10" y="34" fill="#94a3b8" font-size="8.5">Detects trust deficit &amp; skepticism</text>
+
+          <rect x="202" y="0" width="190" height="46" rx="6" fill="#0f172a" stroke="#1e293b" />
+          <text x="212" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">2. Objection Profiling</text>
+          <text x="212" y="34" fill="#94a3b8" font-size="8.5">Unspoken liquidity/lock-in fear</text>
+        </g>
+
+        <g transform="translate(14, 88)">
+          <rect width="190" height="46" rx="6" fill="#0f172a" stroke="#1e293b" />
+          <text x="10" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">3. Compliance Boundaries</text>
+          <text x="10" y="34" fill="#94a3b8" font-size="8.5">Enforces strict RBI directives</text>
+
+          <rect x="202" y="0" width="190" height="46" rx="6" fill="#0f172a" stroke="#1e293b" />
+          <text x="212" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">4. Upsell / Sizing Clues</text>
+          <text x="212" y="34" fill="#94a3b8" font-size="8.5">High-net-worth portfolio signals</text>
+        </g>
+      </g>
+
+      <!-- Whisper Injection Protocol Box -->
+      <g transform="translate(0, 200)">
+        <rect width="420" height="150" rx="10" fill="#0f172a" stroke="#1e293b" />
+        <text x="14" y="24" fill="#22d3ee" font-size="11" font-weight="700">WHISPER INJECTION PROTOCOL (&lt;copilot_hint&gt;)</text>
+
+        <rect x="14" y="34" width="392" height="102" rx="6" fill="#080c17" stroke="#1e293b" />
+        <text x="24" y="54" fill="#e2e8f0" font-size="9" font-family="'JetBrains Mono', monospace">&lt;copilot_hint&gt;</text>
+        <text x="36" y="70" fill="#22d3ee" font-size="9" font-family="'JetBrains Mono', monospace">The user is skeptical about 100-borrower recovery.</text>
+        <text x="36" y="86" fill="#34d399" font-size="9" font-family="'JetBrains Mono', monospace">Reassure with 96.18% legal recovery track record.</text>
+        <text x="24" y="102" fill="#e2e8f0" font-size="9" font-family="'JetBrains Mono', monospace">&lt;/copilot_hint&gt;</text>
+        <text x="24" y="122" fill="#94a3b8" font-size="8.5">Injected directly into Gemini Live session as a system turn</text>
+      </g>
+
+      <!-- Cooldown & Safety Guardrails -->
+      <g transform="translate(0, 365)">
+        <rect width="420" height="85" rx="10" fill="#0c1e19" stroke="#047857" stroke-width="1" />
+        <text x="14" y="22" fill="#34d399" font-size="11" font-weight="700">CO-PILOT GUARDRAILS</text>
+        <text x="14" y="42" fill="#cbd5e1" font-size="10">✓ Strict 4-Turn Cooldown Interval (`_min_turn_interval = 4`)</text>
+        <text x="14" y="60" fill="#cbd5e1" font-size="10">✓ Deduplication hash prevents repeating identical whispers</text>
+        <text x="14" y="78" fill="#34d399" font-size="10" font-weight="600">✓ Non-disruptive: does NOT interrupt active voice audio</text>
+      </g>
+
+      <!-- Bottom Card: Outcome -->
+      <g transform="translate(0, 465)">
+        <rect width="420" height="85" rx="10" fill="#08281e" stroke="#10b981" stroke-width="1" />
+        <text x="16" y="22" fill="#a7f3d0" font-size="11" font-weight="700">CONTINUOUS WATCHER ADVANTAGE</text>
+        <text x="16" y="42" fill="#e2e8f0" font-size="10">Gives Pragya superhuman consultative sales intelligence and empathy</text>
+        <text x="16" y="60" fill="#a7f3d0" font-size="9.5" font-weight="600">without burdening the live conversational model context!</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- BOTTOM SYNCHRONIZATION BAR: CONSULTATIVE PHASE TRACKER              -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(60, 840)" filter="url(#shadowCard3)">
+    <rect width="1480" height="140" rx="16" fill="#0f172a" stroke="#334155" stroke-width="1.5" />
+
+    <g transform="translate(24, 20)">
+      <rect x="0" y="0" width="36" height="36" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+      <text x="18" y="24" fill="#a78bfa" font-size="18" text-anchor="middle">⚙️</text>
+      <text x="50" y="22" fill="#f8fafc" font-size="15" font-weight="800">Master Orchestration: `ConsultativePhaseTracker` &amp; `PhaseTransitionProcessor`</text>
+      <text x="50" y="42" fill="#94a3b8" font-size="12">Synchronizes all 3 tiers into a unified, conflict-free state machine with audio-safe prompt card queueing</text>
+
+      <g transform="translate(0, 56)">
+        <rect width="340" height="48" rx="8" fill="#1e293b" />
+        <text x="14" y="20" fill="#60a5fa" font-size="10" font-weight="700">1. Transcript Event Ingestion</text>
+        <text x="14" y="36" fill="#94a3b8" font-size="9">Tier 1 regex evaluates in 0.00ms on turn</text>
+
+        <rect x="360" y="0" width="340" height="48" rx="8" fill="#1e293b" />
+        <text x="374" y="20" fill="#a78bfa" font-size="10" font-weight="700">2. Async Semantic Fallback</text>
+        <text x="374" y="36" fill="#94a3b8" font-size="9">Tier 2 LLM resolves complex cases in &lt;120ms</text>
+
+        <rect x="720" y="0" width="340" height="48" rx="8" fill="#1e293b" />
+        <text x="734" y="20" fill="#34d399" font-size="10" font-weight="700">3. Sentry Whisper Sidecar</text>
+        <text x="734" y="36" fill="#94a3b8" font-size="9">Tier 3 continuously analyzes sales strategy</text>
+
+        <rect x="1080" y="0" width="348" height="48" rx="8" fill="#064e3b" stroke="#047857" />
+        <text x="1094" y="20" fill="#a7f3d0" font-size="10" font-weight="700">4. Turn-Safe Prompt Delivery</text>
+        <text x="1094" y="36" fill="#6ee7b7" font-size="9">Delivered ONLY on `BotStoppedSpeaking`</text>
+      </g>
+    </g>
+  </g>
+</svg>

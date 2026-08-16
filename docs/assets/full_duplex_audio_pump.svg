@@ -1,0 +1,347 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1020" width="100%" height="100%" style="background:#0a0f1d; font-family:'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080c17" />
+      <stop offset="50%" stop-color="#0d1527" />
+      <stop offset="100%" stop-color="#080c17" />
+    </linearGradient>
+    
+    <linearGradient id="cardGradDark2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151e34" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <linearGradient id="cardGradAccent2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2942" />
+      <stop offset="100%" stop-color="#131c31" />
+    </linearGradient>
+
+    <linearGradient id="blueGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+
+    <linearGradient id="emeraldGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+
+    <linearGradient id="purpleGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#6d28d9" />
+    </linearGradient>
+
+    <linearGradient id="roseGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f43f5e" />
+      <stop offset="100%" stop-color="#be123c" />
+    </linearGradient>
+
+    <linearGradient id="amberGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+
+    <!-- Drop Shadows -->
+    <filter id="shadowCard2" x="-10%" y="-5%" width="120%" height="115%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+
+    <!-- Markers -->
+    <marker id="arrBlue" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#3b82f6" />
+    </marker>
+    <marker id="arrEmerald" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#10b981" />
+    </marker>
+    <marker id="arrPurple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#8b5cf6" />
+    </marker>
+    <marker id="arrRose" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#f43f5e" />
+    </marker>
+    <marker id="arrAmber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#f59e0b" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1600" height="1020" fill="url(#bgGrad2)" />
+
+  <!-- Subtle Grid Pattern -->
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <pattern id="grid2" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" />
+    </pattern>
+    <rect width="1600" height="1020" fill="url(#grid2)" />
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER SECTION                                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(60, 40)">
+    <!-- Title Pill -->
+    <rect x="0" y="0" width="160" height="26" rx="13" fill="#1e293b" stroke="#10b981" stroke-width="1.2" />
+    <text x="80" y="17" fill="#34d399" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1.5">AUDIO ENGINE PIPELINE</text>
+
+    <!-- Main Title -->
+    <text x="0" y="58" fill="#f8fafc" font-size="26" font-weight="800" letter-spacing="-0.5">Full-Duplex Audio Pump &amp; Collision Protection Architecture</text>
+    <text x="0" y="82" fill="#94a3b8" font-size="14" font-weight="400">16kHz/24kHz Linear PCM Streaming • Silero VAD Barge-In • Anti-Cancel Tool Shield • Repeat-on-Filler</text>
+
+    <!-- Header Badges -->
+    <g transform="translate(1080, 10)">
+      <rect x="0" y="0" width="125" height="32" rx="8" fill="#0f2942" stroke="#38bdf8" stroke-width="1" />
+      <circle cx="16" cy="16" r="5" fill="#38bdf8" />
+      <text x="28" y="20" fill="#bae6fd" font-size="11" font-weight="600">20ms Audio Chunks</text>
+
+      <rect x="135" y="0" width="135" height="32" rx="8" fill="#4c0519" stroke="#f43f5e" stroke-width="1" />
+      <circle cx="151" cy="16" r="5" fill="#f43f5e" />
+      <text x="163" y="20" fill="#fecdd3" font-size="11" font-weight="600">Anti-Cancel Shield</text>
+
+      <rect x="280" y="0" width="120" height="32" rx="8" fill="#1e1b4b" stroke="#8b5cf6" stroke-width="1" />
+      <circle cx="296" cy="16" r="5" fill="#a78bfa" />
+      <text x="308" y="20" fill="#ddd6fe" font-size="11" font-weight="600">Zero-Drop Safe</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- MAIN 3-SECTION HORIZONTAL PIPELINE FLOW                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- SECTION 1: UPLINK AUDIO STREAM (TOP ROW: 16kHz Ingress) -->
+  <g transform="translate(60, 140)" filter="url(#shadowCard2)">
+    <rect width="1480" height="240" rx="16" fill="url(#cardGradDark2)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Section Title Ribbon -->
+    <path d="M 0 16 Q 0 0 16 0 L 280 0 L 260 36 L 0 36 Z" fill="url(#blueGrad2)" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="800" letter-spacing="0.5">⬆️ UPLINK AUDIO STREAM (16kHz PCM)</text>
+    <text x="300" y="24" fill="#94a3b8" font-size="12">Microphone Capture → 20ms Frame Chunking → Silero VAD Ingestion → Vertex BiDi Input</text>
+
+    <!-- Stage 1.1: Web Audio API Capture -->
+    <g transform="translate(24, 55)">
+      <rect width="260" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#273553" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#1e3a8a" />
+      <text x="28" y="32" fill="#93c5fd" font-size="12" font-weight="700" text-anchor="middle">🎙️</text>
+      <text x="50" y="32" fill="#f8fafc" font-size="13" font-weight="700">Web Audio API Mic</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">Browser `AudioWorkletNode`</text>
+      
+      <rect x="14" y="74" width="232" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#60a5fa" font-size="10" font-family="'JetBrains Mono', monospace">16,000 Hz Linear PCM</text>
+
+      <rect x="14" y="112" width="232" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Mono (1 channel, 16-bit)</text>
+    </g>
+
+    <!-- Arrow 1 -> 2 -->
+    <path d="M 294 135 L 344 135" fill="none" stroke="#3b82f6" stroke-width="3" marker-end="url(#arrBlue)" />
+
+    <!-- Stage 1.2: 20ms Frame Chunking -->
+    <g transform="translate(354, 55)">
+      <rect width="280" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#273553" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#1e3a8a" />
+      <text x="28" y="32" fill="#93c5fd" font-size="12" font-weight="700" text-anchor="middle">📦</text>
+      <text x="50" y="32" fill="#f8fafc" font-size="13" font-weight="700">20ms Frame Slicer</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">Strict packetization cadence</text>
+
+      <rect x="14" y="74" width="252" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#38bdf8" font-size="10" font-family="'JetBrains Mono', monospace">320 samples / 640 Bytes</text>
+
+      <rect x="14" y="112" width="252" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">FastAPI WebSocket Binary Frame</text>
+    </g>
+
+    <!-- Arrow 2 -> 3 -->
+    <path d="M 644 135 L 694 135" fill="none" stroke="#3b82f6" stroke-width="3" marker-end="url(#arrBlue)" />
+
+    <!-- Stage 1.3: Silero VAD Analyzer -->
+    <g transform="translate(704, 55)">
+      <rect width="360" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#047857" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#064e3b" />
+      <text x="28" y="32" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">⚡</text>
+      <text x="50" y="32" fill="#a7f3d0" font-size="13" font-weight="700">Silero VAD Analyzer</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">Real-time voice activity boundaries</text>
+
+      <g transform="translate(14, 74)">
+        <rect width="160" height="68" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="20" fill="#34d399" font-size="10" font-weight="600">stop_secs = 0.40s</text>
+        <text x="10" y="38" fill="#94a3b8" font-size="8.5">Speech end cutoff</text>
+        <text x="10" y="54" fill="#64748b" font-size="8.5">50ms start trigger</text>
+
+        <rect x="170" y="0" width="160" height="68" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <text x="180" y="20" fill="#60a5fa" font-size="10" font-weight="600">Pipeline Frames</text>
+        <text x="180" y="38" fill="#94a3b8" font-size="8.5">UserStartedSpeaking</text>
+        <text x="180" y="54" fill="#94a3b8" font-size="8.5">UserStoppedSpeaking</text>
+      </g>
+    </g>
+
+    <!-- Arrow 3 -> 4 -->
+    <path d="M 1074 135 L 1124 135" fill="none" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrPurple)" />
+
+    <!-- Stage 1.4: Vertex AI Live Ingestion -->
+    <g transform="translate(1134, 55)">
+      <rect width="320" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#6d28d9" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#312e81" />
+      <text x="28" y="32" fill="#c7d2fe" font-size="12" font-weight="700" text-anchor="middle">☁️</text>
+      <text x="50" y="32" fill="#c7d2fe" font-size="13" font-weight="700">Vertex AI BiDi Gateway</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">`realtimeInput` Live Stream</text>
+
+      <rect x="14" y="74" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#c084fc" font-size="10" font-family="'JetBrains Mono', monospace">audio/pcm;rate=16000</text>
+
+      <rect x="14" y="112" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Sub-150ms Turnaround TTFT</text>
+    </g>
+  </g>
+
+  <!-- SECTION 2: IN-FLIGHT SHIELDING & COLLISION MECHANICS (MIDDLE SECTION) -->
+  <g transform="translate(60, 400)" filter="url(#shadowCard2)">
+    <rect width="1480" height="320" rx="16" fill="#0e1424" stroke="#334155" stroke-width="1.5" />
+    
+    <!-- Section Title Ribbon -->
+    <path d="M 0 16 Q 0 0 16 0 L 320 0 L 300 36 L 0 36 Z" fill="url(#purpleGrad2)" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="800" letter-spacing="0.5">🛡️ IN-FLIGHT COLLISION &amp; SHIELDING MECHANICS</text>
+    <text x="340" y="24" fill="#94a3b8" font-size="12">VAD Barge-In • Anti-Cancel Tool Shield • Repeat-on-Filler • Defer-Prompt Synchronization</text>
+
+    <!-- Shield 1: VAD Barge-In Interruption -->
+    <g transform="translate(24, 55)">
+      <rect width="450" height="240" rx="12" fill="url(#cardGradAccent2)" stroke="#f43f5e" stroke-width="1" />
+      <rect x="16" y="16" width="32" height="32" rx="8" fill="#4c0519" />
+      <text x="32" y="38" fill="#f43f5e" font-size="16" text-anchor="middle">🛑</text>
+      <text x="58" y="32" fill="#fecdd3" font-size="14" font-weight="700">1. Instant VAD Barge-In</text>
+      <text x="58" y="48" fill="#94a3b8" font-size="10.5">User interrupts bot while bot is speaking</text>
+
+      <rect x="16" y="66" width="418" height="48" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="86" fill="#cbd5e1" font-size="10" font-weight="600">Trigger Condition:</text>
+      <text x="26" y="102" fill="#94a3b8" font-size="9.5">Silero detects speech energy &gt; 50ms during active playback</text>
+
+      <rect x="16" y="122" width="418" height="52" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="142" fill="#f43f5e" font-size="10" font-weight="600">Action &amp; Signal Propagation:</text>
+      <text x="26" y="158" fill="#e2e8f0" font-size="9.5">Emits `InterruptionFrame` → Client truncates AudioBuffer immediately</text>
+
+      <rect x="16" y="182" width="418" height="42" rx="6" fill="#1c1917" stroke="#78350f" />
+      <text x="26" y="200" fill="#fde68a" font-size="9.5" font-weight="600">Result: Natural conversational barge-in without audio overlap</text>
+      <text x="26" y="214" fill="#94a3b8" font-size="8.5">Gemini Live clears server synthesis buffer immediately</text>
+    </g>
+
+    <!-- Shield 2: Anti-Cancel Tool Shield -->
+    <g transform="translate(500, 55)">
+      <rect width="470" height="240" rx="12" fill="url(#cardGradAccent2)" stroke="#f59e0b" stroke-width="1.2" />
+      <rect x="16" y="16" width="32" height="32" rx="8" fill="#451a03" />
+      <text x="32" y="38" fill="#f59e0b" font-size="16" text-anchor="middle">🔒</text>
+      <text x="58" y="32" fill="#fef3c7" font-size="14" font-weight="700">2. Anti-Cancel Tool Shield</text>
+      <text x="58" y="48" fill="#94a3b8" font-size="10.5">Protects deterministic financial calculation execution</text>
+
+      <rect x="16" y="66" width="438" height="48" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="86" fill="#cbd5e1" font-size="10" font-weight="600">Trigger Condition:</text>
+      <text x="26" y="102" fill="#fde68a" font-size="9.5" font-family="'JetBrains Mono', monospace">_active_tools_in_flight &gt; 0 | hold_max = 8.0s</text>
+
+      <rect x="16" y="122" width="438" height="52" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="142" fill="#f59e0b" font-size="10" font-weight="600">Action &amp; Interception Shield:</text>
+      <text x="26" y="158" fill="#e2e8f0" font-size="9.5">SUPPRESSES incoming `InterruptionFrame` / `CancelFrame`</text>
+
+      <rect x="16" y="182" width="438" height="42" rx="6" fill="#064e3b" stroke="#047857" />
+      <text x="26" y="200" fill="#a7f3d0" font-size="9.5" font-weight="600">Result: Pure math results (EMI, NPA, XIRR) NEVER dropped mid-turn</text>
+      <text x="26" y="214" fill="#6ee7b7" font-size="8.5">Prevents background noise or mic coughs from killing calculation callbacks</text>
+    </g>
+
+    <!-- Shield 3: Repeat-on-Filler Processor -->
+    <g transform="translate(994, 55)">
+      <rect width="462" height="240" rx="12" fill="url(#cardGradAccent2)" stroke="#38bdf8" stroke-width="1" />
+      <rect x="16" y="16" width="32" height="32" rx="8" fill="#0c4a6e" />
+      <text x="32" y="38" fill="#38bdf8" font-size="16" text-anchor="middle">🔄</text>
+      <text x="58" y="32" fill="#e0f2fe" font-size="14" font-weight="700">3. Repeat-on-Filler Recovery</text>
+      <text x="58" y="48" fill="#94a3b8" font-size="10.5">Distinguishes acknowledgments from real interruptions</text>
+
+      <rect x="16" y="66" width="430" height="48" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="86" fill="#cbd5e1" font-size="10" font-weight="600">Detection Pattern:</text>
+      <text x="26" y="102" fill="#38bdf8" font-size="9.5">Short utterance (≤ 2 words): "haan", "theek hai", "hmm", "okay"</text>
+
+      <rect x="16" y="122" width="430" height="52" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="26" y="142" fill="#38bdf8" font-size="10" font-weight="600">Synthetic Injected Prompt Turn:</text>
+      <text x="26" y="158" fill="#bae6fd" font-size="9" font-family="'JetBrains Mono', monospace">"User said '{filler}'. REPEAT previous response from start."</text>
+
+      <rect x="16" y="182" width="430" height="42" rx="6" fill="#172554" stroke="#1d4ed8" />
+      <text x="26" y="200" fill="#bfdbfe" font-size="9.5" font-weight="600">Result: Seamless thought continuation without losing consultative train</text>
+      <text x="26" y="214" fill="#93c5fd" font-size="8.5">Avoids awkward restart or confusing model replies</text>
+    </g>
+  </g>
+
+  <!-- SECTION 3: DOWNLINK AUDIO STREAM (BOTTOM ROW: 24kHz Egress) -->
+  <g transform="translate(60, 740)" filter="url(#shadowCard2)">
+    <rect width="1480" height="240" rx="16" fill="url(#cardGradDark2)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Section Title Ribbon -->
+    <path d="M 0 16 Q 0 0 16 0 L 300 0 L 280 36 L 0 36 Z" fill="url(#emeraldGrad2)" />
+    <text x="20" y="23" fill="#ffffff" font-size="13" font-weight="800" letter-spacing="0.5">⬇️ DOWNLINK AUDIO STREAM (24kHz PCM)</text>
+    <text x="320" y="24" fill="#94a3b8" font-size="12">Native Audio Synthesis → Pipeline Output Delivery → WebSocket Transport → Jitter Buffer Playback</text>
+
+    <!-- Stage 3.1: Vertex AI Native Synthesis -->
+    <g transform="translate(24, 55)">
+      <rect width="320" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#047857" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#064e3b" />
+      <text x="28" y="32" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">🧠</text>
+      <text x="50" y="32" fill="#a7f3d0" font-size="13" font-weight="700">Vertex AI Native Audio</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">`gemini-3.5-flash-live-preview`</text>
+
+      <rect x="14" y="74" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#34d399" font-size="10" font-family="'JetBrains Mono', monospace">24,000 Hz Linear PCM Output</text>
+
+      <rect x="14" y="112" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Chirp 3-HD / Cloned Voice Fallback</text>
+    </g>
+
+    <!-- Arrow 3.1 -> 3.2 -->
+    <path d="M 354 135 L 404 135" fill="none" stroke="#10b981" stroke-width="3" marker-end="url(#arrEmerald)" />
+
+    <!-- Stage 3.2: Pipecat Phase Transition Monitor -->
+    <g transform="translate(414, 55)">
+      <rect width="320" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#273553" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#064e3b" />
+      <text x="28" y="32" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">⏱️</text>
+      <text x="50" y="32" fill="#f8fafc" font-size="13" font-weight="700">Phase &amp; Speech Monitor</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">`PhaseTransitionProcessor`</text>
+
+      <rect x="14" y="74" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#e2e8f0" font-size="10">BotStarted / Stopped Speaking Frames</text>
+
+      <rect x="14" y="112" width="292" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#34d399" font-size="10" font-family="'JetBrains Mono', monospace">Safe Prompt Deferral until Silence</text>
+    </g>
+
+    <!-- Arrow 3.2 -> 3.3 -->
+    <path d="M 744 135 L 794 135" fill="none" stroke="#10b981" stroke-width="3" marker-end="url(#arrEmerald)" />
+
+    <!-- Stage 3.3: FastAPI Output Transport -->
+    <g transform="translate(804, 55)">
+      <rect width="310" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#273553" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#064e3b" />
+      <text x="28" y="32" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">📡</text>
+      <text x="50" y="32" fill="#f8fafc" font-size="13" font-weight="700">transport.output()</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">Binary Protobuf Frame Serializer</text>
+
+      <rect x="14" y="74" width="282" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#e2e8f0" font-size="10">Streaming Audio Raw Frames</text>
+
+      <rect x="14" y="112" width="282" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#60a5fa" font-size="10" font-family="'JetBrains Mono', monospace">RTVI Server Message Frames</text>
+    </g>
+
+    <!-- Arrow 3.3 -> 3.4 -->
+    <path d="M 1124 135 L 1174 135" fill="none" stroke="#10b981" stroke-width="3" marker-end="url(#arrEmerald)" />
+
+    <!-- Stage 3.4: Client Web Audio Playback -->
+    <g transform="translate(1184, 55)">
+      <rect width="270" height="160" rx="12" fill="url(#cardGradAccent2)" stroke="#047857" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="28" rx="6" fill="#064e3b" />
+      <text x="28" y="32" fill="#34d399" font-size="12" font-weight="700" text-anchor="middle">🔊</text>
+      <text x="50" y="32" fill="#a7f3d0" font-size="13" font-weight="700">Browser Speaker Out</text>
+      <text x="14" y="60" fill="#94a3b8" font-size="10.5">Zero-latency gapless playback</text>
+
+      <rect x="14" y="74" width="242" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="93" fill="#34d399" font-size="10" font-family="'JetBrains Mono', monospace">AudioBufferSourceNode</text>
+
+      <rect x="14" y="112" width="242" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="131" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Adaptive Jitter Buffer</text>
+    </g>
+  </g>
+</svg>

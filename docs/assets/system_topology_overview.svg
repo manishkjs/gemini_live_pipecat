@@ -1,0 +1,637 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1020" width="100%" height="100%" style="background:#0a0f1d; font-family:'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080c17" />
+      <stop offset="50%" stop-color="#0d1527" />
+      <stop offset="100%" stop-color="#080c17" />
+    </linearGradient>
+    
+    <linearGradient id="cardGradDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151e34" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+
+    <linearGradient id="cardGradAccent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e2942" />
+      <stop offset="100%" stop-color="#131c31" />
+    </linearGradient>
+
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#6d28d9" />
+    </linearGradient>
+
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" />
+      <stop offset="100%" stop-color="#047857" />
+    </linearGradient>
+
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#0e7490" />
+    </linearGradient>
+
+    <!-- Drop Shadows & Glow Filters -->
+    <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="glowPurple" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+
+    <filter id="shadowCard" x="-10%" y="-5%" width="120%" height="115%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.6" />
+    </filter>
+
+    <!-- Markers -->
+    <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#3b82f6" />
+    </marker>
+    <marker id="arrowEmerald" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#10b981" />
+    </marker>
+    <marker id="arrowPurple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#8b5cf6" />
+    </marker>
+    <marker id="arrowAmber" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#f59e0b" />
+    </marker>
+    <marker id="arrowCyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#06b6d4" />
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="1600" height="1020" fill="url(#bgGrad)" />
+  
+  <!-- Subtle Grid Pattern -->
+  <g opacity="0.04" stroke="#ffffff" stroke-width="1">
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" />
+    </pattern>
+    <rect width="1600" height="1020" fill="url(#grid)" />
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- HEADER SECTION                                                      -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(60, 40)">
+    <!-- Title Pill -->
+    <rect x="0" y="0" width="140" height="26" rx="13" fill="#1e293b" stroke="#3b82f6" stroke-width="1.2" />
+    <text x="70" y="17" fill="#60a5fa" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="1.5">TOPOLOGY OVERVIEW</text>
+
+    <!-- Main Title -->
+    <text x="0" y="58" fill="#f8fafc" font-size="26" font-weight="800" letter-spacing="-0.5">Gemini Live Pipecat — Enterprise System Architecture</text>
+    <text x="0" y="82" fill="#94a3b8" font-size="14" font-weight="400">Production Full-Duplex Voice Gateway • Vertex AI BiDi WebSocket • 9-Phase Consultative State Engine</text>
+
+    <!-- Header Badges (Right Aligned) -->
+    <g transform="translate(1080, 10)">
+      <!-- Vertex Badge -->
+      <rect x="0" y="0" width="125" height="32" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+      <circle cx="16" cy="16" r="5" fill="#818cf8" />
+      <text x="28" y="20" fill="#c7d2fe" font-size="11" font-weight="600">us-central1 BiDi</text>
+
+      <!-- Cloud Run Badge -->
+      <rect x="135" y="0" width="125" height="32" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="1" />
+      <circle cx="151" cy="16" r="5" fill="#34d399" />
+      <text x="163" y="20" fill="#a7f3d0" font-size="11" font-weight="600">Cloud Run :7860</text>
+
+      <!-- Latency Badge -->
+      <rect x="270" y="0" width="130" height="32" rx="8" fill="#451a03" stroke="#f59e0b" stroke-width="1" />
+      <circle cx="286" cy="16" r="5" fill="#fbbf24" />
+      <text x="298" y="20" fill="#fde68a" font-size="11" font-weight="600">TTFT &lt; 150ms</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- 4 PRIMARY ARCHITECTURAL COLUMNS                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- COLUMN 1: CLIENT & EDGE TIER -->
+  <g transform="translate(60, 150)" filter="url(#shadowCard)">
+    <!-- Column Card Background -->
+    <rect width="320" height="740" rx="16" fill="url(#cardGradDark)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Column Header -->
+    <rect width="320" height="54" rx="16" fill="#1e293b" />
+    <rect y="40" width="320" height="14" fill="#1e293b" />
+    <path d="M 0 16 Q 0 0 16 0 L 304 0 Q 320 0 320 16 L 320 54 L 0 54 Z" fill="#1e293b" />
+    <circle cx="28" cy="27" r="9" fill="#3b82f6" opacity="0.2" />
+    <circle cx="28" cy="27" r="4" fill="#3b82f6" />
+    <text x="46" y="32" fill="#f8fafc" font-size="14" font-weight="700">1. Client &amp; Edge Tier</text>
+    <rect x="235" y="17" width="68" height="20" rx="6" fill="#0f172a" />
+    <text x="269" y="31" fill="#60a5fa" font-size="9.5" font-weight="600" text-anchor="middle">BROWSER</text>
+
+    <!-- Sub-card 1.1: Web Audio API Engine -->
+    <g transform="translate(16, 70)">
+      <rect width="288" height="120" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#60a5fa" font-size="12" font-weight="700">Web Audio API Engine</text>
+      <text x="14" y="42" fill="#94a3b8" font-size="10.5">High-precision PCM audio processing</text>
+      
+      <rect x="14" y="54" width="260" height="26" rx="5" fill="#0f172a" stroke="#1e293b" />
+      <circle cx="26" cy="67" r="3.5" fill="#3b82f6" />
+      <text x="36" y="71" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Mic Input: 16kHz PCM (20ms)</text>
+
+      <rect x="14" y="84" width="260" height="26" rx="5" fill="#0f172a" stroke="#1e293b" />
+      <circle cx="26" cy="97" r="3.5" fill="#10b981" />
+      <text x="36" y="101" fill="#e2e8f0" font-size="10" font-family="'JetBrains Mono', monospace">Speaker: 24kHz PCM Playback</text>
+    </g>
+
+    <!-- Sub-card 1.2: RTVI Client Core -->
+    <g transform="translate(16, 204)">
+      <rect width="288" height="150" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#a78bfa" font-size="12" font-weight="700">RTVI Client Core Protocol</text>
+      <text x="14" y="42" fill="#94a3b8" font-size="10.5">Dual-mode application runtime</text>
+
+      <rect x="14" y="54" width="260" height="40" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="70" fill="#e2e8f0" font-size="10" font-weight="600">Dual-Mode UI Selector</text>
+      <text x="24" y="85" fill="#64748b" font-size="9.5">Sales Demo View vs Engineer Studio</text>
+
+      <rect x="14" y="99" width="260" height="40" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="115" fill="#e2e8f0" font-size="10" font-weight="600">WebSocket Transport Client</text>
+      <text x="24" y="130" fill="#64748b" font-size="9.5">Auto-reconnect • Binary Protobuf serializer</text>
+    </g>
+
+    <!-- Sub-card 1.3: Realtime UI Visualizers -->
+    <g transform="translate(16, 368)">
+      <rect width="288" height="155" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#34d399" font-size="12" font-weight="700">Telemetry &amp; Visualizers</text>
+      
+      <rect x="14" y="38" width="260" height="32" rx="6" fill="#0f172a" />
+      <text x="24" y="58" fill="#e2e8f0" font-size="10">🌐 HTML5 3D Audio Visualizer Orb</text>
+
+      <rect x="14" y="75" width="260" height="32" rx="6" fill="#0f172a" />
+      <text x="24" y="95" fill="#e2e8f0" font-size="10">🔔 Floating Toast Tool Visualizer</text>
+
+      <rect x="14" y="112" width="260" height="32" rx="6" fill="#0f172a" />
+      <text x="24" y="132" fill="#e2e8f0" font-size="10">📊 Live Turn Latency &amp; Token Counters</text>
+    </g>
+
+    <!-- Sub-card 1.4: Client Diagnostics Box -->
+    <g transform="translate(16, 536)">
+      <rect width="288" height="185" rx="10" fill="#0c1222" stroke="#1e293b" stroke-dasharray="4 3" />
+      <text x="14" y="24" fill="#94a3b8" font-size="11" font-weight="700" letter-spacing="0.5">CLIENT-SIDE INVARIANTS</text>
+      
+      <circle cx="22" cy="46" r="3" fill="#3b82f6" />
+      <text x="32" y="50" fill="#cbd5e1" font-size="9.5">Echo Cancellation + Noise Suppression</text>
+
+      <circle cx="22" cy="74" r="3" fill="#3b82f6" />
+      <text x="32" y="78" fill="#cbd5e1" font-size="9.5">Strict 20ms Frame Chunking (640B)</text>
+
+      <circle cx="22" cy="102" r="3" fill="#3b82f6" />
+      <text x="32" y="106" fill="#cbd5e1" font-size="9.5">StartTrigger Handshake on Connect</text>
+
+      <circle cx="22" cy="130" r="3" fill="#3b82f6" />
+      <text x="32" y="134" fill="#cbd5e1" font-size="9.5">Dynamic Script Rendering (Devanagari)</text>
+
+      <circle cx="22" cy="158" r="3" fill="#3b82f6" />
+      <text x="32" y="162" fill="#cbd5e1" font-size="9.5">AudioBufferSource Jitter Buffer</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 2: PIPE CAT PIPELINE & GATEWAY -->
+  <g transform="translate(420, 150)" filter="url(#shadowCard)">
+    <!-- Column Card Background -->
+    <rect width="360" height="740" rx="16" fill="url(#cardGradDark)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Column Header -->
+    <path d="M 0 16 Q 0 0 16 0 L 344 0 Q 360 0 360 16 L 360 54 L 0 54 Z" fill="#1e293b" />
+    <circle cx="28" cy="27" r="9" fill="#10b981" opacity="0.2" />
+    <circle cx="28" cy="27" r="4" fill="#10b981" />
+    <text x="46" y="32" fill="#f8fafc" font-size="14" font-weight="700">2. Pipecat Duplex Gateway</text>
+    <rect x="255" y="17" width="88" height="20" rx="6" fill="#0f172a" />
+    <text x="299" y="31" fill="#34d399" font-size="9.5" font-weight="600" text-anchor="middle">FASTAPI :7860</text>
+
+    <!-- Sub-card 2.1: Gateway Ingress & VAD -->
+    <g transform="translate(16, 70)">
+      <rect width="328" height="110" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#34d399" font-size="12" font-weight="700">FastAPI Transport &amp; VAD</text>
+      
+      <rect x="14" y="36" width="300" height="28" rx="5" fill="#0f172a" />
+      <text x="24" y="54" fill="#e2e8f0" font-size="10">FastAPIWebsocketTransport</text>
+      <text x="235" y="54" fill="#64748b" font-size="9" font-family="'JetBrains Mono', monospace">ws:// /ws</text>
+
+      <rect x="14" y="68" width="300" height="32" rx="5" fill="#0f172a" stroke="#047857" stroke-width="0.8" />
+      <circle cx="26" cy="84" r="4" fill="#10b981" />
+      <text x="38" y="88" fill="#a7f3d0" font-size="10" font-weight="600">Silero VAD Analyzer (stop_secs = 0.4s)</text>
+    </g>
+
+    <!-- Sub-card 2.2: Pipeline Frame Stack -->
+    <g transform="translate(16, 192)">
+      <rect width="328" height="330" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#60a5fa" font-size="12" font-weight="700">Frame Processor Pipeline Stack</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10">Ordered bi-directional streaming pipeline</text>
+
+      <!-- Frame 1 -->
+      <g transform="translate(14, 52)">
+        <rect width="300" height="34" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="21" fill="#60a5fa" font-size="10" font-weight="700" text-anchor="middle">1</text>
+        <text x="36" y="22" fill="#e2e8f0" font-size="10" font-weight="600">StartTriggerProcessor</text>
+        <text x="195" y="22" fill="#94a3b8" font-size="9">Greeting injection</text>
+      </g>
+
+      <!-- Frame 2 -->
+      <g transform="translate(14, 92)">
+        <rect width="300" height="34" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="21" fill="#f59e0b" font-size="10" font-weight="700" text-anchor="middle">2</text>
+        <text x="36" y="22" fill="#e2e8f0" font-size="10" font-weight="600">UserIdleProcessor</text>
+        <text x="195" y="22" fill="#f59e0b" font-size="9">30s timeout / 3 retries</text>
+      </g>
+
+      <!-- Frame 3 -->
+      <g transform="translate(14, 132)">
+        <rect width="300" height="34" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="21" fill="#8b5cf6" font-size="10" font-weight="700" text-anchor="middle">3</text>
+        <text x="36" y="22" fill="#e2e8f0" font-size="10" font-weight="600">ContextAggregator.user()</text>
+        <text x="210" y="22" fill="#94a3b8" font-size="9">Turn batching</text>
+      </g>
+
+      <!-- Frame 4 -->
+      <g transform="translate(14, 172)">
+        <rect width="300" height="34" rx="6" fill="#1e1b4b" stroke="#6366f1" stroke-width="1" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#312e81" />
+        <text x="17" y="21" fill="#c7d2fe" font-size="10" font-weight="700" text-anchor="middle">4</text>
+        <text x="36" y="22" fill="#c7d2fe" font-size="10" font-weight="700">CustomGeminiLiveVertexLLM</text>
+        <text x="238" y="22" fill="#818cf8" font-size="9">BiDi Pipe</text>
+      </g>
+
+      <!-- Frame 5 -->
+      <g transform="translate(14, 212)">
+        <rect width="300" height="34" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="21" fill="#ec4899" font-size="10" font-weight="700" text-anchor="middle">5</text>
+        <text x="36" y="22" fill="#e2e8f0" font-size="10" font-weight="600">PhaseTransitionProcessor</text>
+        <text x="202" y="22" fill="#94a3b8" font-size="9">Turn-safe yield</text>
+      </g>
+
+      <!-- Frame 6 -->
+      <g transform="translate(14, 252)">
+        <rect width="300" height="34" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="6" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="21" fill="#10b981" font-size="10" font-weight="700" text-anchor="middle">6</text>
+        <text x="36" y="22" fill="#e2e8f0" font-size="10" font-weight="600">transport.output() / TTS</text>
+        <text x="210" y="22" fill="#94a3b8" font-size="9">Audio frames</text>
+      </g>
+
+      <!-- Frame 7 -->
+      <g transform="translate(14, 292)">
+        <rect width="300" height="30" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <rect x="6" y="4" width="22" height="22" rx="4" fill="#1e293b" />
+        <text x="17" y="19" fill="#06b6d4" font-size="10" font-weight="700" text-anchor="middle">7</text>
+        <text x="36" y="20" fill="#e2e8f0" font-size="10" font-weight="600">ContextAggregator.assistant()</text>
+        <text x="220" y="20" fill="#94a3b8" font-size="9">History sync</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 2.3: In-Flight Collision Shields -->
+    <g transform="translate(16, 536)">
+      <rect width="328" height="185" rx="10" fill="#161224" stroke="#4c1d95" stroke-width="1" />
+      <text x="14" y="24" fill="#c084fc" font-size="11" font-weight="700" letter-spacing="0.5">IN-FLIGHT COLLISION SHIELDS</text>
+
+      <rect x="14" y="36" width="300" height="62" rx="6" fill="#0f172a" stroke="#2e1065" />
+      <text x="24" y="54" fill="#f43f5e" font-size="10.5" font-weight="700">🛡️ Anti-Cancel Tool Shield</text>
+      <text x="24" y="70" fill="#94a3b8" font-size="9.5">Locks interruption frames during active tool runs</text>
+      <text x="24" y="86" fill="#64748b" font-size="9" font-family="'JetBrains Mono', monospace">_active_tools_in_flight | hold_max = 8.0s</text>
+
+      <rect x="14" y="106" width="300" height="62" rx="6" fill="#0f172a" stroke="#2e1065" />
+      <text x="24" y="124" fill="#38bdf8" font-size="10.5" font-weight="700">🔄 Repeat-on-Filler Processor</text>
+      <text x="24" y="140" fill="#94a3b8" font-size="9.5">Recovers from acknowledgment words (≤2 words)</text>
+      <text x="24" y="156" fill="#64748b" font-size="9" font-family="'JetBrains Mono', monospace">"haan", "theek hai" -&gt; Model resumes turn</text>
+    </g>
+  </g>
+
+  <!-- COLUMN 3: VERTEX AI GEMINI LIVE & STATE ENGINE -->
+  <g transform="translate(810, 150)" filter="url(#shadowCard)">
+    <!-- Column Card Background -->
+    <rect width="380" height="740" rx="16" fill="url(#cardGradDark)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Column Header -->
+    <path d="M 0 16 Q 0 0 16 0 L 364 0 Q 380 0 380 16 L 380 54 L 0 54 Z" fill="#1e293b" />
+    <circle cx="28" cy="27" r="9" fill="#8b5cf6" opacity="0.2" />
+    <circle cx="28" cy="27" r="4" fill="#8b5cf6" />
+    <text x="46" y="32" fill="#f8fafc" font-size="14" font-weight="700">3. Vertex AI Live &amp; Brain Triad</text>
+    <rect x="250" y="17" width="115" height="20" rx="6" fill="#1e1b4b" />
+    <text x="307" y="31" fill="#c7d2fe" font-size="9.5" font-weight="600" text-anchor="middle">GEMINI 3.5 BIDI</text>
+
+    <!-- Sub-card 3.1: Vertex AI BiDi Engine -->
+    <g transform="translate(16, 70)">
+      <rect width="348" height="125" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#a78bfa" font-size="12" font-weight="700">Vertex AI Gemini Live BiDi Core</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10.5">`gemini-3.5-flash-live-preview` (us-central1)</text>
+
+      <g transform="translate(14, 52)">
+        <rect width="155" height="60" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="20" fill="#c7d2fe" font-size="9.5" font-weight="600">Client Content Stream</text>
+        <text x="10" y="36" fill="#64748b" font-size="8.5">realtimeInput audio frames</text>
+        <text x="10" y="50" fill="#60a5fa" font-size="8.5">Dynamic phase prompt cards</text>
+      </g>
+
+      <g transform="translate(178, 52)">
+        <rect width="155" height="60" rx="6" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="20" fill="#34d399" font-size="9.5" font-weight="600">Server Content Stream</text>
+        <text x="10" y="36" fill="#64748b" font-size="8.5">24kHz PCM native audio</text>
+        <text x="10" y="50" fill="#a78bfa" font-size="8.5">Function call dispatch</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 3.2: 9-Phase Consultative Funnel Engine -->
+    <g transform="translate(16, 208)">
+      <rect width="348" height="185" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#f59e0b" font-size="12" font-weight="700">9-Phase Consultative State Engine</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10">Deterministic sales funnel with prompt card injection</text>
+
+      <!-- 9 Phases Visual Matrix -->
+      <g transform="translate(14, 52)">
+        <rect width="98" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="8" y="16" fill="#fbbf24" font-size="8.5" font-weight="700">P1: Time Check</text>
+        <text x="8" y="28" fill="#64748b" font-size="7.5">2-min consent</text>
+
+        <rect x="106" y="0" width="98" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="114" y="16" fill="#fbbf24" font-size="8.5" font-weight="700">P2: Discovery</text>
+        <text x="114" y="28" fill="#64748b" font-size="7.5">P2P familiarity</text>
+
+        <rect x="212" y="0" width="108" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="220" y="16" fill="#fbbf24" font-size="8.5" font-weight="700">P3: Concept Edu</text>
+        <text x="220" y="28" fill="#64748b" font-size="7.5">Bank disinterm.</text>
+      </g>
+
+      <g transform="translate(14, 94)">
+        <rect width="98" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="8" y="16" fill="#38bdf8" font-size="8.5" font-weight="700">P4: RBI Trust</text>
+        <text x="8" y="28" fill="#64748b" font-size="7.5">Trustee Escrow</text>
+
+        <rect x="106" y="0" width="98" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="114" y="16" fill="#38bdf8" font-size="8.5" font-weight="700">P5: Risk Mitig.</text>
+        <text x="114" y="28" fill="#64748b" font-size="7.5">100+ split, 96%</text>
+
+        <rect x="212" y="0" width="108" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="220" y="16" fill="#38bdf8" font-size="8.5" font-weight="700">P6: Sizing</text>
+        <text x="220" y="28" fill="#64748b" font-size="7.5">Amount / Tenure</text>
+      </g>
+
+      <g transform="translate(14, 136)">
+        <rect width="98" height="34" rx="5" fill="#0f172a" stroke="#059669" stroke-width="1" />
+        <text x="8" y="16" fill="#34d399" font-size="8.5" font-weight="700">P7: Product Calc</text>
+        <text x="8" y="28" fill="#6ee7b7" font-size="7.5">Deterministic math</text>
+
+        <rect x="106" y="0" width="98" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="114" y="16" fill="#34d399" font-size="8.5" font-weight="700">P8: Digital KYC</text>
+        <text x="114" y="28" fill="#64748b" font-size="7.5">PAN / Aadhaar</text>
+
+        <rect x="212" y="0" width="108" height="34" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="220" y="16" fill="#34d399" font-size="8.5" font-weight="700">P9: Activation</text>
+        <text x="220" y="28" fill="#64748b" font-size="7.5">Deposit close</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 3.3: Pure Python Financial Math Tools -->
+    <g transform="translate(16, 404)">
+      <rect width="348" height="155" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#34d399" font-size="12" font-weight="700">Deterministic Financial Math Tools</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10">Zero-hallucination arithmetic execution</text>
+
+      <g transform="translate(14, 52)">
+        <rect width="155" height="42" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">calculate_stl_returns</text>
+        <text x="10" y="32" fill="#64748b" font-size="8.5">5M / 7M (12-18% XIRR)</text>
+
+        <rect x="165" y="0" width="155" height="42" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="175" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">calculate_mtl_returns</text>
+        <text x="175" y="32" fill="#64748b" font-size="8.5">Monthly EMI / Daily EDI</text>
+      </g>
+
+      <g transform="translate(14, 102)">
+        <rect width="155" height="42" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">calculate_manual_lending</text>
+        <text x="10" y="32" fill="#64748b" font-size="8.5">Rule 4 Steps A-G (NPA+Fee)</text>
+
+        <rect x="165" y="0" width="155" height="42" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="175" y="18" fill="#e2e8f0" font-size="9.5" font-weight="600">get_kyc_guidance</text>
+        <text x="175" y="32" fill="#64748b" font-size="8.5">Digilocker 3-step guide</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 3.4: Brain Triad Sidecar Architecture -->
+    <g transform="translate(16, 570)">
+      <rect width="348" height="150" rx="10" fill="#1b1731" stroke="#6d28d9" stroke-width="1" />
+      <text x="14" y="24" fill="#c084fc" font-size="11" font-weight="700" letter-spacing="0.5">MULTI-TIERED AI BRAIN TRIAD</text>
+
+      <g transform="translate(14, 36)">
+        <rect width="320" height="28" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="18" fill="#60a5fa" font-size="9.5" font-weight="700">Tier-1: 0ms Regex Fast-Path</text>
+        <text x="220" y="18" fill="#94a3b8" font-size="9">Keywords router</text>
+      </g>
+
+      <g transform="translate(14, 70)">
+        <rect width="320" height="28" rx="5" fill="#0f172a" stroke="#1e293b" />
+        <text x="10" y="18" fill="#a78bfa" font-size="9.5" font-weight="700">Tier-2: Async Semantic Classifier</text>
+        <text x="218" y="18" fill="#a78bfa" font-size="9">Flash-Lite &lt;120ms</text>
+      </g>
+
+      <g transform="translate(14, 104)">
+        <rect width="320" height="34" rx="5" fill="#0f172a" stroke="#8b5cf6" stroke-width="0.8" />
+        <text x="10" y="16" fill="#34d399" font-size="9.5" font-weight="700">Tier-3: Continuous Watcher Brain</text>
+        <text x="10" y="28" fill="#64748b" font-size="8.5">Silent co-pilot whisper injection (&lt;copilot_hint&gt;)</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- COLUMN 4: MEMORY, PERSISTENCE & OBSERVABILITY -->
+  <g transform="translate(1220, 150)" filter="url(#shadowCard)">
+    <!-- Column Card Background -->
+    <rect width="320" height="740" rx="16" fill="url(#cardGradDark)" stroke="#1e293b" stroke-width="1.5" />
+    
+    <!-- Column Header -->
+    <path d="M 0 16 Q 0 0 16 0 L 304 0 Q 320 0 320 16 L 320 54 L 0 54 Z" fill="#1e293b" />
+    <circle cx="28" cy="27" r="9" fill="#06b6d4" opacity="0.2" />
+    <circle cx="28" cy="27" r="4" fill="#06b6d4" />
+    <text x="46" y="32" fill="#f8fafc" font-size="14" font-weight="700">4. Memory &amp; Telemetry</text>
+    <rect x="235" y="17" width="68" height="20" rx="6" fill="#0f172a" />
+    <text x="269" y="31" fill="#22d3ee" font-size="9.5" font-weight="600" text-anchor="middle">FACTSTORE</text>
+
+    <!-- Sub-card 4.1: Structured FactStore -->
+    <g transform="translate(16, 70)">
+      <rect width="288" height="185" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#22d3ee" font-size="12" font-weight="700">FactStore (8 Financial Keys)</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10.5">Turn-by-turn audit history + 6T TTL</text>
+
+      <g transform="translate(14, 52)">
+        <rect width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="8" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">amount</text>
+
+        <rect x="135" y="0" width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="143" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">tenure_months</text>
+      </g>
+
+      <g transform="translate(14, 82)">
+        <rect width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="8" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">risk_preference</text>
+
+        <rect x="135" y="0" width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="143" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">timeline</text>
+      </g>
+
+      <g transform="translate(14, 112)">
+        <rect width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="8" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">goal</text>
+
+        <rect x="135" y="0" width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="143" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">occupation</text>
+      </g>
+
+      <g transform="translate(14, 142)">
+        <rect width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="8" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">city</text>
+
+        <rect x="135" y="0" width="125" height="24" rx="4" fill="#0f172a" />
+        <text x="143" y="16" fill="#cbd5e1" font-size="9" font-family="'JetBrains Mono', monospace">experience</text>
+      </g>
+    </g>
+
+    <!-- Sub-card 4.2: Vector MemoryBank -->
+    <g transform="translate(16, 266)">
+      <rect width="288" height="155" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#a78bfa" font-size="12" font-weight="700">MemoryBank Vector Engine</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10.5">Dual-threshold semantic matching</text>
+
+      <rect x="14" y="52" width="260" height="42" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="70" fill="#e2e8f0" font-size="10" font-weight="600">Deduplication: &gt;= 0.83</text>
+      <text x="24" y="85" fill="#94a3b8" font-size="9">In-place update • MD5 Content Hash</text>
+
+      <rect x="14" y="100" width="260" height="42" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="118" fill="#e2e8f0" font-size="10" font-weight="600">Retrieval: &gt;= 0.40</text>
+      <text x="24" y="133" fill="#94a3b8" font-size="9">90-day cross-session profile hydration</text>
+    </g>
+
+    <!-- Sub-card 4.3: Post-Session Downcar -->
+    <g transform="translate(16, 432)">
+      <rect width="288" height="135" rx="10" fill="url(#cardGradAccent)" stroke="#273553" stroke-width="1" />
+      <text x="14" y="24" fill="#38bdf8" font-size="12" font-weight="700">Post-Session Downcar</text>
+      <text x="14" y="40" fill="#94a3b8" font-size="10.5">`memory_downcar.py` background worker</text>
+
+      <rect x="14" y="52" width="260" height="70" rx="6" fill="#0f172a" stroke="#0284c7" stroke-width="0.8" />
+      <text x="24" y="72" fill="#bae6fd" font-size="10" font-weight="600">Async Session Finalizer</text>
+      <text x="24" y="88" fill="#94a3b8" font-size="9">Triggered on `on_client_disconnected`</text>
+      <text x="24" y="104" fill="#94a3b8" font-size="9">Extracts structured facts with Flash-Lite</text>
+    </g>
+
+    <!-- Sub-card 4.4: LangSmith Tracing -->
+    <g transform="translate(16, 578)">
+      <rect width="288" height="142" rx="10" fill="#181e2e" stroke="#3b82f6" stroke-width="1" />
+      <text x="14" y="24" fill="#60a5fa" font-size="11" font-weight="700" letter-spacing="0.5">LANGSMITH TELEMETRY</text>
+
+      <rect x="14" y="36" width="260" height="42" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="54" fill="#e2e8f0" font-size="10" font-weight="600">Full-Duplex Session Runs</text>
+      <text x="24" y="69" fill="#94a3b8" font-size="9">VAD turns, TTFT latency, tool spans</text>
+
+      <rect x="14" y="84" width="260" height="44" rx="6" fill="#0f172a" stroke="#1e293b" />
+      <text x="24" y="102" fill="#34d399" font-size="10" font-weight="600">Public Run URL Sharing</text>
+      <text x="24" y="117" fill="#64748b" font-size="8.5" font-family="'JetBrains Mono', monospace">https://smith.langchain.com/public/...</text>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- CROSS-TIER CONNECTORS & DATA BUS ARROWS                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- 1. Client to Pipecat Audio In (16kHz Uplink) -->
+  <path d="M 380 280 L 420 280" fill="none" stroke="#3b82f6" stroke-width="3" marker-end="url(#arrowBlue)" />
+  <rect x="375" y="258" width="50" height="16" rx="4" fill="#0f172a" stroke="#3b82f6" stroke-width="0.8" />
+  <text x="400" y="269" fill="#60a5fa" font-size="8" font-weight="700" text-anchor="middle">16kHz</text>
+
+  <!-- 2. Pipecat to Client Audio Out (24kHz Downlink) -->
+  <path d="M 420 440 L 380 440" fill="none" stroke="#10b981" stroke-width="3" marker-end="url(#arrowEmerald)" />
+  <rect x="375" y="445" width="50" height="16" rx="4" fill="#0f172a" stroke="#10b981" stroke-width="0.8" />
+  <text x="400" y="456" fill="#34d399" font-size="8" font-weight="700" text-anchor="middle">24kHz</text>
+
+  <!-- 3. Pipecat to Vertex Live Bidi (Uplink Stream) -->
+  <path d="M 780 340 L 810 340" fill="none" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrowPurple)" />
+  <rect x="772" y="318" width="46" height="16" rx="4" fill="#0f172a" stroke="#8b5cf6" stroke-width="0.8" />
+  <text x="795" y="329" fill="#c7d2fe" font-size="8" font-weight="700" text-anchor="middle">BiDi</text>
+
+  <!-- 4. Vertex Live Bidi to Pipecat (Downlink Audio + Tools) -->
+  <path d="M 810 460 L 780 460" fill="none" stroke="#8b5cf6" stroke-width="3" marker-end="url(#arrowPurple)" />
+  <rect x="772" y="465" width="46" height="16" rx="4" fill="#0f172a" stroke="#8b5cf6" stroke-width="0.8" />
+  <text x="795" y="476" fill="#c7d2fe" font-size="8" font-weight="700" text-anchor="middle">Audio</text>
+
+  <!-- 5. Vertex Live / State Engine to MemoryBank & FactStore -->
+  <path d="M 1190 320 L 1220 320" fill="none" stroke="#06b6d4" stroke-width="2.5" marker-end="url(#arrowCyan)" stroke-dasharray="5 3" />
+  
+  <!-- 6. Pipeline to LangSmith Telemetry -->
+  <path d="M 780 750 Q 1000 820 1220 750" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowBlue)" stroke-dasharray="4 3" />
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- BOTTOM METRICS & SYSTEM SPECIFICATIONS BAR                          -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <g transform="translate(60, 910)">
+    <rect width="1480" height="70" rx="12" fill="#0f172a" stroke="#1e293b" stroke-width="1.2" />
+
+    <!-- Spec 1 -->
+    <g transform="translate(30, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">AUDIO PROTOCOL</text>
+      <text x="0" y="34" fill="#f8fafc" font-size="12" font-weight="700">16kHz In / 24kHz Out PCM</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="260" y1="12" x2="260" y2="58" stroke="#1e293b" stroke-width="1.5" />
+
+    <!-- Spec 2 -->
+    <g transform="translate(290, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">VAD SENSITIVITY</text>
+      <text x="0" y="34" fill="#34d399" font-size="12" font-weight="700">Silero stop_secs = 0.40s</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="510" y1="12" x2="510" y2="58" stroke="#1e293b" stroke-width="1.5" />
+
+    <!-- Spec 3 -->
+    <g transform="translate(540, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">STATE CONTROL</text>
+      <text x="0" y="34" fill="#fbbf24" font-size="12" font-weight="700">9-Phase Consultative Funnel</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="770" y1="12" x2="770" y2="58" stroke="#1e293b" stroke-width="1.5" />
+
+    <!-- Spec 4 -->
+    <g transform="translate(800, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">COLLISION SHIELD</text>
+      <text x="0" y="34" fill="#f43f5e" font-size="12" font-weight="700">Anti-Cancel (8s Hold) + Repeat Filler</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="1080" y1="12" x2="1080" y2="58" stroke="#1e293b" stroke-width="1.5" />
+
+    <!-- Spec 5 -->
+    <g transform="translate(1110, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">MEMORY RETENTION</text>
+      <text x="0" y="34" fill="#22d3ee" font-size="12" font-weight="700">6T Fact TTL • 90-Day Vector Profile</text>
+    </g>
+
+    <!-- Divider -->
+    <line x1="1330" y1="12" x2="1330" y2="58" stroke="#1e293b" stroke-width="1.5" />
+
+    <!-- Spec 6 -->
+    <g transform="translate(1350, 16)">
+      <text x="0" y="14" fill="#64748b" font-size="10" font-weight="600">DEPLOYMENT</text>
+      <text x="0" y="34" fill="#a78bfa" font-size="12" font-weight="700">Cloud Run + us-central1</text>
+    </g>
+  </g>
+</svg>
