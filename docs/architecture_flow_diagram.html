@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cymbal Gemini Live — Master Architecture Flow Diagrams</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#070b16',
+        primaryColor: '#38bdf8',
+        primaryTextColor: '#ffffff',
+        primaryBorderColor: '#0284c7',
+        lineColor: '#38bdf8',
+        secondaryColor: '#a855f7',
+        tertiaryColor: '#10b981'
+      }
+    });
+  </script>
+  <style>
+    .glass { background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    .glass-card { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); transition: all 0.2s ease; }
+    .glass-card:hover { border-color: rgba(56, 189, 248, 0.4); }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+  </style>
+</head>
+<body class="bg-[#070b16] text-gray-100 font-sans min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="h-16 border-b border-white/10 px-8 flex items-center justify-between bg-[#0b1120]/95 sticky top-0 z-30 backdrop-blur">
+    <div class="flex items-center space-x-4">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 via-indigo-500 to-purple-600 flex items-center justify-center font-bold text-white shadow-lg text-base">GL</div>
+      <div>
+        <h1 class="font-bold text-base tracking-wide text-white flex items-center space-x-2">
+          <span>Cymbal Gemini Live Architecture Flows</span>
+          <span class="text-[11px] px-2.5 py-0.5 rounded-full font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Interactive Engine Specification</span>
+        </h1>
+        <p class="text-xs text-gray-400">Full-Duplex Reflex Voice Loop vs Decoupled Asynchronous Deliberation</p>
+      </div>
+    </div>
+    <div class="flex items-center space-x-3">
+      <a href="ARCHITECTURE_DEEP_DIVE.md" class="text-xs px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 transition">Deep Dive Document</a>
+      <a href="cymbal_live_studio_prototype.html" class="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 font-medium transition">Live Studio Prototype</a>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-8 space-y-12">
+
+    <!-- Hero Infographic Showcase -->
+    <section class="glass rounded-2xl p-6 border border-white/10 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-xl font-bold text-white flex items-center space-x-2">
+            <span>🌟 Master End-to-End Architectural Flowchart</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-mono">1600x1100 HD Vector</span>
+          </h2>
+          <p class="text-sm text-gray-400">Step-by-step tracing from microphone ingest (16kHz), Pipecat frame processors, in-flight AntiCancel tool lock, and 3-tier asynchronous intelligence downcar.</p>
+        </div>
+        <div class="flex space-x-2">
+          <a href="assets/end_to_end_conversation_flow.png" target="_blank" class="text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 transition">Open Full PNG</a>
+          <a href="assets/end_to_end_conversation_flow.svg" target="_blank" class="text-xs px-3 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 border border-purple-500/30 transition">Open Vector SVG</a>
+        </div>
+      </div>
+      <div class="rounded-xl overflow-hidden border border-white/10 bg-[#0c1322] flex items-center justify-center p-2">
+        <img src="assets/end_to_end_conversation_flow.png" alt="End to End Conversation Flow" class="w-full h-auto rounded-lg shadow-2xl hover:scale-[1.01] transition duration-300">
+      </div>
+    </section>
+
+    <!-- Subsystem Flow Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      
+      <!-- Flow 1: Audio Pump & In-Flight Tool Shield -->
+      <section class="glass-card rounded-xl p-5 space-y-4 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-cyan-300 flex items-center space-x-2">
+              <span>1. Full-Duplex Audio Pump &amp; AntiCancel Shield</span>
+            </h3>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400">Reflex Loop</span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">16kHz linear PCM ingestion, 20ms chunk framing, AntiCancel tool locking (<code class="text-pink-300">_active_tools_in_flight</code>), and 24kHz native speech synthesis.</p>
+          <div class="mt-3 rounded-lg overflow-hidden border border-white/10 bg-black/40">
+            <img src="assets/full_duplex_audio_pump.png" alt="Full Duplex Audio Pump" class="w-full h-auto">
+          </div>
+        </div>
+      </section>
+
+      <!-- Flow 2: Multi-Tiered Brain Triad -->
+      <section class="glass-card rounded-xl p-5 space-y-4 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-purple-300 flex items-center space-x-2">
+              <span>2. Multi-Tiered AI Brain Triad &amp; Sentry</span>
+            </h3>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-400">Deliberation Loop</span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Tier-1 0.00ms Fast-Path Regex, Tier-2 &lt;120ms Gemini 3.5 Flash-Lite Intent Classifier, and Tier-3 Continuous Watcher Brain whisper queue.</p>
+          <div class="mt-3 rounded-lg overflow-hidden border border-white/10 bg-black/40">
+            <img src="assets/ai_brain_triad.png" alt="AI Brain Triad" class="w-full h-auto">
+          </div>
+        </div>
+      </section>
+
+      <!-- Flow 3: System Topology Overview -->
+      <section class="glass-card rounded-xl p-5 space-y-4 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-amber-300 flex items-center space-x-2">
+              <span>3. End-to-End System Topology</span>
+            </h3>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">5-Tier Overview</span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Client Tier, FastAPI Gateway (:7860), Pipecat Frame Processing Pipeline, Intelligence Brain Layer, and Google Cloud Vertex AI.</p>
+          <div class="mt-3 rounded-lg overflow-hidden border border-white/10 bg-black/40">
+            <img src="assets/system_topology_overview.png" alt="System Topology Overview" class="w-full h-auto">
+          </div>
+        </div>
+      </section>
+
+      <!-- Flow 4: Enterprise Memory Lifecycle -->
+      <section class="glass-card rounded-xl p-5 space-y-4 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <h3 class="text-base font-bold text-emerald-300 flex items-center space-x-2">
+              <span>4. Enterprise Memory &amp; Post-Session Downcar</span>
+            </h3>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400">Memory Engine</span>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Spoken name lexical identity resolver, 8 canonical financial keys, 6-turn TTL expiration, and post-session Downcar persistence.</p>
+          <div class="mt-3 rounded-lg overflow-hidden border border-white/10 bg-black/40">
+            <img src="assets/enterprise_memory_lifecycle.png" alt="Enterprise Memory Lifecycle" class="w-full h-auto">
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Live Interactive Mermaid Sequence Flow -->
+    <section class="glass rounded-2xl p-6 border border-white/10 shadow-2xl space-y-6">
+      <div>
+        <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+          <span>🔄 Interactive Sequence Flow: Live User Utterance &amp; In-Flight Tool Calling</span>
+          <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-mono">Live Mermaid Render</span>
+        </h2>
+        <p class="text-xs text-gray-400">Real-time sequence tracing message frames, audio chunks, and tool shielding across Client, Pipecat, Vertex AI Gemini Live, and Financial Math.</p>
+      </div>
+
+      <div class="mermaid bg-[#0f172a] p-6 rounded-xl border border-white/10 overflow-x-auto text-xs">
+sequenceDiagram
+    autonumber
+    actor User as 👤 User
+    participant Client as 💻 Client (@pipecat-ai/client)
+    participant Pipe as ⚡ Pipecat Engine (agent_live.py)
+    participant Vertex as ☁️ Vertex AI (Gemini Live)
+    participant Math as 🧮 Math Engine (financial_math.py)
+
+    User->>Client: Speaks: "₹5 लाख 12 महीने के लिए कितना return मिलेगा?"
+    Client->>Pipe: 16kHz PCM Audio Stream (20ms / 640 bytes)
+    Pipe->>Vertex: realtimeInput.mediaChunks (16kHz PCM)
+    
+    Note over Vertex: Server-side VAD detects speech endpoint
+    Vertex-->>Pipe: serverContent.outputTranscription ("हाँ बिल्कुल! मैं calculate करके बताती हूँ...")
+    Vertex-->>Pipe: tool_call calculate_returns(amount=500000, tenure_months=12, repayment_type='monthly')
+    
+    Note over Pipe: AntiCancel Tool Shield Acquired (_active_tools_in_flight=1)
+    Pipe->>Math: calculate_returns(500000, 12, 'monthly')
+    Math-->>Pipe: Return Dict (Net Profit: ₹1,20,000, Net ROI: 24.0%, Monthly EMI: ₹51,666)
+    
+    Pipe->>Vertex: tool_response FunctionResponse(calculate_returns, scheduling=None)
+    Note over Pipe: AntiCancel Tool Shield Released
+    
+    Vertex-->>Pipe: serverContent.modelTurn (24kHz Audio explaining exact profit & EMI)
+    Pipe-->>Client: 24kHz PCM Audio Stream
+    Client->>User: Spoken Response ("₹5,00,000 पर 12 महीने में आपका कुल मुनाफ़ा ₹1,20,000 होगा...")
+      </div>
+    </section>
+
+    <!-- Live Interactive State Engine Flow -->
+    <section class="glass rounded-2xl p-6 border border-white/10 shadow-2xl space-y-6">
+      <div>
+        <h2 class="text-lg font-bold text-white flex items-center space-x-2">
+          <span>📊 Interactive State Machine Flow: 8-Phase Consultative Dialogue</span>
+          <span class="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">Live Mermaid State Graph</span>
+        </h2>
+        <p class="text-xs text-gray-400">Strict stage gating ensuring all risk disclosures, legitimacy explanations, and KYC navigation steps occur in a structured sequence.</p>
+      </div>
+
+      <div class="mermaid bg-[#0f172a] p-6 rounded-xl border border-white/10 overflow-x-auto text-xs">
+stateDiagram-v2
+    [*] --> Phase1_TimeCheck: Connection Start (Greeting)
+    
+    Phase1_TimeCheck --> Phase2_Discovery: User Agrees / "Haan", "Yes" (Tier-1 0ms)
+    Phase1_TimeCheck --> Phase1_TimeCheck: User Busy / Callback Request
+    
+    Phase2_Discovery --> Phase3_Education: Familiarity Shared / "FD", "Mutual Fund" (Tier-1/2)
+    Phase3_Education --> Phase4_Legitimacy: Trust / "RBI", "Escrow", "Legal" Query (Tier-1 0ms)
+    Phase4_Legitimacy --> Phase5_RiskMitigation: Risk / "Default", "NPA", "Paisa Doob" (Tier-1 0ms)
+    
+    Phase5_RiskMitigation --> Phase6_ConfidenceCheck: Risk Addressed / Readiness Confirmed
+    Phase6_ConfidenceCheck --> Phase7_Recommendation: Amount Disclosed / "Calculate", "Kitna Milega"
+    
+    state Phase7_Recommendation {
+        [*] --> ParameterElicitation
+        ParameterElicitation --> ToolCall_CalculateReturns: calculate_returns (AntiCancel Guarded)
+        ToolCall_CalculateReturns --> PresentQuote: EMI / EDI / XIRR Quote
+    }
+    
+    Phase7_Recommendation --> Phase8_KYCNavigation: User Ready / "KYC", "Documents", "Aadhaar", "Bank"
+    Phase8_KYCNavigation --> Phase9_CommitmentClose: KYC Explained / Final Activation Agreement
+    
+    Phase9_CommitmentClose --> [*]: Session Complete (Trigger Downcar Extraction)
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-white/10 py-6 px-8 bg-[#0b1120] text-center text-xs text-gray-400">
+    <p>Cymbal Gemini Live Architecture Specification • Production Target: Google Cloud Platform (Vertex AI us-central1) • Version 5.0</p>
+  </footer>
+
+</body>
+</html>
