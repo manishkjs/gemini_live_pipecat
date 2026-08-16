@@ -303,25 +303,8 @@ class GeminiSessionLoggerMixin:
                 self._user_id_locked = True
                 logger.info(f"🔒 [Identity] User identity locked to {norm_name} from: '{clean_sentence}'")
 
-                # Hydrate returning user profile facts & memories and yield dynamic clientContent
-                if hasattr(self, "memory_bank") and self.memory_bank:
-                    hydrated = self.memory_bank.hydrate_user_profile(norm_name)
-                    facts = hydrated.get("facts", {})
-                    mems = hydrated.get("episodic_memories", []) or hydrated.get("recent_memories", [])
-                    facts_count = len(facts)
-                    mem_count = len(mems)
-                    logger.info(
-                        f"🧠 [MemoryBank:LiveHydration] Profile hydrated for '{norm_name}':\n"
-                        f"   ├─ Active Facts ({facts_count}): {json.dumps(facts, ensure_ascii=False)}\n"
-                        f"   └─ Episodic Memories ({mem_count}): {mems}"
-                    )
-                    if facts_count > 0 or mem_count > 0:
-                        tracker = getattr(self, "phase_tracker", None)
-                        if tracker and hasattr(tracker, "yield_hydrated_context"):
-                            try:
-                                await tracker.yield_hydrated_context(norm_name, hydrated)
-                            except Exception as e:
-                                logger.error(f"[PhaseEngine:LiveHydration] Error yielding context: {e}")
+                # Hydrate returning user profile asynchronously in background (Zero Blocking)
+                asyncio.create_task(self._async_hydrate_user_profile(norm_name))
 
                 # Inform client of locked identity for local storage persistence
                 await self.push_frame(OutputTransportMessageFrame(message={
@@ -394,6 +377,37 @@ class GeminiSessionLoggerMixin:
                     logger.info(f"⚡ [MemoryBank:AsyncDowncar] Injected retrieved memories into Gemini Live system prompt for '{user_id}'.")
         except Exception as e:
             logger.warning(f"[MemoryBank:AsyncDowncar] Error in async retrieval: {e}")
+
+    async def _async_hydrate_user_profile(self, norm_name: str):
+        """Asynchronously hydrates user profile from GCP Memory Bank in background (zero audio blocking)."""
+        try:
+            mb = getattr(self, "memory_bank", None)
+            if not mb:
+                return
+
+            loop = asyncio.get_running_loop()
+            hydrated = await loop.run_in_executor(
+                None,
+                lambda: mb.hydrate_user_profile(norm_name)
+            )
+            if not hydrated or not isinstance(hydrated, dict):
+                return
+
+            facts = hydrated.get("facts", {})
+            mems = hydrated.get("episodic_memories", []) or hydrated.get("recent_memories", [])
+            facts_count = len(facts)
+            mem_count = len(mems)
+            logger.info(
+                f"🧠 [MemoryBank:LiveHydration] Profile hydrated asynchronously in background for '{norm_name}':\n"
+                f"   ├─ Active Facts ({facts_count}): {json.dumps(facts, ensure_ascii=False)}\n"
+                f"   └─ Episodic Memories ({mem_count}): {mems}"
+            )
+            if facts_count > 0 or mem_count > 0:
+                tracker = getattr(self, "phase_tracker", None)
+                if tracker and hasattr(tracker, "yield_hydrated_context"):
+                    await tracker.yield_hydrated_context(norm_name, hydrated)
+        except Exception as e:
+            logger.error(f"[PhaseEngine:LiveHydration] Error in async background hydration for {norm_name}: {e}")
 
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""

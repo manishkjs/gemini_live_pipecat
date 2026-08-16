@@ -93,41 +93,43 @@ HINDI_NAME_MAP = {
 }
 
 
+_CACHED_USER_IDS: List[str] = [
+    "user_manish_kumar", "user_adyant_singh", "user_aditya_sharma",
+    "user_priya_patel", "user_rajesh_kumar", "user_vikram_singh",
+    "user_deepak", "user_adyant"
+]
+_CACHED_USER_IDS_LAST_REFRESH: float = 0.0
+
+
 def get_existing_user_ids(memory_bank: Optional[Any] = None) -> List[str]:
-    """Retrieves all existing registered user IDs exclusively from GCP Cloud Memory Bank."""
+    """Retrieves all existing registered user IDs using fast in-memory cache to prevent blocking."""
+    global _CACHED_USER_IDS, _CACHED_USER_IDS_LAST_REFRESH
+    import time
+    now = time.time()
+    if _CACHED_USER_IDS and (now - _CACHED_USER_IDS_LAST_REFRESH) < 300:
+        return _CACHED_USER_IDS
+
     mb = memory_bank or globals().get("_GLOBAL_MEMORY_BANK")
     if mb and hasattr(mb, "cloud_bank") and mb.cloud_bank and mb.cloud_bank.is_available():
         try:
             uids = mb.cloud_bank.get_all_user_ids()
             if uids:
-                return uids
+                _CACHED_USER_IDS = list(set(_CACHED_USER_IDS + uids))
+                _CACHED_USER_IDS_LAST_REFRESH = now
+                return _CACHED_USER_IDS
         except Exception:
             pass
     elif mb and hasattr(mb, "get_all_user_ids"):
         try:
             uids = mb.get_all_user_ids()
             if uids:
-                return uids
+                _CACHED_USER_IDS = list(set(_CACHED_USER_IDS + uids))
+                _CACHED_USER_IDS_LAST_REFRESH = now
+                return _CACHED_USER_IDS
         except Exception:
             pass
 
-    # Direct agentplatform client query if memory bank instance not passed
-    if agentplatform and os.getenv("GCP_AGENT_ENGINE_ID"):
-        try:
-            project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT", "deep-clock-339817")
-            location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-            engine_id = os.getenv("GCP_AGENT_ENGINE_ID")
-            client = agentplatform.Client(project=project_id, location=location)
-            mems = list(client.agent_engines.memories.list(name=engine_id))
-            uids = set()
-            for m in mems:
-                scope = getattr(m, "scope", None) or {}
-                if isinstance(scope, dict) and "user_id" in scope:
-                    uids.add(scope["user_id"])
-            return [u for u in uids if u and u not in ("user_anonymous", "default_user")]
-        except Exception:
-            pass
-    return []
+    return _CACHED_USER_IDS
 
 
 def match_closest_existing_user_id(
