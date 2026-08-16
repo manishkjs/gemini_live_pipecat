@@ -253,6 +253,9 @@ class GeminiSessionLoggerMixin:
                 if not hasattr(self, 'transcript_history'):
                     self.transcript_history = []
                 self.transcript_history.append({"role": "assistant", "text": interrupted_text})
+                tracker = getattr(self, "phase_tracker", None)
+                if tracker and hasattr(tracker, "record_turn"):
+                    tracker.record_turn("assistant", interrupted_text)
                 self._bot_turn_text_buffer = ""
 
             elapsed_ms = None
@@ -331,7 +334,7 @@ class GeminiSessionLoggerMixin:
             tracker = getattr(self, "phase_tracker", None)
             if tracker and hasattr(tracker, "handle_user_transcript"):
                 try:
-                    await tracker.handle_user_transcript(clean_sentence)
+                    await tracker.handle_user_transcript(clean_sentence, history=getattr(self, "transcript_history", []))
                 except Exception as e:
                     logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
 
@@ -448,6 +451,9 @@ class GeminiSessionLoggerMixin:
             if not hasattr(self, 'transcript_history'):
                 self.transcript_history = []
             self.transcript_history.append({"role": "assistant", "text": full_bot_text})
+            tracker = getattr(self, "phase_tracker", None)
+            if tracker and hasattr(tracker, "record_turn"):
+                tracker.record_turn("assistant", full_bot_text)
             GLOBAL_LANGSMITH_TRACER.record_bot_turn(
                 full_bot_text,
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,

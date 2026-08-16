@@ -158,6 +158,12 @@ class ConsultativePhaseTracker:
         self._pending_reason: Optional[str] = None
         self._lock = asyncio.Lock()
         self.enable_client_content = enable_client_content
+        self.session_transcript: List[Dict[str, str]] = []
+
+    def record_turn(self, role: str, text: str):
+        """Records user or assistant dialogue turns into the session transcript."""
+        if text and text.strip():
+            self.session_transcript.append({"role": role, "text": text.strip()})
 
     def set_bot_speaking(self, speaking: bool):
         self._is_bot_speaking = speaking
@@ -289,14 +295,38 @@ class ConsultativePhaseTracker:
                     logger.warning(f"[PhaseEngine] Failed to yield user context via send_client_content: {e}")
 
 
-    async def _async_ai_classify_intent(self, text: str, initial_phase: int, turn_id: int):
-        """Asynchronous Tier-2 Semantic Intent Classification via Gemini Flash AI."""
+    async def _async_ai_classify_intent(
+        self,
+        text: str,
+        initial_phase: int,
+        turn_id: int,
+        history: Optional[List[Dict[str, str]]] = None,
+    ):
+        """Asynchronous Tier-2 Semantic Intent Classification via Gemini Flash AI with full session dialogue context."""
         try:
             client = get_ai_classifier_client()
+            
+            # Format dialogue context till this point (last 10 turns)
+            history_to_format = history if history is not None else self.session_transcript
+            formatted_turns = []
+            for turn in history_to_format[-10:]:
+                role_label = "Bot" if turn.get("role") in ["assistant", "bot", "model"] else "Customer"
+                turn_txt = (turn.get("text") or "").strip()
+                if turn_txt:
+                    formatted_turns.append(f"{role_label}: \"{turn_txt}\"")
+            dialogue_context = "\n".join(formatted_turns) if formatted_turns else f"Customer: \"{text}\""
+
+            phase_card = PHASE_PROMPT_CARDS.get(initial_phase, {})
+            phase_title = phase_card.get("title", f"Phase {initial_phase}")
+
             prompt = f"""\
-You are an intent classifier for Cymbal Lending P2P voicebot consultative sales funnel.
-Current Active Phase: {initial_phase}
-User Utterance: "{text}"
+You are an intelligent conversational intent classifier for Cymbal Lending P2P voicebot.
+Current Active Funnel Phase: Phase {initial_phase} ({phase_title})
+
+Conversation Dialogue Till This Point (in chronological order):
+{dialogue_context}
+
+Latest Customer Utterance: "{text}"
 
 Sales Funnel Phases:
 1: Time Check & Availability (asking if customer has 2 minutes to talk, scheduling callback)
@@ -309,7 +339,10 @@ Sales Funnel Phases:
 8: App & KYC Navigation (PAN card, Aadhaar Digilocker OTP, Bank account penny-drop, app screen navigation)
 9: Commitment & Activation Close (starting deposit confirmation, payment method, plan activation date)
 
-Respond in JSON ONLY:
+Instructions:
+1. Carefully evaluate the FULL conversation context and trajectory (what the Bot said, what the Customer replied).
+2. Determine if the customer's intent or the conversation flow naturally calls for transitioning to another phase or staying in the current active phase.
+3. Respond in JSON ONLY:
 {{"target_phase": int, "confidence": float, "reason": str}}
 """
             classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-2.5-flash-lite")
@@ -319,7 +352,7 @@ Respond in JSON ONLY:
                     contents=prompt,
                     config={"response_mime_type": "application/json"}
                 ),
-                timeout=2.0
+                timeout=4.0
             )
             if hasattr(res, "usage_metadata") and res.usage_metadata:
                 um = res.usage_metadata
@@ -351,10 +384,11 @@ Respond in JSON ONLY:
         except Exception as e:
             logger.debug(f"[PhaseEngine:FlashClassifier] Background classification note: {e}")
 
-    async def handle_user_transcript(self, text: str):
+    async def handle_user_transcript(self, text: str, history: Optional[List[Dict[str, str]]] = None):
         """Evaluate transcribed user utterance and trigger phase transitions."""
         if not text:
             return
+        self.record_turn("user", text)
         lower = text.strip().lower()
         initial_phase = self.current_phase
         matched_rule = None
@@ -423,10 +457,10 @@ Respond in JSON ONLY:
             return
 
         # ── Tier 2: Async Gemini 2.5 Flash AI Classifier for Subtle Phrasings ─
-        if self.current_phase == initial_phase and len(text.strip()) > 6:
-            logger.info(f"🔍 [PhaseEngine:Classifier] Tier-1 Regex: No match for '{text}'. Dispatching to TIER-2 (Gemini 2.5 Flash Lite async)...")
+        if self.current_phase == initial_phase and len(text.strip()) > 4:
+            logger.info(f"🔍 [PhaseEngine:Classifier] Tier-1 Regex: No match for '{text}'. Dispatching to TIER-2 (Gemini 2.5 Flash Lite async with dialogue history)...")
             self._turn_seq += 1
-            asyncio.create_task(self._async_ai_classify_intent(text, initial_phase, self._turn_seq))
+            asyncio.create_task(self._async_ai_classify_intent(text, initial_phase, self._turn_seq, history=history))
 
 
 class PhaseTransitionProcessor(FrameProcessor):
