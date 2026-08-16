@@ -33,6 +33,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from google.genai import Client
 from google.genai.types import Content, Part
+from diagnostic_buffer import append_diagnostic_log
 
 
 # ═══════════════════════════════════════════════════════════════════════
