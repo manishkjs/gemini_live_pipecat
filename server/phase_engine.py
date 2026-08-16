@@ -141,7 +141,7 @@ def get_ai_classifier_client() -> Client:
         import os
         from google.genai import Client
         project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
-        location = os.getenv("GCP_LOCATION") or "us-central1"
+        location = os.getenv("INTENT_CLASSIFIER_LOCATION") or "global"
         _AI_CLASSIFIER_CLIENT = Client(project=project, location=location, vertexai=True)
     return _AI_CLASSIFIER_CLIENT
 
@@ -345,7 +345,7 @@ Instructions:
 3. Respond in JSON ONLY:
 {{"target_phase": int, "confidence": float, "reason": str}}
 """
-            classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-2.5-flash-lite")
+            classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-3.5-flash-lite")
             res = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=classifier_model,
@@ -359,7 +359,7 @@ Instructions:
                 prompt_tok = getattr(um, "prompt_token_count", 0)
                 cand_tok = getattr(um, "candidates_token_count", 0)
                 total_tok = getattr(um, "total_token_count", 0)
-                logger.info(f"📊 [Tier-2:Gemini 2.5 Flash Lite Usage] Input: {prompt_tok} tok + Output: {cand_tok} tok = {total_tok} total")
+                logger.info(f"📊 [Tier-2:Gemini 3.5 Flash Lite Usage] Input: {prompt_tok} tok + Output: {cand_tok} tok = {total_tok} total")
 
             data = json.loads(res.text)
             target = data.get("target_phase")
@@ -370,17 +370,17 @@ Instructions:
                 target_title = PHASE_PROMPT_CARDS[target]["title"]
                 logger.info(
                     f"\n════════════════════════════════════════════════════════════════════════\n"
-                    f"🧠 [DECISION: TIER-2 GEMINI 2.5 FLASH LITE]\n"
+                    f"🧠 [DECISION: TIER-2 GEMINI 3.5 FLASH LITE]\n"
                     f"   ├─ Utterance: '{text}'\n"
                     f"   ├─ State Transition: Phase {initial_phase} ➔ Phase {target} ({target_title})\n"
                     f"   ├─ AI Confidence: {confidence:.2f}\n"
                     f"   └─ Semantic Rationale: {reason}\n"
                     f"════════════════════════════════════════════════════════════════════════"
                 )
-                append_diagnostic_log("🧠 AI Decision (Gemini 2.5)", f"Phase {initial_phase} ➔ Phase {target} ({target_title}) | Conf: {confidence:.2f} | Reason: {reason}")
-                await self.transition_to(target, trigger_reason=f"Gemini 2.5 Flash Lite: {reason}")
+                append_diagnostic_log("🧠 AI Decision (Gemini 3.5)", f"Phase {initial_phase} ➔ Phase {target} ({target_title}) | Conf: {confidence:.2f} | Reason: {reason}")
+                await self.transition_to(target, trigger_reason=f"Gemini 3.5 Flash Lite: {reason}")
             else:
-                logger.info(f"💤 [Tier-2:Gemini 2.5 Flash Lite] Kept Phase {initial_phase} (Evaluated Target: {target}, Conf: {confidence:.2f}) | Reason: {reason}")
+                logger.info(f"💤 [Tier-2:Gemini 3.5 Flash Lite] Kept Phase {initial_phase} (Evaluated Target: {target}, Conf: {confidence:.2f}) | Reason: {reason}")
         except Exception as e:
             logger.debug(f"[PhaseEngine:FlashClassifier] Background classification note: {e}")
 

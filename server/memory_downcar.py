@@ -328,6 +328,10 @@ async def run_post_session_downcar(
         summary: str = ""
 
         # 6. Structured Extraction Execution
+        downcar_model = os.getenv("MEMORY_DOWNCAR_MODEL", "gemini-3.5-flash-lite")
+        downcar_location = os.getenv("MEMORY_DOWNCAR_LOCATION", "global")
+        project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
+
         if genai_client is not None:
             extraction_prompt = (
                 "You are an expert financial memory extractor for Cymbal Lending.\n"
@@ -342,7 +346,7 @@ async def run_post_session_downcar(
                 f"Transcript:\n{transcript_text}"
             )
             response = await genai_client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model=downcar_model,
                 contents=[
                     {"role": "user", "parts": [{"text": extraction_prompt}]}
                 ],
@@ -352,13 +356,12 @@ async def run_post_session_downcar(
             extracted_facts = parsed.get("facts", {}) or {}
             summary = parsed.get("summary", "") or ""
         else:
-            # Check if live Google GenAI Client can be initialized from env
-            api_key = os.getenv("GEMINI_API_KEY")
+            # Initialize live Vertex AI Client with ADC at global location
             live_client = None
-            if api_key and not os.getenv("HERMETIC_TEST_MODE"):
+            if not os.getenv("HERMETIC_TEST_MODE"):
                 try:
                     from google.genai import Client
-                    live_client = Client(api_key=api_key)
+                    live_client = Client(project=project, location=downcar_location, vertexai=True)
                 except Exception as client_err:
                     logger.debug(f"[Downcar] GenAI Client init notice: {client_err}")
 
@@ -369,9 +372,10 @@ async def run_post_session_downcar(
                         "and episodic summary from this transcript as JSON:\n\n"
                         f"{transcript_text}"
                     )
-                    response = await live_client.models.generate_content(
-                        model="gemini-2.5-flash-lite",
+                    response = await live_client.aio.models.generate_content(
+                        model=downcar_model,
                         contents=extraction_prompt,
+                        config={"response_mime_type": "application/json"},
                     )
                     raw_text = response.text if hasattr(response, "text") else str(response)
                     parsed = parse_downcar_response(raw_text)
