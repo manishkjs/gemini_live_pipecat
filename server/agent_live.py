@@ -956,7 +956,8 @@ async def run_agent_live(
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
-    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=True)
+    # Keep clientContent false for phase tracker so raw text turns do not interleave and truncate live audio
+    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=False)
     llm.phase_tracker = phase_tracker
     llm.memory_bank = memory_bank
     llm.active_user_id = normalize_lexical_user_id(initial_user_id) if normalize_lexical_user_id else initial_user_id
