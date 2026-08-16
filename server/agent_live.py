@@ -88,6 +88,7 @@ from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT, get_chained_system_prompt
+from watcher_brain import WatcherBrain
 
 from google.genai.types import (
     AudioTranscriptionConfig,
@@ -338,6 +339,17 @@ class GeminiSessionLoggerMixin:
                     await tracker.handle_user_transcript(clean_sentence, history=getattr(self, "transcript_history", []))
                 except Exception as e:
                     logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
+
+            # Trigger Continuous Watcher Brain in the background (Gemini 3.5 Flash-Lite downcar co-pilot)
+            wb = getattr(self, "watcher_brain", None)
+            if wb and hasattr(wb, "maybe_whisper_to_live"):
+                sess = getattr(self, "_session", None)
+                if sess:
+                    asyncio.create_task(wb.maybe_whisper_to_live(
+                        session=sess,
+                        transcript_history=self.transcript_history,
+                        user_id=getattr(self, "active_user_id", "default_user"),
+                    ))
 
             # Check for memory query keywords to trigger async downcar memory retrieval in background
             lower_s = clean_sentence.lower()
@@ -906,6 +918,10 @@ async def run_agent_live(
 
     # Register all function handlers
     register_all_tools(llm, standard_tools, get_current_time_fn=get_current_time)
+
+    # Initialize Continuous Watcher Brain (Gemini 3.5 Flash Lite Co-Pilot)
+    watcher_brain = WatcherBrain(project_id=project_id)
+    llm.watcher_brain = watcher_brain
 
     user_params = LLMUserAggregatorParams(
         user_turn_strategies=UserTurnStrategies(
