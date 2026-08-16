@@ -93,104 +93,14 @@ HINDI_NAME_MAP = {
 }
 
 
-_CACHED_USER_IDS: List[str] = [
-    "user_manish_kumar", "user_adyant_singh", "user_aditya_sharma",
-    "user_priya_patel", "user_rajesh_kumar", "user_vikram_singh",
-    "user_deepak", "user_adyant"
-]
-_CACHED_USER_IDS_LAST_REFRESH: float = 0.0
-
-
-def get_existing_user_ids(memory_bank: Optional[Any] = None) -> List[str]:
-    """Retrieves all existing registered user IDs using fast in-memory cache to prevent blocking."""
-    global _CACHED_USER_IDS, _CACHED_USER_IDS_LAST_REFRESH
-    import time
-    now = time.time()
-    if _CACHED_USER_IDS and (now - _CACHED_USER_IDS_LAST_REFRESH) < 300:
-        return _CACHED_USER_IDS
-
-    mb = memory_bank or globals().get("_GLOBAL_MEMORY_BANK")
-    if mb and hasattr(mb, "cloud_bank") and mb.cloud_bank and mb.cloud_bank.is_available():
-        try:
-            uids = mb.cloud_bank.get_all_user_ids()
-            if uids:
-                _CACHED_USER_IDS = list(set(_CACHED_USER_IDS + uids))
-                _CACHED_USER_IDS_LAST_REFRESH = now
-                return _CACHED_USER_IDS
-        except Exception:
-            pass
-    elif mb and hasattr(mb, "get_all_user_ids"):
-        try:
-            uids = mb.get_all_user_ids()
-            if uids:
-                _CACHED_USER_IDS = list(set(_CACHED_USER_IDS + uids))
-                _CACHED_USER_IDS_LAST_REFRESH = now
-                return _CACHED_USER_IDS
-        except Exception:
-            pass
-
-    return _CACHED_USER_IDS
-
-
-def match_closest_existing_user_id(
-    utterance: str,
-    memory_bank: Optional[Any] = None,
-    threshold: float = 0.6,
-) -> Optional[str]:
-    """Polls existing user IDs in memory and maps utterance to closest registered user lexically."""
-    if not utterance or not isinstance(utterance, str) or not utterance.strip():
-        return None
-
-    existing_uids = get_existing_user_ids(memory_bank=memory_bank)
-    if not existing_uids:
-        return None
-
-    text = utterance.lower()
-    for h, l in HINDI_NAME_MAP.items():
-        if h in utterance:
-            text = text + " " + l
-
-    text_tokens = set(re.findall(r'[a-z]+', text))
-    best_uid = None
-    best_score = 0.0
-
-    for uid in existing_uids:
-        raw_uid_name = uid.replace("user_", "").replace("_", " ").strip().lower()
-        uid_tokens = [tok for tok in raw_uid_name.split() if tok]
-        if not uid_tokens:
-            continue
-
-        # If all tokens of the user's name appear in the text (e.g. "Aditya Sharma" in "Mr. Aditya Sharma")
-        if len(uid_tokens) > 1 and all(tok in text_tokens for tok in uid_tokens):
-            return uid
-
-        if len(uid_tokens) == 1 and uid_tokens[0] in text_tokens:
-            score = 0.95
-        elif uid_tokens[0] in text_tokens:
-            score = 0.70
-        else:
-            score = difflib.SequenceMatcher(None, raw_uid_name, text).ratio()
-
-        if score > best_score:
-            best_score = score
-            best_uid = uid
-
-    if best_score >= threshold and best_uid:
-        return best_uid
-    return None
-
-
 def normalize_lexical_user_id(raw_name: Optional[str], memory_bank: Optional[Any] = None) -> str:
-    """Normalizes spoken customer names into deterministic, sanitized keys.
-
-    First checks against existing registered users in memory for closest lexical match.
-    If no existing user matches, sanitizes into new canonical 'user_<name>' key.
+    """Normalizes spoken customer names into deterministic, sanitized keys via pure lexical processing.
 
     Examples:
         "Aditya Sharma" -> "user_aditya_sharma"
         "Mr. Rajesh Kumar" -> "user_rajesh_kumar"
         "Mera naam Priya Patel hai" -> "user_priya_patel"
-        "अम हां, मेरे पास समय है। मेरा नाम मनीष है।" -> "user_manish_kumar" (if exists) or "user_manish"
+        "मेरा नाम अद्यंत सिंह है" -> "user_adyant_singh"
         "Dr. Vikram Singh ji" -> "user_vikram_singh"
         "Namaste, main Deepak bol raha hoon" -> "user_deepak"
         "" -> "user_anonymous"
@@ -198,7 +108,7 @@ def normalize_lexical_user_id(raw_name: Optional[str], memory_bank: Optional[Any
 
     Args:
         raw_name: Raw input string containing customer name or spoken introduction.
-        memory_bank: Optional MemoryBank instance to poll existing users from.
+        memory_bank: Unused (preserved for backwards signature compatibility).
 
     Returns:
         Deterministic normalized user ID string prefixed with 'user_'.
@@ -209,11 +119,6 @@ def normalize_lexical_user_id(raw_name: Optional[str], memory_bank: Optional[Any
     text = raw_name.strip()
     if not text:
         return "user_anonymous"
-
-    # 0. Poll existing user IDs in memory and map to closest registered user
-    existing_match = match_closest_existing_user_id(text, memory_bank=memory_bank)
-    if existing_match:
-        return existing_match
 
     # 1. Map known Devanagari words to Latin transliterations for standalone names
     for hindi_tok, latin_tok in HINDI_NAME_MAP.items():
