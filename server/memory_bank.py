@@ -135,7 +135,7 @@ def get_existing_user_ids(memory_bank: Optional[Any] = None) -> List[str]:
 def match_closest_existing_user_id(
     utterance: str,
     memory_bank: Optional[Any] = None,
-    threshold: float = 0.5,
+    threshold: float = 0.6,
 ) -> Optional[str]:
     """Polls existing user IDs in memory and maps utterance to closest registered user lexically."""
     if not utterance or not isinstance(utterance, str) or not utterance.strip():
@@ -150,21 +150,24 @@ def match_closest_existing_user_id(
         if h in utterance:
             text = text + " " + l
 
+    text_tokens = set(re.findall(r'[a-z]+', text))
     best_uid = None
     best_score = 0.0
 
     for uid in existing_uids:
-        raw_uid_name = uid.replace("user_", "").replace("_", " ").strip()
+        raw_uid_name = uid.replace("user_", "").replace("_", " ").strip().lower()
         uid_tokens = [tok for tok in raw_uid_name.split() if tok]
         if not uid_tokens:
             continue
 
-        first_name = uid_tokens[0]
-        # Match on first name or full name
-        if first_name in text or difflib.get_close_matches(first_name, text.split(), cutoff=0.75):
-            score = 0.85
-            if len(uid_tokens) > 1 and all(tok in text for tok in uid_tokens):
-                score = 1.0
+        # If all tokens of the user's name appear in the text (e.g. "Aditya Sharma" in "Mr. Aditya Sharma")
+        if len(uid_tokens) > 1 and all(tok in text_tokens for tok in uid_tokens):
+            return uid
+
+        if len(uid_tokens) == 1 and uid_tokens[0] in text_tokens:
+            score = 0.95
+        elif uid_tokens[0] in text_tokens:
+            score = 0.70
         else:
             score = difflib.SequenceMatcher(None, raw_uid_name, text).ratio()
 
