@@ -316,12 +316,19 @@ class GeminiSessionLoggerMixin:
                     }
                 }))
 
+            # Direct application-layer hook for PhaseEngine state transitions
+            tracker = getattr(self, "phase_tracker", None)
+            if tracker and hasattr(tracker, "handle_user_transcript"):
+                try:
+                    await tracker.handle_user_transcript(clean_sentence, history=list(self.transcript_history))
+                except Exception as e:
+                    logger.error(f"[PhaseEngine:DirectHook] Error in handle_user_transcript: {e}")
+
             # Trigger Continuous Watcher Brain in the background (Gemini 3.5 Flash-Lite downcar co-pilot)
             wb = getattr(self, "watcher_brain", None)
             if wb and hasattr(wb, "maybe_whisper_to_live"):
                 sess = getattr(self, "_session", None)
                 if sess:
-                    tracker = getattr(self, "phase_tracker", None)
                     asyncio.create_task(wb.maybe_whisper_to_live(
                         session=sess,
                         transcript_history=list(self.transcript_history),
