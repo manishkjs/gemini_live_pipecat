@@ -264,22 +264,22 @@ class TestContextCompressionConfiguration(unittest.TestCase):
     """Validates Context Window Compression defaults and dictionary construction."""
 
     def test_run_agent_live_default_trigger_tokens(self):
-        """`run_agent_live` must have context_compression=True and context_compression_trigger_tokens=20000."""
+        """`run_agent_live` must have context_compression=True and context_compression_trigger_tokens=10000."""
         sig = inspect.signature(agent_live.run_agent_live)
         params = sig.parameters
         self.assertIn("context_compression", params)
         self.assertIn("context_compression_trigger_tokens", params)
         self.assertEqual(params["context_compression"].default, True)
-        self.assertEqual(params["context_compression_trigger_tokens"].default, 20000)
+        self.assertEqual(params["context_compression_trigger_tokens"].default, 10000)
 
     def test_server_websocket_endpoint_default_trigger_tokens(self):
-        """`websocket_endpoint` in server.py must have context_compression_trigger_tokens=20000."""
+        """`websocket_endpoint` in server.py must have context_compression_trigger_tokens=10000."""
         sig = inspect.signature(server_module.websocket_endpoint)
         params = sig.parameters
         self.assertIn("context_compression", params)
         self.assertIn("context_compression_trigger_tokens", params)
         self.assertEqual(params["context_compression"].default, True)
-        self.assertEqual(params["context_compression_trigger_tokens"].default, 20000)
+        self.assertEqual(params["context_compression_trigger_tokens"].default, 10000)
 
     def test_cwc_dict_construction_logic(self):
         """Simulates the cwc construction logic in agent_live.py to verify exact output."""
@@ -287,20 +287,20 @@ class TestContextCompressionConfiguration(unittest.TestCase):
             cwc = {}
             if context_compression:
                 cwc["enabled"] = True
-                cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 20000
+                cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 10000
             return cwc
 
-        # Default case (None provided -> defaults to 20000)
-        self.assertEqual(build_cwc(True, None), {"enabled": True, "trigger_tokens": 20000})
+        # Default case (None provided -> defaults to 10000)
+        self.assertEqual(build_cwc(True, None), {"enabled": True, "trigger_tokens": 10000})
 
-        # Explicit 20000
-        self.assertEqual(build_cwc(True, 20000), {"enabled": True, "trigger_tokens": 20000})
+        # Explicit 10000
+        self.assertEqual(build_cwc(True, 10000), {"enabled": True, "trigger_tokens": 10000})
 
         # Custom override
         self.assertEqual(build_cwc(True, 35000), {"enabled": True, "trigger_tokens": 35000})
 
         # Disabled
-        self.assertEqual(build_cwc(False, 20000), {})
+        self.assertEqual(build_cwc(False, 10000), {})
 
 
 if __name__ == "__main__":

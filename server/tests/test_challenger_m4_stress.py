@@ -484,12 +484,12 @@ class TestChallengerContextCompressionAt20k(unittest.TestCase):
         """Verifies default signatures and cwc dictionary construction in agent_live and server."""
         # 1. agent_live run_agent_live default signature
         sig_agent = inspect.signature(agent_live.run_agent_live)
-        self.assertEqual(sig_agent.parameters["context_compression_trigger_tokens"].default, 20000)
+        self.assertEqual(sig_agent.parameters["context_compression_trigger_tokens"].default, 10000)
         self.assertEqual(sig_agent.parameters["context_compression"].default, True)
 
         # 2. server websocket_endpoint default signature
         sig_server = inspect.signature(server_module.websocket_endpoint)
-        self.assertEqual(sig_server.parameters["context_compression_trigger_tokens"].default, 20000)
+        self.assertEqual(sig_server.parameters["context_compression_trigger_tokens"].default, 10000)
 
 
 class TestChallengerSalesStateMachineRobustness(unittest.TestCase):

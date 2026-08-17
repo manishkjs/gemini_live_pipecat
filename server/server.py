@@ -111,7 +111,7 @@ async def websocket_endpoint(
     tools: Optional[str] = None,
     skip_stt: bool = False,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = 20000,
+    context_compression_trigger_tokens: Optional[int] = 10000,
     user_id: Optional[str] = None,
 ):
     await websocket.accept()
