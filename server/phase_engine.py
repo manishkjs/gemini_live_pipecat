@@ -462,7 +462,7 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
             matched_rule = "User indicated busy / not interested / callback requested"
 
         # Jump to Phase 8: KYC / Document queries / Escrow deposit flow
-        elif any(w in lower or w in text for w in ["kyc", "केवाईसी", "documents", "aadhaar", "आधार", "pan card", "पैन", "bank account", "बैंक", "penny drop", "पेनी ड्रॉप", "digilocker", "डिजीलॉकर", "एस्क्रो में", "पैसे कैसे ऐड", "add funds"]):
+        elif any(w in lower or w in text for w in ["kyc", "केवाईसी", "documents", "डॉक्यूमेंट", "aadhaar", "आधार", "pan card", "पैन कार्ड", "bank account", "बैंक खाता", "penny drop", "पेनी ड्रॉप", "digilocker", "डिजीलॉकर", "ब्रांच जाना", "branch visit", "एस्क्रो में", "पैसे कैसे ऐड", "add funds", "डिपॉजिट कैसे"]):
             target_tier1 = 8
             matched_rule = "User asked for KYC / deposit navigation"
 
@@ -486,7 +486,7 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
             matched_rule = "User asked for returns / calculation"
 
         # Jump to Phase 3: Educational Comparison (FD / Mutual Funds vs P2P)
-        elif any(w in lower or w in text for w in ["fd", "fixed deposit", "mutual fund", "7%", "18%", "24%", "kaise possible"]):
+        elif any(w in lower or w in text for w in ["fd", "fixed deposit", "mutual fund", "7%", "8%", "6%", "बैंक में", "bank me", "18%", "24%", "kaise possible"]):
             target_tier1 = 3
             matched_rule = "User compared returns / asked about mechanism"
 
