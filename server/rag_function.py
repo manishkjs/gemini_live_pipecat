@@ -53,6 +53,8 @@ def initialize_vertex_if_needed():
         logger.error(f"[RAG] Failed to initialize Vertex AI: {e}")
         return False
 
+from redis_cache import rag_cache
+
 # ── Authoritative Grounded Domain Fallback ──────────────────────────────
 CANONICAL_DOMAIN_KNOWLEDGE: dict[str, str] = {
     "rbi": (
@@ -72,6 +74,17 @@ CANONICAL_DOMAIN_KNOWLEDGE: dict[str, str] = {
         "NPA & Risk Mitigation: Unsecured loans carry credit risk, which is mitigated through AI pre-screening (650+ data points) "
         "and spreading investments across 100+ vetted borrowers (₹250 to ₹4,000 max per loan). "
         "Platform NPA is ~3.50% (as of March 2026). Quoted returns (12%-24% XIRR) are already net of historical NPA provisions."
+    ),
+    "recovery_protocol": (
+        "Default & Recovery Protocol: 3-tier recovery framework (Automated soft reminders & digital notices -> Field collection agency mediation -> Legal Section 138 NACH bounce & arbitration proceedings). Historical recovery rate is 96.18%."
+    ),
+    "tds_taxation": (
+        "Taxation & Form 26AS: TDS @ 10% is deducted on annual interest income exceeding ₹5,000 under Section 194A. "
+        "TDS credit is fully reflected in your Form 26AS / AIS, and Cymbal Lending provides an annual TDS certificate (Form 16A) for seamless income tax return filing."
+    ),
+    "nri_regulations": (
+        "NRI & Overseas Investors: NRI investments are permitted through NRE and NRO bank accounts under RBI FEMA guidelines. "
+        "Returns and principal are credited to the linked NRE/NRO account with standard repatriation compliance."
     ),
     "fd_comparison": (
         "Bank FDs offer 6.5%-7.5% taxable returns, barely beating inflation. "
@@ -94,10 +107,16 @@ def _get_fallback_domain_knowledge(query: str) -> str:
     """Retrieve grounded canonical domain knowledge when vector search is sparse."""
     q = (query or "").lower()
     matches = []
+    if any(w in q for w in ["tds", "26as", "226as", "form 26", "tax", "income tax", "194a", "16a"]):
+        matches.append(CANONICAL_DOMAIN_KNOWLEDGE["tds_taxation"])
+    if any(w in q for w in ["nri", "nre", "nro", "fema", "repatriat", "overseas"]):
+        matches.append(CANONICAL_DOMAIN_KNOWLEDGE["nri_regulations"])
     if any(w in q for w in ["rbi", "regist", "regulat", "legal", "complian", "approv"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["rbi"])
     if any(w in q for w in ["escrow", "trustee", "bankrupt", "safe", "security", "protect"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["escrow"])
+    if any(w in q for w in ["recovery", "court", "legal notice", "section 138", "arbitrat", "cheque bounce", "nach bounce"]):
+        matches.append(CANONICAL_DOMAIN_KNOWLEDGE["recovery_protocol"])
     if any(w in q for w in ["npa", "default", "loss", "risk", "delay", "recover"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["npa"])
     if any(w in q for w in ["track", "vintage", "year", "disburse", "crore", "lender", "user"]):
@@ -108,7 +127,7 @@ def _get_fallback_domain_knowledge(query: str) -> str:
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["limits"])
     if any(w in q for w in ["tenure", "month", "duration", "9 month", "period"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["tenure"])
-    if any(w in q for w in ["kyc", "pan", "aadhaar", "penny", "document", "onboard"]):
+    if any(w in q for w in ["kyc", "pan", "aadhaar", "penny", "document", "onboard", "branch"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["kyc"])
 
     if not matches:
@@ -135,9 +154,16 @@ search_knowledge_base_schema = FunctionSchema(
 )
 
 async def search_knowledge_base_handler(params: FunctionCallParams):
-    """Handle search_knowledge_base function calls using Vertex AI RAG with grounded fallback."""
+    """Handle search_knowledge_base function calls using Dual-Layer Redis/L1 Cache with Vertex RAG fallback."""
     query = params.arguments.get("query_for_vector_search", "")
     total_records = params.arguments.get("total_records", 5)
+
+    # 1. Check L1 Memory & L2 Redis Cache (<1ms)
+    cached_result = await rag_cache.get(query)
+    if cached_result:
+        logger.info(f"⚡ [RAG:CacheHit] Returning instant Redis/L1 cached result for: '{query}'")
+        await params.result_callback({"content": cached_result})
+        return
 
     # Resolve config dynamically
     corpus_id, project_id, location = get_rag_config()
@@ -145,6 +171,7 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
     if not corpus_id or not initialize_vertex_if_needed():
         logger.warning(f"[RAG] Using canonical domain fallback for query: '{query}'")
         result = _get_fallback_domain_knowledge(query)
+        await rag_cache.set(query, result)
         await params.result_callback({"content": result})
         return
 
@@ -166,6 +193,7 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
         except asyncio.TimeoutError:
             logger.warning(f"[RAG] Vertex AI RAG query exceeded 800ms timeout. Using instant domain fallback for: '{query}'")
             result = _get_fallback_domain_knowledge(query)
+            await rag_cache.set(query, result)
             await params.result_callback({"content": result})
             return
 
@@ -192,5 +220,6 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
     except Exception as e:
         logger.error(f"[RAG] Knowledge base search error: {e}. Using domain fallback.")
         result = _get_fallback_domain_knowledge(query)
-
+    # Save into L1 and Redis cache
+    await rag_cache.set(query, result)
     await params.result_callback({"content": result})
