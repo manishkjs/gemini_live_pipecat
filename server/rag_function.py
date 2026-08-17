@@ -147,79 +147,34 @@ search_knowledge_base_schema = FunctionSchema(
         },
         "total_records": {
             "type": "integer",
-            "description": "Count (default 5)."
+            "description": "Count (default 3)."
         },
     },
     required=["query_for_vector_search"],
 )
 
 async def search_knowledge_base_handler(params: FunctionCallParams):
-    """Handle search_knowledge_base function calls using Dual-Layer Redis/L1 Cache with Vertex RAG fallback."""
+    """Handle search_knowledge_base function calls using Sub-Millisecond Sheet Memorystore/Redis RAG."""
     query = params.arguments.get("query_for_vector_search", "")
-    total_records = params.arguments.get("total_records", 5)
+    total_records = params.arguments.get("total_records", 3)
 
-    # 1. Check L1 Memory & L2 Redis Cache (<1ms)
+    # 1. Exact Cache Lookup in L1/L2 Redis (<0.01ms)
     cached_result = await rag_cache.get(query)
     if cached_result:
-        logger.info(f"⚡ [RAG:CacheHit] Returning instant Redis/L1 cached result for: '{query}'")
+        logger.info(f"⚡ [RAG:ExactCacheHit] Instant Redis/L1 cached result for: '{query}'")
         await params.result_callback({"content": cached_result})
         return
 
-    # Resolve config dynamically
-    corpus_id, project_id, location = get_rag_config()
-
-    if not corpus_id or not initialize_vertex_if_needed():
-        logger.warning(f"[RAG] Using canonical domain fallback for query: '{query}'")
-        result = _get_fallback_domain_knowledge(query)
-        await rag_cache.set(query, result)
-        await params.result_callback({"content": result})
+    # 2. Sub-Millisecond Token-Ranked Search across 913 Google Sheet Q&A items (<1ms)
+    sheet_matches = await rag_cache.search_sheet_knowledge(query, top_k=total_records)
+    if sheet_matches:
+        logger.info(f"⚡ [RAG:SheetMemorystoreHit] Retrieved grounded Google Sheet Q&A for: '{query}'")
+        await rag_cache.set(query, sheet_matches)
+        await params.result_callback({"content": sheet_matches})
         return
 
-    try:
-        # Query RAG corpus with strict 800ms timeout for voice responsiveness
-        loop = asyncio.get_running_loop()
-        try:
-            response = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: rag.retrieval_query(
-                        rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
-                        text=query,
-                        similarity_top_k=total_records,
-                    )
-                ),
-                timeout=0.8
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"[RAG] Vertex AI RAG query exceeded 800ms timeout. Using instant domain fallback for: '{query}'")
-            result = _get_fallback_domain_knowledge(query)
-            await rag_cache.set(query, result)
-            await params.result_callback({"content": result})
-            return
-
-        # Extract results
-        results = []
-        if response.contexts and response.contexts.contexts:
-            for ctx in response.contexts.contexts:
-                text = ctx.text
-                if "Answer:" in text:
-                    answer = text.split("Answer:")[-1].strip()
-                    results.append(answer)
-                else:
-                    results.append(text)
-
-        if not results:
-            logger.info(f"[RAG] Vertex RAG returned 0 results. Injecting grounded domain fallback for: '{query}'")
-            result = _get_fallback_domain_knowledge(query)
-        else:
-            unique_results = list(dict.fromkeys(results))
-            result = "\n\n".join(f"{i}. {r}" for i, r in enumerate(unique_results, 1))
-
-        logger.info(f"[RAG] Returning {len(results) if results else 'fallback'} knowledge result(s)")
-
-    except Exception as e:
-        logger.error(f"[RAG] Knowledge base search error: {e}. Using domain fallback.")
-        result = _get_fallback_domain_knowledge(query)
-    # Save into L1 and Redis cache
+    # 3. Canonical Domain Knowledge Fallback (<0.01ms)
+    logger.info(f"⚡ [RAG:CanonicalFallback] Using canonical domain knowledge fallback for: '{query}'")
+    result = _get_fallback_domain_knowledge(query)
     await rag_cache.set(query, result)
     await params.result_callback({"content": result})

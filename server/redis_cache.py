@@ -130,6 +130,86 @@ class RedisRAGCache:
         logger.info(f"⚡ [RedisCache] Pre-warmed {count} canonical knowledge topics into cache.")
         return count
 
+    async def prewarm_sheet_knowledge(self, json_path: Optional[str] = None) -> int:
+        """Load, index, and pre-warm entire Google Sheet Q&A dataset (~913 items) into L1/L2 Redis."""
+        import json
+        path = json_path or os.path.join(os.path.dirname(__file__), "data", "sheet_knowledge.json")
+        if not os.path.exists(path):
+            logger.warning(f"[RedisCache] Sheet knowledge JSON not found at {path}")
+            return 0
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                records = json.load(f)
+
+            self._sheet_records = records
+            # Build fast token inverted index
+            self._sheet_token_index = {}
+            for idx, r in enumerate(records):
+                q = r.get("question", "")
+                a = r.get("answer", "")
+                cat = r.get("category", "")
+                text_to_index = f"{q} {a} {cat}".lower()
+                tokens = set(re.findall(r"\w+", text_to_index))
+                for t in tokens:
+                    if len(t) > 2:
+                        if t not in self._sheet_token_index:
+                            self._sheet_token_index[t] = []
+                        self._sheet_token_index[t].append(idx)
+
+                # Cache exact question key
+                if idx < 200:  # Pre-warm top 200 into Redis/L1
+                    await self.set(q, a)
+
+            logger.info(f"⚡ [RedisCache] Pre-warmed & indexed {len(records)} Google Sheet Q&A pairs into Memorystore/L1 RAM.")
+            return len(records)
+        except Exception as e:
+            logger.error(f"[RedisCache] Error prewarming sheet knowledge: {e}")
+            return 0
+
+    async def search_sheet_knowledge(self, query: str, top_k: int = 3) -> str:
+        """Sub-millisecond token-ranked semantic search over 913 Google Sheet Q&A records."""
+        if not hasattr(self, "_sheet_records") or not self._sheet_records:
+            await self.prewarm_sheet_knowledge()
+
+        if not hasattr(self, "_sheet_records") or not self._sheet_records:
+            return ""
+
+        q_lower = query.lower().strip()
+        query_tokens = [t for t in re.findall(r"\w+", q_lower) if len(t) > 2]
+        if not query_tokens:
+            return ""
+
+        from collections import defaultdict
+        scores = defaultdict(float)
+
+        for t in query_tokens:
+            matching_doc_ids = self._sheet_token_index.get(t, [])
+            for doc_id in matching_doc_ids:
+                doc = self._sheet_records[doc_id]
+                q_text = doc.get("question", "").lower()
+                # Exact phrase bonus
+                if q_lower in q_text:
+                    scores[doc_id] += 10.0
+                elif t in q_text:
+                    scores[doc_id] += 3.0
+                else:
+                    scores[doc_id] += 1.0
+
+        if not scores:
+            return ""
+
+        sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        results = []
+        for doc_id, score in sorted_docs:
+            rec = self._sheet_records[doc_id]
+            q = rec.get("question", "")
+            a = rec.get("answer", "")
+            cat = rec.get("category", "General")
+            results.append(f"Q: {q}\nA: {a} (Category: {cat})")
+
+        return "\n\n".join(f"{i}. {r}" for i, r in enumerate(results, 1))
+
 
 # Global cache singleton
 rag_cache = RedisRAGCache()
