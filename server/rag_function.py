@@ -148,19 +148,26 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
         await params.result_callback({"content": result})
         return
 
-    logger.info(f"[RAG] Query: {query}, Records: {total_records}, Location: {location}")
-
     try:
-        # Query RAG corpus
+        # Query RAG corpus with strict 800ms timeout for voice responsiveness
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: rag.retrieval_query(
-                rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
-                text=query,
-                similarity_top_k=total_records,
+        try:
+            response = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: rag.retrieval_query(
+                        rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
+                        text=query,
+                        similarity_top_k=total_records,
+                    )
+                ),
+                timeout=0.8
             )
-        )
+        except asyncio.TimeoutError:
+            logger.warning(f"[RAG] Vertex AI RAG query exceeded 800ms timeout. Using instant domain fallback for: '{query}'")
+            result = _get_fallback_domain_knowledge(query)
+            await params.result_callback({"content": result})
+            return
 
         # Extract results
         results = []
