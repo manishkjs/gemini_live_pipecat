@@ -590,6 +590,7 @@ def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[F
     """
     tools = [
         calculate_returns_schema,
+        search_knowledge_base_schema,
     ]
 
     if dynamic_tools_json:

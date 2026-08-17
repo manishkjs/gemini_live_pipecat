@@ -114,7 +114,8 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
             "You are in Phase 4: Platform Legitimacy & RBI Trust.\n"
             "• Goal: Build institutional credibility and regulatory safety.\n"
             "• Direct Answer: 'जी बिल्कुल! Cymbal Lending (सिम्बल लेंडिंग) एक RBI-registered NBFC-P2P platform है। आपका सारा पैसा ICICI Trustee Escrow Account के through सुरक्षित रूप से manage होता है — platform खुद पैसे hold नहीं करता।'\n"
-            "• Pillars: RBI Registered NBFC-P2P | Independent ICICI Trustee Escrow | 10 yr vintage, ₹18,000+ Crore disbursed, 40 Lakh+ registered lenders, 96.18% recovery rate."
+            "• Pillars: RBI Registered NBFC-P2P | Independent ICICI Trustee Escrow | 10 yr vintage, ₹18,000+ Crore disbursed, 40 Lakh+ registered lenders, 96.18% recovery rate.\n"
+            "• Vector Search Rule: For general trust/escrow questions, answer immediately from knowledge without tools. ONLY if the customer asks for deep regulatory clauses, legal trustee structure, or insolvency protection specifics, call `search_knowledge_base`."
         )
     },
     5: {
@@ -125,7 +126,8 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
             "• Direct Answer: 'देखिए, P2P lending में credit risk होता है, लेकिन platform पर 3 strong safety layers हैं:\n"
             "  1. Hyper-Diversification: आपका पैसा किसी एक इंसान को नहीं दिया जाता। ₹50,000 का investment 100 से ज़्यादा vetted borrowers में split होता है (सिर्फ ₹250 से ₹4,000 per borrower)। बाकी 97+ performing loans returns सुरक्षित रखते हैं।\n"
             "  2. Dedicated Recovery: Cymbal Lending की dedicated professional recovery team handle करती है (96.18% recovery rate)।\n"
-            "  3. Net Quoted Returns: 12%–24% returns already historical NPA (~3.5%) adjust करने के बाद net होते हैं।'"
+            "  3. Net Quoted Returns: 12%–24% returns already historical NPA (~3.5%) adjust करने के बाद net होते हैं।'\n"
+            "• Vector Search Rule: For general risk/diversification, answer immediately from knowledge. ONLY if customer asks for legal default notice protocols, NACH bounce penalties, or NPA provisioning policies, call `search_knowledge_base`."
         )
     },
     6: {
@@ -151,13 +153,13 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
         "title": "App & KYC Navigation",
         "directive": (
             "You are in Phase 8: App & KYC Navigation.\n"
-            "• Goal: Guide frictionless 3-step digital onboarding directly in natural speech without calling tools.\n"
+            "• Goal: Guide frictionless 3-step digital onboarding directly in natural speech.\n"
             "• 3-Step Instant KYC: Explain the 3 simple steps in 2 short sentences:\n"
             "  1) PAN card instant online check\n"
             "  2) Aadhaar Digilocker OTP verification\n"
             "  3) Bank account penny-drop linking\n"
             "• App Flow: Open Cymbal Lending App ➔ Complete KYC in 2 minutes ➔ Add money via UPI/Netbanking ➔ Activate plan.\n"
-            "• Direct Speech: Speak clearly and immediately in Devanagari Hindi with Latin financial terms. DO NOT call any tools."
+            "• Vector Search Rule: For standard KYC, answer immediately in speech with ZERO tools. ONLY if customer asks complex edge cases (NRI/NRE/NRO accounts, HUF/company onboarding, TDS/Form 26AS tax certificates), call `search_knowledge_base`."
         )
     },
     9: {
