@@ -1,0 +1,45 @@
+{
+  "mcpServers": {
+    "memorystore-valkey": {
+      "endpoint": "https://memorystore.googleapis.com/mcp",
+      "type": "remote",
+      "description": "Google Cloud Memorystore for Valkey Remote MCP Server for sub-millisecond in-memory cache, BM25 indexing, and session memory synchronization.",
+      "documentation": "https://docs.cloud.google.com/memorystore/docs/valkey/use-memorystore-mcp",
+      "auth": {
+        "type": "oauth2",
+        "scopes": [
+          "https://www.googleapis.com/auth/memorystore.read-write",
+          "https://www.googleapis.com/auth/cloud-platform"
+        ],
+        "audience": "https://memorystore.googleapis.com/"
+      },
+      "environment": {
+        "GCP_PROJECT_ID": "deep-clock-339817",
+        "MEMORYSTORE_REGION": "us-central1",
+        "MEMORYSTORE_HOST": "10.198.162.203",
+        "MEMORYSTORE_PORT": "6379",
+        "REDIS_HOST": "10.198.162.203",
+        "REDIS_PORT": "6379",
+        "REDIS_URL": "redis://10.198.162.203:6379/0"
+      },
+      "iam_roles": [
+        "roles/memorystore.admin",
+        "roles/memorystore.viewer",
+        "roles/redis.admin"
+      ],
+      "tools": [
+        "get_instance",
+        "list_instances",
+        "get_cluster",
+        "list_clusters",
+        "execute_valkey_command",
+        "get_key",
+        "set_key",
+        "delete_key",
+        "hget_all",
+        "sadd_members",
+        "smembers"
+      ]
+    }
+  }
+}
