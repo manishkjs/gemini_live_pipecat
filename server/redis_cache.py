@@ -15,7 +15,21 @@ class RedisRAGCache:
     """High-speed Dual-Layer (L1 In-Memory + L2 Redis) Caching Engine for Voice RAG."""
 
     def __init__(self, redis_url: Optional[str] = None, default_ttl_seconds: int = 86400):
-        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        # Resolve Google Cloud Memorystore or Redis connection parameters
+        host = os.getenv("MEMORYSTORE_HOST") or os.getenv("REDIS_HOST")
+        port = os.getenv("MEMORYSTORE_PORT") or os.getenv("REDIS_PORT") or "6379"
+        auth = os.getenv("MEMORYSTORE_AUTH") or os.getenv("REDIS_PASSWORD") or os.getenv("REDIS_AUTH")
+        use_tls = os.getenv("MEMORYSTORE_TLS", "false").lower() in ("true", "1") or os.getenv("REDIS_TLS", "false").lower() in ("true", "1")
+
+        if redis_url:
+            self.redis_url = redis_url
+        elif host:
+            scheme = "rediss" if use_tls else "redis"
+            auth_part = f":{auth}@" if auth else ""
+            self.redis_url = f"{scheme}://{auth_part}{host}:{port}/0"
+        else:
+            self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
         self.default_ttl_seconds = default_ttl_seconds
         self.redis_client: Optional[Any] = None
         self.is_connected = False
@@ -23,7 +37,7 @@ class RedisRAGCache:
         self._init_task: Optional[asyncio.Task] = None
 
     async def initialize(self) -> bool:
-        """Asynchronously connect to Redis and verify connection."""
+        """Asynchronously connect to Google Cloud Memorystore / Redis instance."""
         if not aioredis:
             logger.warning("[RedisCache] redis-py is not installed. Using In-Memory L1 Cache.")
             return False
@@ -38,11 +52,11 @@ class RedisRAGCache:
             # Ping test with short timeout
             await asyncio.wait_for(self.redis_client.ping(), timeout=0.6)
             self.is_connected = True
-            logger.info(f"🔴 [RedisCache] Connected to Redis instance at {self.redis_url}")
+            logger.info(f"☁️🔴 [Memorystore:Redis] Connected successfully to instance at {self.redis_url}")
             return True
         except Exception as e:
             self.is_connected = False
-            logger.warning(f"[RedisCache] Redis not reachable ({e}). Operating in high-speed L1 In-Memory mode.")
+            logger.warning(f"☁️🔴 [Memorystore:Redis] Memorystore instance not reachable at {self.redis_url} ({e}). Operating in high-speed L1 In-Memory mode (<0.01ms).")
             return False
 
     def normalize_query(self, query: str) -> str:
