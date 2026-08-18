@@ -278,14 +278,8 @@ class ConsultativePhaseTracker:
         """Send realtime clientContent turn to Gemini Live WebSocket."""
         card = PHASE_PROMPT_CARDS[target_phase]
         directive_text = (
-            f"[ACTIVE_PHASE_DIRECTIVE: Phase {target_phase} - {card['title']}]\n"
-            f"Speaker Persona: Pragya (Female Senior Wealth Manager / वरिष्ठ वेल्थ मैनेजर at Cymbal Lending).\n"
-            f"Mandatory Female Grammar: You MUST always speak in 100% consistent feminine Hindi grammar for yourself.\n"
-            f"• REQUIRED FEMININE VERBS: 'मैं बता रही हूँ', 'करती हूँ', 'देती हूँ', 'मदद करूँगी', 'समझ गई', 'सलाह देती हूँ'\n"
-            f"• STRICTLY FORBIDDEN: NEVER use masculine verb forms like 'रहा हूँ', 'करता हूँ', 'देता हूँ', 'करूँगा', 'समझ गया'.\n\n"
-            f"{card['directive']}\n\n"
-            f"Context: {trigger_reason}\n"
-            f"Rule: Always use Devanagari for Hindi words and Latin for English financial terms."
+            f"[ACTIVE_PHASE: Phase {target_phase} - {card['title']}]\n"
+            f"{card['directive']}"
         )
 
         logger.info(
