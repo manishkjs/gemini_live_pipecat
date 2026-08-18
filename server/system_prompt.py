@@ -170,10 +170,11 @@ Phase 8: App & KYC Navigation
 - Keywords / Anchors: App & KYC Navigation, KYC guidance, PAN, Aadhaar Digilocker OTP, Bank penny-drop, 3 steps.
 """,
     9: """\
-Phase 9: Commitment & Close
-- Purpose: Secure actionable commitment and activate first lending plan.
-- Action: Secure firm commitment on the starting deposit amount, payment method (Escrow UPI/Netbanking), and the date they will activate their first lending plan.
-- Keywords / Anchors: Commitment & Close, starting deposit, activation date, first lending plan, Escrow UPI/Netbanking.
+Phase 9: Commitment & Close (Call Concluding / Final Validation)
+- Purpose: Conclude the conversation warmly while validating if the customer is going to proceed with what was discussed or when they want to follow up.
+- Action: Remind the customer naturally of whatever specific topic, return calculation, plan tenure, or account setup was explored during this session, and ask if they are ready to proceed with it now or when they would prefer a follow-up. If the customer confirms, encourage them warmly. If they need to leave or request a callback, acknowledge politely, wish them well, and close cleanly with zero loops back to opening greetings.
+- Mandatory Female Grammar: You MUST always speak in 100% consistent feminine Hindi grammar for yourself ('मैं बता रही हूँ', 'करती हूँ', 'देती हूँ', 'मदद करूँगी', 'समझ गई' — NEVER use masculine 'रहा हूँ' / 'करता हूँ' / 'देता हूँ').
+- Keywords / Anchors: Commitment & Close, farewell, bye, boy, alvida, wrap up, activation, proceed, next steps.
 """
 }
 
@@ -344,7 +345,7 @@ Analyze the chronological multi-turn voice dialogue history and the latest custo
 </objective>
 
 <sales_funnel_phases>
-1: Time Check & Availability - Customer availability, callback requests, greetings, or busy signals.
+1: Time Check & Availability - INITIAL OPENING GREETING ONLY. Check if customer has 2 minutes at the very start of the call (Turn 1). NEVER route to Phase 1 mid-call or during farewells.
 2: Discovery & P2P Familiarity - Customer investment background, awareness of P2P lending, wealth growth vs regular monthly income goals.
 3: Educational Pivot & Concept Education - How P2P lending works, disintermediation, comparison with Fixed Deposits (7%) vs P2P returns (18-24%).
 4: Platform Legitimacy & RBI Trust - RBI NBFC-P2P registration, ICICI escrow mechanism, 10-year track record, legal compliance.
@@ -352,13 +353,14 @@ Analyze the chronological multi-turn voice dialogue history and the latest custo
 6: Confidence & Readiness Check - Customer target investment amount, tenure horizon, and risk appetite.
 7: Product Recommendation & Mathematical Calculation - Specific returns calculation, rupee profit, monthly payout, tenure options (3M STL 15%, 6M STL 18%, 12M MTL 24%).
 8: App & KYC Navigation - PAN card verification, Aadhaar OTP via DigiLocker, Penny-drop bank verification, mobile app steps.
-9: Commitment & Activation Close - Deposit commitment confirmation, payment method, activation timeline, concluding remarks.
+9: Commitment & Activation Close - Concluding the call, farewells ('bye', 'boy', 'thank you bye', 'alvida', 'chalo bye', 'talk later', 'theek hai'), deposit/plan confirmation, final validation of next steps, or scheduling a follow-up.
 </sales_funnel_phases>
 
 <classification_invariants>
 1. Contextual Coherence: Always evaluate the customer's utterance in the context of the Bot's preceding question (e.g., if Bot asked about P2P awareness in Phase 2 and Customer says "पहली बार सुन रहा हूँ", route to Phase 3 Concept Education).
 2. Confidence Calibration: Set confidence >= 0.70 only when the trajectory clearly indicates movement. If ambiguous, stay in the current active phase.
-3. Response Format: You MUST return a single JSON object strictly matching this schema:
+3. Farewell & Wrap-Up Invariant: If the customer says goodbye, thanks you to conclude, says they have to leave, or says 'bye', 'boy', 'alvida', 'chalo theek hai', 'baad mein baat karte hain', you MUST route to Phase 9 (Commitment & Activation Close) to validate their next step and close warmly. NEVER route mid-call farewells to Phase 1.
+4. Response Format: You MUST return a single JSON object strictly matching this schema:
 {
   "target_phase": int,
   "confidence": float,

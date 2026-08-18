@@ -165,9 +165,10 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
     9: {
         "title": "Commitment & Activation Close",
         "directive": (
-            "You are in Phase 9: Commitment & Activation Close.\n"
-            "• Goal: Secure starting deposit, payment method & activation date, and persist final agreement.\n"
-            "• Action: 'Aap aaj hi KYC complete karke ₹50,000 se plan activate kar lijiye, taaki kal se aapka interest accrue hona start ho jaye.'"
+            "You are in Phase 9: Commitment & Activation Close (Call Concluding / Final Validation).\n"
+            "• Goal: Conclude the conversation warmly while naturally validating if the customer is going to proceed with what was discussed or when they want to follow up.\n"
+            "• Context-Aware Validation: Dynamically remind the customer of whatever specific plan, return calculation, tenure, or account setup was explored in this session, and ask if they are ready to proceed with it now or if they prefer a follow-up.\n"
+            "• Closing Discipline: If the customer confirms, encourage them warmly. If they need time or request a callback, acknowledge politely, wish them well, and close cleanly with ZERO loops back to opening greetings."
         )
     }
 }
@@ -278,7 +279,11 @@ class ConsultativePhaseTracker:
         card = PHASE_PROMPT_CARDS[target_phase]
         directive_text = (
             f"[ACTIVE_PHASE_DIRECTIVE: Phase {target_phase} - {card['title']}]\n"
-            f"{card['directive']}\n"
+            f"Speaker Persona: Pragya (Female Senior Wealth Manager / वरिष्ठ वेल्थ मैनेजर at Cymbal Lending).\n"
+            f"Mandatory Female Grammar: You MUST always speak in 100% consistent feminine Hindi grammar for yourself.\n"
+            f"• REQUIRED FEMININE VERBS: 'मैं बता रही हूँ', 'करती हूँ', 'देती हूँ', 'मदद करूँगी', 'समझ गई', 'सलाह देती हूँ'\n"
+            f"• STRICTLY FORBIDDEN: NEVER use masculine verb forms like 'रहा हूँ', 'करता हूँ', 'देता हूँ', 'करूँगा', 'समझ गया'.\n\n"
+            f"{card['directive']}\n\n"
             f"Context: {trigger_reason}\n"
             f"Rule: Always use Devanagari for Hindi words and Latin for English financial terms."
         )
@@ -456,10 +461,21 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
         target_tier1 = None
 
         # ── Tier 1: Fast-Path Rule Check (Instant 0ms) ───────────────
-        # Jump to Phase 1: Disinterest / Callback request
-        if any(w in lower or w in text for w in ["इंटरेस्ट नहीं", "interest nahi", "baad mein", "बाद में", "busy", "बिजी", "not interested", "nahi chahiye", "नहीं चाहिए", "call back", "कॉल बैक"]):
+        # Jump to Phase 9: Farewells, Wrap-Up, Bye, Boy, Alvida, Concluding (when call has already started)
+        if self.current_phase > 1 and (
+            any(re.search(rf"\b{re.escape(w)}\b", lower) for w in [
+                "bye", "boy", "by", "alvida", "thank you", "thanks", "chalo bye", "ok bye",
+                "theek hai bye", "wrap up", "chalta hu", "chalti hu", "rakhta hu", "rakhti hu",
+                "baad mein baat", "call you later", "later"
+            ]) or any(w in text for w in ["बाय", "अलविदा", "थैंक यू", "धन्यवाद", "चलो बाय", "ठीक है बाय", "बाद में बात"])
+        ):
+            target_tier1 = 9
+            matched_rule = "User wrapping up call / farewell -> validate commitment & close"
+
+        # Jump to Phase 1: Disinterest / Callback request right at the start of Turn 1
+        elif self.current_phase == 1 and any(w in lower or w in text for w in ["इंटरेस्ट नहीं", "interest nahi", "baad mein", "बाद में", "busy", "बिजी", "not interested", "nahi chahiye", "नहीं चाहिए", "call back", "कॉल बैक"]):
             target_tier1 = 1
-            matched_rule = "User indicated busy / not interested / callback requested"
+            matched_rule = "User indicated busy / not interested on initial turn"
 
         # Jump to Phase 8: KYC / Document queries / Escrow deposit flow
         elif any(w in lower or w in text for w in ["kyc", "केवाईसी", "documents", "डॉक्यूमेंट", "aadhaar", "आधार", "pan card", "पैन कार्ड", "bank account", "बैंक खाता", "penny drop", "पेनी ड्रॉप", "digilocker", "डिजीलॉकर", "ब्रांच जाना", "branch visit", "एस्क्रो में", "पैसे कैसे ऐड", "add funds", "डिपॉजिट कैसे"]):
