@@ -1,74 +1,48 @@
-# Project: Cymbal Lending Voicebot — Gemini Enterprise Memory Bank & Consultative State Engine
+# Project: Gemini Live Sub-Millisecond Memorystore RAG & Sheet Knowledge Ingestion
 
 ## Architecture
-The system consists of a real-time duplex voice pipeline using Pipecat and Gemini Live, integrated with deterministic financial tools, a dual-threshold vector and structured FactStore memory engine, an 8-stage decision state machine with transition gates, a numeric consistency ledger, a 5-tier escalation matrix, and an asynchronous post-session downcar memory extraction worker.
-
-### Module Boundaries
-- `server/memory_bank.py`: FactStore (8 canonical keys, turn-by-turn history, 6-turn TTL for hypothetical explore values), dual-threshold vector engine (0.83 deduplication, 0.40 retrieval, 90-day hydration), and `normalize_lexical_user_id`. [COMPLETED]
-- `server/tools/tool_definitions.py`: Tool schemas and handlers including `retrieve_memory_schema`, `handle_retrieve_memory`, and registration in `get_standard_tools()`. [COMPLETED]
-- `server/tools/navigation.py`: Complete screen-by-screen navigation flows (Escrow UPI/NetBanking deposit, STL/MTL selection, 3-step Digilocker KYC, 8 loan filter parameters). [COMPLETED]
-- `server/system_prompt.py`: Turn 1 name elicitation greeting, Devanagari Hindi + Latin English code mixing, objection playbooks, memory recall directives. [COMPLETED]
-- `server/phase_engine.py`: 8 Decision Stages (`UNAWARE` -> `DISENGAGED`), Stage Skip Guard (max +3), `COMMITTED` & Recommendation Gates (require amount), Close Gate (max 2 attempts), Hysteresis (2-turn cooldown on `HESITANT`), Staleness Guard (5-turn auto-advance), `NumericLedger`, and 5-Tier Human Escalation Matrix. [COMPLETED]
-- `server/memory_downcar.py`: Asynchronous post-session background extraction worker with `gemini-2.5-flash-lite`, extracting 8 facts and episodic summary with idempotent MD5 content hash. [COMPLETED]
-- `server/agent_live.py`: Pipecat pipeline lifecycle, tool registration, session hydration, and `on_client_disconnected` downcar trigger. [COMPLETED]
-- `server/tests/`: Comprehensive 4-tier hermetic unit and integration test suite guaranteeing 100% pass rate. [COMPLETED - TEST_READY.md published]
+- **Voice Pipeline**: Pipecat + Gemini Live duplex voice WebSocket streaming server in `server/server.py`.
+- **RAG Knowledge Engine**: Decoupled from remote Vertex AI RAG (`asia-south1`, ~3,500ms latency) to local Dual-Layer L1 In-Memory BM25 Token Inverted Index (<0.2ms) + L2 Google Cloud Memorystore for Valkey/Redis (`10.198.162.203:6379` in `us-central1`, `cymbal:sheet_rag:*`, <0.8ms).
+- **Dataset**: 100% of rows (896 valid Q&A records, ~1,100 raw lines) from Google Sheet `1JI9MOdsqIZAPedATGdODWCDJ-nm9R-ZJ57taZtNrsiM` extracted via `gsheets` CLI and pre-warmed at startup.
+- **Control Plane**: Google Cloud Memorystore for Valkey Remote MCP Server (`https://memorystore.googleapis.com/mcp`).
 
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | Lexical Identity Normalization | `normalize_lexical_user_id(raw_name)` -> deterministic `user_<normalized>` key | M1 | ORIGINAL_REQUEST §R1 |
-| 2 | Structured FactStore | 8 canonical financial keys (`amount`, `tenure_months`, `risk_preference`, `timeline`, `goal`, `occupation`, `city`, `experience`) | M1 | ORIGINAL_REQUEST §R2 |
-| 3 | Fact Change History Log | Turn-by-turn audit trail with timestamps and values | M1 | ORIGINAL_REQUEST §R2 |
-| 4 | Hypothetical Parameter TTL | 6-turn expiration for hypothetical exploration parameters | M1 | ORIGINAL_REQUEST §R2 |
-| 5 | Dual-Threshold Vector Engine | 0.83 deduplication threshold, 0.40 retrieval threshold | M1 | ORIGINAL_REQUEST §R2 |
-| 6 | 90-Day Cross-Session Hydration | Profile hydration from memories within 90 days | M1 | ORIGINAL_REQUEST §R2 |
-| 7 | `retrieve_memory` Tool Schema & Handler | Non-blocking async tool to retrieve profile & episodic memories | M2 | ORIGINAL_REQUEST §R3 |
-| 8 | System Prompt Turn 1 Elicitation & Memory Guidance | Elicit customer name on Turn 1 & prompt directives for memory recall | M2 | ORIGINAL_REQUEST §R1, §R3 |
-| 9 | Screen-by-Screen Navigation Dataset | Escrow deposit, STL/MTL selection, 3-step Digilocker KYC, 8-filter options | M2 | ORIGINAL_REQUEST §R6 |
-| 10 | 8 Decision Stages Enum | `UNAWARE`, `CURIOUS`, `INTERESTED`, `EVALUATING`, `HESITANT`, `READY`, `COMMITTED`, `DISENGAGED` | M3 | ORIGINAL_REQUEST §R5 |
-| 11 | State Transition Gates & Skip Guard | Max 3 jumps forward unless `READY`, `COMMITTED` & Recommendation gates require `amount`, Close limiter max 2 attempts | M3 | ORIGINAL_REQUEST §R5 |
-| 12 | Hysteresis & Staleness Guard | 2-turn cooldown on `HESITANT`, 5-turn auto-advance | M3 | ORIGINAL_REQUEST §R5 |
-| 13 | Numeric Consistency Ledger | Track quoted returns, maturity amounts, EMI payouts across turns | M3 | ORIGINAL_REQUEST §R5 |
-| 14 | 5-Tier Escalation Matrix | Repeated human requests (>=2) or questions (>=3) trigger callback booking | M3 | ORIGINAL_REQUEST §R5 |
-| 15 | Post-Session Downcar Extraction Service | Background worker `run_post_session_downcar` with `gemini-2.5-flash-lite` | M4 | ORIGINAL_REQUEST §R4 |
-| 16 | Idempotent MD5 Storage | Content MD5 hash prevents duplicate writes on reconnects | M4 | ORIGINAL_REQUEST §R4 |
-| 17 | Disconnect Event Downcar Trigger | Hook `run_post_session_downcar` to `on_client_disconnected` in `agent_live.py` | M4 | ORIGINAL_REQUEST §R4 |
-| 18 | E2E Testing Suite (Tiers 1-4) | Comprehensive hermetic test suite covering all features, boundaries, interactions, and real-world journeys | E2E_TEST | ORIGINAL_REQUEST Acceptance Criteria |
-| 19 | Full E2E Test Suite Pass & Adversarial Hardening | 100% test pass on `python -m unittest discover -s server/tests` + Tier 5 adversarial verification | M5 | ORIGINAL_REQUEST Acceptance Criteria |
+| 1 | Google Sheet Q&A Dataset Ingestion | Extract all 896 valid Q&A pairs from Sheet `1JI9MOdsqIZAPedATGdODWCDJ-nm9R-ZJ57taZtNrsiM` via `gsheets` JSON CLI, clean multiline answers, and format to `server/data/sheet_knowledge.json`. | M1 | ORIGINAL_REQUEST §R1 |
+| 2 | Dual-Layer Redis/L1 Key Schema & BM25 Inverted Index | Implement `cymbal:sheet_rag:doc:*`, `cymbal:sheet_rag:token:*`, `cymbal:sheet_rag:query:*`, and `cymbal:sheet_rag:meta` with field-weighted BM25 token ranking in `server/redis_cache.py`. | M1 | ORIGINAL_REQUEST §R1 |
+| 3 | Decouple Remote Vertex AI RAG | Remove slow `vertexai.preview.rag` network calls from `search_knowledge_base_handler` in `server/rag_function.py`, fix syntax errors, and route queries directly to Dual-Layer cache with canonical domain fallback. | M2 | ORIGINAL_REQUEST §R2 |
+| 4 | Startup Pre-warming & Lifespan Integration | Update FastAPI `lifespan()` in `server/server.py` to pre-warm both canonical domain rules and sheet knowledge dataset into RAM/Redis. | M2 | ORIGINAL_REQUEST §R2, §R4 |
+| 5 | Memorystore Valkey MCP Server Integration Pattern | Document and configure Memorystore for Valkey MCP server interface and wire environment variables in `server/.env`. | M3 | ORIGINAL_REQUEST §R3 |
+| 6 | Sub-Millisecond Retrieval Verification (<5ms, Zero Dead Air) | Verify specific lending queries ("minimum amount to lend", "maximum amount per PAN ₹50 Lakh", "14 month EMI option", "CTO February 2025 update") with < 5ms latency. | M4 | ORIGINAL_REQUEST §R4 |
+| 7 | End-to-End Test Suite Pass & Adversarial Coverage Hardening | Run all test tiers in `server/tests/test_sheet_redis_rag.py` and pass 100%. | M4 | ORIGINAL_REQUEST §R4 |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Memory Bank Core & Lexical Identity | Implement `server/memory_bank.py` (FactStore, Vector Engine 0.83/0.40, Lexical Normalization, 90d Hydration) | none | DONE |
-| M2 | Tools Configuration & Prompt Alignment | Implement `server/tools/tool_definitions.py` (`retrieve_memory`), `server/tools/navigation.py`, and `server/system_prompt.py` | M1 | DONE |
-| M3 | 8 Decision Stages & Numeric Ledger | Implement `server/phase_engine.py` (8 Decision Stages, Skip/Committed/Recommendation/Close Gates, Hysteresis, Staleness, NumericLedger, 5-Tier Escalation) | M1 | DONE |
-| M4 | Downcar Service & Live Integration | Implement `server/memory_downcar.py` and wire `server/agent_live.py` (disconnect hook, tool registration, session hydration) | M1, M2, M3 | DONE |
-| E2E_TEST | E2E Testing Infrastructure Track | Create Tier 1-4 comprehensive test modules and publish `TEST_READY.md` | none (independent track) | DONE |
-| M5 | Final E2E Pass & Adversarial Hardening | Pass 100% of E2E test suite + Tier 5 adversarial coverage hardening | M4, E2E_TEST | IN_PROGRESS |
+| M1 | Sheet Ingestion & Dual-Layer Redis Cache | Extract 896 Q&A records, build `sheet_knowledge.json`, update `requirements.txt` with `redis>=5.0.0`, implement BM25 token index and `cymbal:sheet_rag:*` key schema in `server/redis_cache.py`. | none | DONE |
+| M2 | Vertex RAG Decoupling & Server Pre-warming | Fix `server/rag_function.py`, decouple Vertex RAG, route tool handler to L1/L2 cache, update `server/server.py` lifespan prewarming, update `server/.env`. | M1 | DONE |
+| M3 | Memorystore Valkey MCP Integration | Define Memorystore MCP server integration schema, tool mapping, and environment settings. | none | DONE |
+| M4 | E2E Verification & Adversarial Coverage Hardening | Pass 100% of test suite `server/tests/test_sheet_redis_rag.py` across Tiers 1-4 and Tier 5 adversarial hardening. | M1, M2, M3 | DONE |
 
 ## Interface Contracts
-### `server/memory_bank.py`
-- `normalize_lexical_user_id(raw_name: str) -> str`
-- `FactStore`: `set_fact(key, value, turn_id, is_hypothetical=False)`, `get_fact(key)`, `get_all_facts()`, `tick_turn(turn_id)`, `get_change_history()`
-- `MemoryBank`: `add_memory(user_id, content, metadata=None, content_hash=None) -> bool`, `search_memories(user_id, query, threshold=0.40, limit=5) -> List[Dict]`, `hydrate_user_profile(user_id, days_lookback=90) -> Dict`
+### `server/redis_cache.py` ↔ `server/rag_function.py`
+- `rag_cache.search_sheet_knowledge(query: str, top_k: int = 3) -> str`: Returns formatted Q&A text matches or empty string if no relevant match.
+- `rag_cache.get(query: str) -> Optional[str]`: Returns cached response for exact/normalized query hash key (`cymbal:sheet_rag:query:*`).
+- `rag_cache.set(query: str, response: str, ttl: int = 86400)`: Stores formatted response under normalized query hash.
+- `rag_cache.prewarm_sheet_knowledge(file_path: Optional[str] = None) -> int`: Loads records, builds BM25 index, syncs to Redis, returns total record count.
 
-### `server/tools/tool_definitions.py`
-- `retrieve_memory_schema: FunctionSchema`
-- `async def handle_retrieve_memory(params: FunctionCallParams)`
-
-### `server/phase_engine.py`
-- `DecisionStage(IntEnum)`: 8 stages
-- `StageTransitionManager`: `can_transition(from_stage, to_stage, fact_store, user_intent, turn_id) -> Tuple[bool, str]`
-- `NumericLedger`: `record_quote(principal, tenure_months, xirr_pct, profit, maturity_amount, monthly_emi=None)`, `verify_quote(principal, tenure_months, quoted_maturity) -> bool`
-- `EscalationTracker`: `record_user_query(text)`, `record_human_request()`, `get_escalation_tier() -> int`
-
-### `server/memory_downcar.py`
-- `async def run_post_session_downcar(session_id: str, user_id: str, transcript_history: List[Dict[str, str]], memory_bank: Any) -> Dict[str, Any]`
+### `server/rag_function.py` ↔ `server/agent_live.py` / Pipecat LLM
+- `search_knowledge_base_schema`: JSON schema matching `query_for_vector_search` (string) and `total_records` (integer).
+- `search_knowledge_base_handler(params: FunctionCallParams)`: Async callback invoking `params.result_callback({"content": result})` within < 5ms.
 
 ## Code Layout
-- Exclusive file ownership per milestone:
-  - M1 Worker: `server/memory_bank.py` [COMPLETED]
-  - M2 Worker: `server/tools/tool_definitions.py`, `server/tools/navigation.py`, `server/system_prompt.py` [COMPLETED]
-  - M3 Worker: `server/phase_engine.py` [COMPLETED]
-  - M4 Worker: `server/memory_downcar.py`, `server/agent_live.py` [COMPLETED]
-  - E2E Test Writer: `server/tests/test_memory_bank.py`, `server/tests/test_retrieve_memory_tool.py`, `server/tests/test_memory_downcar.py`, `server/tests/test_decision_stages_gates.py`, `server/tests/test_numeric_ledger.py`, `server/tests/test_navigation_flows.py`, `server/tests/test_integration_memory_voice.py`, `server/tests/test_consultative_e2e_scenarios.py`, `server/tests/__init__.py` [COMPLETED]
+- `server/data/sheet_knowledge.json`: Sanitized JSON array of 896 Q&A records.
+- `server/scripts/ingest_sheet_knowledge.py`: Standalone CLI script for extracting from Google Sheet and syncing to Redis.
+- `server/redis_cache.py`: Dual-Layer L1/L2 RedisRAGCache client with BM25 inverted index.
+- `server/rag_function.py`: Tool definition and sub-millisecond handler.
+- `server/server.py`: FastAPI server with startup lifespan pre-warming.
+- `server/.env`: Memorystore host/port and environment settings.
+- `server/mcp_config.json`: Memorystore Valkey Remote MCP server configuration.
+- `server/requirements.txt`: Python package dependencies including `redis>=5.0.0`.
+- `server/tests/test_sheet_redis_rag.py`: E2E automated test suite.

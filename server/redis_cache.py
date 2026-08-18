@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -40,6 +41,9 @@ def tokenize_text(text: Any) -> List[str]:
     # Extract alphanumeric words: preserve single-digit numbers (0-9) and alphanumeric words >= 1 char if not stop words
     tokens = [w for w in re.findall(r"[a-zA-Z0-9]+", t) if (len(w) > 1 or w.isdigit()) and w not in STOP_WORDS]
     return tokens
+
+
+_GLOBAL_SHEET_RECORDS_RAM: Optional[List[Dict[str, Any]]] = None
 
 
 class RedisRAGCache:
@@ -183,20 +187,71 @@ class RedisRAGCache:
         return count
 
     async def prewarm_sheet_knowledge(self, json_path: Optional[str] = None) -> int:
-        """Load, BM25 index, and pre-warm Google Sheet Q&A dataset into L1/L2 Redis."""
-        path = json_path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sheet_knowledge.json")
-        if not os.path.exists(path):
-            logger.warning(f"[RedisCache] Sheet knowledge JSON not found at {path}")
+        """Load, BM25 index, and pre-warm Google Sheet Q&A dataset directly from Google Cloud Memorystore or in-memory Sheet."""
+        global _GLOBAL_SHEET_RECORDS_RAM
+        records = []
+
+        # 1. Fast in-memory process cache hit (<0.01ms)
+        if _GLOBAL_SHEET_RECORDS_RAM is not None:
+            records = _GLOBAL_SHEET_RECORDS_RAM
+
+        # 2. Attempt to fetch all records directly from Google Cloud Memorystore (Cloud Redis)
+        if not records and self.is_connected and self.redis_client:
+            try:
+                memorystore_data = await asyncio.wait_for(
+                    self.redis_client.get("cymbal:sheet_qa:all"),
+                    timeout=1.0
+                )
+                if memorystore_data:
+                    records = json.loads(memorystore_data)
+                    _GLOBAL_SHEET_RECORDS_RAM = records
+                    logger.info(f"☁️ [Memorystore:Hit] Loaded {len(records)} Q&A pairs directly from Google Cloud Memorystore.")
+            except Exception as e:
+                logger.debug(f"[RedisCache] Could not fetch directly from Memorystore: {e}")
+
+        # 3. If not found in Memorystore, fetch live from Google Sheet in-memory (zero local disk files)
+        if not records:
+            try:
+                gsheets_bin = "/google/bin/releases/gemini-agents-gsheets/gsheets"
+                sheet_id = os.environ.get("GOOGLE_SHEET_ID", "1JI9MOdsqIZAPedATGdODWCDJ-nm9R-ZJ57taZtNrsiM")
+                if os.path.exists(gsheets_bin):
+                    logger.info("☁️ [GoogleSheets:Sync] Fetching Q&A dataset in-memory directly from Google Sheet...")
+                    out = subprocess.check_output(
+                        [gsheets_bin, "readonly", "read", sheet_id, "A1:C1500"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=10
+                    ).decode("utf-8")
+                    for line in out.strip().split("\n"):
+                        parts = line.split("\t")
+                        if len(parts) >= 2:
+                            q = parts[0].strip()
+                            a = parts[1].strip()
+                            cat = parts[2].strip() if len(parts) > 2 else "General"
+                            if q and a and q.lower() not in ["questions", "question"]:
+                                records.append({"question": q, "answer": a, "category": cat, "id": len(records) + 1})
+                    if records:
+                        _GLOBAL_SHEET_RECORDS_RAM = records
+            except Exception as e:
+                logger.debug(f"[RedisCache] In-memory Google Sheet fetch failed: {e}")
+
+        # 4. Optional local path fallback only if explicitly provided
+        if not records and json_path and os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    records = json.load(f)
+                    _GLOBAL_SHEET_RECORDS_RAM = records
+            except Exception as e:
+                logger.warning(f"[RedisCache] Local path read error: {e}")
+
+        if not records:
+            logger.warning("[RedisCache] No sheet knowledge records available from Memorystore or Sheet.")
             return 0
 
+        # Filter out any lingering header row
+        if records and records[0].get("question") in ["Questions", "question"]:
+            records = records[1:]
+
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                records = json.load(f)
-
-            # Filter out any lingering header row if present
-            if records and records[0].get("question") == "Questions":
-                records = records[1:]
-
             self._sheet_records = records
             total_n = len(records)
 

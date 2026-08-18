@@ -656,14 +656,11 @@ class GCPAgentEngineMemoryBank:
 
 
 def _get_default_storage_path() -> str:
-    """Returns the canonical storage path for persistent user memories."""
+    """Returns the canonical storage path for temporary user memory fallback."""
     env_path = os.getenv("MEMORY_BANK_STORAGE_PATH")
     if env_path:
         return env_path
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(base_dir, "data")
-    os.makedirs(data_dir, exist_ok=True)
-    return os.path.join(data_dir, "user_memories.json")
+    return "/tmp/user_memories.json"
 
 
 class MemoryBank:
