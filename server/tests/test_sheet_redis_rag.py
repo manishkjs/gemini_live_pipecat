@@ -24,8 +24,6 @@ if _SERVER_DIR not in sys.path:
 
 from redis_cache import RedisRAGCache, rag_cache, tokenize_text
 from rag_function import (
-    CANONICAL_DOMAIN_KNOWLEDGE,
-    _get_fallback_domain_knowledge,
     search_knowledge_base_handler,
     search_knowledge_base_schema,
 )
@@ -94,13 +92,13 @@ class TestTier1FeatureCoverage(unittest.IsolatedAsyncioTestCase):
         # Normalization produces identical sorted tokens across English & Hindi phrasing
         self.assertEqual(norm1, norm2)
 
-    async def test_prewarm_canonical_knowledge_topics(self):
-        """Verify pre-warming canonical domain knowledge stores topics into cache."""
-        count = await self.cache.prewarm(CANONICAL_DOMAIN_KNOWLEDGE)
-        self.assertGreaterEqual(count, 10)
-        rbi_val = await self.cache.get("rbi")
-        self.assertIsNotNone(rbi_val)
-        self.assertIn("RBI-registered NBFC-P2P", rbi_val)
+    async def test_prewarm_sheet_knowledge_topics(self):
+        """Verify pre-warming sheet knowledge stores topics into cache."""
+        count = await self.cache.prewarm_sheet_knowledge()
+        self.assertGreater(count, 0)
+        res = await self.cache.search_sheet_knowledge("minimum amount to lend")
+        self.assertIsNotNone(res)
+        self.assertTrue("250" in res or "Rupees 250" in res or "₹250" in res)
 
     async def test_search_knowledge_base_schema_specification(self):
         """Verify search_knowledge_base_schema conforms to Pipecat FunctionSchema contract."""
@@ -280,17 +278,13 @@ class TestTier3SpecificLendingQueries(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(res) > 0)
         self.assertTrue("25" in res and ("lakh" in res.lower() or "lakhs" in res.lower()))
 
-    async def test_canonical_domain_fallback_for_unmatched_query(self):
-        """Verify completely unmatched queries fall back to authoritative Canonical Domain Knowledge."""
+    async def test_unmatched_query_behavior(self):
+        """Verify completely unmatched queries return clean not found message from Memorystore."""
         unmatched_query = "zzqqxx123456789 unknowntermxyz987"
         sheet_res = await self.cache.search_sheet_knowledge(unmatched_query)
         self.assertEqual(sheet_res, "")
 
-        fallback_res = _get_fallback_domain_knowledge(unmatched_query)
-        self.assertIn("Cymbal Lending", fallback_res)
-        self.assertIn("RBI-registered", fallback_res)
-
-        # Verify tool handler triggers canonical fallback
+        # Verify tool handler returns clean message
         callback_mock = AsyncMock()
         params = MagicMock()
         params.arguments = {"query_for_vector_search": unmatched_query}
@@ -299,10 +293,10 @@ class TestTier3SpecificLendingQueries(unittest.IsolatedAsyncioTestCase):
         await search_knowledge_base_handler(params)
         callback_mock.assert_called_once()
         content = callback_mock.call_args[0][0]["content"]
-        self.assertIn("Cymbal Lending", content)
+        self.assertIn("No specific record found in Memorystore", content)
 
     async def test_exact_cache_hierarchy_execution(self):
-        """Verify retrieval hierarchy: Exact Cache Hit -> Sheet Inverted Index -> Canonical Fallback."""
+        """Verify retrieval hierarchy: Exact Cache Hit -> Sheet Inverted Index in Memorystore."""
         # 1. Sheet search
         sheet_res = await self.cache.search_sheet_knowledge("minimum amount to lend")
         self.assertTrue(len(sheet_res) > 0)
@@ -311,11 +305,6 @@ class TestTier3SpecificLendingQueries(unittest.IsolatedAsyncioTestCase):
         await self.cache.set("exact test question", "Exact Answer From Cache")
         exact_res = await self.cache.get("exact test question")
         self.assertEqual(exact_res, "Exact Answer From Cache")
-
-        # 3. Canonical fallback for domain keywords
-        domain_res = _get_fallback_domain_knowledge("tell me about nri regulations and fema")
-        self.assertIn("NRI", domain_res)
-        self.assertIn("NRE", domain_res)
 
 
 # ============================================================================
@@ -406,13 +395,7 @@ class TestTier4LatencyAndWorkloadBenchmark(unittest.IsolatedAsyncioTestCase):
         t0 = time.perf_counter()
         async with lifespan(app):
             prewarm_ms = (time.perf_counter() - t0) * 1000.0
-            print(f"\n⚡ [Tier 4 Lifespan Prewarm Time]: {prewarm_ms:.2f} ms")
-
-            # Verify canonical knowledge is prewarmed
-            rbi_hit = await rag_cache.get("rbi")
-            self.assertIsNotNone(rbi_hit)
-
-            # Verify sheet knowledge is prewarmed and searchable
+            # Verify sheet knowledge is prewarmed and searchable in Memorystore
             sheet_hit = await rag_cache.search_sheet_knowledge("minimum amount to lend")
             self.assertTrue("250" in sheet_hit or "₹250" in sheet_hit or "Rupees 250" in sheet_hit)
 

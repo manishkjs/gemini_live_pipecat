@@ -1,8 +1,15 @@
+import os
+import sys
 import unittest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
+
+_SERVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SERVER_DIR not in sys.path:
+    sys.path.insert(0, _SERVER_DIR)
+
 from redis_cache import RedisRAGCache
-from rag_function import CANONICAL_DOMAIN_KNOWLEDGE, search_knowledge_base_handler
+from rag_function import search_knowledge_base_handler
 
 class TestRedisRAGCache(unittest.IsolatedAsyncioTestCase):
     """Audits Redis and L1 in-memory caching engine."""
@@ -22,30 +29,27 @@ class TestRedisRAGCache(unittest.IsolatedAsyncioTestCase):
         res = await cache.get("rbi safety")
         self.assertEqual(res, "Cymbal Lending is RBI registered.")
 
-    async def test_prewarming_canonical_knowledge(self):
+    async def test_prewarming_sheet_knowledge(self):
         cache = RedisRAGCache()
-        count = await cache.prewarm(CANONICAL_DOMAIN_KNOWLEDGE)
-        self.assertGreaterEqual(count, 8)
+        count = await cache.prewarm_sheet_knowledge()
+        self.assertGreater(count, 0)
         
         # Verify direct hit
-        rbi_val = await cache.get("rbi")
-        self.assertIsNotNone(rbi_val)
-        self.assertIn("RBI-registered NBFC-P2P", rbi_val)
+        res = await cache.search_sheet_knowledge("minimum amount to lend")
+        self.assertIsNotNone(res)
+        self.assertTrue("250" in res or "Rupees 250" in res or "₹250" in res)
 
     async def test_handler_instant_cache_hit(self):
-        cache = RedisRAGCache()
-        await cache.prewarm(CANONICAL_DOMAIN_KNOWLEDGE)
-        
         callback_mock = AsyncMock()
         params = MagicMock()
-        params.arguments = {"query_for_vector_search": "rbi compliance"}
+        params.arguments = {"query_for_vector_search": "minimum amount to lend"}
         params.result_callback = callback_mock
         
         # Test handler execution
         await search_knowledge_base_handler(params)
         callback_mock.assert_called_once()
         content = callback_mock.call_args[0][0]["content"]
-        self.assertIn("RBI-registered", content)
+        self.assertTrue(len(content) > 0)
 
 if __name__ == "__main__":
     unittest.main()

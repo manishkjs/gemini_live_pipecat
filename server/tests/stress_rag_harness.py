@@ -23,8 +23,6 @@ if _SERVER_DIR not in sys.path:
 
 from redis_cache import RedisRAGCache, rag_cache, tokenize_text
 from rag_function import (
-    CANONICAL_DOMAIN_KNOWLEDGE,
-    _get_fallback_domain_knowledge,
     search_knowledge_base_handler,
 )
 from pipecat.services.llm_service import FunctionCallParams

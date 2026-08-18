@@ -77,13 +77,11 @@ from agent import run_agent
 from system_prompt import SYSTEM_PROMPT, get_chained_system_prompt, tts_prompt
 from redis_cache import rag_cache
 from memory_redis_sync import memory_redis_syncer
-from rag_function import CANONICAL_DOMAIN_KNOWLEDGE
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles FastAPI startup and shutdown."""
     await rag_cache.initialize()
-    await rag_cache.prewarm(CANONICAL_DOMAIN_KNOWLEDGE)
     await rag_cache.prewarm_sheet_knowledge()
     # Asynchronously sync known users in background
     asyncio.create_task(memory_redis_syncer.sync_all_known_users())
