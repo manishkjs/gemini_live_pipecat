@@ -674,7 +674,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 
 class UserIdleProcessor(FrameProcessor):
-    def __init__(self, callback, timeout: float = 10.0):
+    def __init__(self, callback, timeout: float = 5.0):
         super().__init__()
         self.callback = callback
         self.timeout = timeout
@@ -973,7 +973,7 @@ async def run_agent_live(
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(language=language),
-        UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
+        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
         context_aggregator.user(),
         llm,
         phase_processor,
