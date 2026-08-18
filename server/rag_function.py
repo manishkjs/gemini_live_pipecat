@@ -53,6 +53,10 @@ CANONICAL_DOMAIN_KNOWLEDGE: dict[str, str] = {
     ),
     "kyc": (
         "3-Step Instant KYC: 1. PAN card verification, 2. Aadhaar Digilocker OTP, 3. Bank account penny-drop linking. Completed in 2 minutes inside the app."
+    ),
+    "founders": (
+        "Founders & Leadership: Cymbal Lending (operating on LenDenClub NBFC-P2P infrastructure) was co-founded by Bhavin Patel (Co-Founder & CEO) and Dipesh Karki (Co-Founder & CTO). "
+        "With 10+ years of fintech leadership, they have built India's premier RBI-registered P2P platform serving 40 Lakh+ lenders."
     )
 }
 
@@ -60,6 +64,8 @@ def _get_fallback_domain_knowledge(query: str) -> str:
     """Retrieve grounded canonical domain knowledge when vector search is sparse."""
     q = str(query).lower() if query is not None else ""
     matches = []
+    if any(w in q for w in ["founder", "found", "ceo", "cto", "leadership", "bhavin", "dipesh", "management", "owner"]):
+        matches.append(CANONICAL_DOMAIN_KNOWLEDGE["founders"])
     if any(w in q for w in ["tds", "26as", "226as", "form 26", "tax", "income tax", "194a", "16a"]):
         matches.append(CANONICAL_DOMAIN_KNOWLEDGE["tds_taxation"])
     if any(w in q for w in ["nri", "nre", "nro", "fema", "repatriat", "overseas"]):
