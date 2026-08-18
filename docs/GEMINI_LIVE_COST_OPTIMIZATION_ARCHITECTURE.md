@@ -1,11 +1,11 @@
 # Architecting Ultra-Low-Cost, Sub-Millisecond Gemini Live Voice Systems
-## A 6-Pillar Blueprint for High-Concurrency Full-Duplex Voicebots
+## A Top-Down 6-Pillar Blueprint for High-Concurrency Full-Duplex Voicebots
 
 ---
 
 ## Executive Summary
 
-Gemini Live (`gemini-3.5-flash-live-preview` via Vertex AI `BidiGenerateContent`) represents a paradigm shift in real-time conversational AI, enabling natural, human-speed full-duplex speech with sub-second time-to-first-audio (TTFA). However, building full-duplex voice applications naively introduces severe **cost explosion** and **audio latency penalties**:
+Gemini Live (`gemini-3.5-flash-live-preview` via Vertex AI `BidiGenerateContent`) enables natural, human-speed full-duplex speech with sub-second time-to-first-audio (TTFA). However, building full-duplex voice applications naively introduces severe **cost explosion** and **audio latency penalties**:
 
 1. **Continuous Audio-Token Compounding**: In bidirectional streaming WebSockets, the active session context grows continuously with every audio frame. Every token in your system prompt, tool declarations, and dialogue history is re-billed on every generation.
 2. **Long-Call Context Bloat**: Unmanaged 5- to 10-minute duplex voice calls accumulate 25,000+ tokens in raw audio and text buffers, increasing token spend quadratically and causing attention dispersion.
@@ -13,85 +13,123 @@ Gemini Live (`gemini-3.5-flash-live-preview` via Vertex AI `BidiGenerateContent`
 4. **Monolithic Prompt Bloat**: Stuffing an entire 10-phase enterprise playbook into the base system prompt burns tens of thousands of tokens per minute across long calls.
 5. **Cognitive Overload on the Live Audio Stream**: Forcing the primary live voice model to do intent classification, multi-step reasoning, database queries, and memory extraction inside the audio loop results in speech stutter and audio stalls.
 
-This document outlines the **6-Pillar Cost & Latency Optimization Pattern** implemented in our production architecture. By combining a **Near-Process Hot Cache**, **Lean Tool Declarations**, **Dynamic Prompt Cards**, **Multi-Stage Context Compression**, a **Gemini 3.5 Flash-Lite Downcar Thinker**, and **Silent Context Injection (`turn_complete=False`)**, enterprise voice platforms can achieve **80%–90% cost reduction** and **<5ms tool retrieval speeds** under 10,000+ concurrent calls.
+This document outlines the **Top-Down 6-Pillar Optimization Blueprint**. By combining a **2-Step Phase Engine (Tier-1 0ms Regex ➔ Tier-2 Flash-Lite Fallback)**, **Near-Process Hot Cache**, **Lean Tool Declarations**, **Modular Prompt Cards**, **Context Compression**, and **Silent Context Injection (`turn_complete=False`)**, enterprise voice platforms achieve **80%–90% cost reduction** and **<5ms tool retrieval speeds** under 10,000+ concurrent calls.
 
 ---
 
-## The 6-Pillar Architecture Topology
+## 🏛️ Top-Down Master Architecture Diagram
 
 ```mermaid
 flowchart TB
-    subgraph Client["Client Layer"]
-        Browser["Web Client / Phone SIP<br/>16kHz Mic PCM & 24kHz Audio"]
+    %% Level 1: Client & Audio Transport
+    subgraph L1["1. User & Audio Transport"]
+        User["👤 Customer (Voice Input)"]
+        Pipecat["⚡ Pipecat 1.7.0 Pipeline (16kHz PCM In / 24kHz Out)"]
+        User <== "Live Duplex Audio" ==> Pipecat
     end
 
-    subgraph Transport["Voice Transport Layer"]
-        Pipecat["Pipecat 1.7.0 Pipeline<br/>VAD Barge-In & Frame Aggregators"]
+    %% Level 2: Primary Live Voice Model
+    subgraph L2["2. Primary Live Voice Loop (High Value)"]
+        LiveModel["🎙️ Gemini Live (gemini-3.5-flash-live-preview)<br/>• Lean Base Persona (&lt;800 tokens)<br/>• 1-2 Minimal Deterministic Tools"]
+        Pipecat <== "WebSocket BidiGenerateContent" ==> LiveModel
     end
 
-    subgraph LiveVoice["Primary Live Voice Loop (High Cost Tier)"]
-        GeminiLive["Gemini Live (gemini-3.5-flash-live-preview)<br/>• Lean Base System Prompt (<800 tokens)<br/>• Minimalist Tool Set (1-2 deterministic tools)<br/>• Compressed Working Context Window"]
+    %% Level 3: 2-Step Phase Engine
+    subgraph L3["3. Two-Step Phase Decision Engine"]
+        Transcript["📝 User Transcript Stream"]
+        Tier1["⚡ Step 1: Tier-1 Regex Fast-Path (0ms, $0)<br/>Instant keyword match (KYC, PAN, Escrow, Bye)"]
+        Tier2["🧠 Step 2: Tier-2 Sidecar Fallback (Gemini 3.5 Flash-Lite)<br/>Evaluates semantic intent ONLY if Regex misses"]
+        PhaseSwitch["🔄 Phase Transition Decision"]
+
+        Transcript --> Tier1
+        Tier1 -- "Match (0ms)" --> PhaseSwitch
+        Tier1 -- "Miss (Fallback)" --> Tier2
+        Tier2 -- "AI Semantic Decision" --> PhaseSwitch
     end
 
-    subgraph Compression["Context Compression & Pruning Engine"]
-        AudioPruner["Audio-to-Text Frame Pruner<br/>(Prunes raw audio >6 turns)"]
-        FactCompactor["Rolling FactStore Compactor<br/>(Turns 1..N ➔ 60-token entity summary)"]
+    %% Level 4: JIT Prompt Cards & Silent Injection
+    subgraph L4["4. Just-in-Time Prompt Cards & Silent Injection"]
+        PromptCards["🃏 Modular Prompt Cards (150–250 tokens)<br/>(Phase 1 Discovery ➔ Phase 4 Trust ➔ Phase 7 Math ➔ Phase 8 KYC)"]
+        SilentInject["📡 Silent Injection: send_client_content(turn_complete=False)<br/>Updates attention context silently without interrupting user"]
+        
+        PhaseSwitch --> PromptCards
+        PromptCards --> SilentInject
     end
 
-    subgraph AsyncBrain["Asynchronous Sidecar Thinker (Ultra-Low Cost Tier)"]
-        FlashLite["Gemini 3.5 Flash-Lite (location=global)<br/>• Tier-2 Semantic Intent Classifier<br/>• Watcher Brain Co-Pilot<br/>• Post-Session Memory Downcar"]
+    %% Level 5: Near-Process Dual-Layer Cache
+    subgraph L5["5. Sub-Millisecond Dual-Layer RAG Cache"]
+        L1Cache["⚡ L1 In-Memory Process RAM (&lt;0.05ms)<br/>BM25 Inverted Index (896 Q&A, 2.8 MB)"]
+        L2Redis["☁️ L2 GCP Memorystore Valkey / Redis (1.0ms)<br/>Shared Cross-Pod Store & Session Persistence"]
+        
+        L1Cache -- "Cache Miss / Profile Load" --> L2Redis
     end
 
-    subgraph StateAndPrompt["Just-in-Time Context & State Engine"]
-        PhaseEngine["Phase Engine & State Machine<br/>(Phases 1 to 10)"]
-        PromptCards["Modular Prompt Cards<br/>(150-250 tokens swapped JIT)"]
+    %% Level 6: Context Compression
+    subgraph L6["6. Multi-Stage Context Compression"]
+        AudioPruner["✂️ Audio Frame Pruner (Prunes raw PCM &gt;6 turns)"]
+        FactStore["📦 Rolling FactStore (Turns 1..N ➔ 60-token JSON summary)"]
+        
+        AudioPruner --> FactStore
     end
 
-    subgraph Caching["Near-Process Dual-Layer RAG & Memory"]
-        L1RAM["L1 In-Memory RAM Cache (<0.05ms)<br/>BM25 Inverted Index (896 Q&A, 2.8 MB)"]
-        L2Redis["L2 GCP Memorystore Valkey/Redis (1.0ms)<br/>Cross-Pod User State & Session Store"]
-    end
-
-    Browser <== "Bi-directional 16kHz/24kHz Audio" ==> Pipecat
-    Pipecat <== "WebSocket BidiGenerateContent" ==> GeminiLive
-
-    GeminiLive -.->|"In-Flight Deterministic Tool Call"| L1RAM
-    L1RAM -.->|"Cache Miss / User Profile"| L2Redis
-
-    Pipecat -->|"User Transcript Stream"| PhaseEngine
-    Pipecat -->|"Raw Dialogue Turns"| AudioPruner
-    AudioPruner -->|"Text Summaries"| FactCompactor
-    FactCompactor -->|"send_client_content(turn_complete=False)"| GeminiLive
-
-    PhaseEngine -->|"Async Intent Query"| FlashLite
-    FlashLite -->|"Phase Decision & Rationale"| PhaseEngine
-
-    PhaseEngine -->|"Select Active Card"| PromptCards
-    PromptCards -->|"send_client_content(turn_complete=False)"| GeminiLive
-
-    Pipecat -->|"Post-Session Transcript"| FlashLite
-    FlashLite -->|"Extracted Facts & Summary"| L2Redis
+    %% Top-Down Cross Connections
+    Pipecat --> Transcript
+    SilentInject ==>|"Updates Working Context Silently"| LiveModel
+    LiveModel -.->|"In-Flight Tool Call"| L1Cache
+    Transcript --> AudioPruner
+    FactStore -.->|"send_client_content(turn_complete=False)"| LiveModel
 ```
 
 ---
 
-## Pillar 1: Near-Process Dual-Layer Hot Cache (L1 RAM + L2 Cloud Memorystore)
+## 1. The Two-Step Phase Decision Engine
+
+Instead of running heavy LLM inference on every single conversational turn, state transitions use an efficient **Two-Step Hierarchy**:
+
+```
+[ Incoming User Utterance ]
+            │
+            ▼
+┌────────────────────────────────────────┐
+│ Step 1: Tier-1 Regex Fast-Path (0ms)   │ ──(Match)──> [ Trigger Phase Immediately in 0ms ($0) ]
+│ Keywords: 'kyc', 'pan', 'escrow', etc. │
+└───────────────────┬────────────────────┘
+                    │ (Miss / Fallback)
+                    ▼
+┌────────────────────────────────────────┐
+│ Step 2: Tier-2 Sidecar (Flash-Lite)    │ ──(Confidence >= 0.70)──> [ Trigger Semantic Phase Transition ]
+│ Model: gemini-3.5-flash-lite (global)  │
+└────────────────────────────────────────┘
+```
+
+1. **Step 1: Tier-1 0ms Regex Fast-Path**:
+   - Matches deterministic intent anchors (`aadhaar`, `pan card`, `kyc`, `escrow safety`, `calculate returns`, `alvida`).
+   - Executes in **`0.000 ms`** with **zero API calls** and **zero token costs**.
+   - Handles **~60%–70% of standard state transitions** instantly.
+
+2. **Step 2: Tier-2 Gemini 3.5 Flash-Lite Fallback**:
+   - **Only triggered if Tier-1 Regex misses**.
+   - Evaluates the rolling 10-turn dialogue context asynchronously out-of-band (<800ms) without blocking the audio stream.
+   - When AI confidence $\ge 0.70$, it signals the Phase Engine to swap prompt cards.
+
+---
+
+## 2. Near-Process Dual-Layer Hot Cache (L1 RAM + L2 Cloud Memorystore)
 
 ### The Problem
-Traditional voicebot architectures make remote REST/gRPC vector search calls (e.g. Vertex AI Search or remote vector databases) during live tool execution. These remote round-trips take **3,200 ms – 3,800 ms**, introducing catastrophic audio dead air that forces the user to ask "Are you still there?". Furthermore, recurring per-query embedding and vector search API fees accumulate rapidly under high call volume.
+Traditional voicebots make remote REST/gRPC vector search calls during live tool execution. These remote round-trips take **3,200 ms – 3,800 ms**, causing dead air and accumulating per-query vector API charges.
 
 ### The Architectural Solution
-Implement a **Dual-Layer In-Memory Cache**:
 1. **L1 Process RAM (In-Memory Hot Cache)**:
    - Houses a compiled **Robertson-Spärck Jones BM25 inverted index** over the enterprise knowledge base (~2.8 MB for 896 records) and an exact-match hash table.
    - Retrieval Latency: **`<0.05 ms` (50 microseconds)**.
    - Cost: **$0.00** (runs within existing container RAM).
 2. **L2 Cloud Memorystore (Valkey / Redis in `us-central1`)**:
-   - Acts as the distributed source of truth for cross-pod user state, customer profile hydration, and session persistence.
+   - Distributed source of truth for cross-pod user state, customer profile hydration, and session persistence.
    - Retrieval Latency: **`1.0 ms – 1.8 ms`**.
 
 ```
-[ Incoming Tool Call: search_knowledge_base('TDS rate on P2P') ]
+[ In-Flight Tool Call: search_knowledge_base('TDS rate on P2P') ]
                      │
                      ▼
        ┌───────────────────────────┐
@@ -104,49 +142,24 @@ Implement a **Dual-Layer In-Memory Cache**:
        └───────────────────────────┘
 ```
 
-### Cost & Performance Impact
-- **Latency**: Reduced tool execution from **3,500ms down to 3.0ms** (a **1,000x speedup**).
-- **Cost**: Eliminates 100% of recurring per-query vector database charges and prevents needing expensive, multi-core Redis clusters.
-
 ---
 
-## Pillar 2: Lean Minimalist Tool Declarations (Eliminating the "Tool Tax")
+## 3. Lean Minimalist Tool Declarations (Eliminating the "Tool Tax")
 
-### The Problem: The "Tool Tax"
-When using LLMs in duplex voice mode, every tool declared in `function_declarations` adds to the model's active system schema.
-- Declaring 15–20 detailed JSON schemas burns **2,500 – 4,000 extra prompt tokens on every single audio generation turn**.
-- Excessive tools cause **tool hallucination** (invoking unnecessary tools for simple conversational chit-chat) and **deliberation latency** (model hesitates before speaking while evaluating tool schemas).
-
-### The Solution: Minimalist Runtime Tooling
 1. **Limit Active Tools to 1 or 2 Deterministic Operations**:
-   - Only declare tools that *require runtime computation* (e.g. `calculate_returns` for compound interest math) or deep knowledge search (`search_knowledge_base`).
+   - Only declare tools that *require runtime calculation* (`calculate_returns`) or deep knowledge lookup (`search_knowledge_base`).
 2. **Direct Conversational Grounding for Routine Logic**:
-   - Instead of calling a `get_kyc_steps` or `check_platform_safety` tool, ground these 3-step processes directly in concise system instructions. The bot delivers them verbally in 0ms without tool overhead.
-3. **Offload All Memory Tools to Post-Call**:
-   - Eliminate `save_memory` and `update_profile` tools from the live voice session entirely. Customer facts and summaries are extracted asynchronously post-session by the Downcar worker.
+   - 3-step KYC, platform trust, and reasons for calling are grounded directly in conversational prompts. The bot delivers them verbally in 0ms without tool overhead.
+3. **Offload Memory Tools to Post-Session**:
+   - Zero memory tools inside the live call. Customer facts and summaries are extracted asynchronously post-session by the Downcar worker.
 
 ---
 
-## Pillar 3: Dynamic Phase Engine & Modular Prompt Cards (Just-in-Time Prompting)
+## 4. Dynamic Phase Engine & Modular Prompt Cards (Just-in-Time Prompting)
 
-### The Problem: Monolithic System Prompt Bloat
-In a multi-stage consultative sales or support dialogue (e.g. 10 phases: Greeting ➔ Discovery ➔ Trust ➔ Objection Handling ➔ Math ➔ KYC ➔ Closing), including the entire instruction manual in the base system prompt bloats the prompt to **8,000 – 12,000 tokens**.
-
-In Gemini Live, where prompt tokens are re-processed continuously across hundreds of audio frames, a 10k token prompt costs **10x more per minute** than a 1k token prompt.
-
-### The Solution: Modular Prompt Card Swapping
-1. **Lean Base Persona (<800 tokens)**: The base system prompt contains only the identity, tone, language constraints (Devanagari Hindi + Latin financial terms), and safety rules.
-2. **Modular Prompt Cards (150–250 tokens each)**: Each stage of the conversation is encapsulated into an isolated, bite-sized "Prompt Card".
-3. **Dynamic Just-in-Time Context Swapping**: The **Phase Engine** tracks dialogue state. When a state transition occurs, it yields only the *current active prompt card* into the live context.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Phase1: Greeting & Discovery (Card 1: 180 tokens)
-    Phase1 --> Phase4: Customer asks about RBI/Safety (Card 4: 210 tokens)
-    Phase4 --> Phase7: Customer asks for Returns/Math (Card 7: 240 tokens)
-    Phase7 --> Phase8: Customer commits to Plan (Card 8: 190 tokens)
-    Phase8 --> [*]
-```
+1. **Lean Base Persona (<800 tokens)**: Base prompt contains only identity, tone, language rules (Devanagari Hindi + Latin financial terms), and boundary safety.
+2. **Modular Prompt Cards (150–250 tokens each)**: Each conversational phase is an isolated, bite-sized "Prompt Card".
+3. **Just-in-Time Context Swapping**: The Phase Engine injects only the *current active prompt card* into working memory.
 
 ### Token Savings:
 - **Monolithic System Prompt**: 10,000 tokens $\times$ 50 turns = **500,000 prompt tokens billed**.
@@ -155,120 +168,31 @@ stateDiagram-v2
 
 ---
 
-## Pillar 4: Multi-Stage Context Compression & Sliding Window Compaction
-
-### The Problem: The Long-Call Token Accumulation Trap
-In continuous bidirectional streaming, audio tokens and text transcripts compound quadratically over time:
-- By minute 5 (25 turns), context accumulates to **~15,000 tokens**.
-- By minute 10 (50 turns), context accumulates to **~30,000+ tokens**.
-- **Drawbacks**: High token cost per turn, increased time-to-first-audio (TTFA), and **attention dispersion** (the model forgets key facts established at the start of the call).
+## 5. Multi-Stage Context Compression & Sliding Window Compaction
 
 ```
-Uncompressed Context Growth (Quadratic Token Cost):
+Uncompressed Context (Naive Setup):
 Turn 1:   [██] (1,000 tokens)
 Turn 10:  [██████████] (6,000 tokens)
 Turn 25:  [█████████████████████████] (15,000 tokens)
 Turn 50:  [██████████████████████████████████████████████████] (32,000 tokens) $$$
 
-Compressed Context (Flat Linear Boundary):
+Compressed Context (6-Pillar Architecture):
 Turn 1:   [██] (1,000 tokens)
 Turn 10:  [████] (2,200 tokens)
 Turn 25:  [████] (2,400 tokens)  <-- Older audio pruned & compacted to FactStore
-Turn 50:  [████] (2,500 tokens)  <-- Steady-state bounded token cost
+Turn 50:  [████] (2,500 tokens)  <-- Bounded steady-state token cost
 ```
 
-### The Architectural Solution: 3-Stage Context Compression
-
-```mermaid
-flowchart LR
-    subgraph RawHistory["Raw Conversation Stream"]
-        T1["Turns 1..T-6<br/>(Older Dialogue)"]
-        T2["Turns T-5..T<br/>(Active Sliding Window)"]
-    end
-
-    subgraph CompressionPipeline["Context Compression Engine"]
-        AudioPruning["1. Audio Frame Pruning<br/>Discard raw PCM audio beyond 6 turns"]
-        FactStore["2. FactStore Compaction<br/>Dense entity JSON (60-90 tokens)"]
-        CardEviction["3. Prompt Card Eviction<br/>Evict stale phase cards"]
-    end
-
-    subgraph BoundedContext["Bounded Live Working Context (<2,500 tokens)"]
-        WorkingCtx["• Base Persona (800 tok)<br/>• Active Prompt Card (200 tok)<br/>• Compact FactStore (80 tok)<br/>• Active 6-turn Audio/Text (1,400 tok)"]
-    end
-
-    T1 --> AudioPruning
-    AudioPruning --> FactStore
-    FactStore --> WorkingCtx
-    T2 --> WorkingCtx
-    CardEviction --> WorkingCtx
-```
-
-#### 1. Audio-to-Text Frame Pruning (Sliding Audio Window)
-- Raw duplex audio tokens are **~10x more token-dense** than transcribed text.
-- Retain raw bidirectional PCM audio frames only for the active **6-turn sliding window** (where prosody, tone, and inflection matter for immediate dialogue).
-- Older historical turns are pruned of raw audio and preserved purely as concise text transcript strings, achieving an immediate **85% token volume reduction** on historical turns.
-
-#### 2. Rolling FactStore Entity Compaction
-- Instead of keeping 15 turns of exploratory chit-chat in prompt memory, the asynchronous sidecar continuously distills established investor parameters into a compact **Working FactStore**:
-  ```json
-  {
-    "user_facts": {
-      "name": "Manish",
-      "amount": 100000,
-      "tenure": 12,
-      "risk": "low",
-      "kyc_status": "pan_verified"
-    }
-  }
-  ```
-- This 60-token structured block replaces **3,000+ tokens** of verbose back-and-forth conversation while retaining 100% mathematical and contextual precision.
-
-#### 3. Stale Prompt Card Eviction
-- When transitioning phases (e.g. Phase 4 Platform Trust ➔ Phase 7 Math Calculation), the Phase Engine evicts the Phase 4 instructions from the model's active directive slot.
-- Only the single active phase card remains in working memory, preventing stale instruction conflicts and bounding token spend.
+1. **Audio-to-Text Frame Pruning**: Retain raw 16kHz/24kHz audio frames only for the active **6-turn sliding window**. Prune raw audio from older turns and retain purely concise text transcripts (**85% token volume reduction** on historical turns).
+2. **Rolling FactStore Compaction**: Sidecar continuously distills established parameters into a dense **60-token FactStore** (`name`, `amount`, `tenure`, `risk`, `kyc_status`), replacing 3,000+ tokens of conversational history.
+3. **Stale Prompt Card Eviction**: Evicts completed phase instructions upon state transitions to prevent instruction interference.
 
 ---
 
-## Pillar 5: Asynchronous Sidecar Thinker (`gemini-3.5-flash-lite`)
+## 6. Silent Asynchronous Context Injection (`turn_complete=False`)
 
-### The Problem
-Using the primary live voice model (`gemini-3.5-flash-live-preview`) to perform heavy semantic classification, multi-turn state tracking, and post-call fact extraction consumes expensive live multimodal compute.
-
-### The Solution: Multi-Tiered Cognitive Separation
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ PRIMARY LIVE VOICE MODEL                                               │
-│ Model: gemini-3.5-flash-live-preview (us-central1)                     │
-│ Role: 100% focused on ultra-low-latency, natural, expressive speech    │
-└──────────────────────────────────┬─────────────────────────────────────┘
-                                   │ (Out-of-Band Text Event Stream)
-                                   ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ ASYNCHRONOUS SIDECAR THINKER                                           │
-│ Model: gemini-3.5-flash-lite (location=global)                         │
-│ Cost: ~1/10th the cost of live multimodal models                       │
-│ Roles:                                                                 │
-│   1. Tier-2 Semantic Intent Classification (<800ms)                    │
-│   2. Watcher Brain Co-Pilot Guidance                                   │
-│   3. Continuous FactStore Compaction & Post-Session Memory Downcar     │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-1. **Tier-1 Regex Fast Path (0ms)**: Instant rule-based transition for common keywords (`kyc`, `pan`, `escrow`, `bye`).
-2. **Tier-2 Semantic Intent Classifier (`gemini-3.5-flash-lite`)**: Evaluates the full rolling 10-turn dialogue context asynchronously. When confidence exceeds 0.70, it signals a state transition to the Phase Engine.
-3. **Memory Downcar Thinker (`gemini-3.5-flash-lite`)**: Executes after call completion to parse structured canonical facts (`amount`, `tenure_months`, `risk_preference`, `city`) and persist episodic memory to the GCP Memory Bank.
-
----
-
-## Pillar 6: Silent Asynchronous Context Injection (`turn_complete=False`)
-
-### The Critical Mechanism
-How do you update the live voice model with compacted FactStore summaries, prompt cards, or user profile facts **without interrupting the customer or causing the bot to speak prematurely**?
-
-### The Invariant: `send_client_content` with `turn_complete=False`
-
-When the Phase Engine transitions, FactStore compacts, or the Watcher Brain generates a guidance whisper, it dispatches a system content frame over the active Gemini Live WebSocket session with **`turn_complete=False`**:
+When the Phase Engine transitions, FactStore compacts, or the Watcher Brain yields guidance, it dispatches system content over the active Gemini Live WebSocket with **`turn_complete=False`**:
 
 ```python
 # Dispatched asynchronously from PhaseEngine / FactCompactor
@@ -284,39 +208,13 @@ await session.send_client_content(
 ```
 
 ### Why `turn_complete=False` is Essential:
-1. **Silent Context Update**: In the Gemini Bidi protocol, setting `turn_complete=True` forces the model to take a conversational turn and generate immediate audio output.
-2. **Zero Audio Clashing**: By setting `turn_complete=False`, the model silently incorporates the new prompt card or user context into its attention matrix.
-3. **Seamless Natural Turn**: When the user finishes speaking their next sentence, Gemini Live responds using the newly injected context with **zero delay and zero interruptions**.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Pipecat as Pipecat Audio Loop
-    participant GeminiLive as Gemini Live (Bidi WebSocket)
-    participant Sidecar as Gemini 3.5 Flash-Lite (Sidecar)
-    participant PhaseEngine as Phase Engine
-
-    User->>Pipecat: "What is the interest rate for 14 month EMI?"
-    Pipecat->>GeminiLive: Stream 16kHz PCM Audio Frames
-    Pipecat->>PhaseEngine: Dispatch User Transcript
-    PhaseEngine->>Sidecar: Async Intent Classify(Dialogue Context)
-    
-    Note over Sidecar: Evaluates Context in 400ms (Conf: 0.95)
-    Sidecar->>PhaseEngine: Target: Phase 7 (Math & Returns)
-    
-    PhaseEngine->>GeminiLive: send_client_content(Phase 7 Card, turn_complete=False)
-    Note over GeminiLive: Attention Matrix Updated Silently (0ms Audio Impact)
-
-    User->>Pipecat: [User Stops Speaking / Silence Detected]
-    Pipecat->>GeminiLive: End of User Utterance Frame
-    GeminiLive-->>Pipecat: Stream 24kHz Audio Response using Phase 7 Rules
-    Pipecat-->>User: "14-month EMI plan starts from 18% p.a..."
-```
+1. **Silent Attention Update**: Updates the model's attention matrix without forcing a turn or generating premature speech.
+2. **Zero Audio Clashing**: The model does not interrupt the user.
+3. **Seamless Natural Turn**: When the user finishes speaking, Gemini Live responds using the newly injected context with **zero latency**.
 
 ---
 
-## Comprehensive Cost & Latency Benchmark Comparison
+## 📊 Comprehensive Cost & Latency Benchmark Comparison
 
 ### Scenario: 1,000 Active Call Minutes (Average 4-minute call duration = 250 calls)
 
@@ -324,20 +222,9 @@ sequenceDiagram
 |---|---|---|---|
 | **System Prompt Size** | 10,000 tokens (monolithic) | 800 tokens base + 200 token active card | **90% token reduction** |
 | **Tool Declarations** | 18 tools (3,200 tokens / turn) | 2 tools (250 tokens / turn) | **92% schema reduction** |
+| **Phase Decision Cost** | 100% heavy LLM calls | 70% 0ms Regex ($0) + 30% Flash-Lite | **95% phase routing savings** |
 | **10-Min Call Context Size** | 30,000+ tokens (uncompressed) | **< 2,500 tokens (bounded sliding window)** | **91% context compression** |
 | **RAG Knowledge Retrieval** | Remote Vector Search API ($0.005/query) | L1 In-Memory BM25 + Memorystore ($0/query) | **100% API query savings** |
 | **Tool Execution Latency** | 3,200 ms – 3,800 ms (Dead air) | **0.05 ms – 3.0 ms** | **1,000x faster** |
 | **Cognitive Offloading** | Handled inside Live Audio Loop | Handled by `gemini-3.5-flash-lite` | **85% reasoning cost savings** |
 | **Estimated Compute Cost / 1k min** | **~$185.00** | **~$24.20** | **~86.9% Total Cost Reduction** |
-
----
-
-## Implementation Checklist for Voice Architects
-
-- [x] **Deploy Dual-Layer Cache**: Pre-warm BM25 inverted index into process RAM (<0.05ms) and connect Memorystore Valkey/Redis for shared state.
-- [x] **Prune Runtime Tools**: Limit live `function_declarations` to 1 or 2 deterministic compute functions. Move all knowledge FAQs to direct speech and memory tools to post-session.
-- [x] **Decompose System Prompts into Prompt Cards**: Split large conversation playbooks into 150–250 token modular cards.
-- [x] **Implement Multi-Stage Context Compression**: Prune raw PCM audio beyond 6 turns, distill historical dialogue into a dense 60-token FactStore, and evict stale prompt cards.
-- [x] **Deploy Asynchronous Sidecar Thinker**: Use Tier-1 Regex (0ms) and Tier-2 `gemini-3.5-flash-lite` out-of-band classification to manage state.
-- [x] **Enforce Silent Injections**: Always pass dynamic prompt cards, compacted FactStores, and returning user profiles via `send_client_content(..., turn_complete=False)`.
-- [x] **Post-Session Memory Downcar**: Run post-session background workers with `gemini-3.5-flash-lite` to extract canonical facts and write to GCP Cloud Memory Bank.
