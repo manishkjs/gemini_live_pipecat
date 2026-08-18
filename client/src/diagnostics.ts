@@ -154,10 +154,10 @@ class DiagnosticsApp {
       if (msg.includes("User Speech") || msg.includes("Bot Response")) {
         turns++;
       }
-      if (msg.includes("Interrupted") || msg.includes("Interruption")) {
+      if (msg.includes("Interrupted") || msg.includes("Interruption") || msg.includes("barge-in") || msg.includes("barging")) {
         interrupts++;
       }
-      if (msg.includes("Tool Output") || msg.includes("Function call")) {
+      if (msg.includes("Tool Output") || msg.includes("Tool Invocation") || msg.includes("Tool Call") || msg.includes("Function call") || msg.includes("calculate_returns")) {
         tools++;
       }
       if (msg.includes("Turn Token Usage") || msg.includes("LLM Token Usage")) {

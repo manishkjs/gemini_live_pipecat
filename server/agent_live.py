@@ -211,14 +211,16 @@ class GeminiSessionLoggerMixin:
         """Guarantee memory tool calls complete despite user audio interruptions."""
         frame_type_name = type(frame).__name__
         if frame_type_name in ("FunctionCallInProgressFrame", "FunctionCallsStartedFrame", "FunctionCallFromLLM"):
+            fn_name = getattr(frame, 'function_name', getattr(frame, 'name', 'Tool'))
+            append_diagnostic_log("🛠️ Tool Invocation", f"Function call started: {fn_name}")
             if not getattr(self, '_frame_locked_tools', False):
                 self._lock_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallResultFrame":
             res_str = str(getattr(frame, 'result', getattr(frame, 'content', '')))
             if len(res_str) > 150:
-                append_diagnostic_log("Tool Output", f"Result -> Model: {res_str[:150]}...")
+                append_diagnostic_log("🛠️ Tool Output", f"Result -> Model: {res_str[:150]}...")
             else:
-                append_diagnostic_log("Tool Output", f"Result -> Model:\n{res_str}")
+                append_diagnostic_log("🛠️ Tool Output", f"Result -> Model:\n{res_str}")
             if getattr(self, '_frame_locked_tools', False):
                 self._release_tools(f"frame {frame_type_name}")
         elif frame_type_name == "FunctionCallCancelFrame":
@@ -775,7 +777,7 @@ async def run_agent_live(
     tts_pace: float = 0.80,
     tools: Optional[str] = None,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = 10000,
+    context_compression_trigger_tokens: Optional[int] = 20000,
     initial_user_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
@@ -786,6 +788,7 @@ async def run_agent_live(
     persona_anchor = (
         f"\n\nVOICE & PERSONA INSTRUCTION: You are Pragya (Female Senior Wealth Advisor). "
         f"Converse in {language} / Hinglish. Speak with a fun, witty, warm, playful energy like a smart friend over coffee. "
+        f"Even if the user speaks in 100% English, you MUST ALWAYS respond in natural, friendly Hinglish (Devanagari Hindi + Latin English financial terms). NEVER switch completely to English. "
         f"You MUST always use natural feminine Hindi verb endings for yourself ('बता रही हूँ', 'करती हूँ', 'देती हूँ', 'सोच रही हूँ', 'मदद करूँगी', 'समझाती हूँ')."
     )
     prompt_text = (system_instruction or default_instruction) + persona_anchor
@@ -842,7 +845,7 @@ async def run_agent_live(
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
-        cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 10000
+        cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 20000
 
     AI_STUDIO_MODELS = {
         "gemini-3.5-live-preview",
