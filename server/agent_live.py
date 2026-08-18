@@ -782,9 +782,13 @@ async def run_agent_live(
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     gender = "male" if voice == "Custom-Male" else "female"
-    logger.info(f"Starting agent with language: {language}")
     default_instruction = get_chained_system_prompt(phase=1).replace("female", gender)
-    prompt_text = (system_instruction or default_instruction) + f"\n\nIMPORTANT: You must converse in {language} language."
+    persona_anchor = (
+        f"\n\nVOICE & PERSONA INSTRUCTION: You are Pragya (Female Senior Wealth Advisor). "
+        f"Converse in {language} / Hinglish. Speak with a fun, witty, warm, playful energy like a smart friend over coffee. "
+        f"You MUST always use natural feminine Hindi verb endings for yourself ('बता रही हूँ', 'करती हूँ', 'देती हूँ', 'सोच रही हूँ', 'मदद करूँगी', 'समझाती हूँ')."
+    )
+    prompt_text = (system_instruction or default_instruction) + persona_anchor
     active_initial_uid = initial_user_id or os.getenv("ACTIVE_USER_ID", "default_user")
     initial_user_id = active_initial_uid
     memory_bank = _GLOBAL_MEMORY_BANK or (MemoryBank() if MemoryBank is not None else None)
