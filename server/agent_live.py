@@ -282,6 +282,12 @@ class GeminiSessionLoggerMixin:
                 }
             }))
 
+        # Reset idle timer on any user speech, interruption, or transcription frame
+        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TranscriptionFrame, TextFrame)):
+            idle_proc = getattr(self, 'user_idle_processor', None)
+            if idle_proc and hasattr(idle_proc, 'record_activity'):
+                idle_proc.record_activity(f"frame: {type(frame).__name__}")
+
         await super().process_frame(frame, direction)
 
     async def _push_user_transcription(self, sentence: str, result=None):
@@ -289,6 +295,10 @@ class GeminiSessionLoggerMixin:
         await super()._push_user_transcription(sentence, result=result)
         clean_sentence = sentence.strip() if sentence else ""
         if clean_sentence:
+            idle_proc = getattr(self, 'user_idle_processor', None)
+            if idle_proc and hasattr(idle_proc, 'record_activity'):
+                idle_proc.record_activity(f"transcription: {clean_sentence[:30]}")
+
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
             logger.info(f"🎙️ [PhaseEngine:LiveUserTranscription] User spoke: '{clean_sentence}'")
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
@@ -674,7 +684,7 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
 
 
 class UserIdleProcessor(FrameProcessor):
-    def __init__(self, callback, timeout: float = 5.0):
+    def __init__(self, callback, timeout: float = 15.0):
         super().__init__()
         self.callback = callback
         self.timeout = timeout
@@ -683,16 +693,23 @@ class UserIdleProcessor(FrameProcessor):
         self.last_activity = time.monotonic()
         self._bot_speaking = False
 
+    def record_activity(self, reason: str = ""):
+        """Explicitly reset the idle timer and retry count upon active user speech or activity."""
+        self.last_activity = time.monotonic()
+        if self.retry_count > 0:
+            logger.info(f"🔄 [UserIdleProcessor] User activity confirmed ({reason}). Resetting idle retry counter from {self.retry_count} to 0.")
+        self.retry_count = 0
+
     async def _idle_timer(self):
         try:
             while True:
-                await asyncio.sleep(0.2) # tick faster for sub-second precision
+                await asyncio.sleep(0.5)
                 if self._bot_speaking:
                     self.last_activity = time.monotonic()
                     continue
                 if time.monotonic() - self.last_activity >= self.timeout:
                     self.retry_count += 1
-                    logger.info(f"[UserIdleProcessor] Idle timeout fired, retry_count={self.retry_count}")
+                    logger.info(f"⏳ [UserIdleProcessor] Idle timeout fired, retry_count={self.retry_count}")
                     should_continue = await self.callback(self, self.retry_count)
                     if not should_continue:
                         break
@@ -725,14 +742,9 @@ class UserIdleProcessor(FrameProcessor):
             self.last_activity = time.monotonic()
             logger.info(f"[UserIdleProcessor] Bot finished speaking. Starting silence countdown.")
 
-        # Reset timer ONLY on active speech activity (VAD or transcription/text frames)
-        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame)):
-            self.last_activity = time.monotonic()
-            # Reset the idle retry counter back to 0 if the user confirms they are active
-            if isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame)):
-                if self.retry_count > 0:
-                    logger.info(f"[UserIdleProcessor] User speech activity detected ({frame.name}). Resetting idle retry counter from {self.retry_count} to 0.")
-                self.retry_count = 0
+        # Reset timer on active speech activity
+        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame, InterruptionFrame)):
+            self.record_activity(f"frame: {type(frame).__name__}")
 
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
@@ -950,16 +962,21 @@ async def run_agent_live(
     )
 
     async def handle_user_idle(processor: UserIdleProcessor, retry_count: int) -> bool:
-        logger.info(f"User idle detected, retry count: {retry_count}")
-        if retry_count < 4:
-            prompts = {
-                1: "ask me if I am able to hear you",
-                2: "ask me if I am still here",
-                3: "Tell me that you are not able to hear me, and you are disconnecting the call and will call back again"
-            }
-            # Call Gemini Live session directly to trigger a response
-            await llm._create_single_response([{"role": "user", "content": prompts[retry_count]}])
+        logger.info(f"⏳ [UserIdleProcessor] Handling silence timeout (retry_count: {retry_count})")
+        if retry_count == 1:
+            # 1st check-in after 15s of silence
+            await llm._create_single_response([{"role": "user", "content": "The customer has been silent for a moment. Ask warmly in 1 short sentence in Hinglish if they are able to hear you (e.g. 'हेलो, क्या आप मुझे सुन पा रहे हैं?')" }])
             return True
+        elif retry_count == 2:
+            # 2nd check-in after 30s of silence
+            await llm._create_single_response([{"role": "user", "content": "The customer is still quiet. Ask warmly in 1 short sentence in Hinglish if they are still on the line."}])
+            return True
+        elif retry_count == 3:
+            # 3rd notice after 45s of silence
+            await llm._create_single_response([{"role": "user", "content": "The customer has been silent for a while. Say warmly in Hinglish that you are not able to hear them, so you will disconnect for now and call back shortly."}])
+            return True
+        # Terminate only after 60s of total silence (retry 4)
+        logger.info("🛑 [UserIdleProcessor] Max retries reached (4). Disconnecting call cleanly.")
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
@@ -970,10 +987,13 @@ async def run_agent_live(
     llm.active_user_id = normalize_lexical_user_id(initial_user_id) if normalize_lexical_user_id else initial_user_id
     phase_processor = PhaseTransitionProcessor(tracker=phase_tracker)
 
+    user_idle_proc = UserIdleProcessor(callback=handle_user_idle, timeout=15.0)
+    llm.user_idle_processor = user_idle_proc
+
     pipeline = Pipeline([
         transport.input(),
         StartTriggerProcessor(language=language),
-        UserIdleProcessor(callback=handle_user_idle, timeout=5.0),
+        user_idle_proc,
         context_aggregator.user(),
         llm,
         phase_processor,

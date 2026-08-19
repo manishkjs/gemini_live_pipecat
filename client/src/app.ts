@@ -704,7 +704,8 @@ class WebsocketClientApp {
               case "usage":
                   if (payload.usage) {
                       const promptTokens = payload.usage.prompt_token_count || 0;
-                      if (this.lastPromptTokenCount > 0 && promptTokens < this.lastPromptTokenCount) {
+                      // Only report context compression if history exceeded the 15,000 threshold and dropped significantly (>3000 tokens)
+                      if (this.lastPromptTokenCount > 15000 && promptTokens < (this.lastPromptTokenCount - 3000)) {
                           const diff = this.lastPromptTokenCount - promptTokens;
                           this.log(`Context compression triggered! Prompt tokens reduced by ${diff} (from ${this.lastPromptTokenCount} to ${promptTokens}).`, "warning");
                           this.appendChatMessage("bot", `[System Notice: Context window compressed! History reduced by ${diff} tokens to optimize performance.]`);
@@ -780,7 +781,8 @@ class WebsocketClientApp {
                       if (data.usage) {
                           this.lastTurnUsage = data.usage;
                           const promptTokens = data.usage.prompt_token_count || 0;
-                          if (this.lastPromptTokenCount > 0 && promptTokens < this.lastPromptTokenCount) {
+                          // Only report context compression if history exceeded the 15,000 threshold and dropped significantly (>3000 tokens)
+                          if (this.lastPromptTokenCount > 15000 && promptTokens < (this.lastPromptTokenCount - 3000)) {
                               const diff = this.lastPromptTokenCount - promptTokens;
                               this.log(`Context compression triggered (fallback)! Prompt tokens reduced by ${diff} (from ${this.lastPromptTokenCount} to ${promptTokens}).`, "warning");
                               this.appendChatMessage("bot", `[System Notice: Context window compressed! History reduced by ${diff} tokens to optimize performance.]`);
