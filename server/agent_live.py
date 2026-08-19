@@ -789,7 +789,7 @@ async def run_agent_live(
     tts_pace: float = 0.80,
     tools: Optional[str] = None,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = 20000,
+    context_compression_trigger_tokens: Optional[int] = 10000,
     initial_user_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
@@ -857,7 +857,7 @@ async def run_agent_live(
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
-        cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 20000
+        cwc["trigger_tokens"] = context_compression_trigger_tokens if context_compression_trigger_tokens is not None else 10000
 
     AI_STUDIO_MODELS = {
         "gemini-3.5-live-preview",
