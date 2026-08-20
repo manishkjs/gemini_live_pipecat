@@ -122,12 +122,6 @@ class WatcherBrain:
         if not session or not transcript_history:
             return False
 
-        current_turn_count = len(transcript_history)
-
-        # Debounce check: don't inject hints if recently injected within cooldown interval
-        if self._last_injected_turn_count > 0 and (current_turn_count - self._last_injected_turn_count) < self._min_turn_interval:
-            return False
-
         # Fast skip on 1-word user fillers
         last_turn = transcript_history[-1] if transcript_history else {}
         last_text = last_turn.get("text", "").strip()
@@ -143,6 +137,11 @@ class WatcherBrain:
         hint_type = result.get("hint_type", "strategy")
         hint_text = result.get("hint_text")
         reasoning = result.get("reasoning", "")
+
+        current_turn_count = len(transcript_history)
+        is_high_priority = hint_type == "objection" or "disinterest" in str(reasoning).lower() or "refus" in str(reasoning).lower()
+        if not is_high_priority and self._last_injected_turn_count > 0 and (current_turn_count - self._last_injected_turn_count) < self._min_turn_interval:
+            return False
 
         if should_inject and hint_text:
             # Prevent duplicate consecutive identical whispers
