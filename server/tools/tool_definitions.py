@@ -677,3 +677,5 @@ def register_all_tools(llm: Any, standard_tools: List[FunctionSchema], get_curre
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
 
+
+
