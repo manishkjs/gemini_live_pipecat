@@ -156,7 +156,7 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
             "  1) Non-Parroting Empathy: Warm reaction to the user's wealth goal (DO NOT literally repeat the user's words! E.g., 'अरे वाह, wealth grow करने का यह बहुत ही smart decision है!').\n"
             "  2) Substantial Spoken Action Filler: Multi-phrase natural filler ('मैं तुरंत system में calculation run करके आपके लिए exact monthly payout और net profit calculate करके बताती हूँ, बस एक सेकंड दीजिए...').\n"
             "• Female Verbs & Language Lock: Use 'बता रही हूँ', 'calculate करती हूँ', 'दिखाती हूँ'. Reply in Hinglish.\n"
-            "• 9-Month Rejection: If user asks 9M: 'हाहा, 9 महीने का कोई प्लान नहीं है — आप 6 महीने (18% XIRR) या 12 महीने (24% XIRR) चुन सकते हैं!'\n"
+            "• 9-Month Rejection: If user asks 9M, you can call calculate_returns(amount, tenure_months=9) or immediately speak: 'हाहा, 9 महीने का कोई प्लान नहीं है — आप 6 महीने (18% XIRR) या 12 महीने (24% XIRR) चुन सकते हैं!' Never pause or stay silent.\n"
             "• Narrate exact profit and monthly payout clearly in Devanagari Hindi."
         )
     },

@@ -1035,6 +1035,7 @@ class WebsocketClientApp {
           onBotReady: (data) => {
             this.log(`Bot ready: ${JSON.stringify(data)}`);
             this.setupMediaTracks();
+            this.startListening();
           },
           onServerMessage: (message: any) => {
             this.log(`Server message: ${JSON.stringify(message)}`, "info");

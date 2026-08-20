@@ -93,7 +93,7 @@ calculate_returns_schema = FunctionSchema(
         },
         "tenure_months": {
             "type": "integer",
-            "description": "Months: 3, 4, 5, 6, 12 (9m unavailable)."
+            "description": "Tenure in months (e.g. 3, 4, 5, 6, 9, 12). If 9m is requested, tool returns official alternative guidance."
         },
         "repayment_type": {
             "type": "string",
