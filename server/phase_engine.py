@@ -469,8 +469,20 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
         target_tier1 = None
 
         # ── Tier 1: Fast-Path Rule Check (Instant 0ms) ───────────────
-        # Jump to Phase 9: Farewells, Wrap-Up, Bye, Boy, Alvida, Concluding (when call has already started)
+        # Jump to Phase 6: Mid-call disinterest, reluctance, objection, or 'don't want to do it / phone rakho'
         if self.current_phase > 1 and (
+            any(w in lower for w in [
+                "nahi karna", "nahi invest", "dont want", "don't want", "not interested", "dont think", "don't think",
+                "phone rakho", "rehne do", "mood nahi", "man nahi", "no interest", "mat batao", "ruk jao", "disconnect"
+            ]) or any(w in text for w in [
+                "नहीं करना", "इन्वेस्ट नहीं करना", "फोन रखो", "फ़ोन रखो", "रहने दो", "मूड नहीं", "मन नहीं", "मत बताओ", "रुको"
+            ])
+        ):
+            target_tier1 = 6
+            matched_rule = "User expressed disinterest / reluctance -> trigger Phase 6 Objection Overcoming"
+
+        # Jump to Phase 9: Farewells, Wrap-Up, Bye, Boy, Alvida, Concluding (when call has already started)
+        elif self.current_phase > 1 and (
             any(re.search(rf"\b{re.escape(w)}\b", lower) for w in [
                 "bye", "boy", "by", "alvida", "thank you", "thanks", "chalo bye", "ok bye",
                 "theek hai bye", "wrap up", "chalta hu", "chalti hu", "rakhta hu", "rakhti hu",
