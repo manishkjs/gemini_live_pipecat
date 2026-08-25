@@ -1,0 +1,183 @@
+import os
+import xml.etree.ElementTree as ET
+from build_assets import SHARED_DEFS, FONT_STACK, MONO_FONT, ASSETS_DIR
+
+def build_latency_waterfall():
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 840" width="1400" height="840" style="background-color: #0B0F19; font-family: {FONT_STACK};">
+  {SHARED_DEFS}
+
+  <!-- Canvas Background -->
+  <rect width="1400" height="840" fill="url(#bgGrad)"/>
+  <rect width="1400" height="840" fill="url(#gridPattern)"/>
+
+  <!-- Top Header Block -->
+  <g transform="translate(60, 45)">
+    <rect x="0" y="0" width="260" height="28" rx="14" fill="#00E5FF" fill-opacity="0.12" stroke="#00E5FF" stroke-width="1.2"/>
+    <circle cx="14" cy="14" r="5" fill="#00E5FF"/>
+    <text x="28" y="18" fill="#00E5FF" font-size="12" font-weight="700" letter-spacing="1.2">ARCHITECTURAL BOTTLENECK ANALYSIS</text>
+    
+    <text x="0" y="62" fill="#FFFFFF" font-size="28" font-weight="800" letter-spacing="-0.5">The 2.85s Cascaded Latency Waterfall vs Native S2S</text>
+    <text x="0" y="90" fill="#94A3B8" font-size="15" font-weight="400">Step-by-step breakdown of multi-hop cascaded latency vs Gemini Live's sub-500ms bidirectional stream</text>
+  </g>
+
+  <!-- Main Section: Cascaded Pipeline Waterfall -->
+  <g transform="translate(60, 165)">
+    <!-- Container Card -->
+    <rect width="1280" height="385" rx="16" fill="url(#cardGrad)" stroke="#1E293B" stroke-width="1.5" filter="url(#dropShadow)"/>
+    
+    <!-- Section Title & Badge -->
+    <text x="30" y="38" fill="#F87171" font-size="15" font-weight="700" letter-spacing="0.5">LEGACY MODULAR CASCADE PIPELINE (STT → LLM → TTS)</text>
+    <rect x="1060" y="18" width="190" height="28" rx="6" fill="#EF4444" fill-opacity="0.15" stroke="#EF4444" stroke-width="1"/>
+    <text x="1155" y="36" fill="#EF4444" font-size="12" font-weight="700" text-anchor="middle">TOTAL: 2,850ms (2.85s)</text>
+
+    <!-- Waterfall Coordinate System -->
+    <!-- X-axis scale: 0ms at x=320, 2850ms at x=1220 (900px span -> ~0.3157 px/ms) -->
+    <!-- Time Grid Lines & Headers -->
+    <g transform="translate(320, 55)">
+      <!-- Grid lines -->
+      <line x1="0" y1="0" x2="0" y2="250" stroke="#334155" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="0" y="-8" fill="#64748B" font-size="11" font-family="{MONO_FONT}" text-anchor="middle">0.0s</text>
+
+      <line x1="158" y1="0" x2="158" y2="250" stroke="#334155" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="158" y="-8" fill="#64748B" font-size="11" font-family="{MONO_FONT}" text-anchor="middle">0.5s</text>
+
+      <line x1="316" y1="0" x2="316" y2="250" stroke="#EF4444" stroke-width="1.5" stroke-opacity="0.6"/>
+      <text x="316" y="-8" fill="#F87171" font-size="11" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">1.0s (Patience Threshold)</text>
+
+      <line x1="474" y1="0" x2="474" y2="250" stroke="#334155" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="474" y="-8" fill="#64748B" font-size="11" font-family="{MONO_FONT}" text-anchor="middle">1.5s</text>
+
+      <line x1="632" y1="0" x2="632" y2="250" stroke="#334155" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="632" y="-8" fill="#64748B" font-size="11" font-family="{MONO_FONT}" text-anchor="middle">2.0s</text>
+
+      <line x1="790" y1="0" x2="790" y2="250" stroke="#334155" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="790" y="-8" fill="#64748B" font-size="11" font-family="{MONO_FONT}" text-anchor="middle">2.5s</text>
+
+      <line x1="900" y1="0" x2="900" y2="250" stroke="#EF4444" stroke-width="2"/>
+      <text x="900" y="-8" fill="#EF4444" font-size="11" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">2.85s</text>
+
+      <!-- Danger Zone Highlight Background -->
+      <rect x="316" y="0" width="584" height="250" fill="#EF4444" fill-opacity="0.04"/>
+    </g>
+
+    <!-- Stage 1: Silero VAD & Silence Window -->
+    <g transform="translate(30, 75)">
+      <text x="0" y="22" fill="#E2E8F0" font-size="13" font-weight="600">1. Silero VAD / End-of-Speech</text>
+      <text x="0" y="38" fill="#94A3B8" font-size="11">Silence detection window</text>
+      <!-- Bar: 0ms to 600ms -> width = 190px -->
+      <rect x="290" y="8" width="190" height="30" rx="6" fill="#F59E0B" fill-opacity="0.25" stroke="#F59E0B" stroke-width="1.5"/>
+      <text x="385" y="28" fill="#FDE68A" font-size="12" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">+600 ms</text>
+      <text x="490" y="28" fill="#F59E0B" font-size="11" font-weight="600">User stops speaking</text>
+    </g>
+
+    <!-- Stage 2: STT ASR Finalization -->
+    <g transform="translate(30, 118)">
+      <text x="0" y="22" fill="#E2E8F0" font-size="13" font-weight="600">2. Chirp 2 / STT v2 Finalize</text>
+      <text x="0" y="38" fill="#94A3B8" font-size="11">USM Conformer acoustic model</text>
+      <!-- Bar: 600ms to 950ms -> start=480, width=110px -->
+      <rect x="480" y="8" width="110" height="30" rx="6" fill="#EF4444" fill-opacity="0.25" stroke="#EF4444" stroke-width="1.5"/>
+      <text x="535" y="28" fill="#FECACA" font-size="12" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">+350 ms</text>
+      <text x="600" y="28" fill="#EF4444" font-size="11" font-weight="600">Transcript text emitted</text>
+    </g>
+
+    <!-- Stage 3: Net Hop 1 & LLM TTFT -->
+    <g transform="translate(30, 161)">
+      <text x="0" y="22" fill="#E2E8F0" font-size="13" font-weight="600">3. Net Hop 1 + LLM TTFT</text>
+      <text x="0" y="38" fill="#94A3B8" font-size="11">Gemini 2.5 Flash / GPT-4o TTFT</text>
+      <!-- Bar: 950ms to 1650ms -> start=590, width=220px -->
+      <rect x="590" y="8" width="220" height="30" rx="6" fill="#DC2626" fill-opacity="0.3" stroke="#DC2626" stroke-width="1.5"/>
+      <text x="700" y="28" fill="#FCA5A5" font-size="12" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">+700 ms (50ms Net + 650ms LLM)</text>
+    </g>
+
+    <!-- Stage 4: Net Hop 2 + TTS Synthesis -->
+    <g transform="translate(30, 204)">
+      <text x="0" y="22" fill="#E2E8F0" font-size="13" font-weight="600">4. Net Hop 2 + Chirp 3 HD TTS</text>
+      <text x="0" y="38" fill="#94A3B8" font-size="11">Diffusion 1st chunk synthesis</text>
+      <!-- Bar: 1650ms to 1950ms -> start=810, width=95px -->
+      <rect x="810" y="8" width="95" height="30" rx="6" fill="#EA580C" fill-opacity="0.3" stroke="#EA580C" stroke-width="1.5"/>
+      <text x="857" y="28" fill="#FED7AA" font-size="12" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">+300 ms</text>
+    </g>
+
+    <!-- Stage 5: Client Jitter Buffer & Playback -->
+    <g transform="translate(30, 247)">
+      <text x="0" y="22" fill="#E2E8F0" font-size="13" font-weight="600">5. Client Ring &amp; Jitter Buffers</text>
+      <text x="0" y="38" fill="#94A3B8" font-size="11">Audio packet decode &amp; sync</text>
+      <!-- Bar: 1950ms to 2850ms -> start=905, width=285px -->
+      <rect x="905" y="8" width="285" height="30" rx="6" fill="#7F1D1D" fill-opacity="0.4" stroke="#B91C1C" stroke-width="1.5"/>
+      <text x="1047" y="28" fill="#FCA5A5" font-size="12" font-weight="700" font-family="{MONO_FONT}" text-anchor="middle">+900 ms Buffers &amp; Net Hop 3</text>
+    </g>
+
+    <!-- Bottom summary banner in cascade card -->
+    <g transform="translate(30, 310)">
+      <rect width="1220" height="52" rx="8" fill="#1E293B" fill-opacity="0.6" stroke="#334155" stroke-width="1"/>
+      <circle cx="24" cy="26" r="9" fill="#EF4444"/>
+      <text x="24" y="31" fill="#FFFFFF" font-size="13" font-weight="800" text-anchor="middle">!</text>
+      <text x="44" y="30" fill="#FCA5A5" font-size="13" font-weight="700">CONVERSATIONAL FAILURE:</text>
+      <text x="225" y="30" fill="#E2E8F0" font-size="13">2.85s delay exceeds human conversational cadence (200–400ms) by <tspan fill="#EF4444" font-weight="700">7.1x</tspan>, causing user over-talk, false turn-cutting, and 35%+ drop-off.</text>
+    </g>
+  </g>
+
+  <!-- Native Duplex S2S Section (Gemini Live) -->
+  <g transform="translate(60, 570)">
+    <!-- Container Card Highlighted -->
+    <rect width="1280" height="225" rx="16" fill="url(#cardGradHighlight)" stroke="#00E5FF" stroke-width="2" filter="url(#dropShadow)"/>
+    
+    <!-- Glowing corner accents -->
+    <circle cx="12" cy="12" r="3" fill="#00E5FF" filter="url(#glowCyan)"/>
+    <circle cx="1268" cy="12" r="3" fill="#00E5FF" filter="url(#glowCyan)"/>
+
+    <!-- Section Title & Hero Badge -->
+    <text x="30" y="38" fill="#00E5FF" font-size="16" font-weight="800" letter-spacing="0.5">GOOGLE GEMINI LIVE (NATIVE SPEECH-TO-SPEECH S2S)</text>
+    <rect x="990" y="18" width="260" height="32" rx="8" fill="#10B981" fill-opacity="0.2" stroke="#10B981" stroke-width="1.5"/>
+    <text x="1120" y="39" fill="#34D399" font-size="14" font-weight="800" text-anchor="middle">SUB-500ms TTFT (6.3x FASTER)</text>
+
+    <!-- Duplex Stream Visual Bar -->
+    <g transform="translate(30, 65)">
+      <!-- Label -->
+      <text x="0" y="26" fill="#FFFFFF" font-size="14" font-weight="700">Single Bidirectional WebSocket</text>
+      <text x="0" y="44" fill="#94A3B8" font-size="12">BidiGenerateContent • Thinker-Talker</text>
+
+      <!-- Gemini Bar: 0ms to 450ms -> start=290, width=142px -->
+      <rect x="290" y="10" width="142" height="42" rx="8" fill="url(#greenGrad)" filter="url(#glowCyan)"/>
+      <text x="361" y="36" fill="#0B0F19" font-size="14" font-weight="800" font-family="{MONO_FONT}" text-anchor="middle">&lt; 450 ms</text>
+
+      <!-- Connection line to speech output -->
+      <path d="M 440 31 L 490 31" stroke="#00E5FF" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrowCyan)"/>
+      
+      <!-- Waveform decoration -->
+      <g transform="translate(510, 16)">
+        <rect width="180" height="30" rx="6" fill="#00E5FF" fill-opacity="0.1" stroke="#00E5FF" stroke-width="1"/>
+        <path d="M 15 15 L 25 5 L 35 25 L 45 10 L 55 20 L 65 5 L 75 25 L 85 12 L 95 18 L 105 5 L 115 25 L 125 15 L 165 15" fill="none" stroke="#00E5FF" stroke-width="2"/>
+        <text x="90" y="-6" fill="#00E5FF" font-size="10" font-weight="700" text-anchor="middle">PCM 24kHz LIVE AUDIO</text>
+      </g>
+
+      <text x="710" y="36" fill="#34D399" font-size="13" font-weight="700">✓ Instant Conversational Turn-Taking • Acoustic Barge-In Active</text>
+    </g>
+
+    <!-- Key Architectural Proof Points -->
+    <g transform="translate(30, 138)">
+      <!-- Card 1 -->
+      <rect x="0" y="0" width="390" height="64" rx="8" fill="#131B2E" stroke="#1E293B" stroke-width="1"/>
+      <text x="18" y="24" fill="#00E5FF" font-size="12" font-weight="700">ZERO DISJOINT APIS</text>
+      <text x="18" y="44" fill="#CBD5E1" font-size="12">1 WebSocket replaces 3 vendor hops &amp; SDKs</text>
+
+      <!-- Card 2 -->
+      <rect x="415" y="0" width="390" height="64" rx="8" fill="#131B2E" stroke="#1E293B" stroke-width="1"/>
+      <text x="433" y="24" fill="#A855F7" font-size="12" font-weight="700">THINKER-TALKER DUPLEX</text>
+      <text x="433" y="44" fill="#CBD5E1" font-size="12">Continuous verbal filler during async CRM queries</text>
+
+      <!-- Card 3 -->
+      <rect x="830" y="0" width="390" height="64" rx="8" fill="#131B2E" stroke="#1E293B" stroke-width="1"/>
+      <text x="848" y="24" fill="#34A853" font-size="12" font-weight="700">TRUE ACOUSTIC PROSODY</text>
+      <text x="848" y="44" fill="#CBD5E1" font-size="12">Preserves emotion, hesitation, tone &amp; laughter</text>
+    </g>
+  </g>
+</svg>"""
+    out_file = os.path.join(ASSETS_DIR, "latency_waterfall.svg")
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write(svg)
+    ET.fromstring(svg) # Validate
+    print(f"Generated and validated {out_file}")
+
+if __name__ == "__main__":
+    build_latency_waterfall()

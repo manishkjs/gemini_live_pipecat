@@ -72,9 +72,13 @@ class RedisRAGCache:
         self.is_connected = False
 
         # L1 in-memory caches and BM25 indexing structures
+        self.l2_write_async = os.getenv("RAG_L2_WRITE_ASYNC", "true").lower() in ("true", "1")
+        self._bg_tasks: Set[asyncio.Task] = set()
         self._l1_cache: Dict[str, str] = {}
         self._sheet_records: List[Dict[str, Any]] = []
         self._sheet_token_index: Dict[str, Set[int]] = defaultdict(set)
+        self._doc_q_clean: List[str] = []
+        self._doc_a_clean: List[str] = []
         self._doc_tokens_q: List[Counter] = []
         self._doc_tokens_c: List[Counter] = []
         self._doc_tokens_a: List[Counter] = []
@@ -160,22 +164,36 @@ class RedisRAGCache:
         return None
 
     async def set(self, query: Any, content: str, ttl: Optional[int] = None) -> None:
-        """Store result in both L1 Memory and L2 Redis."""
+        """Store result in L1 Memory immediately and L2 Redis (non-blocking if async enabled)."""
         if not query or not content:
             return
 
         key = self._get_key(query)
         ttl = ttl or self.default_ttl_seconds
 
-        # Store in L1 In-Memory
+        # 1. Instant L1 In-Memory Update (<0.001ms)
         self._l1_cache[key] = content
 
-        # Store in L2 Redis
+        # 2. L2 Redis Writeback
         if self.is_connected and self.redis_client:
-            try:
-                await self.redis_client.set(key, content, ex=ttl)
-            except Exception as e:
-                logger.debug(f"[RedisCache] Redis set error: {e}")
+            if self.l2_write_async:
+                async def _bg_set(client, k, v, exp):
+                    try:
+                        await client.set(k, v, ex=exp)
+                    except Exception as e:
+                        logger.debug(f"[RedisCache] Async Redis set error: {e}")
+
+                try:
+                    task = asyncio.create_task(_bg_set(self.redis_client, key, content, ttl))
+                    self._bg_tasks.add(task)
+                    task.add_done_callback(self._bg_tasks.discard)
+                except Exception as e:
+                    logger.debug(f"[RedisCache] Background task creation error: {e}")
+            else:
+                try:
+                    await self.redis_client.set(key, content, ex=ttl)
+                except Exception as e:
+                    logger.debug(f"[RedisCache] Redis set error: {e}")
 
     async def prewarm(self, canonical_data: Dict[str, str]) -> int:
         """Pre-warm Redis and L1 cache with canonical domain knowledge."""
@@ -219,7 +237,7 @@ class RedisRAGCache:
                     out = subprocess.check_output(
                         [gsheets_bin, "readonly", "read", sheet_id, "A1:C1500"],
                         stderr=subprocess.DEVNULL,
-                        timeout=10
+                        timeout=30
                     ).decode("utf-8")
                     for line in out.strip().split("\n"):
                         parts = line.split("\t")
@@ -255,6 +273,8 @@ class RedisRAGCache:
             self._sheet_records = records
             total_n = len(records)
 
+            self._doc_q_clean = [r.get("question", "").lower().replace("₹", "rs ").strip() for r in records]
+            self._doc_a_clean = [r.get("answer", "").lower().replace("₹", "rs ").strip() for r in records]
             self._doc_tokens_q = []
             self._doc_tokens_c = []
             self._doc_tokens_a = []
@@ -383,6 +403,7 @@ class RedisRAGCache:
         b = 0.75
         scores: Dict[int, float] = {}
         q_raw_clean = query_clean.lower().replace("₹", "rs ").strip()
+        q_raw_parts = [part for part in q_raw_clean.split("?") if len(part.strip()) > 6]
 
         for doc_id in candidate_doc_ids:
             rec = self._sheet_records[doc_id]
@@ -400,13 +421,13 @@ class RedisRAGCache:
                     tf_component = (tf_weighted * (k1 + 1.0)) / (tf_weighted + k1 * (1.0 - b + b * (dl / self._avg_dl)))
                     score += token_idf * tf_component
 
-            # Exact phrase substring bonus
-            q_text = rec.get("question", "").lower().replace("₹", "rs ")
-            a_text = rec.get("answer", "").lower().replace("₹", "rs ")
+            # Exact phrase substring bonus using pre-normalized text
+            q_text = self._doc_q_clean[doc_id] if doc_id < len(self._doc_q_clean) else rec.get("question", "").lower().replace("₹", "rs ")
+            a_text = self._doc_a_clean[doc_id] if doc_id < len(self._doc_a_clean) else rec.get("answer", "").lower().replace("₹", "rs ")
 
             if q_raw_clean and q_raw_clean in q_text:
                 score += 15.0
-            elif any(part in q_text for part in q_raw_clean.split("?") if len(part.strip()) > 6):
+            elif any(part in q_text for part in q_raw_parts):
                 score += 6.0
 
             if q_raw_clean and q_raw_clean in a_text:

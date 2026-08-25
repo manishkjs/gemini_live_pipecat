@@ -40,18 +40,10 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
         await params.result_callback({"content": "Please provide a search query to search Memorystore."})
         return
 
-    # 1. Exact Cache Lookup in L1/L2 Redis (<0.01ms)
-    cached_result = await rag_cache.get(query)
-    if cached_result:
-        logger.info(f"⚡ [RAG:ExactCacheHit] Instant Redis/L1 cached result for: '{query}'")
-        await params.result_callback({"content": cached_result})
-        return
-
-    # 2. Sub-Millisecond Token-Ranked Search across Google Sheet Q&A items in Memorystore (<1ms)
+    # Sub-Millisecond Token-Ranked Search across Google Sheet Q&A items in Memorystore (<1ms)
     sheet_matches = await rag_cache.search_sheet_knowledge(query, top_k=total_records)
     if sheet_matches:
-        logger.info(f"⚡ [RAG:SheetMemorystoreHit] Retrieved grounded Google Sheet Q&A from Memorystore for: '{query}'")
-        await rag_cache.set(query, sheet_matches)
+        logger.info(f"⚡ [RAG:Hit] Retrieved grounded Google Sheet Q&A for: '{query}'")
         await params.result_callback({"content": sheet_matches})
         return
 

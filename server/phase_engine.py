@@ -11,13 +11,14 @@ Implements Google Gemini Live API Prompt Yielding Best Practices:
 
 from __future__ import annotations
 import asyncio
-import os
+from dataclasses import dataclass
 import json
+import math
+import os
 import re
 import time
 from enum import IntEnum
-import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from loguru import logger
 
 from pipecat.frames.frames import (
@@ -37,36 +38,198 @@ from diagnostic_buffer import append_diagnostic_log
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# TIER-2 INTENT CLASSIFIER SYSTEM INSTRUCTION
+# TIER-2 INTENT CLASSIFIER CONFIGURATION & SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════════════
 
+TIER2_MAX_HISTORY_TURNS = int(os.getenv("TIER2_MAX_HISTORY_TURNS", "8"))
+TIER2_CLASSIFIER_TIMEOUT_S = float(os.getenv("TIER2_CLASSIFIER_TIMEOUT_S", "2.5"))
+
 INTENT_CLASSIFIER_SYSTEM_PROMPT = """\
+<intent_classifier_system_prompt>
+<role>
 You are an expert real-time conversational intent classifier and sales funnel state-transition evaluator for the Cymbal Lending P2P voicebot.
+</role>
 
-Your objective:
+<objective>
 Analyze the chronological multi-turn voice dialogue history and the latest customer utterance to determine the customer's true underlying intent and whether the conversation has progressed to a new sales funnel phase.
+</objective>
 
-Sales Funnel Phases (1-9):
-1: Time Check & Availability - Customer availability, callback requests, greetings, or busy signals.
+<sales_funnel_phases>
+1: Time Check & Availability - INITIAL OPENING GREETING ONLY. Check if customer has 2 minutes at the very start of the call (Turn 1). NEVER route to Phase 1 mid-call or during farewells.
 2: Discovery & P2P Familiarity - Customer investment background, awareness of P2P lending, wealth growth vs regular monthly income goals.
 3: Educational Pivot & Concept Education - How P2P lending works, disintermediation, comparison with Fixed Deposits (7%) vs P2P returns (18-24%).
 4: Platform Legitimacy & RBI Trust - RBI NBFC-P2P registration, ICICI escrow mechanism, 10-year track record, legal compliance.
 5: Risk Mitigation, Defaults & Recovery - Borrower credit risk, default handling, 100+ borrower diversification, 96.18% historical recovery rate.
-6: Confidence, Readiness Check & Active Objection Overcoming - Customer hesitation, reluctance, saying 'I don't want to invest / not interested / don't want to do it / मुझे नहीं करना', target investment amount, tenure horizon, and risk appetite.
+6: Confidence & Readiness Check - Customer target investment amount, tenure horizon, and risk appetite.
 7: Product Recommendation & Mathematical Calculation - Specific returns calculation, rupee profit, monthly payout, tenure options (3M STL 15%, 6M STL 18%, 12M MTL 24%).
 8: App & KYC Navigation - PAN card verification, Aadhaar OTP via DigiLocker, Penny-drop bank verification, mobile app steps.
-9: Commitment & Activation Close - Deposit commitment confirmation, payment method, activation timeline, concluding remarks.
+9: Commitment & Activation Close - Concluding the call, farewells ('bye', 'boy', 'thank you bye', 'alvida', 'chalo bye', 'talk later', 'theek hai'), deposit/plan confirmation, final validation of next steps, or scheduling a follow-up.
+</sales_funnel_phases>
 
-Classification Invariants:
+<classification_invariants>
 1. Contextual Coherence: Always evaluate the customer's utterance in the context of the Bot's preceding question (e.g., if Bot asked about P2P awareness in Phase 2 and Customer says "पहली बार सुन रहा हूँ", route to Phase 3 Concept Education).
 2. Confidence Calibration: Set confidence >= 0.70 only when the trajectory clearly indicates movement. If ambiguous, stay in the current active phase.
-3. Response Format: You MUST return a single JSON object strictly matching this schema:
+3. Farewell & Wrap-Up Invariant: If the customer says goodbye, thanks you to conclude, says they have to leave, or says 'bye', 'boy', 'alvida', 'chalo theek hai', 'baad mein baat karte hain', you MUST route to Phase 9 (Commitment & Activation Close) to validate their next step and close warmly. NEVER route mid-call farewells to Phase 1.
+4. Response Format: You MUST return a single JSON object strictly matching this schema:
 {
   "target_phase": int,
   "confidence": float,
   "reason": str
 }
+</classification_invariants>
+</intent_classifier_system_prompt>
 """
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# TIER-1 FAST-PATH PRECOMPILED RULES & FILLER SHORT-CIRCUIT
+# ═══════════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class Tier1Rule:
+    target_phase: int
+    rule_name: str
+    pattern: re.Pattern
+    source_phases: Optional[Sequence[int]] = None
+    min_phase: Optional[int] = None
+    max_phase: Optional[int] = None
+
+    def is_applicable(self, current_phase: int) -> bool:
+        if self.source_phases is not None and current_phase not in self.source_phases:
+            return False
+        if self.min_phase is not None and current_phase < self.min_phase:
+            return False
+        if self.max_phase is not None and current_phase > self.max_phase:
+            return False
+        return True
+
+
+PHASE_TIER1_RULES: Sequence[Tier1Rule] = (
+    # 1. Jump to Phase 6: Mid-call disinterest, reluctance, objection ('phone rakho', 'nahi karna')
+    Tier1Rule(
+        target_phase=6,
+        rule_name="User expressed disinterest / reluctance -> trigger Phase 6 Objection Overcoming",
+        min_phase=2,
+        pattern=re.compile(
+            r"\b(?:nahi\s+karna|nahi\s+invest|dont\s+want|don't\s+want|not\s+interested|dont\s+think|don't\s+think|"
+            r"phone\s+rakho|rehne\s+do|mood\s+nahi|man\s+nahi|no\s+interest|mat\s+batao|ruk\s+jao|disconnect)\b|"
+            r"नहीं\s+करना|इन्वेस्ट\s+नहीं\s+करना|फोन\s+रखो|फ़ोन\s+रखो|रहने\s+दो|मूड\s+नहीं|मन\s+नहीं|मत\s+बताओ|रुको",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 2. Jump to Phase 9: Farewells, Wrap-Up, Bye, Boy, Alvida, Concluding (mid-call)
+    Tier1Rule(
+        target_phase=9,
+        rule_name="User wrapping up call / farewell -> validate commitment & close",
+        min_phase=2,
+        pattern=re.compile(
+            r"\b(?:bye|boy|by|alvida|thank\s+you|thanks|chalo\s+bye|ok\s+bye|theek\s+hai\s+bye|wrap\s+up|"
+            r"chalta\s+hu|chalti\s+hu|rakhta\s+hu|rakhti\s+hu|baad\s+mein\s+baat|call\s+you\s+later|later)\b|"
+            r"बाय|अलविदा|थैंक\s+यू|धन्यवाद|चलो\s+बाय|ठीक\s+है\s+बाय|बाद\s+में\s+बात",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 3. Jump to Phase 1: Disinterest / Callback request / Busy
+    Tier1Rule(
+        target_phase=1,
+        rule_name="User indicated busy / callback request / not interested on initial turn",
+        pattern=re.compile(
+            r"\b(?:interest\s+nahi|busy|not\s+interested|nahi\s+chahiye|call\s+back)\b|"
+            r"इंटरेस्ट\s+नहीं|बिजी|नहीं\s+चाहिए|कॉल\s+बैक",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 3b. Phase 1 stay on callback / later request at start
+    Tier1Rule(
+        target_phase=1,
+        rule_name="User requested callback / later on initial turn",
+        source_phases=(1,),
+        pattern=re.compile(
+            r"\b(?:baad\s+mein)\b|बाद\s+में",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 4. Jump to Phase 8: KYC / Document queries / Escrow deposit flow
+    Tier1Rule(
+        target_phase=8,
+        rule_name="User asked for KYC / deposit navigation",
+        pattern=re.compile(
+            r"\b(?:kyc|documents?|aadhaar|pan\s+card|bank\s+account|penny\s+drop|digilocker|branch\s+visit|add\s+funds)\b|"
+            r"केवाईसी|डॉक्यूमेंट्स?|आधार|पैन\s+कार्ड|बैंक\s+खाता|पेनी\s+ड्रॉप|डिजीलॉकर|ब्रांच\s+जाना|एस्क्रो\s+में|पैसे\s+कैसे\s+ऐड|डिपॉजिट\s+कैसे",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 5. Jump to Phase 4: RBI / Escrow / Trust / Penalty
+    Tier1Rule(
+        target_phase=4,
+        rule_name="User asked about platform safety / RBI",
+        pattern=re.compile(
+            r"\b(?:rbi|escrow|safe|legal|penalty|approved|trustee)\b|"
+            r"आरबीआई|एस्क्रो|लीगल",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 6. Jump to Phase 5: Risk / Diversification / Default / Doesn't pay back
+    Tier1Rule(
+        target_phase=5,
+        rule_name="User asked about credit risk, defaults & recovery",
+        pattern=re.compile(
+            r"\b(?:default|npa|doob|risk|100\s+borrowers?|kitne\s+borrowers?|doesn'?t\s+pay|wapas\s+na|wapas\s+nahi|"
+            r"paisa\s+doob|bhag\s+gaya|na\s+de|delay|kya\s+hoga\s+agar|recovery)\b|"
+            r"डिफ़ॉल्ट|एनपीए|डूब|रिस्क|वापस\s+नहीं|पैसा\s+डूबा?|भाग\s+गया|रिकवरी",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 7. Jump to Phase 7: Returns / Calculations
+    Tier1Rule(
+        target_phase=7,
+        rule_name="User asked for returns / calculation",
+        pattern=re.compile(
+            r"\b(?:kitna\s+milega|return\s+kitna|profit|monthly\s+payout|emi\s+kitna|calculate|returns?)\b|"
+            r"कितना\s+मिलेगा|फायदा\s+होगा",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 8. Jump to Phase 3: Educational Comparison (FD / Mutual Funds vs P2P)
+    Tier1Rule(
+        target_phase=3,
+        rule_name="User compared returns / asked about mechanism",
+        pattern=re.compile(
+            r"\b(?:fd|fixed\s+deposit|mutual\s+funds?|7%|8%|6%|bank\s+me|18%|24%|kaise\s+possible)\b|"
+            r"बैंक\s+में",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 9. Phase 1 -> 2: User gives consent / confirms availability
+    Tier1Rule(
+        target_phase=2,
+        rule_name="User confirmed availability / conversational consent",
+        source_phases=(1,),
+        pattern=re.compile(
+            r"\b(?:haan|yes|batao|bataiye|sure|theek\s+hai|boliye|ok|okay)\b|"
+            r"हाँ|हां|बताइए|बताओ|बोलिए|ठीक\s*है|ठीक",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+    # 10. Phase 2 -> 3: User shares investment background
+    Tier1Rule(
+        target_phase=3,
+        rule_name="User shared P2P familiarity background",
+        source_phases=(2,),
+        pattern=re.compile(
+            r"\b(?:suna\s+hai|explore|invest|pehli\s+baar|first\s+time|kabhi\s+invest\s+nahi\s+kiya)\b|"
+            r"पहली\s+बार",
+            re.IGNORECASE | re.UNICODE,
+        ),
+    ),
+)
+
+# 1-2 word conversational filler short-circuit pattern (evaluated when current_phase > 1)
+CONVERSATIONAL_FILLER_PATTERN: re.Pattern = re.compile(
+    r"^(?:haan|ha|yes|theek\s+hai|theek|accha|acha|achha|ji|ji\s+haan|haanji|ok|okay|hmm+|hm|sahi\s+hai|got\s+it|sure|right|alright|all\s+right|"
+    r"हाँ|हां|जी|ठीक\s+है|ठीक|अच्छा|हम्म+|हाँजी|सही\s+है|जी\s+हाँ)[.!?\s]*$",
+    re.IGNORECASE | re.UNICODE,
+)
 
 # Lazy initialized Vertex AI Client for async classification
 _AI_CLASSIFIER_CLIENT: Optional[Client] = None
@@ -188,20 +351,6 @@ PHASE_PROMPT_CARDS: Dict[int, Dict[str, str]] = {
 }
 
 
-# Lazy initialized Vertex AI Client for async classification
-_AI_CLASSIFIER_CLIENT: Optional[Client] = None
-
-def get_ai_classifier_client() -> Client:
-    global _AI_CLASSIFIER_CLIENT
-    if _AI_CLASSIFIER_CLIENT is None:
-        import os
-        from google.genai import Client
-        project = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
-        location = os.getenv("INTENT_CLASSIFIER_LOCATION") or "global"
-        _AI_CLASSIFIER_CLIENT = Client(project=project, location=location, vertexai=True)
-    return _AI_CLASSIFIER_CLIENT
-
-
 class ConsultativePhaseTracker:
     """Manages active consultative sales phase and yields prompt cards to Gemini Live."""
 
@@ -292,7 +441,7 @@ class ConsultativePhaseTracker:
         """Send realtime clientContent turn to Gemini Live WebSocket."""
         card = PHASE_PROMPT_CARDS[target_phase]
         directive_text = (
-            f"[ACTIVE_PHASE: Phase {target_phase} - {card['title']}]\n"
+            f"[ACTIVE_PHASE_DIRECTIVE: Phase {target_phase} - {card['title']}]\n"
             f"{card['directive']}"
         )
 
@@ -393,10 +542,11 @@ class ConsultativePhaseTracker:
         try:
             client = get_ai_classifier_client()
             
-            # Format dialogue context till this point (last 10 turns)
+            # Format dialogue context till this point (last N turns)
             history_to_format = history if history is not None else self.session_transcript
+            max_turns = int(os.getenv("TIER2_MAX_HISTORY_TURNS", "8"))
             formatted_turns = []
-            for turn in history_to_format[-10:]:
+            for turn in history_to_format[-max_turns:]:
                 role_label = "Bot" if turn.get("role") in ["assistant", "bot", "model"] else "Customer"
                 turn_txt = (turn.get("text") or "").strip()
                 if turn_txt:
@@ -417,6 +567,7 @@ Latest Customer Utterance: "{text}"
 Evaluate the full dialogue context and return the target phase decision in JSON.
 """
             classifier_model = os.getenv("INTENT_CLASSIFIER_MODEL", "gemini-3.5-flash-lite")
+            timeout_s = float(os.getenv("TIER2_CLASSIFIER_TIMEOUT_S", "2.5"))
             res = await asyncio.wait_for(
                 client.aio.models.generate_content(
                     model=classifier_model,
@@ -426,7 +577,7 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
                         response_mime_type="application/json",
                     ),
                 ),
-                timeout=4.0
+                timeout=timeout_s
             )
             if hasattr(res, "usage_metadata") and res.usage_metadata:
                 um = res.usage_metadata
@@ -463,98 +614,46 @@ Evaluate the full dialogue context and return the target phase decision in JSON.
         if not text:
             return
         self.record_turn("user", text)
-        lower = text.strip().lower()
+        cleaned_text = text.strip()
+        lower = cleaned_text.lower()
         initial_phase = self.current_phase
-        matched_rule = None
+        matched_rule_name = None
         target_tier1 = None
 
         # ── Tier 1: Fast-Path Rule Check (Instant 0ms) ───────────────
-        # Jump to Phase 6: Mid-call disinterest, reluctance, objection, or 'don't want to do it / phone rakho'
-        if self.current_phase > 1 and (
-            any(w in lower for w in [
-                "nahi karna", "nahi invest", "dont want", "don't want", "not interested", "dont think", "don't think",
-                "phone rakho", "rehne do", "mood nahi", "man nahi", "no interest", "mat batao", "ruk jao", "disconnect"
-            ]) or any(w in text for w in [
-                "नहीं करना", "इन्वेस्ट नहीं करना", "फोन रखो", "फ़ोन रखो", "रहने दो", "मूड नहीं", "मन नहीं", "मत बताओ", "रुको"
-            ])
-        ):
-            target_tier1 = 6
-            matched_rule = "User expressed disinterest / reluctance -> trigger Phase 6 Objection Overcoming"
+        for rule in PHASE_TIER1_RULES:
+            if not rule.is_applicable(self.current_phase):
+                continue
+            if rule.pattern.search(cleaned_text) or rule.pattern.search(lower):
+                target_tier1 = rule.target_phase
+                matched_rule_name = rule.rule_name
+                break
 
-        # Jump to Phase 9: Farewells, Wrap-Up, Bye, Boy, Alvida, Concluding (when call has already started)
-        elif self.current_phase > 1 and (
-            any(re.search(rf"\b{re.escape(w)}\b", lower) for w in [
-                "bye", "boy", "by", "alvida", "thank you", "thanks", "chalo bye", "ok bye",
-                "theek hai bye", "wrap up", "chalta hu", "chalti hu", "rakhta hu", "rakhti hu",
-                "baad mein baat", "call you later", "later"
-            ]) or any(w in text for w in ["बाय", "अलविदा", "थैंक यू", "धन्यवाद", "चलो बाय", "ठीक है बाय", "बाद में बात"])
-        ):
-            target_tier1 = 9
-            matched_rule = "User wrapping up call / farewell -> validate commitment & close"
+        if target_tier1 is not None:
+            if target_tier1 != self.current_phase:
+                target_title = PHASE_PROMPT_CARDS[target_tier1]["title"]
+                logger.info(
+                    f"\n════════════════════════════════════════════════════════════════════════\n"
+                    f"⚡ [DECISION: TIER-1 REGEX FAST-PATH (0ms)]\n"
+                    f"   ├─ Utterance: '{text}'\n"
+                    f"   ├─ State Transition: Phase {self.current_phase} ➔ Phase {target_tier1} ({target_title})\n"
+                    f"   └─ Matched Pattern: {matched_rule_name}\n"
+                    f"════════════════════════════════════════════════════════════════════════"
+                )
+                append_diagnostic_log("⚡ Fast-Path Decision (Tier-1 Regex)", f"Phase {self.current_phase} ➔ Phase {target_tier1} ({target_title}) | Rule: {matched_rule_name}")
+                await self.transition_to(target_tier1, trigger_reason=f"Tier-1 Regex: {matched_rule_name}")
+                return
+            else:
+                logger.info(f"⚡ [PhaseEngine:FastPath] Tier-1 matched {matched_rule_name} (Phase {self.current_phase} maintained).")
+                return
 
-        # Jump to Phase 1: Disinterest / Callback request right at the start of Turn 1
-        elif self.current_phase == 1 and any(w in lower or w in text for w in ["इंटरेस्ट नहीं", "interest nahi", "baad mein", "बाद में", "busy", "बिजी", "not interested", "nahi chahiye", "नहीं चाहिए", "call back", "कॉल बैक"]):
-            target_tier1 = 1
-            matched_rule = "User indicated busy / not interested on initial turn"
-
-        # Jump to Phase 8: KYC / Document queries / Escrow deposit flow
-        elif any(w in lower or w in text for w in ["kyc", "केवाईसी", "documents", "डॉक्यूमेंट", "aadhaar", "आधार", "pan card", "पैन कार्ड", "bank account", "बैंक खाता", "penny drop", "पेनी ड्रॉप", "digilocker", "डिजीलॉकर", "ब्रांच जाना", "branch visit", "एस्क्रो में", "पैसे कैसे ऐड", "add funds", "डिपॉजिट कैसे"]):
-            target_tier1 = 8
-            matched_rule = "User asked for KYC / deposit navigation"
-
-        # Jump to Phase 4: RBI / Escrow / Trust / Penalty
-        elif any(w in lower or w in text for w in ["rbi", "आरबीआई", "escrow", "एस्क्रो", "safe", "legal", "लीगल", "penalty", "approved", "trustee"]):
-            target_tier1 = 4
-            matched_rule = "User asked about platform safety / RBI"
-
-        # Jump to Phase 5: Risk / Diversification / Default / Doesn't pay back
-        elif any(w in lower or w in text for w in [
-            "default", "डिफ़ॉल्ट", "npa", "एनपीए", "doob", "डूब", "risk", "रिस्क", "100 borrower", "kitne borrower",
-            "doesn't pay", "doesnt pay", "wapas na", "wapas nahi", "वापस नहीं", "paisa doob", "पैसा डूब",
-            "bhag gaya", "भाग गया", "na de", "delay", "kya hoga agar", "recovery", "रिकवरी"
-        ]):
-            target_tier1 = 5
-            matched_rule = "User asked about credit risk, defaults & recovery"
-
-        # Jump to Phase 7: Returns / Calculations
-        elif any(w in lower or w in text for w in ["kitna milega", "कितना मिलेगा", "फायदा होगा", "return kitna", "profit", "monthly payout", "emi kitna", "calculate", "returns"]):
-            target_tier1 = 7
-            matched_rule = "User asked for returns / calculation"
-
-        # Jump to Phase 3: Educational Comparison (FD / Mutual Funds vs P2P)
-        elif any(w in lower or w in text for w in ["fd", "fixed deposit", "mutual fund", "7%", "8%", "6%", "बैंक में", "bank me", "18%", "24%", "kaise possible"]):
-            target_tier1 = 3
-            matched_rule = "User compared returns / asked about mechanism"
-
-        # Phase 1 -> 2: User gives consent / confirms availability
-        elif self.current_phase == 1 and (
-            "हाँ" in text or "हां" in text or
-            any(re.search(rf"\b{re.escape(w)}\b", lower) for w in ["haan", "yes", "batao", "bataiye", "sure", "theek hai", "boliye", "ok", "okay"])
-        ):
-            target_tier1 = 2
-            matched_rule = "User confirmed availability / conversational consent"
-
-        # Phase 2 -> 3: User shares investment background
-        elif self.current_phase == 2 and any(w in lower or w in text for w in ["suna hai", "explore", "invest", "pehli baar", "पहली बार", "first time", "kabhi invest nahi kiya"]):
-            target_tier1 = 3
-            matched_rule = "User shared P2P familiarity background"
-
-        if target_tier1 is not None and target_tier1 != self.current_phase:
-            target_title = PHASE_PROMPT_CARDS[target_tier1]["title"]
-            logger.info(
-                f"\n════════════════════════════════════════════════════════════════════════\n"
-                f"⚡ [DECISION: TIER-1 REGEX FAST-PATH (0ms)]\n"
-                f"   ├─ Utterance: '{text}'\n"
-                f"   ├─ State Transition: Phase {self.current_phase} ➔ Phase {target_tier1} ({target_title})\n"
-                f"   └─ Matched Pattern: {matched_rule}\n"
-                f"════════════════════════════════════════════════════════════════════════"
-            )
-            append_diagnostic_log("⚡ Fast-Path Decision (Tier-1 Regex)", f"Phase {self.current_phase} ➔ Phase {target_tier1} ({target_title}) | Rule: {matched_rule}")
-            await self.transition_to(target_tier1, trigger_reason=f"Tier-1 Regex: {matched_rule}")
+        # ── Conversational Filler Short-Circuit (current_phase > 1) ───
+        if self.current_phase > 1 and CONVERSATIONAL_FILLER_PATTERN.match(cleaned_text):
+            logger.info(f"⚡ [PhaseEngine:FastPath] Conversational filler '{cleaned_text}' short-circuited (Phase {self.current_phase} maintained with zero Tier-2 LLM overhead).")
             return
 
         # ── Tier 2: Async Gemini 3.5 Flash Lite AI Classifier for Subtle Phrasings ─
-        if self.current_phase == initial_phase and len(text.strip()) > 4:
+        if self.current_phase == initial_phase and len(cleaned_text) > 4:
             logger.info(f"🔍 [PhaseEngine:Classifier] Tier-1 Regex: No match for '{text}'. Dispatching to TIER-2 (Gemini 3.5 Flash Lite async with dialogue history)...")
             self._turn_seq += 1
             asyncio.create_task(self._async_ai_classify_intent(text, initial_phase, self._turn_seq, history=history))

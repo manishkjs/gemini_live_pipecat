@@ -7,6 +7,7 @@ out of agent_live.py for maximum modularity, testability, and clean architecture
 from __future__ import annotations
 import asyncio
 import json
+import os
 from typing import Any, Dict, List, Optional
 from loguru import logger
 
@@ -582,23 +583,40 @@ async def dynamic_tool_handler(params: FunctionCallParams):
 
 # ── Registry Helper ──────────────────────────────────────────────────
 
-def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
-    """Returns only instantaneous, non-blocking tools for Gemini Live duplex audio stream.
-    
-    Memory extraction runs asynchronously post-call ('downcar' pattern) via Gemini 3.5 Flash-Lite
-    so Gemini Live only ever invokes in-flight math calculations (calculate_returns) and never pauses.
+def get_tools_for_profile(profile: Optional[str] = None, dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
+    """Returns tool schemas according to the selected profile ('lean' vs 'full') and parses dynamic tools.
+
+    - 'lean' (default): Returns the 4 active real-time conversational tools:
+      [calculate_returns, search_knowledge_base, retrieve_memory, save_memory].
+    - 'full': Returns all 6 tools:
+      [get_current_time, search_knowledge_base, calculate_returns, get_onboarding_guide, retrieve_memory, save_memory].
     """
-    tools = [
-        calculate_returns_schema,
-        search_knowledge_base_schema,
-    ]
+    resolved_profile = (profile if profile is not None else os.getenv("TOOL_PROFILE", "lean")).strip().lower()
+
+    if resolved_profile == "full":
+        tools = [
+            get_current_time_schema,
+            search_knowledge_base_schema,
+            calculate_returns_schema,
+            get_onboarding_guide_schema,
+            retrieve_memory_schema,
+            save_memory_schema,
+        ]
+    else:
+        # "lean" profile (default)
+        tools = [
+            calculate_returns_schema,
+            search_knowledge_base_schema,
+            retrieve_memory_schema,
+            save_memory_schema,
+        ]
 
     if dynamic_tools_json:
         try:
             tools_data = json.loads(dynamic_tools_json)
             if isinstance(tools_data, list):
                 for tool in tools_data:
-                    if "name" in tool:
+                    if isinstance(tool, dict) and "name" in tool:
                         tools.append(FunctionSchema(
                             name=tool.get("name"),
                             description=tool.get("description", ""),
@@ -609,35 +627,19 @@ def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[F
             logger.error(f"Failed to parse dynamic tools: {e}")
 
     return tools
+
+
+def get_live_streaming_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
+    """Returns only instantaneous, non-blocking tools for Gemini Live duplex audio stream.
+
+    Delegates to get_tools_for_profile with TOOL_PROFILE from environment (defaults to 'lean').
+    """
+    return get_tools_for_profile(profile=os.getenv("TOOL_PROFILE", "lean"), dynamic_tools_json=dynamic_tools_json)
 
 
 def get_standard_tools(dynamic_tools_json: Optional[str] = None) -> List[FunctionSchema]:
     """Returns the active tool schemas (full suite)."""
-    tools = [
-        get_current_time_schema,
-        search_knowledge_base_schema,
-        calculate_returns_schema,
-        get_onboarding_guide_schema,
-        retrieve_memory_schema,
-        save_memory_schema,
-    ]
-
-    if dynamic_tools_json:
-        try:
-            tools_data = json.loads(dynamic_tools_json)
-            if isinstance(tools_data, list):
-                for tool in tools_data:
-                    if "name" in tool:
-                        tools.append(FunctionSchema(
-                            name=tool.get("name"),
-                            description=tool.get("description", ""),
-                            properties=tool.get("properties", {}),
-                            required=tool.get("required", [])
-                        ))
-        except Exception as e:
-            logger.error(f"Failed to parse dynamic tools: {e}")
-
-    return tools
+    return get_tools_for_profile(profile="full", dynamic_tools_json=dynamic_tools_json)
 
 
 def register_all_tools(llm: Any, standard_tools: List[FunctionSchema], get_current_time_fn: Optional[Any] = None) -> None:

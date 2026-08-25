@@ -1,0 +1,198 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" width="1400" height="820" style="background-color: #0B0F19; font-family: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0B0F19"/>
+      <stop offset="50%" stop-color="#0E1626"/>
+      <stop offset="100%" stop-color="#080C14"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151D30" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#0F172A" stop-opacity="0.85"/>
+    </linearGradient>
+    <linearGradient id="cardGradHighlight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A2744" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#111B30" stop-opacity="0.90"/>
+    </linearGradient>
+
+    <!-- Accent Gradients -->
+    <linearGradient id="geminiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4285F4"/>
+      <stop offset="50%" stop-color="#9B51E0"/>
+      <stop offset="100%" stop-color="#00E5FF"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#34A853"/>
+    </linearGradient>
+    <linearGradient id="redGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#EF4444"/>
+      <stop offset="100%" stop-color="#DC2626"/>
+    </linearGradient>
+    <linearGradient id="amberGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <linearGradient id="purpleGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#A855F7"/>
+      <stop offset="100%" stop-color="#7E22CE"/>
+    </linearGradient>
+
+    <!-- Glow Filters -->
+    <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+
+    <!-- Marker Arrowheads -->
+    <marker id="arrowCyan" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#00E5FF"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#4285F4"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#A855F7"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="10" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#F59E0B"/>
+    </marker>
+
+    <!-- Grid Pattern -->
+    <pattern id="gridPattern" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1E293B" stroke-width="0.75" stroke-opacity="0.4"/>
+    </pattern>
+  </defs>
+
+
+  <!-- Canvas Background -->
+  <rect width="1400" height="820" fill="url(#bgGrad)"/>
+  <rect width="1400" height="820" fill="url(#gridPattern)"/>
+
+  <!-- Header Block -->
+  <g transform="translate(60, 45)">
+    <rect x="0" y="0" width="270" height="28" rx="14" fill="#34A853" fill-opacity="0.12" stroke="#34A853" stroke-width="1.2"/>
+    <circle cx="14" cy="14" r="5" fill="#34A853"/>
+    <text x="28" y="18" fill="#34A853" font-size="12" font-weight="700" letter-spacing="1.2">COMMERCIAL TCO &amp; UNIT ECONOMICS</text>
+    
+    <text x="0" y="62" fill="#FFFFFF" font-size="28" font-weight="800" letter-spacing="-0.5">The 10.6x Cost Advantage &amp; Hourly Unit Economics</text>
+    <text x="0" y="90" fill="#94A3B8" font-size="15" font-weight="400">Comparing effective hourly voice operational cost across Google Gemini Live, Competitors, and Human Contact Centers</text>
+  </g>
+
+  <!-- Left: Big Bar Chart of Hourly Cost -->
+  <g transform="translate(60, 160)">
+    <rect width="780" height="610" rx="16" fill="url(#cardGrad)" stroke="#1E293B" stroke-width="1.5" filter="url(#dropShadow)"/>
+
+    <text x="30" y="38" fill="#FFFFFF" font-size="18" font-weight="800">Effective Fully Loaded Cost per Active Audio Hour</text>
+    <text x="30" y="58" fill="#94A3B8" font-size="13">Based on standard 28.5 audio tokens/s in + 140 words/min out</text>
+
+    <!-- Chart Coordinate Area -->
+    <g transform="translate(30, 85)">
+      <!-- Bar 1: Human Agent (India Contact Center) -->
+      <text x="0" y="32" fill="#E2E8F0" font-size="13" font-weight="700">Human Agent (₹180/call)</text>
+      <rect x="220" y="12" width="480" height="34" rx="6" fill="#EF4444" fill-opacity="0.4" stroke="#EF4444" stroke-width="1.5"/>
+      <text x="710" y="34" fill="#FCA5A5" font-size="14" font-weight="800" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$25.80 / hr</text>
+      <text x="235" y="34" fill="#FFFFFF" font-size="11" font-weight="700">Traditional BPO Baseline (100%)</text>
+
+      <!-- Bar 2: ElevenLabs Agents -->
+      <text x="0" y="92" fill="#E2E8F0" font-size="13" font-weight="700">ElevenLabs Agents</text>
+      <rect x="220" y="72" width="180" height="34" rx="6" fill="#F59E0B" fill-opacity="0.3" stroke="#F59E0B" stroke-width="1.5"/>
+      <text x="410" y="94" fill="#FDE68A" font-size="14" font-weight="800" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$6.00 / hr</text>
+      <text x="235" y="94" fill="#FDE68A" font-size="11" font-weight="700">Minute-based ($0.10/min)</text>
+
+      <!-- Bar 3: OpenAI Realtime (2.1) -->
+      <text x="0" y="152" fill="#E2E8F0" font-size="13" font-weight="700">OpenAI Realtime 2.1</text>
+      <rect x="220" y="132" width="120" height="34" rx="6" fill="#DC2626" fill-opacity="0.3" stroke="#DC2626" stroke-width="1.5"/>
+      <text x="350" y="154" fill="#FCA5A5" font-size="14" font-weight="800" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$3.05 / hr</text>
+      <text x="230" y="154" fill="#FCA5A5" font-size="10" font-weight="700">$20/1M audio out</text>
+
+      <!-- Bar 4: Deepgram + Groq DIY -->
+      <text x="0" y="212" fill="#E2E8F0" font-size="13" font-weight="700">Deepgram + Groq DIY</text>
+      <rect x="220" y="192" width="65" height="34" rx="6" fill="#64748B" fill-opacity="0.4" stroke="#94A3B8" stroke-width="1.5"/>
+      <text x="295" y="214" fill="#CBD5E1" font-size="14" font-weight="800" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$1.10 / hr</text>
+
+      <!-- Bar 5: Google Gemini 3.5 Flash Live -->
+      <text x="0" y="272" fill="#E2E8F0" font-size="13" font-weight="700">Gemini 3.5 Flash Live</text>
+      <rect x="220" y="252" width="45" height="34" rx="6" fill="url(#cyanGrad)" filter="url(#glowCyan)"/>
+      <text x="275" y="274" fill="#00E5FF" font-size="14" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$0.90 / hr</text>
+
+      <!-- Bar 6: Google Gemini 3.5 Flash-Lite Live -->
+      <text x="0" y="332" fill="#E2E8F0" font-size="13" font-weight="700">Gemini 3.5 Flash-Lite</text>
+      <rect x="220" y="312" width="25" height="34" rx="6" fill="url(#greenGrad)" filter="url(#glowCyan)"/>
+      <text x="255" y="334" fill="#34D399" font-size="14" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$0.35 / hr</text>
+    </g>
+
+    <!-- Bottom Highlights inside chart card -->
+    <g transform="translate(30, 475)">
+      <rect width="720" height="100" rx="10" fill="#0B0F19" stroke="#34A853" stroke-width="1.2"/>
+      <text x="20" y="28" fill="#34D399" font-size="13" font-weight="800">EXECUTIVE ROI SUMMARY:</text>
+      <text x="20" y="52" fill="#E2E8F0" font-size="13">• Replacing human Tier-1 calls (₹180) with Gemini Live (₹10) yields <tspan fill="#34D399" font-weight="800">94.4% net savings</tspan>.</text>
+      <text x="20" y="74" fill="#E2E8F0" font-size="13">• For 100,000 calls/month, annual operating savings exceed <tspan fill="#00E5FF" font-weight="800">₹2.04 Crore ($245,000 USD)</tspan>.</text>
+    </g>
+  </g>
+
+  <!-- Right: Token Rate Card Comparison Cards -->
+  <g transform="translate(865, 160)">
+    <rect width="475" height="610" rx="16" fill="url(#cardGradHighlight)" stroke="#00E5FF" stroke-width="2" filter="url(#dropShadow)"/>
+
+    <text x="28" y="38" fill="#00E5FF" font-size="18" font-weight="800">Token Rate Card Invariants</text>
+    <text x="28" y="58" fill="#94A3B8" font-size="13">Audio Token Pricing (/1M Tokens)</text>
+
+    <!-- Card A: Audio Output Tokens (The 10.6x Metric) -->
+    <g transform="translate(24, 85)">
+      <rect width="425" height="145" rx="12" fill="#0B0F19" stroke="#00E5FF" stroke-width="1.5"/>
+      <rect x="18" y="16" width="170" height="24" rx="6" fill="#00E5FF" fill-opacity="0.15"/>
+      <text x="103" y="32" fill="#00E5FF" font-size="11" font-weight="800" text-anchor="middle">AUDIO OUTPUT TOKENS</text>
+
+      <text x="18" y="70" fill="#94A3B8" font-size="12">Google Gemini 3.5 Flash-Lite:</text>
+      <text x="320" y="70" fill="#34D399" font-size="16" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$2.00 / 1M</text>
+
+      <text x="18" y="98" fill="#94A3B8" font-size="12">OpenAI Realtime 2.1:</text>
+      <text x="320" y="98" fill="#EF4444" font-size="16" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$20.00 / 1M</text>
+
+      <line x1="18" y1="112" x2="407" y2="112" stroke="#1E293B" stroke-width="1"/>
+      <text x="18" y="132" fill="#00E5FF" font-size="13" font-weight="800">★ EXACT 10.0x TO 10.6x GOOGLE COST LEAD</text>
+    </g>
+
+    <!-- Card B: Audio Input Tokens -->
+    <g transform="translate(24, 245)">
+      <rect width="425" height="145" rx="12" fill="#0B0F19" stroke="#4285F4" stroke-width="1"/>
+      <rect x="18" y="16" width="160" height="24" rx="6" fill="#4285F4" fill-opacity="0.15"/>
+      <text x="98" y="32" fill="#4285F4" font-size="11" font-weight="800" text-anchor="middle">AUDIO INPUT TOKENS</text>
+
+      <text x="18" y="70" fill="#94A3B8" font-size="12">Google Gemini 3.5 Flash-Lite:</text>
+      <text x="320" y="70" fill="#34D399" font-size="16" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$0.50 / 1M</text>
+
+      <text x="18" y="98" fill="#94A3B8" font-size="12">OpenAI Realtime 2.1:</text>
+      <text x="320" y="98" fill="#EF4444" font-size="16" font-weight="900" font-family="'Roboto Mono', 'SF Mono', Consolas, 'Courier New', monospace">$10.00 / 1M</text>
+
+      <line x1="18" y1="112" x2="407" y2="112" stroke="#1E293B" stroke-width="1"/>
+      <text x="18" y="132" fill="#4285F4" font-size="13" font-weight="800">★ 20x LOWER AUDIO INGESTION COST</text>
+    </g>
+
+    <!-- Card C: Batch Pricing Promo -->
+    <g transform="translate(24, 405)">
+      <rect width="425" height="175" rx="12" fill="#0B0F19" stroke="#A855F7" stroke-width="1"/>
+      <text x="18" y="28" fill="#C084FC" font-size="13" font-weight="800">POST-CALL BATCH TRANSCRIPTION</text>
+      <text x="18" y="52" fill="#E2E8F0" font-size="12">Gemini 3.5 Transcribe Batch: <tspan fill="#34D399" font-weight="800">$0.13 – $0.16 / hr</tspan></text>
+      <text x="18" y="72" fill="#94A3B8" font-size="11">50% discount vs sync streaming for analytics &amp; QA</text>
+      
+      <line x1="18" y1="88" x2="407" y2="88" stroke="#1E293B" stroke-width="1"/>
+      <text x="18" y="112" fill="#E2E8F0" font-size="12">• Outperforms Whisper on Hinglish / Tanglish</text>
+      <text x="18" y="134" fill="#E2E8F0" font-size="12">• Multi-speaker diarization &amp; word timestamps</text>
+      <text x="18" y="156" fill="#C084FC" font-size="12" font-weight="700">Instant Custom Voice 10s Clone + SynthID</text>
+    </g>
+  </g>
+</svg>

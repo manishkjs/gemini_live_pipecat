@@ -16,6 +16,7 @@ from tools.tool_definitions import (
     _GLOBAL_MEMORY_BANK,
     get_standard_tools,
     get_live_streaming_tools,
+    get_tools_for_profile,
     register_all_tools,
     retrieve_memory_schema,
     handle_retrieve_memory,
@@ -821,17 +822,19 @@ async def run_agent_live(
     }
     pipecat_language = language_map.get(language, Language.EN_US)
     
+    vad_stop_secs = float(os.getenv("VAD_STOP_SECS", "0.4"))
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)), serializer=CustomProtobufSerializer(),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=vad_stop_secs)), serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
 
-    # Tool Schemas & Dynamic Registration (Live streaming tools only; background downcar handles intelligence async)
-    standard_tools = get_live_streaming_tools(dynamic_tools_json=tools)
+    # Tool Schemas & Dynamic Registration (Configurable profile: lean vs full; background downcar handles intelligence async)
+    tool_profile = os.getenv("TOOL_PROFILE", "lean")
+    standard_tools = get_tools_for_profile(profile=tool_profile, dynamic_tools_json=tools)
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
     use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
@@ -884,23 +887,32 @@ async def run_agent_live(
         is_ai_studio = False
 
     if is_ai_studio:
-        # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
+        # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager / gcloud CLI
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         if not gemini_api_key:
             try:
                 def _fetch_sm_key():
-                    from google.cloud import secretmanager
-                    sm_client = secretmanager.SecretManagerServiceClient()
-                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                    return sm_res.payload.data.decode("UTF-8").strip()
+                    try:
+                        from google.cloud import secretmanager
+                        sm_client = secretmanager.SecretManagerServiceClient()
+                        sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                        return sm_res.payload.data.decode("UTF-8").strip()
+                    except Exception:
+                        import subprocess
+                        out = subprocess.check_output(
+                            ["gcloud", "secrets", "versions", "access", "latest", "--secret=GEMINI_API_KEY", f"--project={project_id}"],
+                            stderr=subprocess.DEVNULL,
+                            timeout=5
+                        )
+                        return out.decode("utf-8").strip()
 
                 gemini_api_key = await asyncio.to_thread(_fetch_sm_key)
                 if gemini_api_key:
                     os.environ["GEMINI_API_KEY"] = gemini_api_key
-                    logger.info("[SecretManager] Successfully retrieved GEMINI_API_KEY asynchronously from Google Cloud Secret Manager.")
+                    logger.info("[SecretManager] Successfully retrieved GEMINI_API_KEY for AI Studio.")
             except Exception as sm_err:
-                logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+                logger.warning(f"[SecretManager] GEMINI_API_KEY retrieval failed: {sm_err}")
 
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
@@ -950,10 +962,11 @@ async def run_agent_live(
     watcher_brain = WatcherBrain(project_id=project_id)
     llm.watcher_brain = watcher_brain
 
+    user_speech_timeout = float(os.getenv("USER_SPEECH_TIMEOUT_S", "0.6"))
     user_params = LLMUserAggregatorParams(
         user_turn_strategies=UserTurnStrategies(
             start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy()],
-            stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.6)]
+            stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=user_speech_timeout)]
         )
     )
     context_aggregator = LLMContextAggregatorPair(

@@ -1,0 +1,3043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Voice Models Sales Enablement Deck & Field Playbook</title>
+  <!-- Google Fonts: Google Sans / Inter / Fira Code -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700;800&family=Google+Sans+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Chart.js for interactive visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ==========================================================================
+       1. DESIGN TOKENS & CSS VARIABLES (Google AI Executive Dark Theme)
+       ========================================================================== */
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-secondary: #111827;
+      --bg-card: rgba(18, 24, 40, 0.78);
+      --bg-card-hover: rgba(28, 38, 64, 0.88);
+      --bg-teleprompter: rgba(11, 15, 25, 0.96);
+      --bg-overlay: rgba(5, 8, 15, 0.85);
+
+      --border-subtle: rgba(255, 255, 255, 0.09);
+      --border-active: rgba(0, 229, 255, 0.45);
+      --border-card: rgba(255, 255, 255, 0.12);
+
+      --color-cyan: #00e5ff;
+      --color-blue: #4285f4;
+      --color-green: #34a853;
+      --color-amber: #fbbc04;
+      --color-red: #ea4335;
+      --color-purple: #a855f7;
+
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --text-accent: #38bdf8;
+
+      --shadow-elevation: 0 16px 40px -10px rgba(0, 0, 0, 0.7);
+      --shadow-glow-cyan: 0 0 30px rgba(0, 229, 255, 0.28);
+      --shadow-glow-blue: 0 0 30px rgba(66, 133, 244, 0.28);
+      --shadow-glow-green: 0 0 30px rgba(52, 168, 83, 0.28);
+
+      --font-display: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'Google Sans Mono', 'Fira Code', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-display);
+      user-select: none;
+    }
+
+    /* Background Canvas for Neural Particles */
+    #particle-canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+      pointer-events: none;
+      opacity: 0.65;
+    }
+
+    /* Ambient Background Radial Glows */
+    .ambient-glow {
+      position: fixed;
+      width: 600px;
+      height: 600px;
+      border-radius: 50%;
+      filter: blur(140px);
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.18;
+      transition: all 1s ease;
+    }
+    .ambient-glow-1 {
+      top: -150px;
+      left: -150px;
+      background: radial-gradient(circle, var(--color-cyan), transparent 70%);
+    }
+    .ambient-glow-2 {
+      bottom: -150px;
+      right: -150px;
+      background: radial-gradient(circle, var(--color-blue), transparent 70%);
+    }
+
+    /* Top Ambient Progress Bar */
+    #progress-bar-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.05);
+      z-index: 100;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 7.14%;
+      background: linear-gradient(90deg, var(--color-blue), var(--color-cyan), var(--color-green));
+      box-shadow: 0 0 12px var(--color-cyan);
+      transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Top Navigation Status Header */
+    #top-nav {
+      position: fixed;
+      top: 14px;
+      left: 32px;
+      right: 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 50;
+      pointer-events: none;
+    }
+    .brand-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(18, 24, 40, 0.85);
+      border: 1px solid var(--border-subtle);
+      padding: 6px 14px;
+      border-radius: 20px;
+      backdrop-filter: blur(12px);
+      pointer-events: auto;
+    }
+    .google-logo-dots {
+      display: flex;
+      gap: 4px;
+    }
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+    }
+    .dot.blue { background: var(--color-blue); }
+    .dot.red { background: var(--color-red); }
+    .dot.amber { background: var(--color-amber); }
+    .dot.green { background: var(--color-green); }
+
+    .brand-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    .brand-title span {
+      color: var(--color-cyan);
+    }
+
+    .pillar-indicator {
+      background: rgba(18, 24, 40, 0.85);
+      border: 1px solid var(--border-subtle);
+      padding: 6px 14px;
+      border-radius: 20px;
+      backdrop-filter: blur(12px);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      pointer-events: auto;
+    }
+    .pillar-indicator span {
+      color: var(--color-cyan);
+      font-weight: 700;
+    }
+
+    /* Presentation Main Viewport */
+    #presentation-stage {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 10;
+      padding: 60px 48px 80px 48px;
+    }
+
+    .slide {
+      position: absolute;
+      top: 55px;
+      left: 48px;
+      right: 48px;
+      bottom: 75px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      opacity: 0;
+      visibility: hidden;
+      transform: scale(0.98) translateY(10px);
+      transition: opacity 0.4s ease, transform 0.4s ease, visibility 0.4s;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 6px;
+    }
+    .slide.active {
+      opacity: 1;
+      visibility: visible;
+      transform: scale(1) translateY(0);
+    }
+
+    /* Slide Header */
+    .slide-header {
+      margin-bottom: 20px;
+      flex-shrink: 0;
+    }
+    .slide-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--color-cyan);
+      background: rgba(0, 229, 255, 0.12);
+      border: 1px solid rgba(0, 229, 255, 0.25);
+      padding: 3px 10px;
+      border-radius: 12px;
+      margin-bottom: 8px;
+    }
+    .slide-title {
+      font-size: 30px;
+      font-weight: 800;
+      line-height: 1.18;
+      letter-spacing: -0.015em;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .slide-title .gradient-text {
+      background: linear-gradient(135deg, #ffffff 30%, var(--color-cyan) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .slide-subtitle {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      font-weight: 400;
+    }
+
+    /* Slide Content Grid Layouts */
+    .content-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-height: 0;
+    }
+    .grid-2col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      height: 100%;
+    }
+    .grid-3col {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      height: 100%;
+    }
+    .grid-4col {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      height: 100%;
+    }
+    .grid-4quadrant {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      gap: 16px;
+      height: 100%;
+    }
+    .grid-1-2 {
+      display: grid;
+      grid-template-columns: 1.1fr 1.9fr;
+      gap: 20px;
+      height: 100%;
+    }
+    .grid-2-1 {
+      display: grid;
+      grid-template-columns: 1.8fr 1.2fr;
+      gap: 20px;
+      height: 100%;
+    }
+
+    /* Glassmorphism Cards */
+    .glass-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 14px;
+      padding: 18px;
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow-elevation);
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
+      display: flex;
+      flex-direction: column;
+    }
+    .glass-card:hover {
+      border-color: var(--border-active);
+      box-shadow: var(--shadow-elevation), var(--shadow-glow-cyan);
+    }
+    .glass-card.highlight {
+      border-color: rgba(0, 229, 255, 0.4);
+      background: linear-gradient(135deg, rgba(0, 229, 255, 0.08) 0%, rgba(18, 24, 40, 0.85) 100%);
+    }
+    .glass-card.highlight-green {
+      border-color: rgba(52, 168, 83, 0.4);
+      background: linear-gradient(135deg, rgba(52, 168, 83, 0.08) 0%, rgba(18, 24, 40, 0.85) 100%);
+    }
+    .glass-card.highlight-amber {
+      border-color: rgba(251, 188, 4, 0.4);
+      background: linear-gradient(135deg, rgba(251, 188, 4, 0.08) 0%, rgba(18, 24, 40, 0.85) 100%);
+    }
+    .glass-card.highlight-red {
+      border-color: rgba(234, 67, 53, 0.4);
+      background: linear-gradient(135deg, rgba(234, 67, 53, 0.08) 0%, rgba(18, 24, 40, 0.85) 100%);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-cyan { background: rgba(0, 229, 255, 0.18); color: var(--color-cyan); border: 1px solid rgba(0, 229, 255, 0.3); }
+    .badge-green { background: rgba(52, 168, 83, 0.18); color: var(--color-green); border: 1px solid rgba(52, 168, 83, 0.3); }
+    .badge-amber { background: rgba(251, 188, 4, 0.18); color: var(--color-amber); border: 1px solid rgba(251, 188, 4, 0.3); }
+    .badge-red { background: rgba(234, 67, 53, 0.18); color: var(--color-red); border: 1px solid rgba(234, 67, 53, 0.3); }
+    .badge-blue { background: rgba(66, 133, 244, 0.18); color: var(--color-blue); border: 1px solid rgba(66, 133, 244, 0.3); }
+    .badge-purple { background: rgba(168, 85, 247, 0.18); color: var(--color-purple); border: 1px solid rgba(168, 85, 247, 0.3); }
+
+    /* Stat Numbers Callouts */
+    .stat-display {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 10px;
+    }
+    .stat-value {
+      font-size: 38px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .stat-value.cyan { color: var(--color-cyan); text-shadow: 0 0 16px rgba(0, 229, 255, 0.35); }
+    .stat-value.green { color: var(--color-green); text-shadow: 0 0 16px rgba(52, 168, 83, 0.35); }
+    .stat-value.amber { color: var(--color-amber); text-shadow: 0 0 16px rgba(251, 188, 4, 0.35); }
+    .stat-value.red { color: var(--color-red); text-shadow: 0 0 16px rgba(234, 67, 53, 0.35); }
+    .stat-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.3;
+    }
+
+    /* Lists & Specs */
+    .spec-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    .spec-list li {
+      position: relative;
+      padding-left: 16px;
+    }
+    .spec-list li::before {
+      content: "•";
+      position: absolute;
+      left: 2px;
+      color: var(--color-cyan);
+      font-weight: bold;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .spec-list li strong {
+      color: var(--text-primary);
+    }
+
+    /* Code Blocks */
+    .code-pill {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: rgba(0, 0, 0, 0.4);
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+      color: var(--color-cyan);
+    }
+    .code-box {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: rgba(5, 8, 15, 0.8);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: #e2e8f0;
+      line-height: 1.45;
+      overflow-x: auto;
+      margin-top: 8px;
+    }
+
+    /* Bottom Presenter Dock */
+    #bottom-dock {
+      position: fixed;
+      bottom: 16px;
+      left: 32px;
+      right: 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 50;
+      pointer-events: none;
+    }
+    .dock-left, .dock-center, .dock-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    .glass-pill-btn {
+      background: rgba(18, 24, 40, 0.88);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      border-radius: 24px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      backdrop-filter: blur(14px);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      box-shadow: var(--shadow-elevation);
+    }
+    .glass-pill-btn:hover {
+      background: rgba(28, 38, 64, 0.95);
+      border-color: var(--border-active);
+      color: var(--color-cyan);
+      transform: translateY(-1px);
+    }
+    .glass-pill-btn.active {
+      background: rgba(0, 229, 255, 0.18);
+      border-color: var(--color-cyan);
+      color: var(--color-cyan);
+    }
+    .glass-pill-btn .kbd-hint {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--text-muted);
+      margin-left: 4px;
+    }
+
+    .slide-counter-pill {
+      background: rgba(18, 24, 40, 0.88);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      padding: 8px 16px;
+      border-radius: 24px;
+      font-size: 13px;
+      font-weight: 700;
+      backdrop-filter: blur(14px);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .slide-counter-pill span.num {
+      color: var(--color-cyan);
+      font-family: var(--font-mono);
+    }
+
+    /* Live Teleprompter Speaker Notes Drawer ([P] Hotkey) */
+    #teleprompter-drawer {
+      position: fixed;
+      right: 0;
+      top: 0;
+      width: 480px;
+      height: 100vh;
+      background: var(--bg-teleprompter);
+      border-left: 1px solid var(--border-card);
+      backdrop-filter: blur(24px);
+      z-index: 200;
+      box-shadow: -10px 0 40px rgba(0, 0, 0, 0.8);
+      transform: translateX(100%);
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+    }
+    #teleprompter-drawer.open {
+      transform: translateX(0);
+    }
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 16px;
+    }
+    .drawer-title-box {
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer-badge {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--color-cyan);
+      margin-bottom: 2px;
+    }
+    .drawer-slide-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .drawer-close-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: all 0.2s;
+    }
+    .drawer-close-btn:hover {
+      background: rgba(234, 67, 53, 0.2);
+      color: var(--color-red);
+      border-color: var(--color-red);
+    }
+
+    /* Teleprompter Tabs */
+    .drawer-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 4px;
+      border-radius: 10px;
+    }
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 6px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+    .tab-btn.active {
+      background: rgba(0, 229, 255, 0.2);
+      color: var(--color-cyan);
+      font-weight: 700;
+    }
+
+    .drawer-content-box {
+      flex: 1;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #cbd5e1;
+      padding-right: 4px;
+    }
+    .tab-pane {
+      display: none;
+    }
+    .tab-pane.active {
+      display: block;
+    }
+    .pitch-quote {
+      background: rgba(0, 229, 255, 0.08);
+      border-left: 3px solid var(--color-cyan);
+      padding: 12px 14px;
+      border-radius: 0 8px 8px 0;
+      font-size: 14px;
+      font-style: italic;
+      color: #f1f5f9;
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .notes-section-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--color-cyan);
+      margin: 14px 0 6px 0;
+    }
+    .notes-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .notes-list li {
+      position: relative;
+      padding-left: 16px;
+    }
+    .notes-list li::before {
+      content: "▸";
+      position: absolute;
+      left: 0;
+      color: var(--color-cyan);
+    }
+    .objection-item {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .obj-q {
+      font-weight: 700;
+      color: var(--color-amber);
+      margin-bottom: 4px;
+    }
+    .obj-a {
+      color: var(--text-secondary);
+      font-size: 12.5px;
+    }
+
+    /* 14-Slide Thumbnail Overview Grid ([G] Hotkey) */
+    #overview-grid-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: var(--bg-overlay);
+      backdrop-filter: blur(20px);
+      z-index: 250;
+      display: flex;
+      flex-direction: column;
+      padding: 40px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s, visibility 0.3s;
+    }
+    #overview-grid-modal.open {
+      opacity: 1;
+      visibility: visible;
+    }
+    .grid-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .grid-modal-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text-primary);
+    }
+    .grid-tiles-container {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      grid-template-rows: repeat(2, 1fr);
+      gap: 14px;
+      overflow-y: auto;
+    }
+    .slide-tile {
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 10px;
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .slide-tile:hover {
+      border-color: var(--color-cyan);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 20px rgba(0, 229, 255, 0.2);
+    }
+    .slide-tile.active {
+      border-color: var(--color-cyan);
+      background: rgba(0, 229, 255, 0.15);
+    }
+    .tile-num {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: var(--color-cyan);
+    }
+    .tile-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin: 4px 0;
+      line-height: 1.3;
+    }
+    .tile-pillar {
+      font-size: 9px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    /* Generic Modal for Quadrants / Details */
+    #detail-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(5, 8, 15, 0.85);
+      backdrop-filter: blur(16px);
+      z-index: 220;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s, visibility 0.3s;
+      padding: 24px;
+    }
+    #detail-modal.open {
+      opacity: 1;
+      visibility: visible;
+    }
+    .modal-box {
+      width: 680px;
+      max-width: 90vw;
+      background: #111827;
+      border: 1px solid var(--border-active);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: var(--shadow-elevation), var(--shadow-glow-cyan);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: 85vh;
+      overflow-y: auto;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--color-cyan);
+    }
+
+    /* Custom Interactive Elements */
+    .interactive-badge-filter {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .filter-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      padding: 4px 12px;
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn.active, .filter-btn:hover {
+      background: rgba(0, 229, 255, 0.15);
+      border-color: var(--color-cyan);
+      color: var(--color-cyan);
+    }
+
+    /* Range Slider Styling for ROI Calculator */
+    input[type=range] {
+      -webkit-appearance: none;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.1);
+      height: 6px;
+      border-radius: 3px;
+      outline: none;
+      margin: 10px 0;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--color-cyan);
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--color-cyan);
+    }
+
+    /* Voice Orb Animation */
+    .voice-orb-container {
+      position: relative;
+      width: 220px;
+      height: 220px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 0 auto;
+    }
+    .voice-orb-core {
+      width: 90px;
+      height: 90px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #00e5ff 0%, #4285f4 70%, #1e1b4b 100%);
+      box-shadow: 0 0 45px rgba(0, 229, 255, 0.6);
+      animation: pulse-core 3s infinite alternate ease-in-out;
+      z-index: 2;
+    }
+    .voice-orb-ring {
+      position: absolute;
+      border-radius: 50%;
+      border: 1px solid rgba(0, 229, 255, 0.4);
+      animation: spin-ring 10s infinite linear;
+    }
+    .ring-1 { width: 140px; height: 140px; border-color: rgba(0, 229, 255, 0.3); border-style: dashed; }
+    .ring-2 { width: 180px; height: 180px; border-color: rgba(66, 133, 244, 0.25); animation-duration: 15s; animation-direction: reverse; }
+    .ring-3 { width: 220px; height: 220px; border-color: rgba(52, 168, 83, 0.2); animation-duration: 20s; }
+
+    @keyframes pulse-core {
+      0% { transform: scale(0.92); box-shadow: 0 0 30px rgba(0, 229, 255, 0.4); }
+      100% { transform: scale(1.08); box-shadow: 0 0 60px rgba(0, 229, 255, 0.8); }
+    }
+    @keyframes spin-ring {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Comparison Table Styling */
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .compare-table th {
+      background: rgba(0, 0, 0, 0.3);
+      padding: 10px;
+      text-align: left;
+      font-weight: 700;
+      color: var(--text-primary);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .compare-table td {
+      padding: 9px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      line-height: 1.35;
+    }
+    .compare-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .compare-table td.google-col {
+      color: var(--color-cyan);
+      font-weight: 600;
+      background: rgba(0, 229, 255, 0.04);
+    }
+
+    /* Decision Tree Nodes */
+    .decision-node {
+      background: rgba(18, 24, 40, 0.8);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .decision-node:hover, .decision-node.selected {
+      border-color: var(--color-cyan);
+      background: rgba(0, 229, 255, 0.12);
+      box-shadow: 0 0 16px rgba(0, 229, 255, 0.2);
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 229, 255, 0.4);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Neural Particle Canvas Background -->
+  <canvas id="particle-canvas"></canvas>
+  <div class="ambient-glow ambient-glow-1"></div>
+  <div class="ambient-glow ambient-glow-2"></div>
+
+  <!-- Top Progress Bar -->
+  <div id="progress-bar-container">
+    <div id="progress-bar"></div>
+  </div>
+
+  <!-- Top Navigation Status Bar -->
+  <header id="top-nav">
+    <div class="brand-badge">
+      <div class="google-logo-dots">
+        <div class="dot blue"></div>
+        <div class="dot red"></div>
+        <div class="dot amber"></div>
+        <div class="dot green"></div>
+      </div>
+      <div class="brand-title">Google Cloud • <span>Voice AI Sales Enablement 2026</span></div>
+    </div>
+    <div class="pillar-indicator" id="pillar-indicator">
+      PILLAR 1: <span>MARKET INFLECTION & SCOPE</span>
+    </div>
+  </header>
+
+  <!-- ==========================================================================
+       MAIN PRESENTATION STAGE (14 SLIDES)
+       ========================================================================== -->
+  <main id="presentation-stage">
+
+    <!-- ==========================================================================
+         SLIDE 1: Executive Title & Strategic Scope
+         ========================================================================== -->
+    <section class="slide active" id="slide-1" data-slide="1" data-pillar="Pillar 1: Market Inflection" data-title="Executive Title & Scope">
+      <div class="slide-header">
+        <div class="slide-kicker">Executive Enablement • Customer Engineers & FSR Playbook</div>
+        <h1 class="slide-title"><span class="gradient-text">The $5.9B Voice Inflection Point</span>: Enterprise Voice AI Strategy</h1>
+        <p class="slide-subtitle">A Unified Technical & Commercial Playbook on Google Speech, Gemini Live, and Multimodal Duplex</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-1-2">
+          <!-- Agenda Roadmap Card -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">🗺️ Strategic Agenda</span>
+              <span class="card-badge badge-cyan">7 Pillars</span>
+            </div>
+            <ul class="spec-list">
+              <li><strong>Pillar 1: Market Surge & Economics</strong> — India $5.9B growth & $80B labor reduction.</li>
+              <li><strong>Pillar 2: Enterprise Verticals</strong> — BFSI, Hearables, EdTech, and Concierge logos.</li>
+              <li><strong>Pillar 3: Workload Decision Matrix</strong> — Gemini Live vs Cascade vs Dialogflow CX.</li>
+              <li><strong>Pillar 4: Production Stack & Gotchas</strong> — 2.85s Latency Waterfall vs Duplex VAD.</li>
+              <li><strong>Pillar 5: Next-Gen Roadmap</strong> — Gemini 3.5 Transcribe, 92% Numeric S2S, Avatars v2.</li>
+              <li><strong>Pillar 6: Competitive Battlecards</strong> — 10.6x TCO Advantage vs OpenAI Realtime.</li>
+              <li><strong>Pillar 7: Commercial Positioning</strong> — Rate cards, 5 India cues & 2-Week POC close.</li>
+            </ul>
+          </div>
+
+          <!-- Hero Voice Orb & Core Metrics -->
+          <div class="glass-card" style="display: flex; flex-direction: column; justify-content: space-between;">
+            <div class="card-header">
+              <span class="card-title">🎙️ Google Enterprise Audio Platform (GEAP)</span>
+              <span class="card-badge badge-blue">Full-Duplex S2S</span>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-around; padding: 10px 0;">
+              <div class="voice-orb-container">
+                <div class="voice-orb-core"></div>
+                <div class="voice-orb-ring ring-1"></div>
+                <div class="voice-orb-ring ring-2"></div>
+                <div class="voice-orb-ring ring-3"></div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px; max-width: 260px;">
+                <div class="stat-display">
+                  <div class="stat-value cyan">Sub-500ms</div>
+                  <div class="stat-label">Time-To-First-Token (TTFT) duplex latency</div>
+                </div>
+                <div class="stat-display">
+                  <div class="stat-value green">10.6x</div>
+                  <div class="stat-label">Cost advantage on audio output vs OpenAI</div>
+                </div>
+                <div class="stat-display">
+                  <div class="stat-value amber">100+</div>
+                  <div class="stat-label">Indic & global languages via Chirp 2 USM</div>
+                </div>
+              </div>
+            </div>
+            <div style="background: rgba(0, 229, 255, 0.06); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--text-secondary); display: flex; justify-content: space-between; align-items: center;">
+              <span>💡 <strong>Presenter Tip:</strong> Press <span class="code-pill">P</span> to open the Live Teleprompter & Discovery Cues.</span>
+              <span class="code-pill">Hotkeys: ← → Space P F G</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 2: India & Global Voice AI Market Surge
+         ========================================================================== -->
+    <section class="slide" id="slide-2" data-slide="2" data-pillar="Pillar 1: Market Inflection" data-title="India & Global Market Surge">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 1 • Market Inflection & Macro Drivers</div>
+        <h1 class="slide-title">India’s <span class="gradient-text">$5.9B Voice AI Surge</span>: 26.6% CAGR & GCC Expansion</h1>
+        <p class="slide-subtitle">1.1 Billion Mobile Subscribers, 850M+ Smartphones, and 1,700+ GCCs Driving Vernacular Voice Transformation</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-1-2">
+          <!-- 3 Macro KPI Cards -->
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="glass-card highlight">
+              <div class="card-header">
+                <span class="card-title">📈 India Voice AI Market</span>
+                <span class="card-badge badge-cyan">26.6% CAGR</span>
+              </div>
+              <div class="stat-value cyan">$5.90B</div>
+              <div class="stat-label">Projected 2034 TAM (up from $565M in 2025). Sources: NASSCOM, IMARC Group.</div>
+            </div>
+
+            <div class="glass-card">
+              <div class="card-header">
+                <span class="card-title">📱 Demographic Scale</span>
+                <span class="card-badge badge-blue">1.1B Users</span>
+              </div>
+              <div class="stat-value">70%+</div>
+              <div class="stat-label">Of next 500M Indian internet users adopt voice-first navigation across 22 official languages.</div>
+            </div>
+
+            <div class="glass-card">
+              <div class="card-header">
+                <span class="card-title">🏢 Contact Center Hub</span>
+                <span class="card-badge badge-green">1,700+ GCCs</span>
+              </div>
+              <div class="stat-value green">45%+</div>
+              <div class="stat-label">Of global contact center operations reside in India GCCs migrating Tier 1/2 lines to AI.</div>
+            </div>
+          </div>
+
+          <!-- Interactive Chart.js Area Chart -->
+          <div class="glass-card" style="position: relative;">
+            <div class="card-header">
+              <span class="card-title">📊 India Voice AI Market Trajectory (2025–2034)</span>
+              <span class="card-badge badge-cyan">Click Inflection Points</span>
+            </div>
+            <div style="position: relative; flex: 1; min-height: 230px;">
+              <canvas id="market-growth-chart"></canvas>
+            </div>
+            <!-- Inflection callout pill -->
+            <div id="market-chart-callout" style="background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.3); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+              🚀 <strong>2026 Inflection:</strong> Gemini Live S2S duplex WebSocket launch triggers enterprise contact center transformation.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 3: Gartner & McKinsey Economic Value
+         ========================================================================== -->
+    <section class="slide" id="slide-3" data-slide="3" data-pillar="Pillar 1: Market Inflection" data-title="Gartner & McKinsey Economic Value">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 1 • Economic Value & Unit Economics</div>
+        <h1 class="slide-title">Contact Center Economics: <span class="gradient-text">$80B Labor Deflection</span> & ₹180 → ₹10 Unit Cost</h1>
+        <p class="slide-subtitle">94.4% Direct Cost Reduction Per Resolved Call & 30–50% Autonomous Deflection</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-3col" style="flex: 0 0 auto; margin-bottom: 8px;">
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">💰 Global Labor Deflection</span>
+              <span class="card-badge badge-cyan">Gartner</span>
+            </div>
+            <div class="stat-value cyan">$80 Billion</div>
+            <div class="stat-label">Projected reduction in global contact center labor spend via conversational AI by 2027.</div>
+          </div>
+
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title">⚡ Autonomous Deflection</span>
+              <span class="card-badge badge-green">Resolution</span>
+            </div>
+            <div class="stat-value green">30% – 50%</div>
+            <div class="stat-label">Of inbound Tier 1 and Tier 2 customer service inquiries resolved end-to-end without human touch.</div>
+          </div>
+
+          <div class="glass-card highlight-amber">
+            <div class="card-header">
+              <span class="card-title">📉 Unit Cost Reduction</span>
+              <span class="card-badge badge-amber">94.4% Savings</span>
+            </div>
+            <div class="stat-value amber">₹180 → ₹10</div>
+            <div class="stat-label">Traditional human agent call cost (₹180 / $2.15) dropped to ₹10 ($0.12) via Google Voice AI.</div>
+          </div>
+        </div>
+
+        <!-- Interactive ROI Calculator Widget -->
+        <div class="glass-card" style="flex: 1;">
+          <div class="card-header">
+            <span class="card-title">🧮 Interactive Enterprise ROI Savings Calculator</span>
+            <span class="card-badge badge-green">Live Financial Simulation</span>
+          </div>
+          <div class="grid-2col" style="align-items: center;">
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 13px;">
+                  <span>Monthly Inbound Call Volume:</span>
+                  <strong id="roi-calls-display" style="color: var(--color-cyan); font-family: var(--font-mono);">250,000 calls</strong>
+                </div>
+                <input type="range" id="roi-calls-slider" min="10000" max="1000000" step="10000" value="250000" oninput="updateROICalculator()">
+              </div>
+              <div>
+                <div style="display: flex; justify-content: space-between; font-size: 13px;">
+                  <span>Average Call Duration:</span>
+                  <strong id="roi-duration-display" style="color: var(--color-green); font-family: var(--font-mono);">5.0 Minutes</strong>
+                </div>
+                <input type="range" id="roi-duration-slider" min="2" max="12" step="0.5" value="5" oninput="updateROICalculator()">
+              </div>
+              <div style="font-size: 12px; color: var(--text-muted);">
+                📊 <strong>McKinsey Benchmark:</strong> Voice AI automation delivers +18% to +25% higher debt recovery & 40% AHT reduction.
+              </div>
+            </div>
+
+            <!-- Calculation Output Cards -->
+            <div style="background: rgba(0, 0, 0, 0.4); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted);">Traditional Human Cost</div>
+                <div id="roi-human-cost" style="font-size: 20px; font-weight: 800; color: var(--color-red);">₹4.50 Cr ($538k)</div>
+              </div>
+              <div>
+                <div style="font-size: 11px; color: var(--text-muted);">Google Voice AI Cost</div>
+                <div id="roi-ai-cost" style="font-size: 20px; font-weight: 800; color: var(--color-cyan);">₹0.25 Cr ($30k)</div>
+              </div>
+              <div style="grid-column: span 2; border-top: 1px solid var(--border-subtle); padding-top: 8px;">
+                <div style="font-size: 11px; color: var(--color-green); font-weight: 700;">NET MONTHLY SAVINGS (EBITDA IMPACT)</div>
+                <div id="roi-savings" style="font-size: 26px; font-weight: 800; color: var(--color-green);">₹4.25 Cr / month ($508k/mo)</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 4: Enterprise Verticals & Logo Proof Points
+         ========================================================================== -->
+    <section class="slide" id="slide-4" data-slide="4" data-pillar="Pillar 2: Enterprise Verticals" data-title="Enterprise Verticals & Logos">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 2 • Enterprise Proof Points</div>
+        <h1 class="slide-title">Enterprise Production Deployments: <span class="gradient-text">4-Quadrant Logo Showcase</span></h1>
+        <p class="slide-subtitle">Proven High-Scale Production Deployments Across Banking, Audio Hardware, EdTech, and E-Commerce</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-4quadrant">
+          <!-- Quadrant 1: BFSI & Debt -->
+          <div class="glass-card highlight" onclick="openQuadrantModal('bfsi')" style="cursor: pointer;">
+            <div class="card-header">
+              <span class="card-title">🏦 Q1: BFSI & Debt Collections</span>
+              <span class="card-badge badge-cyan">Groww • Lenden • NBFCs</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Key Workflows:</strong> Multi-stage debt negotiation, EMI rescheduling, KYC verification, loan pre-qualification.
+            </div>
+            <ul class="spec-list">
+              <li><strong>Strict Numeric Ledger:</strong> Enforces exact numeric consistency across turns.</li>
+              <li><strong>RBI Compliance:</strong> Verbatim regulatory disclaimers & Hinglish negotiation.</li>
+            </ul>
+            <div style="margin-top: auto; padding-top: 6px; font-size: 11px; color: var(--color-cyan);">🔍 Click for Architecture Deep Dive →</div>
+          </div>
+
+          <!-- Quadrant 2: Hardware & Hearables -->
+          <div class="glass-card" onclick="openQuadrantModal('hardware')" style="cursor: pointer;">
+            <div class="card-header">
+              <span class="card-title">🎧 Q2: Consumer Hardware & IoT</span>
+              <span class="card-badge badge-blue">boAt • MIVI • Noise</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Key Workflows:</strong> Smart hearables assistant, hands-free ANC toggle, workout coaching, IoT smart home voice control.
+            </div>
+            <ul class="spec-list">
+              <li><strong>Sub-400ms TTFT:</strong> Instant on-device responsiveness via lightweight audio stream.</li>
+              <li><strong>DSP Noise Filtering:</strong> Crystal clear ASR under 85dB Indian traffic noise.</li>
+            </ul>
+            <div style="margin-top: auto; padding-top: 6px; font-size: 11px; color: var(--color-cyan);">🔍 Click for Architecture Deep Dive →</div>
+          </div>
+
+          <!-- Quadrant 3: Education & Coaching -->
+          <div class="glass-card" onclick="openQuadrantModal('edtech')" style="cursor: pointer;">
+            <div class="card-header">
+              <span class="card-title">🎓 Q3: Education & Speech Coaching</span>
+              <span class="card-badge badge-green">Yoodli • HeyAto • EdTech</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Key Workflows:</strong> Real-time interview prep, IELTS spoken fluency, pronunciation feedback, conversational practice.
+            </div>
+            <ul class="spec-list">
+              <li><strong>Prosody & Pacing:</strong> Evaluates hesitation, tone, and speech cadence dynamically.</li>
+              <li><strong>Instant Barge-in:</strong> Natural conversational coaching without robotic turn stalls.</li>
+            </ul>
+            <div style="margin-top: auto; padding-top: 6px; font-size: 11px; color: var(--color-cyan);">🔍 Click for Architecture Deep Dive →</div>
+          </div>
+
+          <!-- Quadrant 4: E-Commerce Concierge -->
+          <div class="glass-card highlight-green" onclick="openQuadrantModal('ecommerce')" style="cursor: pointer;">
+            <div class="card-header">
+              <span class="card-title">🛍️ Q4: E-Commerce & Customer Care</span>
+              <span class="card-badge badge-purple">Lenskart • KaptureCX • Nurix</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Key Workflows:</strong> Long-term memory shopping concierge, appointment booking, returns & omni-channel tracking.
+            </div>
+            <ul class="spec-list">
+              <li><strong>Lenskart 'B' Memory Engine:</strong> Dual-threshold pgvector (0.83 dedup / 0.40 recall).</li>
+              <li><strong>AntiCancel Tool Shields:</strong> Non-blocking CRM queries with zero dead air.</li>
+            </ul>
+            <div style="margin-top: auto; padding-top: 6px; font-size: 11px; color: var(--color-cyan);">🔍 Click for Architecture Deep Dive →</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 5: Workload Decision Matrix
+         ========================================================================== -->
+    <section class="slide" id="slide-5" data-slide="5" data-pillar="Pillar 3: Workload Decisioning" data-title="Workload Decision Matrix">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 3 • Architectural Decisioning</div>
+        <h1 class="slide-title">The 3-Way Workload Decision Tree: <span class="gradient-text">When to Pitch What</span></h1>
+        <p class="slide-subtitle">Strategic Routing Between Gemini Live S2S, Modular Cascade, and Dialogflow CX</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-1-2">
+          <!-- Interactive Selector Nodes -->
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div class="decision-node selected" id="node-live" onclick="selectDecisionPath('live')">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong style="color: var(--color-cyan);">⚡ Gemini Live (Native S2S Duplex)</strong>
+                <span class="card-badge badge-cyan">&lt; 500ms TTFT</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">Best for user delight, natural barge-in, emotional prosody, and VIP concierge.</div>
+            </div>
+
+            <div class="decision-node" id="node-cascade" onclick="selectDecisionPath('cascade')">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong style="color: var(--color-amber);">🧱 Modular Cascade (Chirp 2 $\to$ Flash $\to$ Chirp 3)</strong>
+                <span class="card-badge badge-amber">Regulated Inbound</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">Best for PCI-DSS text redaction, custom 50k pharma SKU biasing, and audit logging.</div>
+            </div>
+
+            <div class="decision-node" id="node-dialogflow" onclick="selectDecisionPath('dialogflow')">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <strong style="color: var(--color-blue);">🌳 Dialogflow CX (Visual State Flow)</strong>
+                <span class="card-badge badge-blue">Deterministic IVR</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">Best for legacy PBX/telephony SIP, zero LLM hallucination tolerance, and DTMF keypads.</div>
+            </div>
+          </div>
+
+          <!-- Dynamic Comparison Detail Card -->
+          <div class="glass-card" id="decision-detail-card">
+            <div class="card-header">
+              <span class="card-title" id="decision-title">⚡ Gemini Live (Native S2S Duplex)</span>
+              <span class="card-badge badge-cyan" id="decision-badge">Recommended for Delight</span>
+            </div>
+            <div id="decision-body">
+              <table class="compare-table">
+                <tr><th>Dimension</th><th>Specification</th></tr>
+                <tr><td><strong>Primary Value Prop</strong></td><td>Conversational intimacy, emotional tone, sub-500ms speed, natural barge-in.</td></tr>
+                <tr><td><strong>End-to-End Latency</strong></td><td><strong style="color: var(--color-cyan);">&lt; 500ms TTFT</strong> (Single WebSocket stream).</td></tr>
+                <tr><td><strong>Audio Quality</strong></td><td>PCM 16kHz Mono In $\to$ PCM 24kHz Mono Out.</td></tr>
+                <tr><td><strong>Tool Calling Model</strong></td><td><strong>Thinker-Talker</strong>: Talker speaks filler while Thinker queries CRM async.</td></tr>
+                <tr><td><strong>Cost Profile</strong></td><td><strong style="color: var(--color-green);">$0.30 – $0.90 / hour</strong> (All-inclusive duplex audio).</td></tr>
+                <tr><td><strong>Ideal Use Cases</strong></td><td>VIP Concierge, Speech Coaching, Sales Reps, Smart Hearables/IoT.</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 6: Difficult Inbound vs Delight Experience
+         ========================================================================== -->
+    <section class="slide" id="slide-6" data-slide="6" data-pillar="Pillar 3: Workload Decisioning" data-title="Difficult Inbound vs Delight Experience">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 3 • Conversational Experience Contrast</div>
+        <h1 class="slide-title">Difficult Inbound vs. Delight Experience: <span class="gradient-text">Architectural Dichotomy</span></h1>
+        <p class="slide-subtitle">Why Cascades Dominate Compliance Inbound While Realtime S2S Powers Customer Retention</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-2col">
+          <!-- Left: Difficult Inbound Card -->
+          <div class="glass-card highlight-amber">
+            <div class="card-header">
+              <span class="card-title">🛡️ Difficult Inbound (Modular Cascade)</span>
+              <span class="card-badge badge-amber">Compliance & Redaction</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Target Environment:</strong> 8kHz PSTN narrowband telephony, loud street noise, crying children, heavy traffic.
+            </div>
+            <ul class="spec-list">
+              <li><strong>Phrase Biasing:</strong> Chirp 2 accepts explicit class phrases (50,000+ rare pharma drugs or banking SKU codes).</li>
+              <li><strong>PII Interception:</strong> Application intercepts raw STT text, runs Cloud DLP to redact Aadhaar/PAN <em>before</em> LLM ingestion.</li>
+              <li><strong>Verbatim Compliance:</strong> Chirp 3 HD speaks exact statutory legal disclaimers without risk of LLM phrasing drift.</li>
+              <li><strong>Trade-Off:</strong> 2.8s cumulative latency & stripped emotional prosody, but 100% auditable.</li>
+            </ul>
+          </div>
+
+          <!-- Right: Delight Experience Card -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">✨ Delight Experience (Gemini Live S2S)</span>
+              <span class="card-badge badge-cyan">Intimacy & Retention</span>
+            </div>
+            <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+              <strong>Target Environment:</strong> 16kHz/24kHz wideband (Mobile Apps, WebRTC, Wearables, Smart TVs).
+            </div>
+            <ul class="spec-list">
+              <li><strong>Acoustic Prosody:</strong> Understands hesitation, sighs, laughter, and tone; responds with genuine human empathy.</li>
+              <li><strong>Sub-500ms Cadence:</strong> Eliminates the awkward 3-second silence that causes 45%+ user drop-offs.</li>
+              <li><strong>Thinker-Talker Duplex:</strong> Speaks continuous verbal filler while executing asynchronous background CRM calls.</li>
+              <li><strong>Natural Barge-In:</strong> User can interject mid-sentence naturally without breaking state.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Sales Meme / Contrast Strip -->
+        <div class="glass-card" style="padding: 10px 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 22px;">🎭</span>
+            <div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--text-primary);">The Field Reality: "Compliance vs. Delight"</div>
+              <div style="font-size: 11px; color: var(--text-secondary);">If the customer's KPI is legal compliance on 8kHz PSTN $\to$ Pitch Cascade. If the KPI is customer delight and NPS on apps/WebRTC $\to$ Pitch Gemini Live.</div>
+            </div>
+          </div>
+          <span class="card-badge badge-green">FSR Qualifying Rule</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 7: Current Stack Part 1 - Modular Cascade
+         ========================================================================== -->
+    <section class="slide" id="slide-7" data-slide="7" data-pillar="Pillar 4: Current Stack & Gotchas" data-title="Current Stack: Modular Cascade">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 4 • Current Production Architecture</div>
+        <h1 class="slide-title">Modular Cascade Stack: <span class="gradient-text">Chirp 2 USM, Gemini 2.5 Flash & Chirp 3 TTS</span></h1>
+        <p class="slide-subtitle">The Enterprise Standard for Custom Vocabulary Biasing, Strict DLP Redaction, and Studio Audio</p>
+      </div>
+      <div class="content-area">
+        <!-- 3-Stage Pipeline Diagram Grid -->
+        <div class="grid-3col">
+          <!-- Stage 1: STT -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">🎙️ 1. Speech-to-Text (ASR)</span>
+              <span class="card-badge badge-blue">Chirp 2 (USM)</span>
+            </div>
+            <div class="stat-value" style="font-size: 26px; color: var(--color-blue);">Chirp 2 (USM 2B)</div>
+            <ul class="spec-list" style="margin-top: 8px;">
+              <li><strong>Universal Speech Model:</strong> 2B-parameter Conformer foundation model.</li>
+              <li><strong>100+ Languages:</strong> Tuned for Indian regional dialects and 8kHz PSTN audio.</li>
+              <li><strong>Endpoint:</strong> <span class="code-pill">us-central1-speech.googleapis.com</span> (STT v2).</li>
+              <li><strong>Phrase Sets:</strong> Hard class biasing for custom domain terminology.</li>
+            </ul>
+          </div>
+
+          <!-- Stage 2: LLM -->
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title">🧠 2. Intelligence & Logic</span>
+              <span class="card-badge badge-green">Gemini 2.5 Flash</span>
+            </div>
+            <div class="stat-value" style="font-size: 26px; color: var(--color-green);">Gemini 2.5 Flash</div>
+            <ul class="spec-list" style="margin-top: 8px;">
+              <li><strong>Sub-200ms TTFT:</strong> Ultra-fast text reasoning & streaming chunk decode.</li>
+              <li><strong>Function Calling:</strong> Structured JSON tool calls for CRM/database queries.</li>
+              <li><strong>1M Context Window:</strong> Massive prompt instructions & multi-turn history.</li>
+              <li><strong>DLP Gateway:</strong> Intermediary redaction filters between STT and LLM.</li>
+            </ul>
+          </div>
+
+          <!-- Stage 3: TTS -->
+          <div class="glass-card highlight-amber">
+            <div class="card-header">
+              <span class="card-title">🔊 3. Text-to-Speech (TTS)</span>
+              <span class="card-badge badge-amber">Chirp 3 HD</span>
+            </div>
+            <div class="stat-value" style="font-size: 26px; color: var(--color-amber);">Chirp 3 HD & Journey</div>
+            <ul class="spec-list" style="margin-top: 8px;">
+              <li><strong>48kHz Studio Diffusion:</strong> Broadcast-quality neural speech synthesis.</li>
+              <li><strong>Journey & Studio:</strong> Expressive conversational pacing and human inflection.</li>
+              <li><strong>SSML Controls:</strong> Explicit pitch, rate, and volume customization.</li>
+              <li><strong>Multi-Accent:</strong> Indian English, Hindi, Tamil, Telugu, and global locales.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Flow Invariant Banner -->
+        <div class="glass-card" style="padding: 10px 16px; display: flex; align-items: center; justify-content: space-between;">
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--text-primary);">
+            <span style="color: var(--color-blue);">Audio In (8k/16k)</span> ➔ <span style="color: var(--color-cyan);">Chirp 2 USM</span> ➔ <span style="color: var(--text-muted);">[DLP Text Redaction]</span> ➔ <span style="color: var(--color-green);">Gemini 2.5 Flash</span> ➔ <span style="color: var(--color-amber);">Chirp 3 HD TTS</span> ➔ <span style="color: #a855f7;">48kHz Audio Out</span>
+          </div>
+          <span class="card-badge badge-cyan">Linear 3-Stage Pipeline</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 8: Current Stack Part 2 - Realtime Duplex Voice Engine
+         ========================================================================== -->
+    <section class="slide" id="slide-8" data-slide="8" data-pillar="Pillar 4: Current Stack & Gotchas" data-title="Current Stack: Realtime Duplex Voice">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 4 • Current Production Architecture</div>
+        <h1 class="slide-title">Native Duplex Voice: <span class="gradient-text">Gemini 2.5/3.1 Flash Live & Thinker-Talker</span></h1>
+        <p class="slide-subtitle">Single Full-Duplex Bidirectional WebSocket Streaming with Asynchronous Background Tool Calling</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-2-1">
+          <!-- Architecture Flow Diagram Card -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">⚡ Bidirectional Duplex Protocol & Dual-Engine Dynamics</span>
+              <span class="card-badge badge-cyan">Vertex AI BidiGenerateContent</span>
+            </div>
+            <div style="background: rgba(5, 8, 15, 0.7); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; font-family: var(--font-mono); font-size: 11px; line-height: 1.4; color: #cbd5e1; margin-bottom: 10px;">
+              <div style="color: var(--color-cyan); font-weight: 700; margin-bottom: 4px;">// Vertex AI WebSocket Path:</div>
+              <div>/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent</div>
+              <div style="margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div style="background: rgba(0, 229, 255, 0.08); padding: 6px; border-radius: 4px; border: 1px solid rgba(0, 229, 255, 0.2);">
+                  <strong style="color: var(--color-cyan);">🗣️ Talker Engine (Realtime Audio)</strong><br>
+                  • Sub-500ms TTFT generation<br>
+                  • Native acoustic barge-in<br>
+                  • Verbal fillers: <em>"Checking that..."</em>
+                </div>
+                <div style="background: rgba(66, 133, 244, 0.08); padding: 6px; border-radius: 4px; border: 1px solid rgba(66, 133, 244, 0.2);">
+                  <strong style="color: var(--color-blue);">🧠 Thinker Engine (Deep Reasoning)</strong><br>
+                  • Non-blocking async tool execution<br>
+                  • Real-time CRM/AlloyDB queries<br>
+                  • Zero conversational stream dead air
+                </div>
+              </div>
+            </div>
+            <ul class="spec-list">
+              <li><strong>Audio Framing:</strong> Input PCM 16kHz 16-bit Mono (<span class="code-pill">audio/pcm;rate=16000</span>) $\to$ Output PCM 24kHz Mono.</li>
+              <li><strong>Non-Blocking Tool Calling:</strong> Tools declared with <span class="code-pill">behavior=types.Behavior.NON_BLOCKING</span> run in background tasks.</li>
+            </ul>
+          </div>
+
+          <!-- Protocol Invariants & Rules -->
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div class="glass-card highlight-red">
+              <div class="card-header">
+                <span class="card-title">⚠️ Modality Invariant</span>
+                <span class="card-badge badge-red">Fatal 1007</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                Must set <span class="code-pill">responseModalities: ["AUDIO"]</span> strictly. Sending hybrid <span class="code-pill">["AUDIO", "TEXT"]</span> triggers fatal WebSocket error code <span class="code-pill">1007</span>.
+              </div>
+            </div>
+
+            <div class="glass-card">
+              <div class="card-header">
+                <span class="card-title">🔄 Session Resumption</span>
+                <span class="card-badge badge-green">15-Min Lifecycle</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                Server emits <span class="code-pill">session_resumption_update</span> before periodic 15-min teardown. Reconnect cleanly using <span class="code-pill">session_resumption_handle</span>.
+              </div>
+            </div>
+
+            <div class="glass-card highlight-amber">
+              <div class="card-header">
+                <span class="card-title">🛡️ System Instructions</span>
+                <span class="card-badge badge-amber">Immutable</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                System instructions are fixed at session establishment. Dynamic state updates are injected via background user turns.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 9: Gotchas & Field Challenges - Cascaded Pipelines
+         ========================================================================== -->
+    <section class="slide" id="slide-9" data-slide="9" data-pillar="Pillar 4: Current Stack & Gotchas" data-title="Gotchas: Cascaded Pipelines">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 4 • Field Lessons & Gotchas</div>
+        <h1 class="slide-title">Cascaded Pipeline Failure Modes: <span class="gradient-text">The 2.85s Latency Waterfall</span></h1>
+        <p class="slide-subtitle">Why 3 Disjoint APIs Break Conversational Flow, Strip Acoustic Affect, and Multiply Failure Points</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-1-2">
+          <!-- 3 Core Failure Mode Cards -->
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div class="glass-card highlight-red">
+              <div class="card-header">
+                <span class="card-title">💥 1. Error Propagation Cascade</span>
+                <span class="card-badge badge-red">Catastrophic Drift</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                STT misspelling of an Indic noun (<em>"Mera folio 402 hai"</em> $\to$ <em>"polio 402"</em>) causes LLM to reason on false premises, outputting hallucinated advice.
+              </div>
+            </div>
+
+            <div class="glass-card highlight-amber">
+              <div class="card-header">
+                <span class="card-title">😶 2. Prosody & Emotion Stripping</span>
+                <span class="card-badge badge-amber">Loss of Affect</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                Converting speech to plain text discards pitch, hesitation, urgency, and distress. TTS speaks back with neutral, robotic delivery.
+              </div>
+            </div>
+
+            <div class="glass-card">
+              <div class="card-header">
+                <span class="card-title">🔌 3. Multi-Vendor SLA Fragility</span>
+                <span class="card-badge badge-blue">3x Outage Risk</span>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                3 vendor APIs = 3 points of rate-limit failure and complex client-side state synchronization for barge-in audio cutting.
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Latency Waterfall Bar Chart -->
+          <div class="glass-card">
+            <div class="card-header">
+              <span class="card-title">⏱️ Turnaround Latency Breakdown: Cascade (2.85s) vs Gemini Live (420ms)</span>
+              <span class="card-badge badge-red">Awkward Pause</span>
+            </div>
+            <div style="position: relative; flex: 1; min-height: 230px;">
+              <canvas id="latency-waterfall-chart"></canvas>
+            </div>
+            <div style="background: rgba(234, 67, 53, 0.1); border: 1px solid rgba(234, 67, 53, 0.3); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+              ⚠️ <strong>The 2.8-Second Wall:</strong> Over 45% of users hang up during the unnatural 2.8s silence. Gemini Live responds in <strong>420ms</strong>.
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 10: Gotchas & Field Fixes - Gemini Live API
+         ========================================================================== -->
+    <section class="slide" id="slide-10" data-slide="10" data-pillar="Pillar 4: Current Stack & Gotchas" data-title="Gotchas & Field Fixes: Gemini Live">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 4 • Field Lessons & Gotchas</div>
+        <h1 class="slide-title">Gemini Live API Production Hardening: <span class="gradient-text">The 4 Field Fix Invariants</span></h1>
+        <p class="slide-subtitle">Field-Tested Engineering Playbooks for Noise, Token Burn, WebSocket Stability, and Telephony DSP</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-4col">
+          <!-- Fix 1: Noise & VAD -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title" style="font-size: 14px;">🔇 1. False Barge-In</span>
+              <span class="card-badge badge-cyan">VAD Tuning</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">
+              <strong>Issue:</strong> Room noise/breathing abruptly cuts off model speech.
+            </div>
+            <div class="code-box" style="font-size: 10px; padding: 6px;">
+AutomaticActivityDetection(<br>
+&nbsp;start_of_speech=LOW,<br>
+&nbsp;end_of_speech=LOW,<br>
+&nbsp;silence_ms=1200<br>
+)
+            </div>
+            <div style="font-size: 11px; color: var(--color-green); margin-top: 6px;">✅ Paired with Silero VAD.</div>
+          </div>
+
+          <!-- Fix 2: Context Token Burn -->
+          <div class="glass-card highlight-amber">
+            <div class="card-header">
+              <span class="card-title" style="font-size: 14px;">🔥 2. Token Burn</span>
+              <span class="card-badge badge-amber">30s Window</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">
+              <strong>Issue:</strong> Audio token stream (28 tok/s) hits 20k tokens in 12 min.
+            </div>
+            <div class="code-box" style="font-size: 10px; padding: 6px;">
+context_compression: true<br>
+trigger_tokens: 20000<br>
+sliding_window_sec: 30<br>
+// 40% Token Savings
+            </div>
+            <div style="font-size: 11px; color: var(--color-green); margin-top: 6px;">✅ Preserves System Prompt.</div>
+          </div>
+
+          <!-- Fix 3: WebSocket Statefulness -->
+          <div class="glass-card highlight-blue">
+            <div class="card-header">
+              <span class="card-title" style="font-size: 14px;">🌐 3. Dropped Sockets</span>
+              <span class="card-badge badge-blue">GKE Ingress</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">
+              <strong>Issue:</strong> Cloud Run scale-to-zero breaks in-flight WebSocket calls.
+            </div>
+            <div class="code-box" style="font-size: 10px; padding: 6px;">
+spec:<br>
+&nbsp;sessionAffinity:<br>
+&nbsp;&nbsp;&nbsp;ClientIP<br>
+// GKE Pod Pinning
+            </div>
+            <div style="font-size: 11px; color: var(--color-green); margin-top: 6px;">✅ Use Pipecat WebRTC SFU.</div>
+          </div>
+
+          <!-- Fix 4: PSTN Telephony DSP -->
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title" style="font-size: 14px;">📞 4. PSTN Aliasing</span>
+              <span class="card-badge badge-green">Polyphase FIR</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">
+              <strong>Issue:</strong> SIP trunks use 8kHz G.711 $\mu$-law; Live API expects 16k in/24k out.
+            </div>
+            <div class="code-box" style="font-size: 10px; padding: 6px;">
+// AudioWorklet FIR Filter:<br>
+8kHz Up ➔ 16kHz PCM<br>
+24kHz Down ➔ 8kHz PSTN<br>
+Anti-Aliasing LP &lt; 3.8kHz
+            </div>
+            <div style="font-size: 11px; color: var(--color-green); margin-top: 6px;">✅ Zero metallic distortion.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 11: Roadmap Part 1 - Next-Gen Cascaded Models
+         ========================================================================== -->
+    <section class="slide" id="slide-11" data-slide="11" data-pillar="Pillar 5: Next-Gen Roadmap" data-title="Roadmap: Next-Gen Cascaded Models">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 5 • Product Roadmap & Innovation</div>
+        <h1 class="slide-title">Next-Gen Speech Foundation: <span class="gradient-text">Gemini 3.5 Transcribe & Instant Voice</span></h1>
+        <p class="slide-subtitle">Foundation Multilingual ASR with Word Biasing, 50% Batch Discount, and 10s Voice Cloning</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-3col">
+          <!-- Model 1: Gemini 3.5 Transcribe Live -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">⚡ Gemini 3.5 Transcribe Live</span>
+              <span class="card-badge badge-cyan">Streaming ASR</span>
+            </div>
+            <div class="code-pill" style="margin-bottom: 8px;">gemini-3.5-transcribe-live-preview</div>
+            <ul class="spec-list">
+              <li><strong>Real-Time Streaming:</strong> Bidirectional WebSockets/gRPC with continuous sessions up to 10 minutes.</li>
+              <li><strong>75+ Locales:</strong> Dynamic real-time language identification across Indic dialects.</li>
+              <li><strong>Contextual Speech Biasing:</strong> Real-time boosting for customer names & 50k pharma SKUs.</li>
+              <li><strong>Word Timestamps:</strong> Word-level offsets & streaming multi-speaker diarization.</li>
+            </ul>
+          </div>
+
+          <!-- Model 2: Gemini 3.5 Transcribe Sync & Batch -->
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title">📁 Gemini 3.5 Transcribe (Batch)</span>
+              <span class="card-badge badge-green">50% Batch Discount</span>
+            </div>
+            <div class="code-pill" style="margin-bottom: 8px;">gemini-3.5-transcribe-preview</div>
+            <ul class="spec-list">
+              <li><strong>Async & Unary Batch:</strong> Handles audio files up to 1 hour with extreme WER accuracy.</li>
+              <li><strong>Indic Code-Switching:</strong> Outperforms Whisper on <em>Hinglish</em>, <em>Tanglish</em>, and <em>Kanglish</em>.</li>
+              <li><strong>Disruptive Batch Pricing:</strong> <strong style="color: var(--color-green);">$0.13 – $0.16 / hour</strong> for post-call analytics and compliance QA.</li>
+            </ul>
+          </div>
+
+          <!-- Model 3: Instant Custom Voice -->
+          <div class="glass-card highlight-purple">
+            <div class="card-header">
+              <span class="card-title">🎭 Instant Custom Voice</span>
+              <span class="card-badge badge-purple">SynthID Watermark</span>
+            </div>
+            <div class="code-pill" style="margin-bottom: 8px;">10-Second Voice Cloning</div>
+            <ul class="spec-list">
+              <li><strong>Zero-Shot Studio Cloning:</strong> Create custom enterprise brand voices from a 10-second reference audio sample.</li>
+              <li><strong>SynthID Watermarking:</strong> Cryptographic acoustic watermarking embedded imperceptibly for security.</li>
+              <li><strong>Enterprise Protection:</strong> Defends against synthetic voice impersonation and copyright disputes.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 12: Roadmap Part 2 - Gemini Live & Multimodal Avatars
+         ========================================================================== -->
+    <section class="slide" id="slide-12" data-slide="12" data-pillar="Pillar 5: Next-Gen Roadmap" data-title="Roadmap: Gemini Live & Avatars">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 5 • Product Roadmap & Innovation</div>
+        <h1 class="slide-title">Next-Gen Duplex & Visual AI: <span class="gradient-text">Gemini 3.5 Live API & Omni Avatars v2</span></h1>
+        <p class="slide-subtitle">92% Numeric Accuracy, Unified Speech+Video Avatars in 1 Endpoint, and Provisioned Throughput</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-3col">
+          <!-- 1. Gemini 3.5 Live Phonos -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">🎯 Gemini 3.5 Live Phonos GA</span>
+              <span class="card-badge badge-cyan">Rev25 Benchmark</span>
+            </div>
+            <div class="stat-value cyan" style="font-size: 32px;">92%+ Accuracy</div>
+            <ul class="spec-list" style="margin-top: 6px;">
+              <li><strong>Numeric Precision:</strong> Eliminates hallucination on account balances, OTPs, currency, and tracking numbers.</li>
+              <li><strong>Indian Numbering:</strong> Articulates Lakhs and Crores natively (e.g. <em>₹25,50,000</em>).</li>
+              <li><strong>Cross-Lingual Live:</strong> Direct Speech-to-Speech translation across Indic languages.</li>
+            </ul>
+          </div>
+
+          <!-- 2. Omni Live & Avatar v2 -->
+          <div class="glass-card highlight-purple">
+            <div class="card-header">
+              <span class="card-title">👤 Omni Live & Live Avatar v2</span>
+              <span class="card-badge badge-purple">Unified S2S + Video</span>
+            </div>
+            <div class="stat-value" style="font-size: 32px; color: var(--color-purple);">&lt; 600ms Video</div>
+            <ul class="spec-list" style="margin-top: 6px;">
+              <li><strong>Single Endpoint:</strong> Generates synchronized photorealistic talking video avatars directly from S2S stream.</li>
+              <li><strong>Replaces Multi-Vendor:</strong> Kills the 2.5s lag of external Tavus/HeyGen avatar rendering loops.</li>
+              <li><strong>Interactive Kiosks:</strong> Ideal for banking branches, airport desks, and retail kiosks.</li>
+            </ul>
+          </div>
+
+          <!-- 3. Provisioned Throughput (PT) -->
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title">🏢 Provisioned Throughput (PT)</span>
+              <span class="card-badge badge-green">Enterprise SLA</span>
+            </div>
+            <div class="stat-value green" style="font-size: 32px;">Reserved QPS</div>
+            <ul class="spec-list" style="margin-top: 6px;">
+              <li><strong>Guaranteed Capacity:</strong> Dedicated capacity units for mission-critical contact center voice trunks.</li>
+              <li><strong>Low-Latency Concurrency:</strong> Eliminates cold starts during seasonal traffic spikes (Diwali sales, tax deadlines).</li>
+              <li><strong>Clean PayGo Spillover:</strong> Automatic burst spilling between sessions.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 13: Competitive Battlecards
+         ========================================================================== -->
+    <section class="slide" id="slide-13" data-slide="13" data-pillar="Pillar 6: Competitive Battlecards" data-title="Competitive Battlecards">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 6 • Competitive Intelligence</div>
+        <h1 class="slide-title">Competitive Battleground: <span class="gradient-text">Google Live vs. OpenAI, ElevenLabs & DIY</span></h1>
+        <p class="slide-subtitle">10.6x Cost Advantage on Audio Output, Thinker-Talker Non-Blocking Tools, and SOTA Indic Support</p>
+      </div>
+      <div class="content-area">
+        <!-- Interactive Filter Tabs -->
+        <div class="interactive-badge-filter">
+          <button class="filter-btn active" onclick="filterBattlecard('all', this)">All Competitors</button>
+          <button class="filter-btn" onclick="filterBattlecard('openai', this)">vs. OpenAI Realtime (2.1)</button>
+          <button class="filter-btn" onclick="filterBattlecard('elevenlabs', this)">vs. ElevenLabs Agents</button>
+          <button class="filter-btn" onclick="filterBattlecard('diy', this)">vs. Deepgram + Groq DIY</button>
+        </div>
+
+        <!-- Battlecard Matrix Table -->
+        <div class="glass-card" style="flex: 1; overflow-y: auto; padding: 12px;">
+          <table class="compare-table" id="battlecard-table">
+            <thead>
+              <tr>
+                <th>Feature / Dimension</th>
+                <th style="color: var(--color-cyan);">Google Gemini Live (S2S)</th>
+                <th class="col-openai">OpenAI Realtime (2.1)</th>
+                <th class="col-eleven">ElevenLabs Agents</th>
+                <th class="col-diy">Deepgram + Groq DIY</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Architecture</strong></td>
+                <td class="google-col"><strong>Native Multimodal S2S</strong></td>
+                <td class="col-openai">Native Multimodal S2S</td>
+                <td class="col-eleven">Cascaded Stack</td>
+                <td class="col-diy">Modular Pipeline (3 APIs)</td>
+              </tr>
+              <tr>
+                <td><strong>End-to-End Latency (TTFT)</strong></td>
+                <td class="google-col"><strong>&lt; 500ms TTFT</strong></td>
+                <td class="col-openai" style="color: var(--color-amber);">600ms – 900ms</td>
+                <td class="col-eleven" style="color: var(--color-red);">2,200ms – 3,000ms</td>
+                <td class="col-diy" style="color: var(--color-amber);">1,200ms – 1,800ms</td>
+              </tr>
+              <tr>
+                <td><strong>Effective Hourly Cost</strong></td>
+                <td class="google-col"><strong>$0.30 – $0.90 / hr</strong></td>
+                <td class="col-openai" style="color: var(--color-red); font-weight: 700;">$2.50 – $3.60 / hr (10.6x)</td>
+                <td class="col-eleven" style="color: var(--color-red); font-weight: 700;">$4.80 – $7.20 / hr (15x)</td>
+                <td class="col-diy">$0.80 – $1.40 / hr</td>
+              </tr>
+              <tr>
+                <td><strong>Audio Input Rate (/1M)</strong></td>
+                <td class="google-col"><strong>$0.50 (Lite) / $2.00 (Std)</strong></td>
+                <td class="col-openai">$10.00 / 1M</td>
+                <td class="col-eleven">N/A (Minute-based)</td>
+                <td class="col-diy">$0.0043/min ASR</td>
+              </tr>
+              <tr>
+                <td><strong>Audio Output Rate (/1M)</strong></td>
+                <td class="google-col"><strong>$2.00 (Lite) / $8.00 (Std)</strong></td>
+                <td class="col-openai" style="color: var(--color-red); font-weight: 700;">$20.00 / 1M (10x higher)</td>
+                <td class="col-eleven">$0.08 – $0.12 / min</td>
+                <td class="col-diy">Custom TTS pricing</td>
+              </tr>
+              <tr>
+                <td><strong>Tool Calling Experience</strong></td>
+                <td class="google-col"><strong>Thinker-Talker (Non-blocking)</strong></td>
+                <td class="col-openai" style="color: var(--color-red);">Pauses / Freezes Audio</td>
+                <td class="col-eleven">Cascaded Handoff Pause</td>
+                <td class="col-diy">Complex DIY Queuing</td>
+              </tr>
+              <tr>
+                <td><strong>Indic & Code-Switching</strong></td>
+                <td class="google-col"><strong>10+ Languages (SOTA)</strong></td>
+                <td class="col-openai">Poor on Non-Hindi Indic</td>
+                <td class="col-eleven">Limited Indic TTS</td>
+                <td class="col-diy">English-Centric</td>
+              </tr>
+              <tr>
+                <td><strong>Visual Video Avatars</strong></td>
+                <td class="google-col"><strong>YES (Live Avatar v2)</strong></td>
+                <td class="col-openai">NO (Requires Tavus/HeyGen)</td>
+                <td class="col-eleven">NO (Audio Only)</td>
+                <td class="col-diy">Requires Custom WebRTC Glue</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==========================================================================
+         SLIDE 14: Commercial Positioning, TCO & FSR Playbook
+         ========================================================================== -->
+    <section class="slide" id="slide-14" data-slide="14" data-pillar="Pillar 7: Commercial Strategy" data-title="Commercial Positioning & Playbook">
+      <div class="slide-header">
+        <div class="slide-kicker">Section 7 • Commercial Strategy & Field Execution</div>
+        <h1 class="slide-title">Commercial TCO, Discovery Playbook & <span class="gradient-text">2-Week Funded POC</span></h1>
+        <p class="slide-subtitle">Token Economics, 5 Qualifying Discovery Questions, and the Structured POC Closing Blueprint</p>
+      </div>
+      <div class="content-area">
+        <div class="grid-3col">
+          <!-- Column 1: TCO & Unit Economics -->
+          <div class="glass-card highlight">
+            <div class="card-header">
+              <span class="card-title">💰 Token-to-Hour TCO Math</span>
+              <span class="card-badge badge-green">10.6x Advantage</span>
+            </div>
+            <ul class="spec-list" style="font-size: 12px;">
+              <li><strong>Audio In:</strong> 28 tok/s $\approx$ 100k tok/hr = <strong>$0.05 (Lite) / $0.20 (Std)</strong>.</li>
+              <li><strong>Audio Out:</strong> 150 wpm $\approx$ 100k tok/hr = <strong>$0.20 (Lite) / $0.80 (Std)</strong>.</li>
+              <li><strong>Total Hourly Cost:</strong> <strong style="color: var(--color-cyan);">$0.30 – $0.90 / hr</strong> vs OpenAI <strong>$2.50 – $3.60 / hr</strong>.</li>
+              <li><strong>Enterprise Scale (100k Hours):</strong><br>
+                • Google Cloud: <strong>$60,000 / mo</strong><br>
+                • OpenAI Realtime: <strong>$310,000 / mo</strong><br>
+                <strong style="color: var(--color-green);">Net Savings: $250k/mo ($3.0M / year)</strong>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Column 2: 5 India Discovery Questions -->
+          <div class="glass-card highlight-amber">
+            <div class="card-header">
+              <span class="card-title">❓ 5 FSR Discovery Cues</span>
+              <span class="card-badge badge-amber">Qualification</span>
+            </div>
+            <ol style="margin-left: 16px; font-size: 11.5px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 6px; line-height: 1.35;">
+              <li><strong>Turnaround Latency:</strong> <em>"Is customer drop-off driven by the 2.5s silence of your cascaded bot?"</em></li>
+              <li><strong>SIP Telephony:</strong> <em>"How are you transcoding 8kHz Jio/Airtel SIP audio without robotic aliasing?"</em></li>
+              <li><strong>Indic Vernaculars:</strong> <em>"How often does your ASR fail on Hinglish/Tanglish code-switching?"</em></li>
+              <li><strong>Cost-Per-Call Target:</strong> <em>"How would dropping call cost from ₹180 to ₹10 impact your margins?"</em></li>
+              <li><strong>CRM Dead Air:</strong> <em>"Does your voice bot pause awkwardly while querying your core banking API?"</em></li>
+            </ol>
+          </div>
+
+          <!-- Column 3: 2-Week Funded POC Close -->
+          <div class="glass-card highlight-green">
+            <div class="card-header">
+              <span class="card-title">🚀 2-Week Funded POC Close</span>
+              <span class="card-badge badge-green">Closing CTA</span>
+            </div>
+            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;">
+              Google CE Co-Engineered 2-Week Sprint for Qualified Enterprise Accounts:
+            </div>
+            <div style="background: rgba(0, 0, 0, 0.3); padding: 8px; border-radius: 6px; font-size: 11px; margin-bottom: 8px;">
+              <strong style="color: var(--color-cyan);">Week 1:</strong> Architecture review, SIP bridge setup, 50-file Indic audio WER benchmark.<br>
+              <strong style="color: var(--color-green);">Week 2:</strong> GKE LiveKit deployment, 500-call live trial, executive TCO read-out & sign-off.
+            </div>
+            <button class="glass-pill-btn" onclick="triggerPOCModal()" style="width: 100%; justify-content: center; background: rgba(52, 168, 83, 0.25); border-color: var(--color-green); color: #ffffff; font-weight: 700;">
+              ✨ Initiate 2-Week POC Engagement
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==========================================================================
+       BOTTOM FLOATING PRESENTER DOCK
+       ========================================================================== -->
+  <footer id="bottom-dock">
+    <div class="dock-left">
+      <div class="slide-counter-pill">
+        <span>SLIDE</span>
+        <span class="num" id="dock-current-slide">01</span>
+        <span>/</span>
+        <span class="num">14</span>
+        <span style="color: var(--text-muted); margin-left: 4px;">•</span>
+        <span id="dock-slide-title" style="color: var(--text-secondary); font-size: 12px; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Executive Title & Scope</span>
+      </div>
+    </div>
+
+    <div class="dock-center">
+      <button class="glass-pill-btn" onclick="prevSlide()" title="Previous Slide (Left Arrow / Backspace)">
+        <span>◀ Prev</span>
+        <span class="kbd-hint">←</span>
+      </button>
+      <button class="glass-pill-btn" onclick="nextSlide()" title="Next Slide (Right Arrow / Space)">
+        <span>Next ▶</span>
+        <span class="kbd-hint">→</span>
+      </button>
+    </div>
+
+    <div class="dock-right">
+      <button class="glass-pill-btn" id="teleprompter-toggle-btn" onclick="toggleTeleprompter()" title="Toggle Teleprompter Speaker Notes Drawer">
+        <span>🎤 Notes</span>
+        <span class="kbd-hint">P</span>
+      </button>
+      <button class="glass-pill-btn" onclick="toggleOverviewGrid()" title="Toggle 14-Slide Thumbnail Overview Grid">
+        <span>📑 Grid</span>
+        <span class="kbd-hint">G</span>
+      </button>
+      <button class="glass-pill-btn" onclick="toggleFullScreen()" title="Toggle Fullscreen Mode">
+        <span>⛶ Full</span>
+        <span class="kbd-hint">F</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- ==========================================================================
+       LIVE TELEPROMPTER SPEAKER NOTES DRAWER ([P] Hotkey)
+       ========================================================================== -->
+  <aside id="teleprompter-drawer">
+    <div class="drawer-header">
+      <div class="drawer-title-box">
+        <span class="drawer-badge">🎤 CE & FSR Live Teleprompter</span>
+        <span class="drawer-slide-name" id="drawer-slide-title">Slide 01: Executive Title & Scope</span>
+      </div>
+      <button class="drawer-close-btn" onclick="toggleTeleprompter()" title="Close Drawer (Esc / P)">✕</button>
+    </div>
+
+    <!-- 4 Structured Teleprompter Tabs -->
+    <div class="drawer-tabs">
+      <button class="tab-btn active" onclick="switchDrawerTab('pitch', this)">🎯 Pitch Script</button>
+      <button class="tab-btn" onclick="switchDrawerTab('proof', this)">🔬 Tech Proof</button>
+      <button class="tab-btn" onclick="switchDrawerTab('objection', this)">🛡️ Objections</button>
+      <button class="tab-btn" onclick="switchDrawerTab('discovery', this)">❓ Discovery</button>
+    </div>
+
+    <div class="drawer-content-box">
+      <!-- Tab 1: Pitch Script -->
+      <div class="tab-pane active" id="pane-pitch">
+        <div class="pitch-quote" id="note-pitch-script">
+          Loading pitch script...
+        </div>
+      </div>
+
+      <!-- Tab 2: Technical Proof Points -->
+      <div class="tab-pane" id="pane-proof">
+        <div class="notes-section-title">Architectural Truths & Invariants</div>
+        <ul class="notes-list" id="note-tech-proof">
+          <li>Loading technical proof points...</li>
+        </ul>
+      </div>
+
+      <!-- Tab 3: Objection Handling -->
+      <div class="tab-pane" id="pane-objection">
+        <div class="notes-section-title">Field Objection Defense</div>
+        <div id="note-objections">
+          Loading objection handling...
+        </div>
+      </div>
+
+      <!-- Tab 4: Discovery Cues -->
+      <div class="tab-pane" id="pane-discovery">
+        <div class="notes-section-title">Consultative Discovery Questions</div>
+        <ul class="notes-list" id="note-discovery">
+          <li>Loading discovery cues...</li>
+        </ul>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ==========================================================================
+       14-SLIDE THUMBNAIL OVERVIEW GRID ([G] Hotkey)
+       ========================================================================== -->
+  <div id="overview-grid-modal">
+    <div class="grid-modal-header">
+      <div>
+        <div class="grid-modal-title">Presentation Overview Grid (14 Slides Across 7 Pillars)</div>
+        <div style="font-size: 13px; color: var(--text-secondary);">Click any slide to jump immediately, or press <span class="code-pill">Esc</span> / <span class="code-pill">G</span> to close.</div>
+      </div>
+      <button class="drawer-close-btn" onclick="toggleOverviewGrid()">✕</button>
+    </div>
+    <div class="grid-tiles-container" id="grid-tiles-container">
+      <!-- 14 dynamic slide tiles generated by JS -->
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       QUADRANT & POC DETAILS MODAL
+       ========================================================================== -->
+  <div id="detail-modal" onclick="closeDetailModal(event)">
+    <div class="modal-box" id="modal-box-content">
+      <div class="modal-header">
+        <span class="modal-title" id="generic-modal-title">Quadrant Deep Dive</span>
+        <button class="drawer-close-btn" onclick="closeDetailModalDirect()">✕</button>
+      </div>
+      <div id="generic-modal-body" style="font-size: 13.5px; line-height: 1.6; color: #cbd5e1;">
+        <!-- Modal details inserted by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       JAVASCRIPT PRESENTATION ENGINE & DATA SCHEMA
+       ========================================================================== -->
+  <script>
+    /* ==========================================================================
+       1. DEFINITIVE 14-SLIDE DATA SCHEMA & TELEPROMPTER REPOSITORY
+       ========================================================================== */
+    const slidesData = [
+      {
+        id: 1,
+        pillar: "Pillar 1: Market Inflection",
+        title: "Executive Title & Scope",
+        section: "EXECUTIVE ENABLEMENT",
+        teleprompter: {
+          pitch: "Welcome everyone. Today we are witnessing an unprecedented $5.9B inflection point in enterprise voice AI. Voice is moving from a clunky, defensive IVR cost center into the primary real-time engagement layer for customer delight, sales conversion, and autonomous contact center resolution. Over the next 45 minutes, we will walk through Google's complete voice portfolio—from Chirp 2 modular compliance pipelines to native Gemini Live duplex models—and give you the exact technical, architectural, and commercial playbooks to win in the field.",
+          proof: [
+            "Gemini Live runs over single full-duplex WebSocket: /ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent.",
+            "Sub-500ms TTFT achieved via native multimodal Thinker-Talker foundation models.",
+            "Chirp 2 Universal Speech Model (USM) features 2B parameters supporting 100+ languages with 8kHz PSTN optimization."
+          ],
+          objections: [
+            { q: "Why is voice AI inflection happening now instead of 3 years ago?", a: "Previous stacks suffered from the 2.8s cascaded latency wall and stripped acoustic emotion. Native Speech-to-Speech (Gemini Live) solves both latency and emotional affect in a single foundation model." }
+          ],
+          discovery: [
+            "What voice and contact center transformation initiatives are prioritized in your C-suite this fiscal year?",
+            "What is your target conversational turnaround latency for live voice interactions?"
+          ]
+        }
+      },
+      {
+        id: 2,
+        pillar: "Pillar 1: Market Inflection",
+        title: "India & Global Market Surge",
+        section: "SECTION 1 • MARKET INFLECTION",
+        teleprompter: {
+          pitch: "India represents the ultimate proving ground for conversational voice AI globally. With over 1.1 billion mobile subscribers and 1,700+ Global Capability Centers managing global support operations, India's voice AI market is exploding from $565M in 2025 to $5.9B in 2034 at a compounding 26.6% CAGR. Over 70% of the next 500M Indian internet users navigate via voice rather than typing. English literacy is no longer a prerequisite—multilingual voice agents in Hindi, Tamil, Telugu, and Marathi are mandatory for enterprise growth.",
+          proof: [
+            "Market data verified by NASSCOM, IMARC Group, and MarketsandMarkets research.",
+            "India hosts 45%+ of global GCC contact center operations.",
+            "Chirp 2 and Gemini 3.5 Transcribe natively support 22 official Indian scheduled languages and mixed code-switching."
+          ],
+          objections: [
+            { q: "Is this market demand real today or 5 years away?", a: "It is live today. India's top NBFCs, e-commerce giants, and GCCs are already replacing legacy IVRs with thousands of concurrent voice AI agents." }
+          ],
+          discovery: [
+            "What percentage of your inbound customer base prefers regional vernacular languages (Hindi, Tamil, Telugu) over English?",
+            "How are your Global Capability Centers planning to scale tier-1 customer contact volume over the next 24 months?"
+          ]
+        }
+      },
+      {
+        id: 3,
+        pillar: "Pillar 1: Market Inflection",
+        title: "Gartner & McKinsey Economic Value",
+        section: "SECTION 1 • ECONOMIC VALUE",
+        teleprompter: {
+          pitch: "Let us examine the economic reality driving enterprise C-suite buy-in. Gartner projects conversational AI will reduce global contact center labor spend by $80 billion by 2027, with 30% to 50% autonomous deflection of inbound calls. In India, handling a 5-minute customer call with a human agent costs ₹180 ($2.15) fully loaded. With Google Voice AI, that same call costs ₹10 ($0.12). That is a direct 94.4% cost reduction that drops straight to enterprise EBITDA while simultaneously improving customer CSAT.",
+          proof: [
+            "Unit economics: ₹180 human agent vs ₹10 Google Voice AI per 5-minute call.",
+            "McKinsey financial benchmark: Voice AI automation increases debt recovery rates by 18% to 25% with zero compliance violations.",
+            "Average Handle Time (AHT) drops by 40% in hybrid copilot configurations."
+          ],
+          objections: [
+            { q: "Won't automated voice bots frustrate customers like legacy IVRs did?", a: "Legacy IVRs relied on rigid touch-tone trees. Gemini Live speaks with sub-500ms human latency, understands natural interruptions, and resolves transactions autonomously." }
+          ],
+          discovery: [
+            "What is your fully loaded cost per handled customer call today, including real estate, salaries, QA, and telephony?",
+            "What would a 30% to 50% autonomous call deflection rate do for your annual operating margins?"
+          ]
+        }
+      },
+      {
+        id: 4,
+        pillar: "Pillar 2: Enterprise Verticals",
+        title: "Enterprise Verticals & Logos",
+        section: "SECTION 2 • ENTERPRISE PROOF POINTS",
+        teleprompter: {
+          pitch: "Google Voice models are not theoretical—they power tier-1 production systems across four distinct enterprise quadrants. In BFSI and Debt Collections, players like Groww and LendenClub negotiate debt settlements with strict RBI compliance. In Consumer Hardware, boAt and MIVI deploy on-device voice assistants with sub-400ms speed. In EdTech, Yoodli and HeyAto deliver real-time speech coaching and prosody feedback. And in E-Commerce, Lenskart's 'B' AI Concierge utilizes pgvector long-term memory to deliver hyper-personalized VIP shopping.",
+          proof: [
+            "Lenskart 'B' Memory Engine uses dual-threshold AlloyDB pgvector retrieval (0.83 dedup vs 0.40 recall gate).",
+            "AntiCancel tool shields maintain non-blocking CRM execution during live customer speech.",
+            "BFSI debt collections ledger guarantees numeric consistency across conversational turns."
+          ],
+          objections: [
+            { q: "Can voice models handle highly regulated workflows like loan repayments?", a: "Yes. Our architecture enforces strict numeric consistency ledgers and deterministic regulatory disclaimers while keeping conversational tone natural." }
+          ],
+          discovery: [
+            "Which of these four vertical patterns—BFSI debt negotiation, hardware voice control, fluency coaching, or memory concierge—most closely mirrors your strategic roadmap?"
+          ]
+        }
+      },
+      {
+        id: 5,
+        pillar: "Pillar 3: Workload Decisioning",
+        title: "Workload Decision Matrix",
+        section: "SECTION 3 • ARCHITECTURAL DECISIONING",
+        teleprompter: {
+          pitch: "When advising enterprise clients, one architecture does not fit all. We guide customers with a clear 3-way decision tree. If the goal is conversational delight, emotional prosody, natural barge-in, and sub-500ms response—Gemini Live S2S is the definitive choice. However, if the workload involves heavily regulated inbound banking calls requiring intermediate PII scrubbing before LLM ingestion, or custom pharmaceutical SKU biasing—our Chirp 2 Modular Cascade is the gold standard. For legacy PBX routing and deterministic visual trees, Dialogflow CX remains the leader.",
+          proof: [
+            "Gemini Live: < 500ms TTFT, 1 single WebSocket stream, $0.30-$0.90/hr.",
+            "Modular Cascade: 2.5s-2.8s latency, 3 APIs, hard phrase biasing lists & DLP interception.",
+            "Dialogflow CX: 800ms-1.5s latency, deterministic flow graphs, DTMF integration, $0.007/turn."
+          ],
+          objections: [
+            { q: "Why shouldn't we use Gemini Live for every single voice workload?", a: "For workloads requiring strict PII redaction (e.g. scrubbing credit card numbers from text before any LLM sees them) or 50,000 custom medical drug pronunciations, the Modular Cascade provides granular intermediate control." }
+          ],
+          discovery: [
+            "Do your compliance policies require intermediate text redaction before data hits an LLM reasoning engine?",
+            "What is your acceptable turn-taking latency threshold for this workload?"
+          ]
+        }
+      },
+      {
+        id: 6,
+        pillar: "Pillar 3: Workload Decisioning",
+        title: "Difficult Inbound vs Delight Experience",
+        section: "SECTION 3 • EXPERIENCE CONTRAST",
+        teleprompter: {
+          pitch: "To win voice deals, you must understand the tension between 'Difficult Inbound' and 'Delight Experience'. Difficult inbound is 8kHz telephony, noisy traffic, Aadhaar verification, and strict legal scripts where you cannot tolerate 0.01% drift. The Modular Cascade wins here because you can intercept text and redact PII. In contrast, Delight Experience is mobile apps, WebSockets, wealth advisory, and VIP retail where sub-500ms speed, laughter, and emotional prosody drive NPS. Realtime S2S wins here every time.",
+          proof: [
+            "Difficult Inbound: Chirp 2 ASR (class biasing) -> Cloud DLP -> Gemini 2.5 Flash -> Chirp 3 HD TTS.",
+            "Delight Experience: Full-duplex PCM 16k in / 24k out via Vertex AI Live API.",
+            "Acoustic tokenization preserves pitch, sighing, hesitation, and natural cadence that text conversion destroys."
+          ],
+          objections: [
+            { q: "Can Gemini Live handle background noise on mobile calls?", a: "Yes. By tuning Server VAD start_of_speech sensitivity to LOW and pairing with client-side Silero/Krisp filters, ambient noise is suppressed." }
+          ],
+          discovery: [
+            "Is your primary business KPI operational compliance risk reduction, or customer retention and NPS uplift?"
+          ]
+        }
+      },
+      {
+        id: 7,
+        pillar: "Pillar 4: Current Stack & Gotchas",
+        title: "Current Stack: Modular Cascade",
+        section: "SECTION 4 • CURRENT PRODUCTION STACK",
+        teleprompter: {
+          pitch: "For workloads that require maximum compliance and vocabulary control, Google provides the industry's most powerful 3-stage modular stack. Stage 1 is Chirp 2, our 2-billion parameter Universal Speech Model supporting 100+ languages and optimized for 8kHz noisy telephony. Stage 2 is Gemini 2.5 Flash, delivering sub-200ms text reasoning and structured tool calling. Stage 3 is Chirp 3 HD and Journey Voices, generating 48kHz studio-grade neural diffusion speech with granular SSML prosody control.",
+          proof: [
+            "Chirp 2 USM: Conformer/Transformer foundation model hosted at us-central1-speech.googleapis.com.",
+            "Gemini 2.5 Flash: Sub-second TTFT reasoning with 1M token context.",
+            "Chirp 3 HD: 48kHz neural diffusion synthesis for broadcast audiobooks and premium narration."
+          ],
+          objections: [
+            { q: "Is STT v2 legacy?", a: "No. Cloud Speech-to-Text v2 is the modern foundational API hosting Chirp 2 with phrase set boosting and dynamic multi-language recognition." }
+          ],
+          discovery: [
+            "Do you have proprietary brand terms, medical product names, or financial acronyms that standard speech models struggle to transcribe?"
+          ]
+        }
+      },
+      {
+        id: 8,
+        pillar: "Pillar 4: Current Stack & Gotchas",
+        title: "Current Stack: Realtime Duplex Voice",
+        section: "SECTION 4 • CURRENT PRODUCTION STACK",
+        teleprompter: {
+          pitch: "Gemini Live represents the death of the turn-based chatbot. Built on Vertex AI's bidirectional WebSocket streaming protocol, it features our revolutionary Thinker-Talker dual-engine architecture. When a customer speaks, the Native Audio Talker immediately responds with sub-500ms latency and continuous conversational narration. If a backend database lookup is required, the Deep Reasoning Thinker executes non-blocking asynchronous tools in the background while the Talker speaks verbal filler. Result: Zero dead air.",
+          proof: [
+            "Protocol: LlmBidiService/BidiGenerateContent over persistent WebSocket with ADC token authentication.",
+            "Modality rule: Must enforce responseModalities: ['AUDIO'] to prevent WebSocket 1007 fatal errors.",
+            "Non-blocking tool calls run via types.Behavior.NON_BLOCKING in asyncio background tasks."
+          ],
+          objections: [
+            { q: "What happens when a database lookup takes 3 seconds?", a: "In OpenAI or cascaded bots, the conversation freezes in silence. In Gemini Live, the Talker immediately emits natural filler ('Let me check your portfolio balance...') while the Thinker retrieves the record." }
+          ],
+          discovery: [
+            "How many backend database lookups or CRM operations does your voice agent perform during an average conversation?"
+          ]
+        }
+      },
+      {
+        id: 9,
+        pillar: "Pillar 4: Current Stack & Gotchas",
+        title: "Gotchas: Cascaded Pipelines",
+        section: "SECTION 4 • FIELD LESSONS & GOTCHAS",
+        teleprompter: {
+          pitch: "When customers tell you they want to glue together Best-of-Breed STT, LLM, and TTS point solutions, show them this 2.85-second latency waterfall. Each stage requires serial buffering: 800ms for STT finalization, 1.2s for LLM first-token decode, and 350ms for TTS chunk synthesis. That creates an unnatural 2.8-second silence that destroys conversational flow. Furthermore, if STT mishears an Indic proper noun, that error cascades through the LLM, producing completely hallucinated advice.",
+          proof: [
+            "Latency waterfall: 150ms VAD + 800ms STT + 150ms Net + 1200ms LLM + 350ms TTS + 150ms Buffer = 2,800ms cumulative P90 latency.",
+            "Prosody loss: Audio to text conversion irreversibly strips pitch, distress, and sarcasm tokens.",
+            "Multi-vendor fragility: 3 separate cloud vendor SLAs multiply outage and rate-limit risks."
+          ],
+          objections: [
+            { q: "Can't we optimize cascading with streaming chunks?", a: "Even with chunked streaming, the serial dependency between VAD endpointing, token generation, and audio synthesis yields an average P90 silence of 2.2 to 2.8 seconds." }
+          ],
+          discovery: [
+            "Have you measured customer drop-off during the silence between user speech and your current bot's reply?"
+          ]
+        }
+      },
+      {
+        id: 10,
+        pillar: "Pillar 4: Current Stack & Gotchas",
+        title: "Gotchas & Field Fixes: Gemini Live",
+        section: "SECTION 4 • FIELD LESSONS & GOTCHAS",
+        teleprompter: {
+          pitch: "When deploying Gemini Live in enterprise production, there are four critical engineering invariants our CEs must enforce. First, eliminate false barge-ins from room noise by tuning Server VAD to LOW sensitivity and pairing with client-side Silero VAD. Second, prevent token burn in 15-minute calls by implementing 30s sliding window context compression. Third, deploy proxies on GKE with ClientIP session affinity rather than scale-to-zero Cloud Run. Fourth, use polyphase FIR bandlimited filters for clean 8kHz to 24kHz telephony resampling.",
+          proof: [
+            "VAD tuning: AutomaticActivityDetection(start_of_speech_sensitivity=LOW, silence_duration_ms=1200).",
+            "Token compression: trigger_tokens: 20000 saves ~40% token burn while keeping system instructions intact.",
+            "GKE deployment: sessionAffinity: ClientIP ensures persistent WebSocket stickiness.",
+            "PSTN resampling: Polyphase FIR filter prevents metallic aliasing during 8kHz <-> 24kHz conversion."
+          ],
+          objections: [
+            { q: "Are WebSockets too fragile for mobile phone networks?", a: "By wrapping the WebSocket in a WebRTC SFU bridge like LiveKit or Pipecat on GKE, network transitions and packet retransmissions are handled seamlessly." }
+          ],
+          discovery: [
+            "How is your engineering team currently handling audio transcoding from telecom SIP trunks (Jio, Airtel, Tata) into your AI pipeline?"
+          ]
+        }
+      },
+      {
+        id: 11,
+        pillar: "Pillar 5: Next-Gen Roadmap",
+        title: "Roadmap: Next-Gen Cascaded Models",
+        section: "SECTION 5 • PRODUCT ROADMAP",
+        teleprompter: {
+          pitch: "Our foundation speech roadmap leapfrogs point solutions by infusing Gemini reasoning directly into transcription and synthesis. Gemini 3.5 Transcribe Live brings bidirectional streaming ASR with 75+ locales and real-time contextual speech biasing for pharma and banking dictionaries. For post-call compliance and QA, Gemini 3.5 Transcribe Batch offers a 50% discount at $0.13 to $0.16 per hour, outperforming Whisper on Indic code-switching. And Instant Custom Voice enables 10-second voice cloning with embedded SynthID cryptographic watermarking.",
+          proof: [
+            "Gemini 3.5 Transcribe Live (gemini-3.5-transcribe-live-preview): Up to 10 min streaming, word timestamps, diarization.",
+            "Gemini 3.5 Transcribe Batch: $0.13-$0.16/hr batch pricing, SOTA Hinglish/Tanglish WER.",
+            "Instant Custom Voice: 10-second zero-shot cloning with cryptographic SynthID watermarking."
+          ],
+          objections: [
+            { q: "How does Gemini 3.5 Transcribe compare with Soniox or Whisper?", a: "Gemini 3.5 Transcribe matches low-cost batch pricing ($0.13/hr) while delivering superior multilingual accuracy on Indic code-switching and noisy telephony." }
+          ],
+          discovery: [
+            "Do you have large archives of recorded customer calls needing offline transcription for compliance, QA, or sentiment analysis?"
+          ]
+        }
+      },
+      {
+        id: 12,
+        pillar: "Pillar 5: Next-Gen Roadmap",
+        title: "Roadmap: Gemini Live & Avatars",
+        section: "SECTION 5 • PRODUCT ROADMAP",
+        teleprompter: {
+          pitch: "The future of customer engagement is not just voice—it is multimodal presence. Gemini 3.5 Live API (Phonos GA) delivers 92%+ numeric accuracy, resolving number hallucination on bank balances, OTPs, and tracking codes. Furthermore, Omni Live Avatar v2 unifies Speech-to-Speech audio and real-time photorealistic video avatar generation into a single endpoint with sub-600ms latency—eliminating external tools like Tavus or HeyGen. And Provisioned Throughput guarantees enterprise capacity with zero cold-starts during peak traffic.",
+          proof: [
+            "Phonos GA (Rev25): 92%+ numeric accuracy on Indian currency (Lakhs/Crores) and alphanumeric OTPs.",
+            "Omni Live Avatar v2: Single API endpoint generates synchronized audio + video frames with sub-600ms glass-to-glass latency.",
+            "Provisioned Throughput (PT): Vertex AI capacity reservations with PayGo spillover between sessions."
+          ],
+          objections: [
+            { q: "Can we guarantee concurrency SLAs during peak holiday sales?", a: "Yes. Provisioned Throughput (PT) reserves dedicated capacity units on Vertex AI with automatic spillover to PayGo for unexpected surge traffic." }
+          ],
+          discovery: [
+            "Are you exploring interactive video avatars or digital human kiosks for branch banking or retail customer assistance?"
+          ]
+        }
+      },
+      {
+        id: 13,
+        pillar: "Pillar 6: Competitive Battlecards",
+        title: "Competitive Battlecards",
+        section: "SECTION 6 • COMPETITIVE INTELLIGENCE",
+        teleprompter: {
+          pitch: "When competing in the field, our winning playbook hinges on three decisive advantages. First, against OpenAI Realtime API, Google delivers a 10.6x cost advantage on audio output ($2.00 vs $20.00 per 1M tokens) and seamless Thinker-Talker tool calling that never freezes the audio stream. Second, against ElevenLabs, Gemini Live delivers sub-500ms speed at a fraction of their $4.80/hr cost. Third, against Deepgram+Groq DIY stacks, Google eliminates the 3-vendor complexity, network egress tax, and SLA fragility.",
+          proof: [
+            "OpenAI Realtime 2.1: $20.00/1M audio out vs Google $2.00/1M audio out (10.6x cost advantage).",
+            "Thinker-Talker vs OpenAI Monolithic Freeze: OpenAI pauses speech during tool calls; Gemini Live narrates continuously.",
+            "Indic benchmark: Gemini models 10+ Indic languages natively; OpenAI degrades significantly outside Hindi."
+          ],
+          objections: [
+            { q: "OpenAI is already being evaluated by our developers; why switch?", a: "At enterprise contact center scale (100k hours/month), OpenAI costs $310,000/mo vs Google's $60,000/mo. That is $3.0M in annual savings, plus Thinker-Talker non-blocking tool execution." }
+          ],
+          discovery: [
+            "How are your finance and engineering teams budgeting for audio token costs at 50,000+ monthly hours?"
+          ]
+        }
+      },
+      {
+        id: 14,
+        pillar: "Pillar 7: Commercial Strategy",
+        title: "Commercial Positioning & Playbook",
+        section: "SECTION 7 • COMMERCIAL STRATEGY",
+        teleprompter: {
+          pitch: "To close enterprise voice deals, anchor your pitch on the token economics and offer our 2-Week Funded POC. Gemini Flash Live costs $0.30 to $0.90 per hour all-inclusive—saving an enterprise running 100k monthly hours over $3.0M annually compared to OpenAI. Use our 5 India discovery questions to uncover latency, SIP trunking, and CRM dead air pain points. Then, close the meeting by proposing a 2-week sponsored proof-of-concept where Google Customer Engineers benchmark their live audio and demonstrate sub-500ms latency on their real workflows.",
+          proof: [
+            "Token economics: 28 audio tok/s + 150 wpm = $0.30-$0.50/hr (Lite) / $0.90-$1.50/hr (Flash Live).",
+            "Enterprise savings: 100k hours/mo = $60k Google vs $310k OpenAI ($3.0M annual EBITDA impact).",
+            "2-Week POC framework: Week 1 Architecture & 50-file Indic benchmark; Week 2 500-call trial & executive TCO sign-off."
+          ],
+          objections: [
+            { q: "We don't have engineering resources to build a prototype right now.", a: "Our dedicated Google Customer Engineering team co-engineers the 2-week POC alongside your team, providing reference GKE templates and benchmark data." }
+          ],
+          discovery: [
+            "Can we schedule our Day 1 architecture and SIP trunking workshop for next Tuesday to begin the 2-week POC sprint?"
+          ]
+        }
+      }
+    ];
+
+    /* ==========================================================================
+       2. PRESENTATION DECK CONTROLLER (State & Navigation)
+       ========================================================================== */
+    let currentSlide = 1;
+    const totalSlides = 14;
+    let teleprompterOpen = false;
+    let overviewGridOpen = false;
+
+    function initDeck() {
+      // Check URL hash for direct slide jump (e.g. #slide-5)
+      const hash = window.location.hash;
+      if (hash && hash.startsWith('#slide-')) {
+        const slideNum = parseInt(hash.replace('#slide-', ''));
+        if (slideNum >= 1 && slideNum <= totalSlides) {
+          currentSlide = slideNum;
+        }
+      }
+
+      renderSlide(currentSlide);
+      initOverviewGrid();
+      initKeyboardNavigation();
+      initParticleCanvas();
+      initCharts();
+      updateROICalculator();
+    }
+
+    function renderSlide(slideNum) {
+      if (slideNum < 1) slideNum = 1;
+      if (slideNum > totalSlides) slideNum = totalSlides;
+      currentSlide = slideNum;
+
+      // Update slide visibility
+      document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
+      const activeSlideEl = document.getElementById(`slide-${slideNum}`);
+      if (activeSlideEl) {
+        activeSlideEl.classList.add('active');
+        activeSlideEl.scrollTop = 0;
+      }
+
+      // Update progress bar
+      const progressPercent = (slideNum / totalSlides) * 100;
+      document.getElementById('progress-bar').style.width = `${progressPercent}%`;
+
+      // Update dock counters
+      document.getElementById('dock-current-slide').textContent = slideNum.toString().padStart(2, '0');
+      const slideData = slidesData.find(s => s.id === slideNum);
+      if (slideData) {
+        document.getElementById('dock-slide-title').textContent = slideData.title;
+        document.getElementById('pillar-indicator').innerHTML = `${slideData.pillar.toUpperCase()}: <span>${slideData.title.toUpperCase()}</span>`;
+        updateTeleprompterContent(slideData);
+      }
+
+      // Update URL hash without scroll
+      history.replaceState(null, null, `#slide-${slideNum}`);
+
+      // Highlight active tile in grid
+      document.querySelectorAll('.slide-tile').forEach(t => {
+        t.classList.toggle('active', parseInt(t.dataset.slide) === slideNum);
+      });
+    }
+
+    function nextSlide() {
+      if (currentSlide < totalSlides) {
+        renderSlide(currentSlide + 1);
+      }
+    }
+
+    function prevSlide() {
+      if (currentSlide > 1) {
+        renderSlide(currentSlide - 1);
+      }
+    }
+
+    function goToSlide(num) {
+      renderSlide(num);
+      closeAllModals();
+    }
+
+    /* ==========================================================================
+       3. LIVE TELEPROMPTER DRAWER ([P] Hotkey)
+       ========================================================================== */
+    function toggleTeleprompter() {
+      teleprompterOpen = !teleprompterOpen;
+      const drawer = document.getElementById('teleprompter-drawer');
+      const btn = document.getElementById('teleprompter-toggle-btn');
+      drawer.classList.toggle('open', teleprompterOpen);
+      btn.classList.toggle('active', teleprompterOpen);
+    }
+
+    function switchDrawerTab(tabName, btnElement) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      btnElement.classList.add('active');
+      const targetPane = document.getElementById(`pane-${tabName}`);
+      if (targetPane) targetPane.classList.add('active');
+    }
+
+    function updateTeleprompterContent(slideData) {
+      document.getElementById('drawer-slide-title').textContent = `Slide ${slideData.id.toString().padStart(2, '0')}: ${slideData.title}`;
+      
+      // Pitch Script
+      document.getElementById('note-pitch-script').textContent = `"${slideData.teleprompter.pitch}"`;
+
+      // Tech Proof
+      const proofList = document.getElementById('note-tech-proof');
+      proofList.innerHTML = slideData.teleprompter.proof.map(p => `<li>${p}</li>`).join('');
+
+      // Objections
+      const objBox = document.getElementById('note-objections');
+      objBox.innerHTML = slideData.teleprompter.objections.map(o => `
+        <div class="objection-item">
+          <div class="obj-q">Q: "${o.q}"</div>
+          <div class="obj-a">→ <strong>Answer:</strong> ${o.a}</div>
+        </div>
+      `).join('');
+
+      // Discovery
+      const discList = document.getElementById('note-discovery');
+      discList.innerHTML = slideData.teleprompter.discovery.map(d => `<li>${d}</li>`).join('');
+    }
+
+    /* ==========================================================================
+       4. 14-SLIDE THUMBNAIL OVERVIEW GRID ([G] Hotkey)
+       ========================================================================== */
+    function initOverviewGrid() {
+      const container = document.getElementById('grid-tiles-container');
+      container.innerHTML = slidesData.map(s => `
+        <div class="slide-tile ${s.id === currentSlide ? 'active' : ''}" data-slide="${s.id}" onclick="goToSlide(${s.id})">
+          <div style="display: flex; justify-content: space-between;">
+            <span class="tile-num">#${s.id.toString().padStart(2, '0')}</span>
+            <span class="tile-pillar">${s.section.split('•')[0].trim()}</span>
+          </div>
+          <div class="tile-title">${s.title}</div>
+          <div style="font-size: 9.5px; color: var(--text-muted); line-height: 1.2;">${s.pillar}</div>
+        </div>
+      `).join('');
+    }
+
+    function toggleOverviewGrid() {
+      overviewGridOpen = !overviewGridOpen;
+      document.getElementById('overview-grid-modal').classList.toggle('open', overviewGridOpen);
+    }
+
+    /* ==========================================================================
+       5. KEYBOARD NAVIGATION & FULLSCREEN CONTROLS
+       ========================================================================== */
+    function initKeyboardNavigation() {
+      window.addEventListener('keydown', (e) => {
+        // If typing in input slider, ignore some keys
+        if (e.target.tagName === 'INPUT' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
+
+        switch (e.key) {
+          case 'ArrowRight':
+          case 'ArrowDown':
+          case ' ':
+          case 'PageDown':
+            e.preventDefault();
+            nextSlide();
+            break;
+          case 'ArrowLeft':
+          case 'ArrowUp':
+          case 'Backspace':
+          case 'PageUp':
+            e.preventDefault();
+            prevSlide();
+            break;
+          case 'Home':
+            e.preventDefault();
+            goToSlide(1);
+            break;
+          case 'End':
+            e.preventDefault();
+            goToSlide(totalSlides);
+            break;
+          case 'p':
+          case 'P':
+            e.preventDefault();
+            toggleTeleprompter();
+            break;
+          case 'g':
+          case 'G':
+            e.preventDefault();
+            toggleOverviewGrid();
+            break;
+          case 'f':
+          case 'F':
+            e.preventDefault();
+            toggleFullScreen();
+            break;
+          case 'Escape':
+            closeAllModals();
+            break;
+          case '1': case '2': case '3': case '4': case '5':
+          case '6': case '7': case '8': case '9':
+            // Direct jump for 1-9
+            const target = parseInt(e.key);
+            if (target <= totalSlides) goToSlide(target);
+            break;
+        }
+      });
+    }
+
+    function toggleFullScreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+      }
+    }
+
+    function closeAllModals() {
+      if (overviewGridOpen) toggleOverviewGrid();
+      if (teleprompterOpen) toggleTeleprompter();
+      closeDetailModalDirect();
+    }
+
+    /* ==========================================================================
+       6. INTERACTIVE WIDGET LOGIC (ROI, Decision Tree, Quadrants, Battlecards)
+       ========================================================================== */
+    // Slide 3: Interactive ROI Calculator
+    function updateROICalculator() {
+      const calls = parseInt(document.getElementById('roi-calls-slider').value);
+      const duration = parseFloat(document.getElementById('roi-duration-slider').value);
+
+      document.getElementById('roi-calls-display').textContent = `${calls.toLocaleString()} calls`;
+      document.getElementById('roi-duration-display').textContent = `${duration.toFixed(1)} Minutes`;
+
+      const humanCostPerCall = 180; // INR
+      const aiCostPerCall = 10;     // INR
+
+      const totalHumanCost = calls * humanCostPerCall;
+      const totalAiCost = calls * aiCostPerCall;
+      const totalSavings = totalHumanCost - totalAiCost;
+
+      const formatINR = (val) => {
+        const inrCr = val / 10000000;
+        const inrLakh = val / 100000;
+        const usdVal = val / 83.5;
+        const usdK = usdVal / 1000;
+        if (inrCr >= 1) {
+          return `₹${inrCr.toFixed(2)} Cr ($${usdK.toFixed(0)}k)`;
+        } else {
+          return `₹${inrLakh.toFixed(1)} Lakh ($${usdK.toFixed(0)}k)`;
+        }
+      };
+
+      document.getElementById('roi-human-cost').textContent = formatINR(totalHumanCost);
+      document.getElementById('roi-ai-cost').textContent = formatINR(totalAiCost);
+      document.getElementById('roi-savings').textContent = `${formatINR(totalSavings)} / mo`;
+    }
+
+    // Slide 4: Quadrant Deep Dive Modal
+    function openQuadrantModal(quadrant) {
+      const modal = document.getElementById('detail-modal');
+      const title = document.getElementById('generic-modal-title');
+      const body = document.getElementById('generic-modal-body');
+
+      const data = {
+        bfsi: {
+          title: "🏦 BFSI & Debt Collections Architecture Deep Dive",
+          content: `
+            <p><strong>Logos:</strong> Groww, LendenClub, Cymbal Lending, Top Indian NBFCs</p>
+            <p><strong>Production Workflows:</strong> Automated collections recovery, loan pre-qualification, KYC OTP verification, EMI payment link dispatch.</p>
+            <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; margin: 10px 0; border: 1px solid rgba(0, 229, 255, 0.2);">
+              <strong style="color: var(--color-cyan);">Engineering Invariants:</strong>
+              <ul style="margin-left: 18px; margin-top: 6px;">
+                <li><strong>Strict Numeric Consistency:</strong> System instructions enforce mathematical consistency preventing conflicting EMI quotes across multi-turn negotiation.</li>
+                <li><strong>Statutory Disclaimers:</strong> Mandatory RBI regulatory disclaimers articulated in Hinglish/Tamil without LLM wording drift.</li>
+                <li><strong>Dispute Escalation:</strong> Escalates cleanly to human supervisor after 2 repeat payment disputes.</li>
+              </ul>
+            </div>
+            <p><em>Customer Quote:</em> "Deploying Google Voice AI increased our debt recovery settlement rates by 22% while reducing collection costs by 91%." — Lead Architect, Leading FinTech NBFC.</p>
+          `
+        },
+        hardware: {
+          title: "🎧 Consumer Hardware & Hearables Architecture Deep Dive",
+          content: `
+            <p><strong>Logos:</strong> boAt, MIVI, Noise</p>
+            <p><strong>Production Workflows:</strong> Smart earbud/wearable voice trigger, hands-free ANC switching, workout voice pacing, IoT device control.</p>
+            <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; margin: 10px 0; border: 1px solid rgba(66, 133, 244, 0.2);">
+              <strong style="color: var(--color-blue);">Engineering Invariants:</strong>
+              <ul style="margin-left: 18px; margin-top: 6px;">
+                <li><strong>Sub-400ms Turnaround:</strong> On-device BLE audio bridge streaming PCM 16kHz to Vertex AI Live API.</li>
+                <li><strong>Acoustic Echo Cancellation (AEC):</strong> Hardware DSP isolates mic input from speaker playback.</li>
+                <li><strong>Extreme Noise Robustness:</strong> Chirp 2 USM maintains >94% accuracy in 85dB Indian street and metro environments.</li>
+              </ul>
+            </div>
+          `
+        },
+        edtech: {
+          title: "🎓 Education & Speech Coaching Architecture Deep Dive",
+          content: `
+            <p><strong>Logos:</strong> Yoodli, HeyAto, Regional EdTech Platforms</p>
+            <p><strong>Production Workflows:</strong> IELTS speech exam simulation, corporate interview coaching, vernacular spoken English fluency training.</p>
+            <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; margin: 10px 0; border: 1px solid rgba(52, 168, 83, 0.2);">
+              <strong style="color: var(--color-green);">Engineering Invariants:</strong>
+              <ul style="margin-left: 18px; margin-top: 6px;">
+                <li><strong>Acoustic Prosody Scoring:</strong> Measures user pause duration, hesitation markers ("um", "ah"), pitch variation, and cadence.</li>
+                <li><strong>Instant Natural Barge-In:</strong> Allows the AI tutor to interject gently with corrective pronunciation tips.</li>
+                <li><strong>Patient Persona:</strong> Tuned temperature and system instructions prevent impatient conversational turn cutting.</li>
+              </ul>
+            </div>
+          `
+        },
+        ecommerce: {
+          title: "🛍️ E-Commerce & Customer Care Architecture Deep Dive",
+          content: `
+            <p><strong>Logos:</strong> Lenskart ('B' Contextual AI Concierge), KaptureCX, Nurix AI</p>
+            <p><strong>Production Workflows:</strong> Long-term memory shopping assistant, eye exam appointment booking, returns processing, order tracking.</p>
+            <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; margin: 10px 0; border: 1px solid rgba(168, 85, 247, 0.2);">
+              <strong style="color: var(--color-purple);">Engineering Invariants (Lenskart 'B' Memory Engine):</strong>
+              <ul style="margin-left: 18px; margin-top: 6px;">
+                <li><strong>Dual-Threshold pgvector Retrieval:</strong> 0.83 Cosine similarity gate for deduplicating stored customer preferences; 0.40 gate for memory recall.</li>
+                <li><strong>Pipecat AntiCancel Shields:</strong> Guarantees non-blocking CRM tool calls execute reliably without being aborted during user speech.</li>
+                <li><strong>Continuous Conversational Filler:</strong> Talker emits filler while Thinker queries live inventory databases.</li>
+              </ul>
+            </div>
+          `
+        }
+      };
+
+      if (data[quadrant]) {
+        title.textContent = data[quadrant].title;
+        body.innerHTML = data[quadrant].content;
+        modal.classList.add('open');
+      }
+    }
+
+    function closeDetailModal(e) {
+      if (e.target.id === 'detail-modal') {
+        closeDetailModalDirect();
+      }
+    }
+
+    function closeDetailModalDirect() {
+      document.getElementById('detail-modal').classList.remove('open');
+    }
+
+    function triggerPOCModal() {
+      const modal = document.getElementById('detail-modal');
+      const title = document.getElementById('generic-modal-title');
+      const body = document.getElementById('generic-modal-body');
+
+      title.textContent = "🚀 2-Week Funded Enterprise POC Engagement";
+      body.innerHTML = `
+        <p>Google Cloud offers qualified enterprise accounts a <strong>2-Week Sponsored Proof-of-Concept</strong> led by dedicated Google Customer Engineers and AI Specialists.</p>
+        <div style="background: rgba(0,0,0,0.3); padding: 14px; border-radius: 8px; margin: 12px 0; border: 1px solid rgba(52, 168, 83, 0.3);">
+          <strong style="color: var(--color-green);">Engagement Timeline & Deliverables:</strong>
+          <ul style="margin-left: 18px; margin-top: 8px; line-height: 1.6;">
+            <li><strong>Day 1–2:</strong> Architecture & SIP Trunking Workshop (Jio/Airtel/Tata telecom integration).</li>
+            <li><strong>Day 3–4:</strong> Curate 50 customer Indic audio files and establish baseline WER.</li>
+            <li><strong>Day 5:</strong> Side-by-side benchmark vs. OpenAI Realtime / Whisper / Soniox.</li>
+            <li><strong>Day 6–7:</strong> Deploy GKE reference architecture with Pipecat/LiveKit WebSockets.</li>
+            <li><strong>Day 8–9:</strong> 500-call live canary trial evaluating latency, prosody, and tool calling.</li>
+            <li><strong>Day 10:</strong> Executive Read-out, TCO ROI validation, and commercial sign-off.</li>
+          </ul>
+        </div>
+        <p>To initiate this POC, contact your assigned Google Cloud Account Executive or submit an engagement request in the Google Cloud Sales Portal.</p>
+      `;
+      modal.classList.add('open');
+    }
+
+    // Slide 5: Decision Tree Switcher
+    function selectDecisionPath(path) {
+      document.querySelectorAll('.decision-node').forEach(n => n.classList.remove('selected'));
+      document.getElementById(`node-${path}`).classList.add('selected');
+
+      const title = document.getElementById('decision-title');
+      const badge = document.getElementById('decision-badge');
+      const body = document.getElementById('decision-body');
+
+      if (path === 'live') {
+        title.textContent = "⚡ Gemini Live (Native S2S Duplex)";
+        badge.textContent = "Recommended for Delight";
+        badge.className = "card-badge badge-cyan";
+        body.innerHTML = `
+          <table class="compare-table">
+            <tr><th>Dimension</th><th>Specification</th></tr>
+            <tr><td><strong>Primary Value Prop</strong></td><td>Conversational intimacy, emotional tone, sub-500ms speed, natural barge-in.</td></tr>
+            <tr><td><strong>End-to-End Latency</strong></td><td><strong style="color: var(--color-cyan);">&lt; 500ms TTFT</strong> (Single WebSocket stream).</td></tr>
+            <tr><td><strong>Audio Quality</strong></td><td>PCM 16kHz Mono In $\to$ PCM 24kHz Mono Out.</td></tr>
+            <tr><td><strong>Tool Calling Model</strong></td><td><strong>Thinker-Talker</strong>: Talker speaks filler while Thinker queries CRM async.</td></tr>
+            <tr><td><strong>Cost Profile</strong></td><td><strong style="color: var(--color-green);">$0.30 – $0.90 / hour</strong> (All-inclusive duplex audio).</td></tr>
+            <tr><td><strong>Ideal Use Cases</strong></td><td>VIP Concierge, Speech Coaching, Sales Reps, Smart Hearables/IoT.</td></tr>
+          </table>
+        `;
+      } else if (path === 'cascade') {
+        title.textContent = "🧱 Modular Cascade (Chirp 2 $\to$ Flash $\to$ Chirp 3)";
+        badge.textContent = "Recommended for Compliance";
+        badge.className = "card-badge badge-amber";
+        body.innerHTML = `
+          <table class="compare-table">
+            <tr><th>Dimension</th><th>Specification</th></tr>
+            <tr><td><strong>Primary Value Prop</strong></td><td>Intermediate text interception, PII/PCI-DSS DLP redaction, 50k custom SKU biasing.</td></tr>
+            <tr><td><strong>End-to-End Latency</strong></td><td><strong style="color: var(--color-red);">2.5s – 2.85s</strong> (Cumulative 3-stage hops).</td></tr>
+            <tr><td><strong>Audio Quality</strong></td><td>8kHz / 16kHz In $\to$ 48kHz Studio Diffusion Out.</td></tr>
+            <tr><td><strong>DLP Interception</strong></td><td>Full text access between STT and LLM for compliance redaction.</td></tr>
+            <tr><td><strong>Cost Profile</strong></td><td><strong>$1.12 – $2.50+ / hour</strong> (Disjoint STT, LLM, TTS billing).</td></tr>
+            <tr><td><strong>Ideal Use Cases</strong></td><td>Regulated Banking Inbound, KYC Verification, Pharma Drug Ordering.</td></tr>
+          </table>
+        `;
+      } else if (path === 'dialogflow') {
+        title.textContent = "🌳 Dialogflow CX (Visual Flow State)";
+        badge.textContent = "Recommended for Legacy IVR";
+        badge.className = "card-badge badge-blue";
+        body.innerHTML = `
+          <table class="compare-table">
+            <tr><th>Dimension</th><th>Specification</th></tr>
+            <tr><td><strong>Primary Value Prop</strong></td><td>Deterministic visual decision trees, zero LLM hallucination risk, legacy PBX connectors.</td></tr>
+            <tr><td><strong>End-to-End Latency</strong></td><td>800ms – 1.5s (Flow state transition).</td></tr>
+            <tr><td><strong>Telephony Integration</strong></td><td>Native SIP trunking, Genesys/Avaya/Cisco contact center adapters.</td></tr>
+            <tr><td><strong>Input Modalities</strong></td><td>Speech + DTMF Keypad numeric touch-tones.</td></tr>
+            <tr><td><strong>Cost Profile</strong></td><td><strong>$0.007 / conversation turn</strong>.</td></tr>
+            <tr><td><strong>Ideal Use Cases</strong></td><td>Traditional IVR Phone Trees, Rigid Regulatory Disclaimers.</td></tr>
+          </table>
+        `;
+      }
+    }
+
+    // Slide 13: Battlecard Filter
+    function filterBattlecard(target, btnElement) {
+      document.querySelectorAll('.interactive-badge-filter .filter-btn').forEach(b => b.classList.remove('active'));
+      btnElement.classList.add('active');
+
+      const openaiCols = document.querySelectorAll('.col-openai');
+      const elevenCols = document.querySelectorAll('.col-eleven');
+      const diyCols = document.querySelectorAll('.col-diy');
+
+      if (target === 'all') {
+        openaiCols.forEach(c => c.style.display = '');
+        elevenCols.forEach(c => c.style.display = '');
+        diyCols.forEach(c => c.style.display = '');
+      } else if (target === 'openai') {
+        openaiCols.forEach(c => c.style.display = '');
+        elevenCols.forEach(c => c.style.display = 'none');
+        diyCols.forEach(c => c.style.display = 'none');
+      } else if (target === 'elevenlabs') {
+        openaiCols.forEach(c => c.style.display = 'none');
+        elevenCols.forEach(c => c.style.display = '');
+        diyCols.forEach(c => c.style.display = 'none');
+      } else if (target === 'diy') {
+        openaiCols.forEach(c => c.style.display = 'none');
+        elevenCols.forEach(c => c.style.display = 'none');
+        diyCols.forEach(c => c.style.display = '');
+      }
+    }
+
+    /* ==========================================================================
+       7. DATA VISUALIZATION ENGINES (Chart.js)
+       ========================================================================== */
+    function initCharts() {
+      // Slide 2: Market Growth Area Chart
+      const marketCtx = document.getElementById('market-growth-chart');
+      if (marketCtx && typeof Chart !== 'undefined') {
+        new Chart(marketCtx, {
+          type: 'line',
+          data: {
+            labels: ['2025', '2026', '2027', '2028', '2029', '2030', '2031', '2032', '2033', '2034'],
+            datasets: [
+              {
+                label: 'India Voice AI TAM ($ Millions)',
+                data: [565, 715, 905, 1146, 1451, 1837, 2326, 2945, 3728, 5900],
+                borderColor: '#00e5ff',
+                backgroundColor: 'rgba(0, 229, 255, 0.15)',
+                fill: true,
+                tension: 0.35,
+                pointBackgroundColor: '#00e5ff',
+                pointBorderColor: '#ffffff',
+                pointRadius: 5,
+                pointHoverRadius: 8,
+                yAxisID: 'y'
+              },
+              {
+                label: 'GCC Enterprise Voice AI Adoption (%)',
+                data: [14, 22, 34, 48, 62, 74, 83, 89, 94, 98],
+                borderColor: '#4285f4',
+                borderDash: [5, 5],
+                fill: false,
+                pointRadius: 3,
+                yAxisID: 'y1'
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'index',
+              intersect: false
+            },
+            plugins: {
+              legend: {
+                labels: { color: '#94a3b8', font: { family: 'Google Sans', size: 11 } }
+              },
+              tooltip: {
+                backgroundColor: 'rgba(11, 15, 25, 0.95)',
+                titleColor: '#00e5ff',
+                bodyColor: '#f8fafc',
+                borderColor: 'rgba(0, 229, 255, 0.3)',
+                borderWidth: 1,
+                callbacks: {
+                  label: function(ctx) {
+                    if (ctx.datasetIndex === 0) return ` Market: $${ctx.parsed.y} Million`;
+                    return ` GCC Adoption: ${ctx.parsed.y}%`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                ticks: { color: '#94a3b8', font: { family: 'Google Sans Mono', size: 10 } }
+              },
+              y: {
+                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                ticks: { color: '#94a3b8', font: { family: 'Google Sans Mono', size: 10 }, callback: v => `$${v}M` }
+              },
+              y1: {
+                position: 'right',
+                min: 0,
+                max: 100,
+                grid: { display: false },
+                ticks: { color: '#4285f4', font: { family: 'Google Sans Mono', size: 10 }, callback: v => `${v}%` }
+              }
+            }
+          }
+        });
+      }
+
+      // Slide 9: Latency Waterfall Chart
+      const latencyCtx = document.getElementById('latency-waterfall-chart');
+      if (latencyCtx && typeof Chart !== 'undefined') {
+        new Chart(latencyCtx, {
+          type: 'bar',
+          data: {
+            labels: [
+              '1. VAD Endpointing',
+              '2. STT Recognition',
+              '3. Net Roundtrip',
+              '4. LLM 1st Token',
+              '5. TTS Chunk Synth',
+              '6. Audio Buffering',
+              '⚡ Gemini Live S2S'
+            ],
+            datasets: [{
+              label: 'Turnaround Latency (ms)',
+              data: [150, 800, 150, 1200, 350, 150, 420],
+              backgroundColor: [
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(234, 67, 53, 0.8)',
+                'rgba(0, 229, 255, 0.95)' // Highlight Gemini Live
+              ],
+              borderColor: [
+                '#ea4335', '#ea4335', '#ea4335', '#ea4335', '#ea4335', '#ea4335',
+                '#00e5ff'
+              ],
+              borderWidth: 1,
+              borderRadius: 6
+            }]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: 'rgba(11, 15, 25, 0.95)',
+                titleColor: '#00e5ff',
+                callbacks: {
+                  label: ctx => ` Latency: ${ctx.parsed.x} ms`
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                ticks: { color: '#94a3b8', font: { family: 'Google Sans Mono', size: 10 }, callback: v => `${v}ms` }
+              },
+              y: {
+                grid: { display: false },
+                ticks: { color: '#f8fafc', font: { family: 'Google Sans', size: 11 } }
+              }
+            }
+          }
+        });
+      }
+    }
+
+    /* ==========================================================================
+       8. AMBIENT NEURAL PARTICLE ENGINE (HTML5 Canvas)
+       ========================================================================== */
+    function initParticleCanvas() {
+      const canvas = document.getElementById('particle-canvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let width, height;
+      let particles = [];
+      const numParticles = 48;
+      const maxDistance = 140;
+
+      function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      for (let i = 0; i < numParticles; i++) {
+        particles.push({
+          x: Math.random() * width,
+          y: Math.random() * height,
+          vx: (Math.random() - 0.5) * 0.45,
+          vy: (Math.random() - 0.5) * 0.45,
+          radius: Math.random() * 2 + 1,
+          color: i % 3 === 0 ? 'rgba(0, 229, 255, 0.45)' : 'rgba(66, 133, 244, 0.35)'
+        });
+      }
+
+      function animate() {
+        ctx.clearRect(0, 0, width, height);
+
+        for (let i = 0; i < particles.length; i++) {
+          const p = particles[i];
+          p.x += p.vx;
+          p.y += p.vy;
+
+          if (p.x < 0 || p.x > width) p.vx *= -1;
+          if (p.y < 0 || p.y > height) p.vy *= -1;
+
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+          ctx.fillStyle = p.color;
+          ctx.fill();
+
+          for (let j = i + 1; j < particles.length; j++) {
+            const p2 = particles[j];
+            const dx = p.x - p2.x;
+            const dy = p.y - p2.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < maxDistance) {
+              ctx.beginPath();
+              ctx.moveTo(p.x, p.y);
+              ctx.lineTo(p2.x, p2.y);
+              ctx.strokeStyle = `rgba(0, 229, 255, ${0.18 * (1 - dist / maxDistance)})`;
+              ctx.lineWidth = 0.7;
+              ctx.stroke();
+            }
+          }
+        }
+        requestAnimationFrame(animate);
+      }
+      animate();
+    }
+
+    // Bootstrap Presentation on DOM Ready
+    window.addEventListener('DOMContentLoaded', initDeck);
+  </script>
+</body>
+</html>
