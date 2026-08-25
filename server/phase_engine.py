@@ -385,36 +385,36 @@ class ConsultativePhaseTracker:
             await self._yield_prompt_to_gemini(phase, reason)
 
         if getattr(self, "_pending_hint", None) is not None:
-            hint = self._pending_hint
+            role, hint = self._pending_hint
             self._pending_hint = None
-            logger.info("⚡ [PhaseEngine] Delivering queued Copilot hint now that bot has finished speaking.")
-            await self._dispatch_raw_system_content(hint, tag="QueuedCopilotHint")
+            logger.info(f"⚡ [PhaseEngine] Delivering queued Copilot hint (role={role}) now that bot has finished speaking.")
+            await self._dispatch_raw_content(hint, role=role, tag=f"QueuedCopilotHint({role})")
 
-    async def yield_copilot_hint(self, hint_payload: str) -> bool:
-        """Safely dispatches a Copilot hint respecting bot speaking state to prevent mid-speech VAD barge-in."""
+    async def yield_copilot_hint(self, hint_payload: str, role: str = "system") -> bool:
+        """Safely dispatches a Copilot hint respecting bot speaking state to prevent mid-speech audio collisions."""
         if not self.enable_client_content:
             return False
 
         if self._is_bot_speaking:
-            logger.info("⏳ [PhaseEngine] Bot is actively speaking. Queuing Copilot hint for delivery after speech.")
-            self._pending_hint = hint_payload
+            logger.info(f"⏳ [PhaseEngine] Bot is actively speaking. Queuing Copilot hint (role={role}) for delivery after speech.")
+            self._pending_hint = (role, hint_payload)
             return True
 
-        return await self._dispatch_raw_system_content(hint_payload, tag="CopilotHint")
+        return await self._dispatch_raw_content(hint_payload, role=role, tag=f"CopilotHint({role})")
 
-    async def _dispatch_raw_system_content(self, text: str, tag: str = "SystemContent") -> bool:
-        """Dispatches a raw system content WebSocket turn to Gemini Live."""
+    async def _dispatch_raw_content(self, text: str, role: str = "system", tag: str = "CopilotContent") -> bool:
+        """Dispatches a raw clientContent WebSocket turn to Gemini Live with specified role."""
         session = getattr(self.gemini_service, "_session", None)
         if session and hasattr(session, "send_client_content"):
             try:
                 await session.send_client_content(
-                    turns=[Content(role="system", parts=[Part(text=text)])],
+                    turns=[Content(role=role, parts=[Part(text=text)])],
                     turn_complete=False
                 )
-                logger.info(f"⚡ [PhaseEngine] Dispatched {tag} to Gemini Live.")
+                logger.info(f"⚡ [PhaseEngine] Dispatched {tag} (role={role}) to Gemini Live.")
                 return True
             except Exception as e:
-                logger.warning(f"[PhaseEngine] Failed to dispatch {tag}: {e}")
+                logger.warning(f"[PhaseEngine] Failed to dispatch {tag} (role={role}): {e}")
         return False
 
     async def transition_to(self, target_phase: int, trigger_reason: str):

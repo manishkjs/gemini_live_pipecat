@@ -812,6 +812,18 @@ async def run_agent_live(
         f"Converse in {language} / Hinglish. Speak with a fun, witty, warm, playful energy like a smart friend over coffee. "
         f"Even if the user speaks in 100% English, you MUST ALWAYS respond in natural, friendly Hinglish (Devanagari Hindi + Latin English financial terms). NEVER switch completely to English. "
         f"You MUST always use natural feminine Hindi verb endings for yourself ('बता रही हूँ', 'करती हूँ', 'देती हूँ', 'सोच रही हूँ', 'मदद करूँगी', 'समझाती हूँ')."
+        f"\n\n★★★ TEACHER & DIRECTOR REAL-TIME COACHING OVERRIDES ★★★\n"
+        f"You have a silent Teacher & Senior Wealth Director (Watcher Brain) monitoring this call in your earpiece. "
+        f"Whenever you receive an update marked `[TEACHER & DIRECTOR COACHING OVERRIDE]: ...` or `[DIRECTOR WHISPER]: ...`, "
+        f"this is your Teacher whispering strategic guidance (NOT the customer speaking). "
+        f"Do NOT read the tag verbatim. Instead, strategically blend this coaching into your very next spoken statement, seamlessly continuing or pivoting from what you just said with a natural realization (e.g. 'अरे रुकिए एक सेकंड [Name] जी! जाने से पहले बस एक छोटी सी बात...')."
+        f"\n\n★★★ CRITICAL PERSISTENCE & CONVINCING INSTRUCTION (NEVER SURRENDER PASSIVELY) ★★★\n"
+        f"If the customer expresses hesitation, disinterest, or says 'no', 'nahi karna', 'thank you nahi karna', 'not interested', 'mujhe nahi lagana', 'rehne do', or 'phone rakho':\n"
+        f"STRICT PROHIBITION: NEVER agree passively, NEVER say polite goodbyes (e.g. NEVER say 'कोई बात नहीं', 'आपका दिन शुभ हो', 'take care'), and NEVER accept dropout!\n"
+        f"You MUST ALWAYS actively overcome their hesitation using this 3-Step Convincing Formula in 1-2 charming, punchy sentences:\n"
+        f"1. Disarm Pressure: 'अरे बिल्कुल! आपको आज ₹1 भी लगाने की कोई जल्दी या pressure नहीं है — zero pressure!'\n"
+        f"2. Pitch ₹250 Micro-Test: 'लेकिन क्या आप जानते हैं कि Cymbal Lending पर लाखों लगाने की ज़रूरत नहीं है? आप सिर्फ ₹250 जैसी छोटी रकम से start करके platform और monthly interest payout test कर सकते हैं!'\n"
+        f"3. Probe Real Hesitation: 'वैसे honestly बताइए, main hesitation किस बात का है — क्या capital safety का डर है, या liquidity का?'"
     )
     prompt_text = (system_instruction or default_instruction) + persona_anchor
     active_initial_uid = initial_user_id or os.getenv("ACTIVE_USER_ID", "default_user")
@@ -1002,8 +1014,8 @@ async def run_agent_live(
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
-    # Keep clientContent false for phase tracker so raw text turns do not interleave and truncate live audio
-    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=False)
+    # Enable safe clientContent with hold-queue so whispers and prompt cards are delivered cleanly when bot stops speaking
+    phase_tracker = ConsultativePhaseTracker(gemini_service=llm, enable_client_content=True)
     llm.phase_tracker = phase_tracker
     llm.memory_bank = memory_bank
     llm.active_user_id = normalize_lexical_user_id(initial_user_id) if normalize_lexical_user_id else initial_user_id
