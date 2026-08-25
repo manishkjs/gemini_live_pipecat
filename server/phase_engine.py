@@ -404,12 +404,21 @@ class ConsultativePhaseTracker:
 
     async def _dispatch_raw_content(self, text: str, role: str = "system", tag: str = "CopilotContent") -> bool:
         """Dispatches a raw clientContent WebSocket turn to Gemini Live with specified role."""
+        if role == "user":
+            if hasattr(self.gemini_service, "_create_single_response"):
+                try:
+                    await self.gemini_service._create_single_response([{"role": "user", "content": text}])
+                    logger.info(f"⚡ [PhaseEngine] Triggered immediate spoken response for {tag} (role=user).")
+                    return True
+                except Exception as e:
+                    logger.warning(f"[PhaseEngine] Failed to trigger _create_single_response for {tag}: {e}")
+
         session = getattr(self.gemini_service, "_session", None)
         if session and hasattr(session, "send_client_content"):
             try:
                 await session.send_client_content(
                     turns=[Content(role=role, parts=[Part(text=text)])],
-                    turn_complete=False
+                    turn_complete=(role == "user")
                 )
                 logger.info(f"⚡ [PhaseEngine] Dispatched {tag} (role={role}) to Gemini Live.")
                 return True
