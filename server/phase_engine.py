@@ -374,7 +374,7 @@ class ConsultativePhaseTracker:
         self._is_bot_speaking = speaking
 
     async def on_bot_stopped_speaking(self):
-        """Called when bot finishes speaking. Safely flushes pending prompt card and copilot hints without audio interruption."""
+        """Called when bot finishes speaking. Safely flushes pending prompt card and copilot hints with natural pacing without audio clipping."""
         self._is_bot_speaking = False
         if self._pending_phase is not None:
             phase = self._pending_phase
@@ -387,8 +387,17 @@ class ConsultativePhaseTracker:
         if getattr(self, "_pending_hint", None) is not None:
             role, hint = self._pending_hint
             self._pending_hint = None
-            logger.info(f"⚡ [PhaseEngine] Delivering queued Copilot hint (role={role}) now that bot has finished speaking.")
-            await self._dispatch_raw_content(hint, role=role, tag=f"QueuedCopilotHint({role})")
+            
+            if role == "user":
+                async def _delayed_spoken_dispatch(h=hint, r=role):
+                    # Natural conversational breath pause (650ms) to ensure previous audio buffer finishes playing cleanly
+                    await asyncio.sleep(0.65)
+                    logger.info(f"⚡ [PhaseEngine] Delivering queued Copilot hint (role={r}) after natural breath pause.")
+                    await self._dispatch_raw_content(h, role=r, tag=f"QueuedCopilotHint({r})")
+                asyncio.create_task(_delayed_spoken_dispatch())
+            else:
+                logger.info(f"⚡ [PhaseEngine] Delivering queued Copilot hint (role={role}) now that bot has finished speaking.")
+                await self._dispatch_raw_content(hint, role=role, tag=f"QueuedCopilotHint({role})")
 
     async def yield_copilot_hint(self, hint_payload: str, role: str = "system") -> bool:
         """Safely dispatches a Copilot hint respecting bot speaking state to prevent mid-speech audio collisions."""
