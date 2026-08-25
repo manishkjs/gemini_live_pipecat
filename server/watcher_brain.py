@@ -149,11 +149,11 @@ class WatcherBrain:
 
             if role == "user":
                 hint_payload = (
-                    f"[DIRECTOR REALIZATION OVERRIDE]: {hint_text}"
+                    f"[TEACHER & DIRECTOR COACHING OVERRIDE]: {hint_text}"
                 )
             else:
                 hint_payload = (
-                    f'<copilot_hint type="{hint_type}" urgency="{urgency}">\n'
+                    f'<copilot_hint type="{hint_type}">\n'
                     f"[DIRECTOR WHISPER]: {hint_text}\n"
                     f"</copilot_hint>"
                 )
