@@ -135,9 +135,6 @@ class WatcherBrain:
         should_inject = result.get("should_inject_hint", False)
         hint_type = result.get("hint_type", "strategy")
         hint_text = result.get("hint_text")
-        urgency = result.get("urgency", "coaching")
-        raw_role = result.get("role", "system")
-        role = "user" if raw_role == "user" or urgency == "urgent_interrupt" else "system"
         reasoning = result.get("reasoning", "")
 
         current_turn_count = len(transcript_history)
@@ -147,26 +144,21 @@ class WatcherBrain:
             if hint_text == self._last_injected_hint:
                 return False
 
-            if role == "user":
-                hint_payload = (
-                    f"[TEACHER & DIRECTOR COACHING OVERRIDE]: {hint_text}"
-                )
-            else:
-                hint_payload = (
-                    f'<copilot_hint type="{hint_type}">\n'
-                    f"[DIRECTOR WHISPER]: {hint_text}\n"
-                    f"</copilot_hint>"
-                )
+            hint_payload = (
+                f'<copilot_hint type="{hint_type}">\n'
+                f"[DIRECTOR WHISPER]: {hint_text}\n"
+                f"</copilot_hint>"
+            )
 
             logger.info(
-                f"👁️⚡ [WatcherBrain:Whisper] Generated {hint_type} hint (role={role}, urgency={urgency}) for '{user_id}':\n"
+                f"👁️⚡ [WatcherBrain:Whisper] Injected silent system hint ({hint_type}) for '{user_id}':\n"
                 f"   ├─ Text: {hint_text}\n"
                 f"   └─ Reason: {reasoning}"
             )
 
-            # Safely dispatch via phase tracker (buffers when bot is actively speaking)
+            # Silently dispatch directly to Gemini Live context (role='system', turn_complete=False)
             if phase_tracker and hasattr(phase_tracker, "yield_copilot_hint"):
-                success = await phase_tracker.yield_copilot_hint(hint_payload, role=role)
+                success = await phase_tracker.yield_copilot_hint(hint_payload, role="system")
                 if success:
                     self._last_injected_hint = hint_text
                     self._last_injected_turn_count = current_turn_count
@@ -177,7 +169,7 @@ class WatcherBrain:
                     await session.send_client_content(
                         turns=[
                             Content(
-                                role=role,
+                                role="system",
                                 parts=[Part(text=hint_payload)],
                             )
                         ],
