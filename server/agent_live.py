@@ -633,7 +633,16 @@ class GeminiSessionLoggerMixin:
         tool_calls = []
         if hasattr(message.tool_call, 'function_calls'):
             for fc in message.tool_call.function_calls:
-                 tool_calls.append({"name": fc.name, "args": fc.args})
+                tool_calls.append({"name": fc.name, "args": fc.args})
+                logger.info(
+                    f"\n════════════════════════════════════════════════════════════════════════\n"
+                    f"🔧 [GEMINI LIVE: TOOL CALL INVOCATION]\n"
+                    f"   ├─ Function: {fc.name}\n"
+                    f"   └─ Arguments: {json.dumps(fc.args, ensure_ascii=False) if isinstance(fc.args, dict) else fc.args}\n"
+                    f"════════════════════════════════════════════════════════════════════════"
+                )
+                append_diagnostic_log("🔧 Tool Invocation", f"{fc.name}({fc.args})")
+
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
