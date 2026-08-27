@@ -1,7 +1,7 @@
 import os
 import time
 import asyncio
-from typing import Optional
+from typing import Optional, List
 import re
 from loguru import logger
 
@@ -13,12 +13,13 @@ from pipecat.processors.aggregators.llm_response_universal import LLMContextAggr
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
-from pipecat.services.google.stt import GoogleSTTService
+from pipecat.services.stt_service import STTService
+from pipecat.services.google.stt import GoogleSTTService, language_to_google_stt_language
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
+                                   StartFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
                                    InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
@@ -34,11 +35,210 @@ from google.genai import types
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 
+VALID_STT_MODELS = {
+    "gemini-3.5-transcribe-live",
+    "gemini-3.5-transcribe-live-aistudio",
+    "chirp_3",
+    "chirp_2",
+    "latest_long",
+    "latest_short",
+    "telephony",
+}
+
+VALID_LLM_MODELS = {
+    "gemini-3.7-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+}
+
+
+def validate_stt_model(stt_model: Optional[str]) -> str:
+    """Validates and sanitizes STT model choice, defaulting to gemini-3.5-transcribe-live."""
+    if stt_model in VALID_STT_MODELS:
+        return stt_model
+    return "gemini-3.5-transcribe-live"
+
+
+def validate_llm_model(llm_model: Optional[str]) -> str:
+    """Validates and sanitizes LLM model choice, defaulting to gemini-3.7-flash."""
+    if llm_model in VALID_LLM_MODELS:
+        return llm_model
+    return "gemini-3.7-flash"
+
+
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None  # Don't serialize these frames
         return await super().serialize(frame)
+
+
+class CustomGeminiTranscribeLiveService(STTService):
+    """Speech-to-Text streaming service using Gemini 3.5 Transcribe Live.
+    
+    Supports both Vertex AI (Enterprise ADC) and Google AI Studio endpoints over WebSockets.
+    """
+    def __init__(
+        self,
+        *,
+        project_id: Optional[str] = None,
+        location: str = "us-central1",
+        api_key: Optional[str] = None,
+        model: str = "gemini-3.5-transcribe-live",
+        languages: Optional[List[Language]] = None,
+        is_ai_studio: bool = False,
+        sample_rate: int = 16000,
+        **kwargs
+    ):
+        super().__init__(sample_rate=sample_rate, **kwargs)
+        self.is_ai_studio = is_ai_studio
+        self.project_id = project_id
+        self.location = location
+        self.languages = languages or [Language("en-US"), Language("hi-IN")]
+        
+        # Clean model naming
+        clean_model = model.replace("-aistudio", "").strip()
+        if is_ai_studio:
+            self.model_name = f"models/{clean_model}" if not clean_model.startswith("models/") else clean_model
+            self._client = genai.Client(api_key=api_key)
+        else:
+            self.model_name = clean_model
+            self._client = genai.Client(vertexai=True, project=project_id, location=location)
+
+        self._audio_queue = asyncio.Queue()
+        self._streaming_task = None
+        self._stream_start_wall_time = None
+        self._user_started_speaking_time = None
+        self._user_stopped_speaking_time = None
+
+    def can_generate_metrics(self) -> bool:
+        return True
+
+    async def run_stt(self, audio: bytes):
+        """Streaming STT processing handled in bidirectional _streaming_worker task."""
+        if False:
+            yield None
+
+    async def start(self, frame: StartFrame):
+        await super().start(frame)
+        self._stream_start_wall_time = time.time()
+        self._streaming_task = self.create_task(self._streaming_worker())
+
+    async def stop(self, frame: Frame):
+        await super().stop(frame)
+        if self._streaming_task:
+            await self.cancel_task(self._streaming_task)
+            self._streaming_task = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            self._user_started_speaking_time = time.time()
+            self._user_stopped_speaking_time = None
+        elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
+            self._user_stopped_speaking_time = time.time()
+        elif isinstance(frame, AudioRawFrame):
+            await self._audio_queue.put(frame)
+            if self._audio_passthrough:
+                await self.push_frame(frame, direction)
+            return
+
+        await super().process_frame(frame, direction)
+
+    async def _streaming_worker(self):
+        lang_codes = [language_to_google_stt_language(lang) for lang in self.languages] if self.languages else []
+        config = types.LiveConnectConfig(
+            response_modalities=["TEXT"],
+            input_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=lang_codes
+            )
+        )
+        
+        while True:
+            try:
+                async with self._client.aio.live.connect(model=self.model_name, config=config) as session:
+                    logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
+
+                    async def send_audio():
+                        while True:
+                            audio_frame = await self._audio_queue.get()
+                            if audio_frame and audio_frame.audio:
+                                await session.send(
+                                    input={"data": audio_frame.audio, "mime_type": f"audio/pcm;rate={audio_frame.sample_rate}"},
+                                    end_of_turn=False
+                                )
+                            self._audio_queue.task_done()
+
+                    async def receive_transcripts():
+                        async for response in session.receive():
+                            server_content = getattr(response, "server_content", None)
+                            if not server_content:
+                                continue
+                            
+                            input_transcription = getattr(server_content, "input_transcription", None)
+                            if input_transcription and input_transcription.text:
+                                transcript_text = input_transcription.text.strip()
+                                if transcript_text:
+                                    now = time.time()
+                                    stt_latency = None
+                                    if self._user_stopped_speaking_time:
+                                        elapsed = now - self._user_stopped_speaking_time
+                                        if 0.05 <= elapsed <= 15.0:
+                                            stt_latency = elapsed
+                                    elif self._user_started_speaking_time:
+                                        elapsed = now - self._user_started_speaking_time
+                                        if 0.05 <= elapsed <= 15.0:
+                                            stt_latency = elapsed
+
+                                    if stt_latency is not None:
+                                        logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
+                                        await self.push_frame(OutputTransportMessageFrame(message={
+                                            "label": "rtvi-ai",
+                                            "type": "server-message",
+                                            "data": {
+                                                'type': 'metrics',
+                                                'payload': {'type': 'stt_latency', 'value': stt_latency}
+                                            }
+                                        }))
+
+                                    is_turn_complete = getattr(server_content, "turn_complete", False)
+                                    primary_lang = self.languages[0].value if self.languages else "en-US"
+                                    if is_turn_complete:
+                                        await self.push_frame(TranscriptionFrame(
+                                            text=transcript_text,
+                                            user_id=self._user_id,
+                                            timestamp=time_now_iso8601(),
+                                            language=primary_lang
+                                        ))
+                                    else:
+                                        await self.push_frame(InterimTranscriptionFrame(
+                                            text=transcript_text,
+                                            user_id=self._user_id,
+                                            timestamp=time_now_iso8601(),
+                                            language=primary_lang
+                                        ))
+
+                    send_task = asyncio.create_task(send_audio())
+                    receive_task = asyncio.create_task(receive_transcripts())
+                    
+                    done, pending = await asyncio.wait(
+                        [send_task, receive_task],
+                        return_when=asyncio.FIRST_EXCEPTION
+                    )
+                    for task in pending:
+                        task.cancel()
+                    for task in done:
+                        if task.exception():
+                            raise task.exception()
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Gemini 3.5 Transcribe Live connection exception: {e}")
+                await asyncio.sleep(1.0)
+
 
 
 class CustomGoogleSTTService(GoogleSTTService):
@@ -405,24 +605,49 @@ async def run_agent(
         ),
     )
 
+    clean_stt_model = validate_stt_model(stt_model)
+    clean_llm_model = validate_llm_model(llm_model)
+
     stt = None
     if not skip_stt:
-        valid_stt_models = {"chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"}
-        clean_stt_model = stt_model if stt_model in valid_stt_models else "chirp_3"
-        # chirp_3 is hosted in US multi-region ("us"), while chirp_2 is in us-central1
-        stt_loc = "us-central1" if ("chirp_2" in clean_stt_model) else "us"
-        
         stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
-        
-        stt = CustomGoogleSTTService(
-            vertexai_project=project_id,
-            location=stt_loc,
-            settings=GoogleSTTService.Settings(
-                languages=stt_languages,
+        if clean_stt_model.startswith("gemini-3.5-transcribe"):
+            is_ai_studio = clean_stt_model.endswith("-aistudio")
+            gemini_api_key = None
+            if is_ai_studio:
+                gemini_api_key = os.getenv("GEMINI_API_KEY")
+                if not gemini_api_key:
+                    try:
+                        from google.cloud import secretmanager
+                        sm_client = secretmanager.SecretManagerServiceClient()
+                        sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                        gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                        if gemini_api_key:
+                            os.environ["GEMINI_API_KEY"] = gemini_api_key
+                    except Exception as sm_err:
+                        logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+
+            stt = CustomGeminiTranscribeLiveService(
+                project_id=project_id,
+                location=location,
+                api_key=gemini_api_key,
                 model=clean_stt_model,
-                enable_interim_results=True,
+                languages=stt_languages,
+                is_ai_studio=is_ai_studio,
             )
-        )
+        else:
+            # chirp_3 is hosted in US multi-region ("us"), while chirp_2 is in us-central1
+            stt_loc = "us-central1" if ("chirp_2" in clean_stt_model) else "us"
+            stt = CustomGoogleSTTService(
+                vertexai_project=project_id,
+                location=stt_loc,
+                settings=GoogleSTTService.Settings(
+                    languages=stt_languages,
+                    model=clean_stt_model,
+                    enable_interim_results=True,
+                )
+            )
 
     final_system_instruction = system_instruction or SYSTEM_PROMPT
     if tts_model.startswith("gemini"):
@@ -431,17 +656,17 @@ async def run_agent(
     if skip_stt:
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
 
-    llm_location = "global" if any(k in llm_model for k in ["gemini-3", "3.6", "3.5"]) else location
+    llm_location = "global" if any(k in clean_llm_model for k in ["gemini-3", "3.7", "3.5"]) else location
     
     thinking_config = None
-    if any(k in llm_model for k in ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-3-flash-preview", "gemini-3.5-flash-preview", "gemini-3.5-flash"]):
+    if any(k in clean_llm_model for k in ["gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
 
     llm = CustomGoogleVertexLLMService(
         project_id=project_id,
         location=llm_location,
         settings=GoogleVertexLLMService.Settings(
-            model=llm_model,
+            model=clean_llm_model,
             system_instruction=final_system_instruction,
             max_tokens=1024 if thinking_config else 4096,
             thinking=thinking_config

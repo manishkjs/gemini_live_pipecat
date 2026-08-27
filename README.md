@@ -17,7 +17,11 @@ A high-performance, real-time voice-to-voice conversational AI application built
 ### 🎙️ How to Use the UI:
 1. **Select Flow:** Choose between **Gemini Live (Native Duplex Audio)** (default) or **STT + LLM + TTS (Cascaded)**.
 2. **Configure Model & Voice:**
-   * **Model:** `gemini-live-2.5-flash-native-audio` or `gemini-3.1-flash-live-preview`
+   * **Gemini Live Models:** `gemini-3.5-flash-live-preview`, `gemini-3.5-flash-lite-live-preview`, `gemini-live-2.5-flash-native-audio`
+   * **STT-LLM-TTS Stack:**
+     - **STT:** `gemini-3.5-transcribe-live` (Vertex AI), `gemini-3.5-transcribe-live-aistudio` (AI Studio), `chirp_3` (Cloud Speech v2 Multilingual), `chirp_2`, `latest_long`, `telephony`
+     - **LLM:** `gemini-3.7-flash` (with minimal thinking), `gemini-3.5-flash-lite`, `gemini-3.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
+     - **TTS:** `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-lite-preview-tts`, Google Cloud TTS (Chirp 3 HD), or Instant Custom Voice Cloning
    * **Voice:** Aoede, Puck, Charon, Fenrir, or Kore
    * **Language:** Hindi, English, Spanish, French, etc.
 3. **Customize System Instructions:** Modify persona or behavior directly in the prompt textarea.
@@ -34,6 +38,7 @@ A high-performance, real-time voice-to-voice conversational AI application built
 graph TD
     Client[Browser UI / & /diagnostics] <-->|WebSocket + RTVI Protocol| FastAPI[FastAPI Server :7860]
     FastAPI <-->|Bidirectional Audio/Text Streams| GeminiLive[Gemini Live API on Vertex AI]
+    FastAPI <-->|Streaming Transcriptions| GeminiTranscribe[Gemini 3.5 Transcribe Live]
     FastAPI -->|OpenTelemetry / RunTree Spans| LangSmith[LangSmith Tracing Platform]
     FastAPI -->|In-Memory Ring Buffer| DiagBuffer[Diagnostic Buffer]
     DiagBuffer -->|GET /api/logs & /api/trace| Client
@@ -43,11 +48,13 @@ graph TD
 
 ## 🌟 Key Features
 
-* **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-live-2.5-flash-native-audio` and `gemini-3.1-flash-live-preview`), achieving ~390ms–500ms Time-to-First-Byte (TTFB).
-* **⚙️ Async & Non-Blocking Tool Calling (OOTB):** Native out-of-the-box support for asynchronous non-blocking tool execution (`behavior: NON_BLOCKING` + `scheduling: WHEN_IDLE`) on **Vertex AI Gemini Live 2.5 Native Audio**. Long-running database lookups, CRM syncs, or APIs run in detached background tasks while the model continues speaking naturally without dead air or audio stalling.
+* **⚡ Ultra-Low Latency Duplex Voice:** Direct bidirectional native audio streaming with Gemini Live (`gemini-3.5-flash-live-preview`, `gemini-live-2.5-flash-native-audio`), achieving ~390ms–500ms Time-to-First-Byte (TTFB).
+* **🎙️ Gemini 3.5 Transcribe Live STT:** Native real-time streaming speech-to-text integration across **Vertex AI** and **Google AI Studio** with automatic language identification, custom speech biasing, and millisecond speech-offset latency metrics.
+* **⚡ Gemini 3.7 Flash & 2.5 Flash LLM Tiers:** High-performance LLM routing on Vertex AI (`global` endpoint) with thinking configuration for reasoning and dialogue management.
+* **⚙️ Async & Non-Blocking Tool Calling (OOTB):** Native out-of-the-box support for asynchronous non-blocking tool execution (`behavior: NON_BLOCKING` + `scheduling: WHEN_IDLE`) on **Vertex AI Gemini Live**. Long-running database lookups, CRM syncs, or APIs run in detached background tasks while the model continues speaking naturally without dead air or audio stalling.
 * **🔄 Dual Conversational Pipelines:**
   1. **Native Gemini Live Duplex Mode:** End-to-end multimodal audio-in / audio-out via WebSocket.
-  2. **Cascaded Mode:** Speech-to-Text + LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Instant Custom Voice Cloning).
+  2. **Cascaded Mode:** Gemini 3.5 Transcribe Live / Chirp 3 STT + Gemini 3.7 Flash / 2.5 Flash LLM + Google Cloud Text-to-Speech (Chirp 3 HD / Gemini TTS / Instant Custom Voice Cloning).
 * **🧠 Smart Filler & Interruption Detection:** Automatically differentiates between short conversational acknowledgments (e.g., *"haan"*, *"okay"*, *"right"*) and genuine topic interruptions, prompting the model to gracefully resume or yield.
 * **🔍 LangSmith Full-Duplex Observability:** Captures the full conversation run tree with nested child spans for User Speech (VAD boundaries), Gemini Live streaming turns, TTFT latencies, token consumption, and tool executions.
 * **🔓 Credential-Free Public Trace Links:** Mints public share tokens (`https://smith.langchain.com/public/<token>/r`) so sales teams, stakeholders, and clients can inspect live traces with **zero login or API key requirements**.
