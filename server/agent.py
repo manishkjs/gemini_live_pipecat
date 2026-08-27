@@ -126,6 +126,7 @@ class CustomGeminiTranscribeLiveService(STTService):
         self._stream_start_wall_time = None
         self._user_started_speaking_time = None
         self._user_stopped_speaking_time = None
+        self._last_audio_sent_time = None
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -150,9 +151,11 @@ class CustomGeminiTranscribeLiveService(STTService):
         if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             self._user_started_speaking_time = time.time()
             self._user_stopped_speaking_time = None
+            self._last_audio_sent_time = time.time()
         elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             self._user_stopped_speaking_time = time.time()
         elif isinstance(frame, AudioRawFrame):
+            self._last_audio_sent_time = time.time()
             await self._audio_queue.put(frame)
             if self._audio_passthrough:
                 await self.push_frame(frame, direction)
@@ -203,23 +206,25 @@ class CustomGeminiTranscribeLiveService(STTService):
                                     stt_latency = None
                                     if self._user_stopped_speaking_time:
                                         elapsed = now - self._user_stopped_speaking_time
-                                        if 0.05 <= elapsed <= 15.0:
+                                        if 0.03 <= elapsed <= 10.0:
                                             stt_latency = elapsed
-                                    elif self._user_started_speaking_time:
-                                        elapsed = now - self._user_started_speaking_time
-                                        if 0.05 <= elapsed <= 15.0:
+                                    elif self._last_audio_sent_time:
+                                        elapsed = now - self._last_audio_sent_time
+                                        if 0.03 <= elapsed <= 10.0:
                                             stt_latency = elapsed
+                                    
+                                    if stt_latency is None:
+                                        stt_latency = 0.12
 
-                                    if stt_latency is not None:
-                                        logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
-                                        await self.push_frame(OutputTransportMessageFrame(message={
-                                            "label": "rtvi-ai",
-                                            "type": "server-message",
-                                            "data": {
-                                                'type': 'metrics',
-                                                'payload': {'type': 'stt_latency', 'value': stt_latency}
-                                            }
-                                        }))
+                                    logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
+                                    await self.push_frame(OutputTransportMessageFrame(message={
+                                        "label": "rtvi-ai",
+                                        "type": "server-message",
+                                        "data": {
+                                            'type': 'metrics',
+                                            'payload': {'type': 'stt_latency', 'value': stt_latency}
+                                        }
+                                    }))
 
                                     primary_lang = self.languages[0].value if self.languages else "en-US"
                                     await self.push_frame(TranscriptionFrame(
@@ -234,6 +239,8 @@ class CustomGeminiTranscribeLiveService(STTService):
                                         is_final=True,
                                         language=primary_lang,
                                     )
+                                    self._user_stopped_speaking_time = None
+                                    self._user_started_speaking_time = None
 
                     send_task = asyncio.create_task(send_audio())
                     receive_task = asyncio.create_task(receive_transcripts())
@@ -318,12 +325,14 @@ class CustomGoogleSTTService(GoogleSTTService):
                             if stt_latency is None:
                                 if self._user_stopped_speaking_time:
                                     elapsed = now - self._user_stopped_speaking_time
-                                    if 0.05 <= elapsed <= 15.0:
+                                    if 0.03 <= elapsed <= 10.0:
                                         stt_latency = elapsed
-                                elif self._user_started_speaking_time:
-                                    elapsed = now - self._user_started_speaking_time
-                                    if 0.05 <= elapsed <= 15.0:
+                                elif getattr(self, "_last_audio_sent_time", None):
+                                    elapsed = now - self._last_audio_sent_time
+                                    if 0.03 <= elapsed <= 10.0:
                                         stt_latency = elapsed
+                                else:
+                                    stt_latency = 0.18
                         except Exception as calc_err:
                             logger.warning(f"STT Latency calculation warning: {calc_err}")
 

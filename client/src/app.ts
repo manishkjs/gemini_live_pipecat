@@ -594,6 +594,7 @@ class WebsocketClientApp {
       const effTts = this.pendingTTSLatency !== null ? this.pendingTTSLatency : undefined;
       this.pendingTTSLatency = null;
       const effStt = (this.connectedBotType === "tts-llm-stt") ? (this.lastTurnSTTLatency || undefined) : undefined;
+      this.lastTurnSTTLatency = null;
       this.updateBubbleLatencyDisplay(bubble, { 
           llmLatency: effTtft, 
           ttsLatency: effTts,
@@ -602,6 +603,7 @@ class WebsocketClientApp {
     } else if (role === "user") {
       const effStt = sttLatency !== undefined ? sttLatency : (this.pendingSTTLatency !== null ? this.pendingSTTLatency : undefined);
       this.pendingSTTLatency = null;
+      this.lastTurnSTTLatency = null;
       if (effStt !== undefined) {
         this.updateUserBubbleSTT(bubble, effStt);
       }
