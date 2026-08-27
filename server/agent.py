@@ -471,6 +471,18 @@ class CustomGoogleTTSService(GoogleTTSService):
                 }))
 
 class CustomGoogleVertexLLMService(GoogleVertexLLMService):
+    def _maybe_unset_thinking_budget(self, generation_params: dict):
+        try:
+            model = self._settings.model or ""
+            if "thinking_config" in generation_params:
+                return
+            if "gemini-3.7" in model or "gemini-2.5" in model:
+                generation_params["thinking_config"] = {"thinking_budget": 0}
+            elif "gemini-3.5-flash-lite" in model or "gemini-3.1" in model or "gemini-3-flash" in model:
+                generation_params["thinking_config"] = {"thinking_level": "minimal"}
+        except Exception as e:
+            logger.error(f"Failed to unset thinking budget: {e}")
+
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.time()
@@ -626,9 +638,10 @@ async def run_agent(
                     except Exception as sm_err:
                         logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
+            stt_loc = "global" if not is_ai_studio else location
             stt = CustomGeminiTranscribeLiveService(
                 project_id=project_id,
-                location=location,
+                location=stt_loc,
                 api_key=gemini_api_key,
                 model=clean_stt_model,
                 languages=stt_languages,
@@ -652,13 +665,17 @@ async def run_agent(
         final_system_instruction += "\n\n" + GEMINI_LLM_TTS_PROMPT
 
     if skip_stt:
-        final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
+        final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current current user query. Do not bring up previous topics or simulate future turns."
 
     llm_location = "global" if any(k in clean_llm_model for k in ["gemini-3", "3.7", "3.5"]) else location
     
     thinking_config = None
-    if any(k in clean_llm_model for k in ["gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]):
+    if "gemini-3.7" in clean_llm_model:
+        thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
+    elif any(k in clean_llm_model for k in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
+    elif any(k in clean_llm_model for k in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]):
+        thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
 
     llm = CustomGoogleVertexLLMService(
         project_id=project_id,
