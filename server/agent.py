@@ -100,7 +100,7 @@ class CustomGeminiTranscribeLiveService(STTService):
         # Clean model naming
         clean_model = model.replace("-aistudio", "").strip()
         if is_ai_studio:
-            self.model_name = f"models/{clean_model}" if not clean_model.startswith("models/") else clean_model
+            self.model_name = clean_model
             self._client = genai.Client(api_key=api_key)
         else:
             self.model_name = clean_model
@@ -146,12 +146,17 @@ class CustomGeminiTranscribeLiveService(STTService):
         await super().process_frame(frame, direction)
 
     async def _streaming_worker(self):
-        lang_codes = [language_to_google_stt_language(lang) for lang in self.languages] if self.languages else []
+        if self.is_ai_studio:
+            tx_config = types.AudioTranscriptionConfig()
+        else:
+            lang_codes = [language_to_google_stt_language(lang) for lang in self.languages] if self.languages else []
+            tx_config = types.AudioTranscriptionConfig(
+                language_codes=lang_codes if lang_codes else None
+            )
+
         config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
-            input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=lang_codes
-            )
+            input_audio_transcription=tx_config
         )
         
         while True:
@@ -623,20 +628,18 @@ async def run_agent(
         stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
         if clean_stt_model.startswith("gemini-3.5-transcribe"):
             is_ai_studio = clean_stt_model.endswith("-aistudio")
-            gemini_api_key = None
-            if is_ai_studio:
-                gemini_api_key = os.getenv("GEMINI_API_KEY")
-                if not gemini_api_key:
-                    try:
-                        from google.cloud import secretmanager
-                        sm_client = secretmanager.SecretManagerServiceClient()
-                        sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                        sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                        gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
-                        if gemini_api_key:
-                            os.environ["GEMINI_API_KEY"] = gemini_api_key
-                    except Exception as sm_err:
-                        logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+            gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not gemini_api_key:
+                try:
+                    from google.cloud import secretmanager
+                    sm_client = secretmanager.SecretManagerServiceClient()
+                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                    gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                    if gemini_api_key:
+                        os.environ["GEMINI_API_KEY"] = gemini_api_key
+                except Exception as sm_err:
+                    logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
             stt_loc = "global" if not is_ai_studio else location
             stt = CustomGeminiTranscribeLiveService(

@@ -32,7 +32,7 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
             languages=[Language("en-US")],
             is_ai_studio=True,
         )
-        self.assertEqual(service.model_name, "models/gemini-3.5-transcribe-live")
+        self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
 
     def test_init_ai_studio_suffix_clean(self):
@@ -42,7 +42,7 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
             languages=[Language("en-US")],
             is_ai_studio=True,
         )
-        self.assertEqual(service.model_name, "models/gemini-3.5-transcribe-live")
+        self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
 
 
