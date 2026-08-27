@@ -36,8 +36,8 @@ from google.genai import types
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 
 VALID_STT_MODELS = {
-    "gemini-3.5-transcribe-live",
     "gemini-3.5-transcribe-live-aistudio",
+    "gemini-3.5-transcribe-live",
     "chirp_3",
     "chirp_2",
     "latest_long",
@@ -46,25 +46,40 @@ VALID_STT_MODELS = {
 }
 
 VALID_LLM_MODELS = {
-    "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 }
 
+VALID_TTS_MODELS = {
+    "gemini-3.1-flash-tts-preview",
+    "gemini-2.5-flash-lite-preview-tts",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
+    "google-tts",
+}
+
 
 def validate_stt_model(stt_model: Optional[str]) -> str:
-    """Validates and sanitizes STT model choice, defaulting to gemini-3.5-transcribe-live."""
+    """Validates and sanitizes STT model choice, defaulting to gemini-3.5-transcribe-live-aistudio."""
     if stt_model in VALID_STT_MODELS:
         return stt_model
-    return "gemini-3.5-transcribe-live"
+    return "gemini-3.5-transcribe-live-aistudio"
 
 
 def validate_llm_model(llm_model: Optional[str]) -> str:
-    """Validates and sanitizes LLM model choice, defaulting to gemini-3.7-flash."""
+    """Validates and sanitizes LLM model choice, defaulting to gemini-3.5-flash-lite."""
     if llm_model in VALID_LLM_MODELS:
         return llm_model
-    return "gemini-3.7-flash"
+    return "gemini-3.5-flash-lite"
+
+
+def validate_tts_model(tts_model: Optional[str]) -> str:
+    """Validates and sanitizes TTS model choice, defaulting to gemini-3.1-flash-tts-preview."""
+    if tts_model in VALID_TTS_MODELS:
+        return tts_model
+    return "gemini-3.1-flash-tts-preview"
 
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
@@ -596,10 +611,10 @@ async def run_agent(
     websocket: WebSocket,
     tts_voice: str,
     tts_pace: float,
-    llm_model: str,
-    stt_model: str,
-    stt_language: str,
-    tts_model: str = "google-tts",
+    llm_model: str = "gemini-3.5-flash-lite",
+    stt_model: str = "gemini-3.5-transcribe-live-aistudio",
+    stt_language: str = "en-US",
+    tts_model: str = "gemini-3.1-flash-tts-preview",
     tts_voice_prompt: Optional[str] = None,
     system_instruction: Optional[str] = None,
     skip_stt: bool = False,
@@ -619,6 +634,7 @@ async def run_agent(
 
     clean_stt_model = validate_stt_model(stt_model)
     clean_llm_model = validate_llm_model(llm_model)
+    clean_tts_model = validate_tts_model(tts_model)
 
     stt = None
     if not skip_stt:
@@ -691,9 +707,9 @@ async def run_agent(
         )
     )
 
-    if tts_model.startswith("gemini"):
+    if clean_tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
-        tts_location = "global" if "gemini-3" in tts_model else location
+        tts_location = "global" if "gemini-3" in clean_tts_model else location
         
         tts_lang = "hi-IN"
         if stt_language:
@@ -705,7 +721,7 @@ async def run_agent(
             project_id=project_id,
             location=tts_location,
             voice_id=tts_voice,
-            model=tts_model, # Use the conditionally passed model
+            model=clean_tts_model, # Use the sanitized model
             sample_rate=24000, 
             voice_prompt=tts_voice_prompt,
             language_code=tts_lang,

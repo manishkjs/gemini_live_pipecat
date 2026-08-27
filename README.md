@@ -19,9 +19,9 @@ A high-performance, real-time voice-to-voice conversational AI application built
 2. **Configure Model & Voice:**
    * **Gemini Live Models:** `gemini-3.5-flash-live-preview`, `gemini-3.5-flash-lite-live-preview`, `gemini-live-2.5-flash-native-audio`
    * **STT-LLM-TTS Stack:**
-     - **STT:** `gemini-3.5-transcribe-live` (Vertex AI), `gemini-3.5-transcribe-live-aistudio` (AI Studio), `chirp_3` (Cloud Speech v2 Multilingual), `chirp_2`, `latest_long`, `telephony`
-     - **LLM:** `gemini-3.7-flash` (with minimal thinking), `gemini-3.5-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
-     - **TTS:** `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-lite-preview-tts`, Google Cloud TTS (Chirp 3 HD), or Instant Custom Voice Cloning
+     - **STT:** `gemini-3.5-transcribe-live-aistudio` (AI Studio - Default), `gemini-3.5-transcribe-live` (Vertex AI), `chirp_3` (Cloud Speech v2 Multilingual), `chirp_2`, `latest_long`, `telephony`
+     - **LLM:** `gemini-3.5-flash-lite` (Vertex AI - Default), `gemini-3.7-flash`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
+     - **TTS:** `gemini-3.1-flash-tts-preview` (Gemini 3.1 Flash TTS - Default), `gemini-2.5-flash-lite-preview-tts`, `gemini-2.5-flash-preview-tts`, Google Cloud TTS (Chirp 3 HD), or Instant Custom Voice Cloning
    * **Voice:** Aoede, Puck, Charon, Fenrir, or Kore
    * **Language:** Hindi, English, Spanish, French, etc.
 3. **Customize System Instructions:** Modify persona or behavior directly in the prompt textarea.

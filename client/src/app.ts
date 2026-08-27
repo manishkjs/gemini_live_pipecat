@@ -962,10 +962,10 @@ class WebsocketClientApp {
         const skipSttToggle = document.getElementById("skip-stt-toggle") as HTMLInputElement | null;
 
         connectUrl += `&tts_voice=${ttsVoiceSelect?.value || "Aoede"}`;
-        connectUrl += `&tts_model=${ttsModelSelect?.value || "gemini-2.5-flash"}`;
+        connectUrl += `&tts_model=${ttsModelSelect?.value || "gemini-3.1-flash-tts-preview"}`;
         connectUrl += `&tts_pace=${paceSlider?.value || "1.0"}`;
-        connectUrl += `&llm_model=${llmModelSelect?.value || "gemini-3.7-flash"}`;
-        connectUrl += `&stt_model=${sttModelSelect?.value || "gemini-3.5-transcribe-live"}`;
+        connectUrl += `&llm_model=${llmModelSelect?.value || "gemini-3.5-flash-lite"}`;
+        connectUrl += `&stt_model=${sttModelSelect?.value || "gemini-3.5-transcribe-live-aistudio"}`;
         connectUrl += `&skip_stt=${skipSttToggle?.checked || false}`;
         
         const checkedLanguages = Array.from(sttLanguageContainer?.querySelectorAll('input[type="checkbox"]:checked') || [])
