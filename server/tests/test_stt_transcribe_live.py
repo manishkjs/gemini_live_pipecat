@@ -20,7 +20,7 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
             languages=[Language("en-US"), Language("hi-IN")],
             is_ai_studio=False,
         )
-        self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
+        self.assertEqual(service.model_name, "gemini-3.5-transcribe-live-preview")
         self.assertFalse(service.is_ai_studio)
         self.assertEqual(service.location, "us-central1")
         self.assertEqual(service.project_id, "deep-clock-339817")

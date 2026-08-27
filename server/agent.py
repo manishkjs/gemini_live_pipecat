@@ -37,6 +37,7 @@ from google.genai import types
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 
 VALID_STT_MODELS = {
+    "gemini-3.5-transcribe-live-preview",
     "gemini-3.5-transcribe-live-aistudio",
     "gemini-3.5-transcribe-live",
     "chirp_3",
@@ -99,9 +100,9 @@ class CustomGeminiTranscribeLiveService(STTService):
         self,
         *,
         project_id: Optional[str] = None,
-        location: str = "us-central1",
+        location: str = "global",
         api_key: Optional[str] = None,
-        model: str = "gemini-3.5-transcribe-live",
+        model: str = "gemini-3.5-transcribe-live-aistudio",
         languages: Optional[List[Language]] = None,
         is_ai_studio: bool = False,
         sample_rate: int = 16000,
@@ -119,7 +120,7 @@ class CustomGeminiTranscribeLiveService(STTService):
             self.model_name = clean_model
             self._client = genai.Client(api_key=api_key)
         else:
-            self.model_name = clean_model
+            self.model_name = clean_model if clean_model.endswith("-preview") else f"{clean_model}-preview"
             self._client = genai.Client(vertexai=True, project=project_id, location=location)
 
         self._audio_queue = asyncio.Queue()
@@ -187,9 +188,11 @@ class CustomGeminiTranscribeLiveService(STTService):
                         while True:
                             audio_frame = await self._audio_queue.get()
                             if audio_frame and audio_frame.audio:
-                                await session.send(
-                                    input={"data": audio_frame.audio, "mime_type": f"audio/pcm;rate={audio_frame.sample_rate}"},
-                                    end_of_turn=False
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=audio_frame.audio,
+                                        mime_type=f"audio/pcm;rate={audio_frame.sample_rate}"
+                                    )
                                 )
                             self._audio_queue.task_done()
 
@@ -199,6 +202,20 @@ class CustomGeminiTranscribeLiveService(STTService):
                             if not server_content:
                                 continue
                             
+                            # 1. Real-time interim transcript for instantaneous UI streaming
+                            interim = getattr(server_content, "interim_input_transcription", None)
+                            if interim and interim.text:
+                                interim_text = interim.text.strip()
+                                if interim_text:
+                                    primary_lang = self.languages[0].value if self.languages else "en-US"
+                                    await self.push_frame(InterimTranscriptionFrame(
+                                        text=interim_text,
+                                        user_id=self._user_id,
+                                        timestamp=time_now_iso8601(),
+                                        language=primary_lang
+                                    ))
+
+                            # 2. Finalized speech turn transcript
                             input_transcription = getattr(server_content, "input_transcription", None)
                             if input_transcription and input_transcription.text:
                                 transcript_text = input_transcription.text.strip()
@@ -659,9 +676,14 @@ async def run_agent(
     if not skip_stt:
         stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
         if clean_stt_model.startswith("gemini-3.5-transcribe"):
-            is_ai_studio = clean_stt_model.endswith("-aistudio")
+            is_ai_studio = False
+            if "aistudio" in clean_stt_model:
+                is_ai_studio = True
+            elif not clean_stt_model.endswith("-preview") and os.getenv("GEMINI_API_KEY"):
+                is_ai_studio = True
+
             gemini_api_key = os.getenv("GEMINI_API_KEY")
-            if not gemini_api_key:
+            if is_ai_studio and not gemini_api_key:
                 try:
                     from google.cloud import secretmanager
                     sm_client = secretmanager.SecretManagerServiceClient()
@@ -672,9 +694,6 @@ async def run_agent(
                         os.environ["GEMINI_API_KEY"] = gemini_api_key
                 except Exception as sm_err:
                     logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
-
-            if gemini_api_key:
-                is_ai_studio = True
 
             stt_loc = "global" if not is_ai_studio else location
             stt = CustomGeminiTranscribeLiveService(
