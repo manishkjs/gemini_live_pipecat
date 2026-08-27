@@ -9,7 +9,8 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
@@ -631,12 +632,21 @@ async def run_agent(
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
+    vad_analyzer = SileroVADAnalyzer(
+        params=VADParams(
+            confidence=0.7,
+            start_secs=0.2,
+            stop_secs=0.4,
+            min_volume=0.6,
+        )
+    )
+    vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
+
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)),
             serializer=CustomProtobufSerializer(),
         ),
     )
@@ -814,12 +824,16 @@ async def run_agent(
             {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
         ])
-        context_aggregator = LLMContextAggregatorPair(context)
+        user_params = LLMUserAggregatorParams(
+            vad_analyzer=vad_analyzer,
+        )
+        context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
 
         pipeline_elements = [
             transport.input(),
             start_trigger,
+            vad_processor,
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
