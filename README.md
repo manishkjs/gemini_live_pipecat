@@ -20,7 +20,7 @@ A high-performance, real-time voice-to-voice conversational AI application built
    * **Gemini Live Models:** `gemini-3.5-flash-live-preview`, `gemini-3.5-flash-lite-live-preview`, `gemini-live-2.5-flash-native-audio`
    * **STT-LLM-TTS Stack:**
      - **STT:** `gemini-3.5-transcribe-live` (Vertex AI), `gemini-3.5-transcribe-live-aistudio` (AI Studio), `chirp_3` (Cloud Speech v2 Multilingual), `chirp_2`, `latest_long`, `telephony`
-     - **LLM:** `gemini-3.7-flash` (with minimal thinking), `gemini-3.5-flash-lite`, `gemini-3.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
+     - **LLM:** `gemini-3.7-flash` (with minimal thinking), `gemini-3.5-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
      - **TTS:** `gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-lite-preview-tts`, Google Cloud TTS (Chirp 3 HD), or Instant Custom Voice Cloning
    * **Voice:** Aoede, Puck, Charon, Fenrir, or Kore
    * **Language:** Hindi, English, Spanish, French, etc.
