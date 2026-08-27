@@ -206,22 +206,19 @@ class CustomGeminiTranscribeLiveService(STTService):
                                             }
                                         }))
 
-                                    is_turn_complete = getattr(server_content, "turn_complete", False)
                                     primary_lang = self.languages[0].value if self.languages else "en-US"
-                                    if is_turn_complete:
-                                        await self.push_frame(TranscriptionFrame(
-                                            text=transcript_text,
-                                            user_id=self._user_id,
-                                            timestamp=time_now_iso8601(),
-                                            language=primary_lang
-                                        ))
-                                    else:
-                                        await self.push_frame(InterimTranscriptionFrame(
-                                            text=transcript_text,
-                                            user_id=self._user_id,
-                                            timestamp=time_now_iso8601(),
-                                            language=primary_lang
-                                        ))
+                                    await self.push_frame(TranscriptionFrame(
+                                        text=transcript_text,
+                                        user_id=self._user_id,
+                                        timestamp=time_now_iso8601(),
+                                        language=primary_lang
+                                    ))
+                                    await self.stop_processing_metrics()
+                                    await self._handle_transcription(
+                                        transcript_text,
+                                        is_final=True,
+                                        language=primary_lang,
+                                    )
 
                     send_task = asyncio.create_task(send_audio())
                     receive_task = asyncio.create_task(receive_transcripts())
@@ -640,6 +637,9 @@ async def run_agent(
                         os.environ["GEMINI_API_KEY"] = gemini_api_key
                 except Exception as sm_err:
                     logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+
+            if gemini_api_key:
+                is_ai_studio = True
 
             stt_loc = "global" if not is_ai_studio else location
             stt = CustomGeminiTranscribeLiveService(
