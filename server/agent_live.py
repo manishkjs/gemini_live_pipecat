@@ -621,12 +621,10 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
     
-    identity_instruction = (
-        "\n\nIDENTITY RULE:\n"
-        "1. When greeting the user initially, ask who you are speaking with today.\n"
-        "2. As soon as the user states their name, call `identify_user(name=...)` immediately.\n"
-    )
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
+    neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
+    if not system_instruction:
+        neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
+    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + neutrality_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []

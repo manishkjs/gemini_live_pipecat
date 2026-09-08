@@ -717,7 +717,10 @@ async def run_agent(
                 )
             )
 
-    final_system_instruction = system_instruction or SYSTEM_PROMPT
+    neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
+    if not system_instruction:
+        neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
+    final_system_instruction = (system_instruction or SYSTEM_PROMPT) + neutrality_instruction
     if tts_model.startswith("gemini"):
         final_system_instruction += "\n\n" + GEMINI_LLM_TTS_PROMPT
 
