@@ -28,6 +28,7 @@ import {
   Globe2,
   Edit3,
   RotateCcw,
+  DollarSign,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -51,6 +52,7 @@ import {
 } from "@/lib/voice-session";
 import { PERSONAS, getPersona, type Persona, type PersonaId } from "@/lib/personas";
 import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
+import { isLivePricingEligible, getLiveRateCard, formatCost, calculateTurnCost } from "@/lib/pricing";
 import ObservabilityDrawer from "./observability-drawer";
 import "./voice-studio.css";
 
@@ -160,6 +162,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const [lastTTFB, setLastTTFB] = useState<number | null>(null);
   const [lastTTS, setLastTTS] = useState<number | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
+  const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
   const [interruptCount, setInterruptCount] = useState(0);
 
   const customInstructions = useRef("");
@@ -259,6 +262,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
     setLastTTFB(null);
     setLastTTS(null);
     setTokenCount(0);
+    setSessionCostUSD(0);
     setInterruptCount(0);
     followTranscript.current = true;
   };
@@ -366,6 +370,9 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             if (metrics?.usage?.total_token_count) {
               setTokenCount((c) => c + (metrics.usage?.total_token_count || 0));
             }
+            if (metrics?.turnCostUSD) {
+              setSessionCostUSD((c) => c + metrics.turnCostUSD!);
+            }
           }
           if (append) {
             setMessages((items) => {
@@ -379,6 +386,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   llmLatency: last.metrics?.llmLatency ?? metrics?.llmLatency,
                   sttLatency: last.metrics?.sttLatency ?? metrics?.sttLatency,
                   ttsLatency: last.metrics?.ttsLatency ?? metrics?.ttsLatency,
+                  turnCostUSD: metrics?.turnCostUSD ?? last.metrics?.turnCostUSD,
                   usage: metrics?.usage ?? last.metrics?.usage,
                 };
                 return [...items.slice(0, -1), { ...last, text: last.text + separator + text, metrics: mergedMetrics }];
@@ -466,13 +474,17 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             if (val?.total_token_count) {
               setTokenCount((c) => c + val.total_token_count);
             }
+            const turnCost = val?.turnCostUSD ?? (targetEngine === "live" ? calculateTurnCost(settings.model, val)?.totalUSD : undefined);
+            if (turnCost) {
+              setSessionCostUSD((c) => c + turnCost);
+            }
             setMessages((items) => {
               const idx = items.findLastIndex((m) => m.role === "assistant");
               if (idx === -1) return items;
               const copy = [...items];
               copy[idx] = {
                 ...copy[idx],
-                metrics: { ...copy[idx].metrics, usage: val },
+                metrics: { ...copy[idx].metrics, usage: val, turnCostUSD: turnCost ?? copy[idx].metrics?.turnCostUSD },
               };
               return copy;
             });
@@ -761,6 +773,12 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                 {sound ? <Volume2 size={17} /> : <VolumeX size={17} />}
               </Button>
             </div>
+            {isLivePricingEligible(settings.engine, settings.model) && sessionCostUSD > 0 && (
+              <div className="session-recap-pill">
+                <DollarSign size={13} />
+                <span>Session Live Cost: <strong>{formatCost(sessionCostUSD)}</strong></span>
+              </div>
+            )}
           </div>
           <p className="preview-note">
             {active
@@ -782,6 +800,12 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   {lastSTT !== null && <span className="ticker-pill">STT: <strong>{lastSTT}ms</strong></span>}
                   {lastTTFB !== null && <span className="ticker-pill">TTFB: <strong>{lastTTFB}ms</strong></span>}
                   {tokenCount > 0 && <span className="ticker-pill">Tokens: <strong>{tokenCount}</strong></span>}
+                  {isLivePricingEligible(settings.engine, settings.model) && sessionCostUSD > 0 && (
+                    <span className="ticker-pill cost-pill" title="Estimated live session token spend">
+                      <DollarSign size={10} />
+                      <span>{formatCost(sessionCostUSD)}</span>
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -976,6 +1000,13 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                                   {message.metrics.usage?.total_token_count ? (
                                     <span className="token-tag">{message.metrics.usage.total_token_count} tok</span>
                                   ) : null}
+                                  {isLivePricingEligible(settings.engine, settings.model) &&
+                                    message.metrics?.turnCostUSD !== undefined &&
+                                    message.metrics.turnCostUSD > 0 && (
+                                      <span className="cost-tag" title="Turn cost (audio/text tokens)">
+                                        {formatCost(message.metrics.turnCostUSD)}
+                                      </span>
+                                    )}
                                 </div>
                               ) : null
                             ) : (
@@ -1107,6 +1138,39 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   onChange={(value) => update("model", value)}
                   options={LIVE_MODELS}
                 />
+
+                {isLivePricingEligible(settings.engine, settings.model) && (() => {
+                  const card = getLiveRateCard(settings.model);
+                  if (!card) return null;
+                  return (
+                    <div className="live-pricing-callout">
+                      <div className="pricing-callout-head">
+                        <span className="pricing-badge-title">
+                          <DollarSign size={12} /> {card.displayName} Pricing
+                        </span>
+                        <span className="pricing-est-pill">{card.estHourlyUSD}</span>
+                      </div>
+                      <div className="pricing-rate-grid">
+                        <div className="pricing-rate-col">
+                          <span className="rate-lbl">Audio In:</span>
+                          <span className="rate-val">${card.audioInPerMillion.toFixed(2)}/1M tok</span>
+                        </div>
+                        <div className="pricing-rate-col">
+                          <span className="rate-lbl">Audio Out:</span>
+                          <span className="rate-val">${card.audioOutPerMillion.toFixed(2)}/1M tok</span>
+                        </div>
+                        <div className="pricing-rate-col">
+                          <span className="rate-lbl">Text In:</span>
+                          <span className="rate-val">${card.textInPerMillion.toFixed(2)}/1M tok</span>
+                        </div>
+                        <div className="pricing-rate-col">
+                          <span className="rate-lbl">Text Out:</span>
+                          <span className="rate-val">${card.textOutPerMillion.toFixed(2)}/1M tok</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="settings-pair">
                   <Picker
@@ -1395,6 +1459,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
         open={observabilityOpen}
         onClose={() => setObservabilityOpen(false)}
         backendUrl={settings.backendUrl?.trim() || getDefaultBackendUrl()}
+        engine={settings.engine}
       />
     </main>
   );

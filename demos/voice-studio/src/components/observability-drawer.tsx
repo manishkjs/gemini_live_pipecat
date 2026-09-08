@@ -34,13 +34,16 @@ type ObservabilityDrawerProps = {
   open: boolean;
   onClose: () => void;
   backendUrl: string;
+  engine?: "live" | "cascade";
 };
 
-export default function ObservabilityDrawer({ open, onClose, backendUrl }: ObservabilityDrawerProps) {
+export default function ObservabilityDrawer({ open, onClose, backendUrl, engine = "live" }: ObservabilityDrawerProps) {
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null);
   const [traceUrl, setTraceUrl] = useState<string>("https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat");
-  const [selectedStage, setSelectedStage] = useState<"total" | "llm" | "stt" | "tts" | "live_ttfb">("total");
+  const [selectedStage, setSelectedStage] = useState<"total" | "llm" | "stt" | "tts" | "live_ttfb">(
+    engine === "live" ? "live_ttfb" : "total"
+  );
   const [activeFilter, setActiveFilter] = useState<"ALL" | "INFO" | "WARNING" | "ERROR">("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedTrace, setCopiedTrace] = useState(false);
@@ -179,7 +182,27 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl }: Obser
     });
   }, [logs, activeFilter, searchQuery]);
 
+  // For Gemini Live flow, liveStat is used, or fallback to llmStat if backend recorded as llm
+  const effectiveLiveStat = (aggregatedMetrics.liveStat?.count || 0) > 0
+    ? aggregatedMetrics.liveStat
+    : aggregatedMetrics.llmStat;
+
+  useEffect(() => {
+    if (engine === "live" && selectedStage !== "total" && selectedStage !== "live_ttfb") {
+      setSelectedStage("live_ttfb");
+    } else if (engine === "cascade" && selectedStage === "live_ttfb") {
+      setSelectedStage("total");
+    }
+  }, [engine, selectedStage]);
+
   const activeStat = useMemo(() => {
+    if (engine === "live") {
+      if (selectedStage === "total") {
+        return { label: "Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
+      }
+      return { label: "Gemini Live Native TTFB", stat: effectiveLiveStat, color: "#38bdf8" };
+    }
+
     switch (selectedStage) {
       case "llm":
         return { label: "LLM TTFB (Reasoning Stream)", stat: aggregatedMetrics.llmStat, color: "#c084fc" };
@@ -187,13 +210,11 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl }: Obser
         return { label: "STT Chirp Latency", stat: aggregatedMetrics.sttStat, color: "#fbbf24" };
       case "tts":
         return { label: "TTS Audio Synthesis", stat: aggregatedMetrics.ttsStat, color: "#4ade80" };
-      case "live_ttfb":
-        return { label: "Gemini Live Native TTFB", stat: aggregatedMetrics.liveStat, color: "#38bdf8" };
       case "total":
       default:
         return { label: "Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
     }
-  }, [selectedStage, aggregatedMetrics]);
+  }, [engine, selectedStage, aggregatedMetrics, effectiveLiveStat]);
 
   if (!open) return null;
 
@@ -261,13 +282,18 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl }: Obser
 
             {/* Stage filter pills */}
             <div className="obs-stage-pills">
-              {[
-                { id: "total", label: "🌟 Total (E2E)", count: aggregatedMetrics.totalStat.count },
-                { id: "live_ttfb", label: "⚡ Live TTFB", count: aggregatedMetrics.liveStat.count },
-                { id: "llm", label: "🧠 LLM TTFB", count: aggregatedMetrics.llmStat.count },
-                { id: "stt", label: "🎙️ STT", count: aggregatedMetrics.sttStat.count },
-                { id: "tts", label: "🔊 TTS", count: aggregatedMetrics.ttsStat.count },
-              ].map((stage) => (
+              {(engine === "live"
+                ? [
+                    { id: "total", label: "🌟 Total (E2E)", count: aggregatedMetrics.totalStat.count },
+                    { id: "live_ttfb", label: "⚡ Live TTFB", count: effectiveLiveStat.count },
+                  ]
+                : [
+                    { id: "total", label: "🌟 Total (E2E)", count: aggregatedMetrics.totalStat.count },
+                    { id: "llm", label: "🧠 LLM TTFB", count: aggregatedMetrics.llmStat.count },
+                    { id: "stt", label: "🎙️ STT", count: aggregatedMetrics.sttStat.count },
+                    { id: "tts", label: "🔊 TTS", count: aggregatedMetrics.ttsStat.count },
+                  ]
+              ).map((stage) => (
                 <button
                   key={stage.id}
                   className={`stage-pill ${selectedStage === stage.id ? "selected" : ""}`}
@@ -329,23 +355,30 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl }: Obser
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { id: "total", name: "🌟 Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" },
-                    { id: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Audio)", stat: aggregatedMetrics.liveStat, color: "#38bdf8" },
-                    { id: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: aggregatedMetrics.llmStat, color: "#c084fc" },
-                    { id: "stt", name: "🎙️ STT Latency (Cloud Speech v2 / AI Studio)", stat: aggregatedMetrics.sttStat, color: "#fbbf24" },
-                    { id: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: aggregatedMetrics.ttsStat, color: "#4ade80" },
-                  ].map((row) => (
+                  {(engine === "live"
+                    ? [
+                        { id: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Audio)", stat: effectiveLiveStat, color: "#38bdf8" },
+                        ...(aggregatedMetrics.totalStat?.count && aggregatedMetrics.totalStat.count > 0
+                          ? [{ id: "total", name: "🌟 Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" }]
+                          : []),
+                      ]
+                    : [
+                        { id: "total", name: "🌟 Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" },
+                        { id: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: aggregatedMetrics.llmStat, color: "#c084fc" },
+                        { id: "stt", name: "🎙️ STT Latency (Cloud Speech v2 / AI Studio)", stat: aggregatedMetrics.sttStat, color: "#fbbf24" },
+                        { id: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: aggregatedMetrics.ttsStat, color: "#4ade80" },
+                      ]
+                  ).map((row) => (
                     <tr
                       key={row.id}
                       className={selectedStage === row.id ? "active-row" : ""}
                       onClick={() => setSelectedStage(row.id as any)}
                     >
                       <td style={{ color: row.color, fontWeight: 600 }}>{row.name}</td>
-                      <td>{row.stat.p50 !== undefined ? `${row.stat.p50} ms` : "--"}</td>
-                      <td>{row.stat.p90 !== undefined ? `${row.stat.p90} ms` : "--"}</td>
-                      <td>{row.stat.p95 !== undefined ? `${row.stat.p95} ms` : "--"}</td>
-                      <td>{row.stat.mean !== undefined ? `${row.stat.mean} ms` : "--"}</td>
+                      <td>{row.stat.p50 !== undefined && row.stat.count > 0 ? `${row.stat.p50} ms` : "--"}</td>
+                      <td>{row.stat.p90 !== undefined && row.stat.count > 0 ? `${row.stat.p90} ms` : "--"}</td>
+                      <td>{row.stat.p95 !== undefined && row.stat.count > 0 ? `${row.stat.p95} ms` : "--"}</td>
+                      <td>{row.stat.mean !== undefined && row.stat.count > 0 ? `${row.stat.mean} ms` : "--"}</td>
                       <td>{row.stat.count > 0 ? `${row.stat.min} - ${row.stat.max} ms` : "--"}</td>
                       <td><strong>{row.stat.count || 0}</strong></td>
                     </tr>

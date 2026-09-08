@@ -1,4 +1,5 @@
 import { buildConnectRequest, validateSocketUrl, type SessionSettings } from "./voice-session";
+import { calculateTurnCost } from "./pricing";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
@@ -7,6 +8,7 @@ export type MessageMetrics = {
   llmLatency?: number; // In seconds (TTFB)
   ttsLatency?: number; // In seconds
   interruptedMs?: number;
+  turnCostUSD?: number;
   usage?: {
     total_token_count?: number;
     prompt_token_count?: number;
@@ -153,12 +155,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         const effStt = settings.engine === "cascade" ? (lastTurnSTTLatency ?? undefined) : undefined;
         lastTurnSTTLatency = null;
         const effUsage = lastTurnUsage ?? undefined;
+        const turnCost = (settings.engine === "live" && effUsage) ? calculateTurnCost(settings.model, effUsage) : null;
 
         events.onMessage("assistant", data.text, turnStarted, {
           llmLatency: effLlm,
           ttsLatency: effTts,
           sttLatency: effStt,
           usage: effUsage,
+          turnCostUSD: turnCost?.totalUSD,
         });
         turnStarted = true;
       }
@@ -194,7 +198,11 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         events.onMetricUpdate?.("tts_latency", p.value);
       } else if (p.type === "usage") {
         lastTurnUsage = p.usage ?? null;
-        events.onMetricUpdate?.("usage", p.usage);
+        const turnCost = settings.engine === "live" ? calculateTurnCost(settings.model, p.usage) : null;
+        events.onMetricUpdate?.("usage", {
+          ...p.usage,
+          turnCostUSD: turnCost?.totalUSD,
+        });
       } else if (p.type === "tool_call") {
         events.onMetricUpdate?.("tool_call", p);
       }

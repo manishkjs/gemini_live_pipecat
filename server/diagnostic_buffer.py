@@ -62,8 +62,22 @@ def parse_and_record_latency_from_log(msg: str):
     """Auto-extract and record latency measurements from log strings."""
     lower = msg.lower()
     
-    # 1. Cloud Speech v2 STT Latency
-    if "stt latency" in lower:
+    # 1. Native Gemini Live TTFB
+    if "ttft calculation:" in lower or "live ttfb" in lower or ("live" in lower and "ttfb" in lower) or ("geminilive" in lower and "ttfb:" in lower):
+        try:
+            import re
+            m = re.search(r"(\d+(?:\.\d+)?)\s*ms", lower)
+            if m:
+                record_turn_latency("live_ttfb", float(m.group(1)), "Gemini Live Native Audio")
+            else:
+                m_sec = re.search(r"(\d+(?:\.\d+)?)\s*s", lower)
+                if m_sec:
+                    record_turn_latency("live_ttfb", float(m_sec.group(1)) * 1000.0, "Gemini Live Native Audio")
+        except Exception:
+            pass
+
+    # 2. Cloud Speech v2 STT Latency
+    elif "stt latency" in lower:
         try:
             import re
             m = re.search(r"(\d+(?:\.\d+)?)\s*ms", msg)
@@ -76,7 +90,7 @@ def parse_and_record_latency_from_log(msg: str):
         except Exception:
             pass
 
-    # 2. LLM Latency / TTFB
+    # 3. LLM Latency / TTFB
     elif "llm latency" in lower or ("llmservice" in lower and "ttfb:" in lower):
         try:
             import re
@@ -90,7 +104,7 @@ def parse_and_record_latency_from_log(msg: str):
         except Exception:
             pass
 
-    # 3. TTS Latency
+    # 4. TTS Latency
     elif "tts latency" in lower or ("ttsservice" in lower and "ttfb:" in lower):
         try:
             import re
@@ -101,20 +115,6 @@ def parse_and_record_latency_from_log(msg: str):
                 m_ms = re.search(r"(\d+(?:\.\d+)?)\s*ms", lower)
                 if m_ms:
                     record_turn_latency("tts", float(m_ms.group(1)), "TTS TTFB")
-        except Exception:
-            pass
-
-    # 4. Native Gemini Live TTFB
-    elif "ttft calculation:" in lower or "live ttfb:" in lower or ("geminilivellmservice" in lower and "ttfb:" in lower):
-        try:
-            import re
-            m = re.search(r"(\d+(?:\.\d+)?)\s*ms", lower)
-            if m:
-                record_turn_latency("live_ttfb", float(m.group(1)), "Gemini Live Native Audio")
-            else:
-                m_sec = re.search(r"(\d+(?:\.\d+)?)\s*s", lower)
-                if m_sec:
-                    record_turn_latency("live_ttfb", float(m_sec.group(1)) * 1000.0, "Gemini Live Native Audio")
         except Exception:
             pass
 
@@ -159,7 +159,7 @@ def append_diagnostic_log(event_type: str, details: str, ttfb_ms: Optional[float
     clean_msg = msg.strip()
 
     if ttfb_ms is not None:
-        if "LIVE" in event_type.upper():
+        if "LIVE" in event_type.upper() or "LIVE" in details.upper():
             record_turn_latency("live_ttfb", ttfb_ms, f"{event_type}: {details}")
         elif "LLM" in event_type.upper():
             record_turn_latency("llm", ttfb_ms, f"{event_type}: {details}")

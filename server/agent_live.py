@@ -108,7 +108,7 @@ class GeminiSessionLoggerMixin:
             self._current_turn_ttft = time.time() - self._my_ttfb_start
             logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
             ttfb_ms = self._current_turn_ttft * 1000.0
-            append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+            append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
             
             # Stream llm_latency metric frame to UI client
             await self.push_frame(OutputTransportMessageFrame(message={
@@ -329,7 +329,7 @@ class GeminiSessionLoggerMixin:
             if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
                 self._current_turn_ttft = time.time() - self._my_ttfb_start
                 ttfb_ms = self._current_turn_ttft * 1000.0
-                append_diagnostic_log("⚡ TTFB Latency", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+                append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
                 self._my_ttfb_start = None
                 
                 # Also push metric frame immediately
@@ -606,7 +606,7 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
-                    greeting_text = "नमस्ते!" if self.language == "hi-IN" else "Hello!"
+                    greeting_text = "Hey!" if self.language == "hi-IN" else "Hello!"
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
                     await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
                     await self.push_frame(LLMRunFrame())
