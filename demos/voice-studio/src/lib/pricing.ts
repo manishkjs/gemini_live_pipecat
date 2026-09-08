@@ -109,11 +109,43 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   const card = getLiveRateCard(model);
   if (!card) return null;
 
-  const audioInTokens = usage.prompt_details?.audio ?? usage.prompt_token_count ?? 0;
-  const textInTokens = usage.prompt_details?.text ?? 0;
+  const pd = (usage.prompt_details || {}) as Record<string, number>;
+  let audioInTokens = 0;
+  let textInTokens = 0;
 
-  const audioOutTokens = usage.response_details?.audio ?? usage.response_token_count ?? 0;
-  const textOutTokens = usage.response_details?.text ?? 0;
+  for (const [key, val] of Object.entries(pd)) {
+    const k = key.toLowerCase();
+    const count = typeof val === "number" ? val : 0;
+    if (k.includes("audio")) {
+      audioInTokens += count;
+    } else if (k.includes("text")) {
+      textInTokens += count;
+    }
+  }
+
+  // If prompt details didn't specify modality, prompt tokens are predominantly text (system prompt + history)
+  if (audioInTokens === 0 && textInTokens === 0 && usage.prompt_token_count) {
+    textInTokens = usage.prompt_token_count;
+  }
+
+  const rd = (usage.response_details || {}) as Record<string, number>;
+  let audioOutTokens = 0;
+  let textOutTokens = 0;
+
+  for (const [key, val] of Object.entries(rd)) {
+    const k = key.toLowerCase();
+    const count = typeof val === "number" ? val : 0;
+    if (k.includes("audio")) {
+      audioOutTokens += count;
+    } else if (k.includes("text")) {
+      textOutTokens += count;
+    }
+  }
+
+  // In Gemini Live native audio flow, model response without explicit text detail is audio output
+  if (audioOutTokens === 0 && textOutTokens === 0 && usage.response_token_count) {
+    audioOutTokens = usage.response_token_count;
+  }
 
   const audioInUSD = (audioInTokens / 1_000_000) * card.audioInPerMillion;
   const textInUSD = (textInTokens / 1_000_000) * card.textInPerMillion;

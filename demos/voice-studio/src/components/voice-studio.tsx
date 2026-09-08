@@ -367,12 +367,6 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             if (metrics?.ttsLatency !== undefined) {
               setLastTTS(Math.round(metrics.ttsLatency * 1000));
             }
-            if (metrics?.usage?.total_token_count) {
-              setTokenCount((c) => c + (metrics.usage?.total_token_count || 0));
-            }
-            if (metrics?.turnCostUSD) {
-              setSessionCostUSD((c) => c + metrics.turnCostUSD!);
-            }
           }
           if (append) {
             setMessages((items) => {

@@ -421,15 +421,23 @@ class GeminiSessionLoggerMixin:
         )
 
         # Stream token usage downstream to client
+        def clean_modality(mod):
+            s = str(mod).lower()
+            if "audio" in s: return "audio"
+            if "text" in s: return "text"
+            if "image" in s: return "image"
+            if "video" in s: return "video"
+            return s
+
         prompt_details = {}
         if hasattr(usage, 'prompt_tokens_details') and usage.prompt_tokens_details:
             for d in usage.prompt_tokens_details:
-                prompt_details[d.modality.lower()] = d.token_count
+                prompt_details[clean_modality(d.modality)] = d.token_count
 
         response_details = {}
         if hasattr(usage, 'response_tokens_details') and usage.response_tokens_details:
             for d in usage.response_tokens_details:
-                response_details[d.modality.lower()] = d.token_count
+                response_details[clean_modality(d.modality)] = d.token_count
 
         usage_dict = {
             "prompt_token_count": getattr(usage, 'prompt_token_count', 0),

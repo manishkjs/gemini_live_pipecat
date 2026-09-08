@@ -120,8 +120,8 @@ test('calculateTurnCost handles fallback when modality details are missing', () 
 
   const cost25 = calculateTurnCost('gemini-live-2.5-flash-native-audio', usageFallback);
   assert.ok(cost25);
-  // Uses audio in ($3.00/1M) and audio out ($12.00/1M) as predominant live modality
-  const expected = (5000 / 1_000_000) * 3.00 + (2000 / 1_000_000) * 12.00;
+  // Uses text in ($0.50/1M) for static prompt tokens and audio out ($12.00/1M) for response
+  const expected = (5000 / 1_000_000) * 0.50 + (2000 / 1_000_000) * 12.00;
   assert.ok(Math.abs(cost25.totalUSD - expected) < 0.000001);
 });
 
