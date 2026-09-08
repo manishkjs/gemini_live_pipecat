@@ -26,6 +26,8 @@ import {
   X,
   Zap,
   Globe2,
+  Edit3,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -117,7 +119,7 @@ function Picker({
     <div className="field">
       <label id={`${id}-label`}>{label}</label>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
-        <SelectTrigger aria-labelledby={`${id}-label`}>
+        <SelectTrigger aria-labelledby={`${id}-label`} className="w-full min-w-0 select-trigger">
           <SelectValue />
         </SelectTrigger>
         <SelectContent position="popper">
@@ -150,6 +152,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const [partialUser, setPartialUser] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [showInlineEditor, setShowInlineEditor] = useState(false);
 
   // Live session metric counters
   const [turnCount, setTurnCount] = useState(0);
@@ -264,6 +267,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
     if (active) return;
     const p = getPersona(value);
     if (settings.personaId === "custom") customInstructions.current = settings.instructions;
+    setShowInlineEditor(false);
     setSettings((current) => ({
       ...current,
       personaId: value as PersonaId,
@@ -720,26 +724,17 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           <div className="session-actions">
             {active ? (
               <Button className="primary-call end-call" onClick={() => void endSession()}>
-                <Square size={15} fill="currentColor" />End Session
+                <Square size={15} fill="currentColor" />Stop Session
               </Button>
             ) : (
-              <div className="engine-action-buttons">
-                <Button
-                  className={`primary-call call-live ${settings.engine === "live" ? "highlight-engine" : ""}`}
-                  onClick={() => void startBackend("live")}
-                >
-                  <Mic size={18} />
-                  <span>Talk via <strong>Gemini Live</strong></span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className={`secondary-call call-cascade ${settings.engine === "cascade" ? "highlight-engine" : ""}`}
-                  onClick={() => void startBackend("cascade")}
-                >
-                  <Layers3 size={17} />
-                  <span>Talk via <strong>Cascade</strong></span>
-                </Button>
-              </div>
+              <Button
+                className="primary-call"
+                disabled={active}
+                onClick={() => void startBackend()}
+              >
+                <Mic size={18} />
+                <span>Start {engineName}</span>
+              </Button>
             )}
             <div className="audio-controls">
               <Button
@@ -770,7 +765,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           <p className="preview-note">
             {active
               ? `Connected via ${engineName} with ${persona.agentName}. Speak into your microphone.`
-              : `Ready to talk. Choose Gemini Live or Cascade to speak with ${custom ? "your agent" : persona.agentName}.`}
+              : `Ready to talk. Click Start ${engineName} to speak with ${custom ? "your agent" : persona.agentName}.`}
           </p>
         </section>
 
@@ -858,6 +853,71 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                       <div className="opening-cue">
                         <span className="eyebrow">TRY SAYING</span>
                         <blockquote>“{persona.opening}”</blockquote>
+                      </div>
+
+                      <div className="persona-instruction-card">
+                        <div className="persona-instruction-header">
+                          <div className="instruction-header-left">
+                            <span className="eyebrow">SYSTEM INSTRUCTIONS · {persona.agentName.toUpperCase()}</span>
+                            {settings.instructions && (
+                              <span className="customized-indicator-pill">Customized</span>
+                            )}
+                          </div>
+                          <div className="instruction-header-right">
+                            <button
+                              type="button"
+                              className="edit-prompt-btn-pill"
+                              disabled={active}
+                              onClick={() => {
+                                if (!settings.instructions) {
+                                  update("instructions", persona.prompt);
+                                }
+                                setShowInlineEditor((prev) => !prev);
+                              }}
+                            >
+                              <Edit3 size={12} />
+                              <span>{showInlineEditor ? "Close Editor" : (settings.instructions ? "Edit Custom Prompt" : "Edit / Customize")}</span>
+                            </button>
+                            {settings.instructions && (
+                              <button
+                                type="button"
+                                className="reset-prompt-btn-pill"
+                                disabled={active}
+                                onClick={() => {
+                                  update("instructions", "");
+                                  setShowInlineEditor(false);
+                                }}
+                              >
+                                <RotateCcw size={12} />
+                                <span>Reset</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {showInlineEditor ? (
+                          <div className="main-prompt-editor">
+                            <Textarea
+                              value={settings.instructions}
+                              onChange={(e) => update("instructions", e.target.value)}
+                              disabled={active}
+                              maxLength={1000}
+                              rows={4}
+                              className="main-prompt-textarea"
+                              placeholder="Enter custom persona prompt..."
+                              autoFocus
+                            />
+                            <div className="main-prompt-footer">
+                              <span className="field-hint">
+                                {settings.instructions.length}/1000 characters · Replaces default preset in Gemini Live and Cascade
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="persona-prompt-preview">
+                            {settings.instructions || persona.prompt}
+                          </p>
+                        )}
                       </div>
                       <div className="journey">
                         <span className="eyebrow">DEMO FOCUS</span>
@@ -1040,6 +1100,14 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             {/* GEMINI LIVE CONFIGURATION */}
             {settings.engine === "live" && (
               <>
+                <Picker
+                  label="Live Model"
+                  value={settings.model}
+                  disabled={active}
+                  onChange={(value) => update("model", value)}
+                  options={LIVE_MODELS}
+                />
+
                 <div className="settings-pair">
                   <Picker
                     label="Voice"
@@ -1056,14 +1124,6 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                     options={LANGUAGE_OPTIONS}
                   />
                 </div>
-
-                <Picker
-                  label="Live Model"
-                  value={settings.model}
-                  disabled={active}
-                  onChange={(value) => update("model", value)}
-                  options={LIVE_MODELS}
-                />
 
                 <div className="settings-slider-field">
                   <div className="slider-label-row">
@@ -1132,22 +1192,13 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             {/* CASCADE (STT-LLM-TTS) CONFIGURATION */}
             {settings.engine === "cascade" && (
               <>
-                <div className="settings-pair">
-                  <Picker
-                    label="Speech Recognition (STT)"
-                    value={settings.sttModel}
-                    disabled={active}
-                    onChange={(value) => update("sttModel", value)}
-                    options={CASCADE_STT_MODELS}
-                  />
-                  <Picker
-                    label="Language"
-                    value={settings.language}
-                    disabled={active}
-                    onChange={(value) => update("language", value)}
-                    options={LANGUAGE_OPTIONS}
-                  />
-                </div>
+                <Picker
+                  label="Speech Recognition (STT)"
+                  value={settings.sttModel}
+                  disabled={active}
+                  onChange={(value) => update("sttModel", value)}
+                  options={CASCADE_STT_MODELS}
+                />
 
                 <label className="toggle-label" style={{ marginBottom: "12px" }}>
                   <input
@@ -1167,27 +1218,35 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   options={CASCADE_LLM_MODELS}
                 />
 
+                <Picker
+                  label="Voice Model (TTS)"
+                  value={settings.ttsModel}
+                  disabled={active}
+                  onChange={(value) => {
+                    update("ttsModel", value);
+                    if (value === "google-tts" && !settings.voice.includes("Chirp")) {
+                      update("voice", "hi-IN-Chirp3-HD-Sulafat");
+                    } else if (value !== "google-tts" && settings.voice.includes("Chirp")) {
+                      update("voice", "Aoede");
+                    }
+                  }}
+                  options={CASCADE_TTS_MODELS}
+                />
+
                 <div className="settings-pair">
-                  <Picker
-                    label="Voice Model (TTS)"
-                    value={settings.ttsModel}
-                    disabled={active}
-                    onChange={(value) => {
-                      update("ttsModel", value);
-                      if (value === "google-tts" && !settings.voice.includes("Chirp")) {
-                        update("voice", "hi-IN-Chirp3-HD-Sulafat");
-                      } else if (value !== "google-tts" && settings.voice.includes("Chirp")) {
-                        update("voice", "Aoede");
-                      }
-                    }}
-                    options={CASCADE_TTS_MODELS}
-                  />
                   <Picker
                     label="Voice"
                     value={settings.voice}
                     disabled={active}
                     onChange={(value) => update("voice", value)}
                     options={settings.ttsModel === "google-tts" ? CHIRP_HD_VOICES : GEMINI_VOICES}
+                  />
+                  <Picker
+                    label="Language"
+                    value={settings.language}
+                    disabled={active}
+                    onChange={(value) => update("language", value)}
+                    options={LANGUAGE_OPTIONS}
                   />
                 </div>
 
@@ -1229,29 +1288,74 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             {/* SYSTEM / PERSONA INSTRUCTIONS */}
             <div className="field">
               <div className="instructions-label">
-                <label htmlFor="instructions">{custom ? "System instructions" : "Persona instructions"}</label>
-                {settings.instructions && (
-                  <Button variant="ghost" size="sm" disabled={active} onClick={() => update("instructions", "")}>
-                    {custom ? "Use backend default" : "Restore preset"}
-                  </Button>
-                )}
+                <div className="instructions-title-group">
+                  <label htmlFor="instructions">{custom ? "System instructions" : "Persona instructions"}</label>
+                  {settings.instructions && (
+                    <span className="customized-indicator-pill">Customized</span>
+                  )}
+                </div>
+                <div className="instructions-btn-group">
+                  {!custom && !settings.instructions && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={active}
+                      onClick={() => update("instructions", persona.prompt)}
+                      className="edit-instructions-btn"
+                    >
+                      <Edit3 size={12} />
+                      <span>Customize / Edit prompt</span>
+                    </Button>
+                  )}
+                  {settings.instructions && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={active}
+                      onClick={() => update("instructions", "")}
+                      className="restore-preset-btn"
+                    >
+                      <RotateCcw size={12} />
+                      <span>{custom ? "Use backend default" : "Restore preset"}</span>
+                    </Button>
+                  )}
+                </div>
               </div>
               <Textarea
                 id="instructions"
                 placeholder={custom ? "Leave blank to use your backend’s existing system instructions." : persona.prompt}
                 value={settings.instructions}
+                onFocus={() => {
+                  if (!custom && !settings.instructions) {
+                    update("instructions", persona.prompt);
+                  }
+                }}
                 onChange={(e) => update("instructions", e.target.value)}
                 disabled={active}
                 maxLength={1000}
-                rows={4}
+                rows={5}
+                className="instructions-textarea"
               />
-              <p className="field-hint">
-                {settings.instructions
-                  ? `${settings.instructions.length}/1000 characters${custom ? "" : " · replaces the persona preset"}`
-                  : custom
-                  ? "Using your backend’s existing system instructions."
-                  : `Using the ${persona.name} preset. Write here to customize it.`}
-              </p>
+              <div className="instructions-footer">
+                <p className="field-hint">
+                  {settings.instructions
+                    ? `${settings.instructions.length}/1000 characters · Replaces default preset`
+                    : custom
+                    ? "Using your backend’s existing system instructions."
+                    : `Using the ${persona.name} preset. Click inside or 'Customize / Edit' to modify it.`}
+                </p>
+                {!settings.instructions && !custom && (
+                  <button
+                    type="button"
+                    className="load-prompt-inline-link"
+                    onClick={() => update("instructions", persona.prompt)}
+                  >
+                    Load preset into editor
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* CUSTOM SERVER URL OVERRIDE */}
