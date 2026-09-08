@@ -953,7 +953,12 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                       </div>
                     </motion.article>
                   ))}
-                  {partialUser && <div className="partial-message">{partialUser}</div>}
+                  {partialUser && (
+                    <div className="partial-message">
+                      <span className="partial-pulse" />
+                      <span>{partialUser}</span>
+                    </div>
+                  )}
                   {active && phase === "thinking" && (
                     <div className="thinking-indicator">
                       <span />
