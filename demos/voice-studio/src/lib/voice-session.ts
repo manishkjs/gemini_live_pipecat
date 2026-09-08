@@ -14,8 +14,19 @@ export type SessionSettings = {
   ttsModel: string;
 };
 
+export function getDefaultBackendUrl(): string {
+  if (typeof window !== "undefined") {
+    if (window.location.port === "5173" || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+      return `${window.location.protocol}//${window.location.hostname}:7860`;
+    }
+    return window.location.origin;
+  }
+  return "http://localhost:7860";
+}
+
 export const DEFAULT_SETTINGS: SessionSettings = {
-  backendUrl: "", engine: "live", personaId: "debt-collector",
+  backendUrl: typeof window !== "undefined" ? getDefaultBackendUrl() : "http://localhost:7860",
+  engine: "live", personaId: "debt-collector",
   model: "gemini-live-2.5-flash-native-audio", voice: "Aoede", language: "en-IN", instructions: "",
   sttModel: "gemini-3.5-transcribe-live-aistudio", llmModel: "gemini-3.5-flash-lite", ttsModel: "gemini-3.1-flash-tts-preview",
 };
@@ -49,7 +60,8 @@ export function buildBackendPageUrl(backendUrl: string, page: "original" | "diag
 
 export function buildConnectUrl(settings: SessionSettings): URL {
   buildSessionInstructions(settings);
-  const url = validatedBackendUrl(settings.backendUrl);
+  const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
+  const url = validatedBackendUrl(targetUrl);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/connect`;
   if (settings.engine === "live") {
     url.search = new URLSearchParams({ bot_type: "gemini-live", model: settings.model, voice: settings.voice, language: settings.language, tts: "false", context_compression: "false" }).toString();
@@ -64,12 +76,16 @@ export function buildConnectRequest(settings: SessionSettings) {
   return { url: buildConnectUrl(settings), body: instructions ? { system_instruction: instructions } : {} };
 }
 
-export function validateSocketUrl(value: unknown, backendUrl: string): string {
+export function validateSocketUrl(value: unknown, backendUrl: string = getDefaultBackendUrl()): string {
   if (typeof value !== "string") throw new Error("The server did not return a ws_url.");
   const socket = new URL(value);
-  const backend = new URL(backendUrl);
+  const targetUrl = backendUrl?.trim() || getDefaultBackendUrl();
+  const backend = new URL(targetUrl);
   if (!["ws:", "wss:"].includes(socket.protocol) || socket.username || socket.password) throw new Error("The server returned an invalid WebSocket URL.");
-  if (socket.host !== backend.host) throw new Error("The WebSocket address must match your configured server host.");
+  
+  const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1";
+  const hostsMatch = socket.host === backend.host || (isLocal(socket.hostname) && isLocal(backend.hostname) && (socket.port === backend.port || (!socket.port && !backend.port)));
+  if (!hostsMatch) throw new Error("The WebSocket address must match your configured server host.");
   if (backend.protocol === "https:" && socket.protocol !== "wss:") throw new Error("An HTTPS server must return a secure wss:// address.");
   return socket.href;
 }

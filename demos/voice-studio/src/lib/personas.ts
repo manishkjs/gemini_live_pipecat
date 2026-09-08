@@ -11,6 +11,7 @@ export type Persona = {
   prompt: string;
   color: string;
   portrait: string | null;
+  defaultVoice: string;
   sample: SampleTurn[];
 };
 
@@ -18,6 +19,7 @@ export const PERSONAS: Persona[] = [
   {
     id: "debt-collector", name: "Debt Collector", agentName: "Meera", color: "#d5f580",
     portrait: "/personas/meera.png",
+    defaultVoice: "Aoede",
     description: "A respectful payment conversation, at your pace.",
     userRole: "You’re Ravi, a customer with a missed payment.",
     opening: "I can’t pay the full amount today. Can we discuss a smaller payment?",
@@ -34,6 +36,7 @@ export const PERSONAS: Persona[] = [
   {
     id: "reservation-agent", name: "Reservation Agent", agentName: "Kavya", color: "#90c8ed",
     portrait: "/personas/kavya.png",
+    defaultVoice: "Kore",
     description: "Plan a table, a celebration and the little details.",
     userRole: "You’re planning a birthday dinner in Bengaluru.",
     opening: "I’d like a table for four on Saturday at seven in the evening.",
@@ -50,6 +53,7 @@ export const PERSONAS: Persona[] = [
   {
     id: "storyteller", name: "Storyteller", agentName: "Kabir", color: "#d2b2fa",
     portrait: "/personas/kabir.png",
+    defaultVoice: "Puck",
     description: "A little imagination, and a story you shape together.",
     userRole: "You’re the co-author. Change the story as it unfolds.",
     opening: "Tell me a story about a little kite that wants to meet the monsoon clouds.",
@@ -65,6 +69,7 @@ export const PERSONAS: Persona[] = [
   {
     id: "ai-companion", name: "AI Companion", agentName: "Aisha", color: "#f0b7a5",
     portrait: "/personas/aisha.png",
+    defaultVoice: "Aoede",
     description: "A gentle check-in, with room to be yourself.",
     userRole: "You’re unwinding after a long day.",
     opening: "It’s been a long day. Can we talk for a few minutes?",
@@ -80,6 +85,7 @@ export const PERSONAS: Persona[] = [
   {
     id: "custom", name: "Custom Agent", agentName: "your agent", color: "#bac4ca",
     portrait: null,
+    defaultVoice: "Puck",
     description: "Bring your own instructions. Make it yours.",
     userRole: "Your instructions. Your conversation.",
     opening: "", journey: [], prompt: "", sample: [],

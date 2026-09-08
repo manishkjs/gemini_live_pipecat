@@ -73,6 +73,16 @@ test('rejects malformed, insecure, credentialed or unexpected WebSocket destinat
 });
 test('permits a local HTTP and WebSocket pair for local development', () => {
   assert.equal(validateSocketUrl('ws://localhost:7860/ws', 'http://localhost:7860'), 'ws://localhost:7860/ws');
+  assert.equal(validateSocketUrl('ws://127.0.0.1:7860/ws', 'http://localhost:7860'), 'ws://127.0.0.1:7860/ws');
+  assert.equal(validateSocketUrl('ws://localhost:7860/ws', 'http://127.0.0.1:7860'), 'ws://localhost:7860/ws');
+});
+
+test('every prepared persona defines an appropriate default voice', () => {
+  for (const persona of PERSONAS) {
+    assert.ok(typeof persona.defaultVoice === 'string' && persona.defaultVoice.length > 0);
+  }
+  assert.equal(PERSONAS.find(p => p.id === 'storyteller').defaultVoice, 'Puck');
+  assert.equal(PERSONAS.find(p => p.id === 'debt-collector').defaultVoice, 'Aoede');
 });
 
 // Public asset references must survive a fresh clone without external image hosting.

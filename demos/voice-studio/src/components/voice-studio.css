@@ -32,3 +32,16 @@
 .header-actions{gap:9px}.header-tool{background:#171b1e;border-color:#33393c;font-size:14px;text-decoration:none}
 @media(max-width:760px){.header-actions{gap:7px}.header-tool{width:35px;height:35px;padding:0!important}.header-tool>span{display:none}.studio-header{gap:10px}}
 @media(max-width:390px){.studio-brand{font-size:18px}.demo-tag{display:none}.header-actions{gap:5px}}
+
+/* Dedicated engine action buttons for instant Live and Cascade launch */
+.engine-action-buttons{display:flex;flex-direction:column;gap:8px;width:100%}
+.engine-action-buttons button{width:100%;font-size:13.5px;justify-content:center;gap:8px;min-height:42px;border-radius:9px}
+.engine-action-buttons .primary-call{background:var(--persona-color)!important;color:#182315!important;font-weight:600;border:1px solid transparent}
+.engine-action-buttons .primary-call:hover{filter:brightness(1.08)}
+.engine-action-buttons .secondary-call{background:#1d2325!important;border:1px solid #374144!important;color:#d5e2d6!important;font-weight:550}
+.engine-action-buttons .secondary-call:hover{background:#252d30!important;border-color:#4e5a5e!important;color:#fff!important}
+.card-quick-actions{margin-top:4px;display:flex;align-items:center}
+.card-active-pill{font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;color:var(--card-color);background:color-mix(in srgb,var(--card-color) 14%,transparent);border:1px solid color-mix(in srgb,var(--card-color) 45%,transparent);padding:2px 7px;border-radius:9999px}
+.advanced-url-toggle{margin-top:6px;font-size:12px;color:var(--muted);border-top:1px solid #333e34;padding-top:10px}
+.advanced-url-toggle summary{cursor:pointer;user-select:none;font-size:12px;color:#a8b6a5;font-weight:500}
+.advanced-url-toggle summary:hover{color:#d7e5d3}
