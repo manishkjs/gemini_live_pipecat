@@ -1,13 +1,30 @@
 import { buildConnectRequest, validateSocketUrl, type SessionSettings } from "./voice-session";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
+
+export type MessageMetrics = {
+  sttLatency?: number; // In seconds
+  llmLatency?: number; // In seconds (TTFB)
+  ttsLatency?: number; // In seconds
+  interruptedMs?: number;
+  usage?: {
+    total_token_count?: number;
+    prompt_token_count?: number;
+    response_token_count?: number;
+    prompt_details?: { text?: number; audio?: number };
+    response_details?: { text?: number; audio?: number };
+  };
+};
+
 export type SessionEvents = {
   onPhase: (phase: Phase) => void;
-  onMessage: (role: "user" | "assistant", text: string, append?: boolean) => void;
+  onMessage: (role: "user" | "assistant", text: string, append?: boolean, metrics?: MessageMetrics) => void;
+  onReplaceMessage?: (role: "user" | "assistant", text: string) => void;
   onPartialUser: (text: string) => void;
   onTrack: (track: MediaStreamTrack | null) => void;
   onLevel: (level: number) => void;
   onLatency: (ms: number) => void;
+  onMetricUpdate?: (metricType: string, value: any) => void;
   onError: (text: string) => void;
   onDisconnected: () => void;
 };
@@ -36,6 +53,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let speakingTimer: ReturnType<typeof setTimeout> | null = null;
   let turnStarted = false;
   let lastUserAt: number | null = null;
+
+  // Latency buffers according to canonical protocol invariants
+  let pendingSTTLatency: number | null = null;
+  let lastTurnSTTLatency: number | null = null;
+  let pendingLLMLatency: number | null = null;
+  let pendingTTSLatency: number | null = null;
+  let lastTurnUsage: any = null;
+
   const controller = new AbortController();
   const sources = new Set<AudioBufferSourceNode>();
   let context: AudioContext | null = null;
@@ -102,18 +127,76 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     if (stopped) return;
     const body = message.type === "server-message" ? message.data : message;
     if (!body || typeof body !== "object") return;
-    const data = body as { type?: string; participant?: string; text?: string; payload?: { type?: string; value?: number } };
+    const data = body as {
+      type?: string;
+      participant?: string;
+      text?: string;
+      ttft?: number;
+      stt_latency?: number;
+      payload?: { type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
+    };
+
     if (data.type === "transcription" && typeof data.text === "string" && data.text) {
       if (data.participant?.toLowerCase() === "user") {
-        turnStarted = false; lastUserAt = performance.now();
-        events.onMessage("user", data.text); events.onPhase("thinking");
+        turnStarted = false;
+        lastUserAt = performance.now();
+        const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
+        pendingSTTLatency = null;
+        lastTurnSTTLatency = effStt ?? null;
+        events.onMessage("user", data.text, false, { sttLatency: effStt });
+        events.onPhase("thinking");
       } else {
-        events.onMessage("assistant", data.text, turnStarted); turnStarted = true;
+        const effLlm = data.ttft !== undefined ? data.ttft : (pendingLLMLatency !== null ? pendingLLMLatency : undefined);
+        pendingLLMLatency = null;
+        const effTts = pendingTTSLatency !== null ? pendingTTSLatency : undefined;
+        pendingTTSLatency = null;
+        const effStt = settings.engine === "cascade" ? (lastTurnSTTLatency ?? undefined) : undefined;
+        lastTurnSTTLatency = null;
+        const effUsage = lastTurnUsage ?? undefined;
+
+        events.onMessage("assistant", data.text, turnStarted, {
+          llmLatency: effLlm,
+          ttsLatency: effTts,
+          sttLatency: effStt,
+          usage: effUsage,
+        });
+        turnStarted = true;
+      }
+    } else if (data.type === "transcription_replace" && typeof data.text === "string") {
+      const role = data.participant?.toLowerCase() === "user" ? "user" : "assistant";
+      if (events.onReplaceMessage) {
+        events.onReplaceMessage(role, data.text);
+      }
+    } else if (data.type === "interim_transcription" || data.type === "interim_input_transcription") {
+      if (typeof data.text === "string") {
+        events.onPartialUser(data.text);
       }
     } else if (data.type === "metrics") {
-      if (data.payload?.type === "turn_complete") turnStarted = false;
-      if (data.payload?.type === "interruption") {
-        turnStarted = false; void media.userStartedSpeaking(); events.onPhase("listening");
+      const p = data.payload;
+      if (!p) return;
+      if (p.type === "turn_complete") {
+        turnStarted = false;
+        events.onMetricUpdate?.("turn_complete", p);
+      } else if (p.type === "interruption") {
+        turnStarted = false;
+        void media.userStartedSpeaking();
+        events.onPhase("listening");
+        events.onMetricUpdate?.("interruption", p);
+      } else if (p.type === "stt_latency") {
+        pendingSTTLatency = p.value ?? null;
+        lastTurnSTTLatency = p.value ?? null;
+        events.onMetricUpdate?.("stt_latency", p.value);
+      } else if (p.type === "llm_latency") {
+        pendingLLMLatency = p.value ?? null;
+        events.onMetricUpdate?.("llm_latency", p.value);
+      } else if (p.type === "tts_latency") {
+        pendingTTSLatency = p.value ?? null;
+        events.onMetricUpdate?.("tts_latency", p.value);
+      } else if (p.type === "usage") {
+        lastTurnUsage = p.usage ?? null;
+        events.onMetricUpdate?.("usage", p.usage);
+      } else if (p.type === "tool_call") {
+        events.onMetricUpdate?.("tool_call", p);
       }
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
