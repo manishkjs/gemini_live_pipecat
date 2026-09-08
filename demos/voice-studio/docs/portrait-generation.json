@@ -1,0 +1,49 @@
+{
+  "note": "AI-generated portraits of fictional Indian adults. Original selected PNG outputs are bundled without modifications.",
+  "portraits": [
+    {
+      "name": "meera",
+      "prompt": "Use case: photorealistic-natural\nAsset type: square avatar/card portrait for a dark voice demo UI\nScene/backdrop: muted dark sage and charcoal seamless studio backdrop, softly out of focus.\nStyle/medium: natural photoreal studio portrait, real human skin texture, polished professional photograph.\nComposition/framing: square 1:1 image, head and shoulders, centered face looking directly toward camera, full head with modest space above hair, upper shoulders visible. Face occupies about half of image height; consistent portrait-series framing.\nLighting/mood: soft flattering studio light, gentle approachable expression, calm warmth.\nConstraints: exactly one fictional Indian adult; contemporary believable styling; no text, logos, watermarks, props, caricature, costume stereotypes, or resemblance to any named real person.\nSubject: Meera, a fictional Indian woman aged approximately 35 with medium warm brown skin, dark brown eyes, neatly styled shoulder-length dark hair. Respectful collections professional wearing a contemporary understated smart casual blouse and blazer. Gentle composed smile conveying patience and credibility.",
+      "method": "AI image generation",
+      "status": "success",
+      "file": "public/personas/meera.png",
+      "dimensions": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    {
+      "name": "kavya",
+      "prompt": "Use case: photorealistic-natural\nAsset type: square avatar/card portrait for a dark voice demo UI\nScene/backdrop: muted dark sage and charcoal seamless studio backdrop, softly out of focus.\nStyle/medium: natural photoreal studio portrait, real human skin texture, polished professional photograph.\nComposition/framing: square 1:1 image, head and shoulders, centered face looking directly toward camera, full head with modest space above hair, upper shoulders visible. Face occupies about half of image height; consistent portrait-series framing.\nLighting/mood: soft flattering studio light, gentle approachable expression, calm warmth.\nConstraints: exactly one fictional Indian adult; contemporary believable styling; no text, logos, watermarks, props, caricature, costume stereotypes, or resemblance to any named real person.\nSubject: Kavya, a fictional Indian woman aged approximately 29 with warm golden brown skin, dark brown eyes, dark softly wavy hair. Welcoming restaurant reservation host wearing elegant contemporary clothing. Warm welcoming small smile and open expression.",
+      "method": "AI image generation",
+      "status": "success",
+      "file": "public/personas/kavya.png",
+      "dimensions": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    {
+      "name": "kabir",
+      "prompt": "Use case: photorealistic-natural\nAsset type: square avatar/card portrait for a dark voice demo UI\nScene/backdrop: muted dark sage and charcoal seamless studio backdrop, softly out of focus.\nStyle/medium: natural photoreal studio portrait, real human skin texture, polished professional photograph.\nComposition/framing: square 1:1 image, head and shoulders, centered face looking directly toward camera, full head with modest space above hair, upper shoulders visible. Face occupies about half of image height; consistent portrait-series framing.\nLighting/mood: soft flattering studio light, gentle approachable expression, calm warmth.\nConstraints: exactly one fictional Indian adult; contemporary believable styling; no text, logos, watermarks, props, caricature, costume stereotypes, or resemblance to any named real person.\nSubject: Kabir, a fictional Indian man aged approximately 38 with deep brown skin, dark brown eyes, short dark hair and a neat short beard. Engaging storyteller wearing a simple muted cotton shirt or contemporary plain kurta. Thoughtful friendly smile with lively attentive eyes.",
+      "method": "AI image generation",
+      "status": "success",
+      "file": "public/personas/kabir.png",
+      "dimensions": {
+        "width": 1254,
+        "height": 1254
+      }
+    },
+    {
+      "name": "aisha",
+      "prompt": "Use case: photorealistic-natural\nAsset type: square avatar/card portrait for a dark voice demo UI\nScene/backdrop: muted dark sage and charcoal seamless studio backdrop, softly out of focus.\nStyle/medium: natural photoreal studio portrait, real human skin texture, polished professional photograph.\nComposition/framing: square 1:1 image, head and shoulders, centered face looking directly toward camera, full head with modest space above hair, upper shoulders visible. Face occupies about half of image height; consistent portrait-series framing.\nLighting/mood: soft flattering studio light, gentle approachable expression, calm warmth.\nConstraints: exactly one fictional Indian adult; contemporary believable styling; no text, logos, watermarks, props, caricature, costume stereotypes, or resemblance to any named real person.\nSubject: Aisha, a fictional Indian woman aged approximately 30 with rich medium-deep brown skin, dark brown eyes, natural dark curly hair. Warm AI companion persona represented as a believable human, wearing relaxed contemporary clothing. Kind relaxed smile and gentle attentive expression, no futuristic or robotic elements.",
+      "method": "AI image generation",
+      "status": "success",
+      "file": "public/personas/aisha.png",
+      "dimensions": {
+        "width": 1254,
+        "height": 1254
+      }
+    }
+  ]
+}
