@@ -10,7 +10,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
@@ -86,6 +86,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def check_sni_mismatch_middleware(request: Request, call_next):
+    gfe_info = request.headers.get("x-google-gfe-frontline-info")
+    if gfe_info:
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        sni = None
+        for pair in gfe_info.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                if k.strip().lower() == "sni":
+                    sni = v.strip().lower()
+                    break
+        if sni and host and sni != host:
+            return Response(status_code=421, content="Misdirected Request")
+    return await call_next(request)
 
 @app.websocket("/ws")
 async def websocket_endpoint(

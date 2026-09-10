@@ -217,7 +217,9 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       const timeout = setTimeout(() => controller.abort(), 20000);
       try {
         response = await fetch(endpoint, {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify(request.body),
           signal: controller.signal,
         });
@@ -251,7 +253,26 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         const rms = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
         events.onLevel(Math.min(1, rms * 6));
       }, 100);
-      await transport.connect({ wsUrl });
+
+      // Prime connection to resolve SNI matching before establishing WebSocket
+      if (typeof window !== "undefined" && window.location.protocol === "https:") {
+        try {
+          await fetch(window.location.origin + "/connect/system-prompt", { credentials: "include" });
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        await transport.connect({ wsUrl });
+      } catch (err: any) {
+        if (stopped) return;
+        const msg = err?.message || String(err);
+        if (msg.includes("1006")) {
+          throw new Error("WebSocket connection error (1006): UberProxy rejected the WebSocket upgrade. Please use the Autobahn PEN URL or SSH tunnel (`ssh -L 5173:localhost:5173 rangarok.c.googlers.com`).");
+        }
+        throw new Error(`Failed to connect to voice stream: ${msg}`);
+      }
       if (stopped) { await transport.disconnect(); return; }
       transport.sendReadyMessage();
       transport.sendMessage(new RTVIMessage("start_trigger", {}));
