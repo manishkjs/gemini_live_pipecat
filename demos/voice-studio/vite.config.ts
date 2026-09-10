@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
+    allowedHosts: true,
     proxy: {
       "/connect": "http://127.0.0.1:7860",
       "/api": "http://127.0.0.1:7860",
