@@ -1183,6 +1183,113 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   />
                 </div>
 
+                {settings.voice === "Custom-Key" && (
+                  <div className="field" style={{ marginTop: "4px" }}>
+                    <label htmlFor="custom-voice-key">Custom Voice Key / Replicated ID</label>
+                    <Input
+                      id="custom-voice-key"
+                      type="text"
+                      placeholder="e.g. projects/.../voices/my-voice or voice_key"
+                      value={settings.customVoiceKey ?? ""}
+                      disabled={active}
+                      onChange={(e) => update("customVoiceKey", e.target.value)}
+                    />
+                    <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
+                  </div>
+                )}
+
+                {settings.voice.startsWith("Custom") && (
+                  <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
+                    ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
+                  </div>
+                )}
+
+                {/* GEMINI LIVE THINKING / REASONING CONFIGURATION */}
+                <div style={{ padding: "12px", background: "rgba(16, 185, 129, 0.06)", border: "1px solid rgba(16, 185, 129, 0.22)", borderRadius: "10px", marginBottom: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <span style={{ fontWeight: 600, fontSize: "13px", color: "#34d399" }}>Gemini Live Thinking / Reasoning</span>
+                      <p style={{ fontSize: "11px", color: "var(--muted-foreground)", margin: "2px 0 0 0" }}>Internal chain-of-thought reasoning tokens before speech</p>
+                    </div>
+                    <label className="toggle-label" style={{ margin: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={settings.thinking || settings.model.includes("thinking")}
+                        disabled={active}
+                        onChange={(e) => {
+                          updateBool("thinking", e.target.checked);
+                          if (e.target.checked && (!settings.thinkingBudget || settings.thinkingBudget === 0)) {
+                            updateNumber("thinkingBudget", 2048);
+                          }
+                        }}
+                      />
+                      <span style={{ fontSize: "12px" }}>Enable</span>
+                    </label>
+                  </div>
+
+                  {(settings.thinking || settings.model.includes("thinking")) && (
+                    <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                      <div className="settings-slider-field">
+                        <div className="slider-label-row">
+                          <label htmlFor="thinking-budget-slider">Thinking Budget</label>
+                          <span className="slider-val">{settings.thinkingBudget ?? 2048} tokens</span>
+                        </div>
+                        <input
+                          id="thinking-budget-slider"
+                          type="range"
+                          min="0"
+                          max="24576"
+                          step="512"
+                          value={settings.thinkingBudget ?? 2048}
+                          disabled={active}
+                          onChange={(e) => updateNumber("thinkingBudget", parseInt(e.target.value, 10))}
+                          className="range-slider"
+                        />
+                        <div style={{ display: "flex", gap: "6px", marginTop: "4px", flexWrap: "wrap" }}>
+                          {[0, 1024, 2048, 4096, 8192, 16384].map((budget) => (
+                            <button
+                              key={budget}
+                              type="button"
+                              disabled={active}
+                              onClick={() => updateNumber("thinkingBudget", budget)}
+                              style={{
+                                padding: "2px 8px",
+                                fontSize: "10px",
+                                borderRadius: "4px",
+                                border: "1px solid rgba(255,255,255,0.12)",
+                                background: settings.thinkingBudget === budget ? "rgba(16,185,129,0.3)" : "rgba(255,255,255,0.06)",
+                                color: settings.thinkingBudget === budget ? "#34d399" : "inherit",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {budget === 0 ? "Off (0)" : `${budget / 1024}k`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="field">
+                        <label id="thinking-level-label">Reasoning Level</label>
+                        <Select
+                          value={settings.thinkingLevel ?? "minimal"}
+                          onValueChange={(val) => update("thinkingLevel", val)}
+                          disabled={active}
+                        >
+                          <SelectTrigger aria-labelledby="thinking-level-label" className="w-full min-w-0 select-trigger">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent position="popper">
+                            <SelectItem value="minimal">Minimal (Lowest Latency)</SelectItem>
+                            <SelectItem value="low">Low (Brief Reasoning)</SelectItem>
+                            <SelectItem value="medium">Medium (Balanced)</SelectItem>
+                            <SelectItem value="high">High (Deep Problem Solving)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="settings-slider-field">
                   <div className="slider-label-row">
                     <label htmlFor="live-pace-slider">Speaking Rate (Pace)</label>
@@ -1307,6 +1414,27 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                     options={LANGUAGE_OPTIONS}
                   />
                 </div>
+
+                {settings.voice === "Custom-Key" && (
+                  <div className="field" style={{ marginTop: "4px" }}>
+                    <label htmlFor="cascade-custom-voice-key">Custom Voice Key / Replicated ID</label>
+                    <Input
+                      id="cascade-custom-voice-key"
+                      type="text"
+                      placeholder="e.g. projects/.../voices/my-voice or voice_key"
+                      value={settings.customVoiceKey ?? ""}
+                      disabled={active}
+                      onChange={(e) => update("customVoiceKey", e.target.value)}
+                    />
+                    <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
+                  </div>
+                )}
+
+                {settings.voice.startsWith("Custom") && (
+                  <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
+                    ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
+                  </div>
+                )}
 
                 <div className="settings-slider-field">
                   <div className="slider-label-row">

@@ -106,6 +106,10 @@ async def websocket_endpoint(
     skip_stt: bool = False,
     context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = None,
+    thinking: bool = False,
+    thinking_budget: Optional[int] = None,
+    thinking_level: Optional[str] = None,
+    custom_voice_key: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -122,6 +126,10 @@ async def websocket_endpoint(
                 tools=tools,
                 context_compression=context_compression,
                 context_compression_trigger_tokens=context_compression_trigger_tokens,
+                thinking=thinking,
+                thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
+                custom_voice_key=custom_voice_key,
             )
         elif bot_type == "tts-llm-stt":
             await run_agent(
@@ -187,6 +195,34 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                     query_params += f"&context_compression_trigger_tokens={val}"
                 else:
                     query_params = f"context_compression_trigger_tokens={val}"
+
+            if "thinking" in body:
+                val = "true" if body["thinking"] else "false"
+                if query_params:
+                    query_params += f"&thinking={val}"
+                else:
+                    query_params = f"thinking={val}"
+
+            if "thinking_budget" in body:
+                val = str(body["thinking_budget"])
+                if query_params:
+                    query_params += f"&thinking_budget={val}"
+                else:
+                    query_params = f"thinking_budget={val}"
+
+            if "thinking_level" in body:
+                val = str(body["thinking_level"])
+                if query_params:
+                    query_params += f"&thinking_level={val}"
+                else:
+                    query_params = f"thinking_level={val}"
+
+            if "custom_voice_key" in body:
+                val = quote(str(body["custom_voice_key"]))
+                if query_params:
+                    query_params += f"&custom_voice_key={val}"
+                else:
+                    query_params = f"custom_voice_key={val}"
 
     except Exception:
         # Body is not JSON or is empty, so we just ignore it

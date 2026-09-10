@@ -622,7 +622,22 @@ class StartTriggerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = None):
+async def run_agent_live(
+    websocket: WebSocket,
+    model: str,
+    voice: Optional[str],
+    language: str,
+    system_instruction: Optional[str] = None,
+    tts: bool = True,
+    tts_pace: float = 0.80,
+    tools: Optional[str] = None,
+    context_compression: bool = True,
+    context_compression_trigger_tokens: Optional[int] = None,
+    thinking: bool = False,
+    thinking_budget: Optional[int] = None,
+    thinking_level: Optional[str] = None,
+    custom_voice_key: Optional[str] = None,
+):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
@@ -695,18 +710,33 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
-    use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
+    is_custom_voice = (voice in ["Custom-Male", "Custom-Female", "Custom-Key"]) or bool(custom_voice_key)
+    use_external_tts = tts or is_custom_voice
     tts_service = None
     
     if use_external_tts:
-        voice_env = "CLONE_TTS_VOICE_KEY_MALE" if voice == "Custom-Male" else "CLONE_TTS_VOICE_KEY_FEMALE"
-        voice_key_path = os.getenv(voice_env) if voice in ["Custom-Male", "Custom-Female"] else None
+        cloned_key_content = None
+        if custom_voice_key:
+            if os.path.isfile(custom_voice_key):
+                try:
+                    with open(custom_voice_key, "r") as f: cloned_key_content = f.read().strip()
+                except Exception as e:
+                    logger.error(f"Failed to read custom_voice_key file: {e}")
+            else:
+                cloned_key_content = custom_voice_key.strip()
+        elif voice in ["Custom-Male", "Custom-Female"]:
+            voice_env = "CLONE_TTS_VOICE_KEY_MALE" if voice == "Custom-Male" else "CLONE_TTS_VOICE_KEY_FEMALE"
+            voice_key_path = os.getenv(voice_env)
+            if voice_key_path and os.path.isfile(voice_key_path):
+                try:
+                    with open(voice_key_path, "r") as f: cloned_key_content = f.read().strip()
+                except Exception as e:
+                    logger.error(f"Failed to read {voice_env}: {e}")
         
-        if voice_key_path:
-            with open(voice_key_path, "r") as f: key = f.read()
-            tts_service = GoogleTTSService(voice_cloning_key=key, params=GoogleTTSService.InputParams(language=Language.EN_US))
+        if cloned_key_content:
+            tts_service = GoogleTTSService(voice_cloning_key=cloned_key_content, params=GoogleTTSService.InputParams(language=Language.EN_US))
         else:
-            voice_id = voice if voice else "Aoede"
+            voice_id = voice if voice and not voice.startswith("Custom") else "Aoede"
             tts_service = GoogleTTSService(voice_id=f"{language}-Chirp3-HD-{voice_id}", params=GoogleTTSService.InputParams(language=pipecat_language))
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
@@ -759,13 +789,28 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             except Exception as sm_err:
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
+        thinking_config = None
+        if thinking or "thinking" in clean_model.lower():
+            th_dict = {}
+            if thinking_budget is not None and thinking_budget > 0:
+                th_dict["thinking_budget"] = thinking_budget
+            if thinking_level:
+                th_dict["thinking_level"] = thinking_level
+            if not th_dict:
+                if "3.1" in clean_model or "flash-lite" in clean_model:
+                    th_dict["thinking_level"] = "minimal"
+                else:
+                    th_dict["thinking_budget"] = 2048
+            thinking_config = th_dict
+
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            thinking=thinking_config or {},
         )
         ai_studio_params = {
             "api_key": gemini_api_key,
@@ -781,13 +826,28 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if clean_model in ["gemini-3.5-live-preview", "gemini-3.5-live-extended-thinking-preview"]:
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
+        thinking_config = None
+        if thinking or "thinking" in clean_model.lower():
+            th_dict = {}
+            if thinking_budget is not None and thinking_budget > 0:
+                th_dict["thinking_budget"] = thinking_budget
+            if thinking_level:
+                th_dict["thinking_level"] = thinking_level
+            if not th_dict:
+                if "3.1" in clean_model or "flash-lite" in clean_model:
+                    th_dict["thinking_level"] = "minimal"
+                else:
+                    th_dict["thinking_budget"] = 2048
+            thinking_config = th_dict
+
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            thinking=thinking_config or {},
         )
         vertex_params = {
             "project_id": project_id,

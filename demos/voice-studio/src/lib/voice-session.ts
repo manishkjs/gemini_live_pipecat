@@ -19,6 +19,10 @@ export type SessionSettings = {
   contextCompression?: boolean;
   contextCompressionTokens?: number;
   toolsJson?: string;
+  thinking?: boolean;
+  thinkingBudget?: number;
+  thinkingLevel?: "minimal" | "low" | "medium" | "high";
+  customVoiceKey?: string;
 };
 
 export function getDefaultBackendUrl(): string {
@@ -49,6 +53,10 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   contextCompression: false,
   contextCompressionTokens: 20000,
   toolsJson: "",
+  thinking: false,
+  thinkingBudget: 0,
+  thinkingLevel: "minimal",
+  customVoiceKey: "",
 };
 
 export const LANGUAGE_MAP: Record<string, string> = {
@@ -154,6 +162,9 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Zubenelgenubi", "Zubenelgenubi (Male)"],
   ["Sadachbia", "Sadachbia (Male)"],
   ["Sadaltager", "Sadaltager (Male)"],
+  ["Custom-Male", "Custom Clone Voice (Male)"],
+  ["Custom-Female", "Custom Clone Voice (Female)"],
+  ["Custom-Key", "Custom Voice Cloning Key"],
 ];
 
 export const CHIRP_HD_VOICES: [string, string][] = [
@@ -169,6 +180,8 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["en-US-Chirp3-HD-Gacrux", "en-US-Chirp3-HD-Gacrux (US Female)"],
   ["en-US-Chirp3-HD-Leda", "en-US-Chirp3-HD-Leda (US Female)"],
   ["en-US-Chirp3-HD-Puck", "en-US-Chirp3-HD-Puck (US Male)"],
+  ["Custom-Male", "Custom Clone Voice (Male)"],
+  ["Custom-Female", "Custom Clone Voice (Female)"],
 ];
 
 export function buildSessionInstructions(settings: SessionSettings): string {
@@ -203,21 +216,40 @@ export function buildConnectUrl(settings: SessionSettings): URL {
   const url = validatedBackendUrl(targetUrl);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/connect`;
   if (settings.engine === "live") {
-    url.search = new URLSearchParams({
+    const effectiveVoice = (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim())
+      ? settings.customVoiceKey.trim()
+      : settings.voice;
+    const params: Record<string, string> = {
       bot_type: "gemini-live",
       model: settings.model,
-      voice: settings.voice,
+      voice: effectiveVoice,
       language: settings.language,
       tts: settings.tts ? "true" : "false",
       context_compression: settings.contextCompression ? "true" : "false",
-    }).toString();
+    };
+    if (settings.thinking) {
+      params.thinking = "true";
+      if (settings.thinkingBudget !== undefined && settings.thinkingBudget > 0) {
+        params.thinking_budget = String(settings.thinkingBudget);
+      }
+      if (settings.thinkingLevel) {
+        params.thinking_level = settings.thinkingLevel;
+      }
+    }
+    if (settings.customVoiceKey?.trim()) {
+      params.custom_voice_key = settings.customVoiceKey.trim();
+    }
+    url.search = new URLSearchParams(params).toString();
   } else if (settings.engine === "cascade") {
+    const effectiveVoice = (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim())
+      ? settings.customVoiceKey.trim()
+      : settings.voice;
     url.search = new URLSearchParams({
       bot_type: "tts-llm-stt",
       stt_model: settings.sttModel,
       llm_model: settings.llmModel,
       tts_model: settings.ttsModel,
-      tts_voice: settings.voice,
+      tts_voice: effectiveVoice,
       stt_language: settings.language,
       tts_pace: String(settings.ttsPace ?? "1.0"),
       skip_stt: settings.skipStt ? "true" : "false",
@@ -242,6 +274,18 @@ export function buildConnectRequest(settings: SessionSettings) {
     if (settings.contextCompressionTokens) {
       body.context_compression_trigger_tokens = settings.contextCompressionTokens;
     }
+  }
+  if (settings.thinking) {
+    body.thinking = true;
+    if (settings.thinkingBudget !== undefined && settings.thinkingBudget > 0) {
+      body.thinking_budget = settings.thinkingBudget;
+    }
+    if (settings.thinkingLevel) {
+      body.thinking_level = settings.thinkingLevel;
+    }
+  }
+  if (settings.customVoiceKey?.trim()) {
+    body.custom_voice_key = settings.customVoiceKey.trim();
   }
   return { url: buildConnectUrl(settings), body };
 }

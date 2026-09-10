@@ -110,3 +110,35 @@ test('backend page shortcuts reject unsafe or credential-bearing navigation targ
     assert.throws(() => buildBackendPageUrl(value, 'original'));
   }
 });
+
+test('thinking configuration serializes correctly for Gemini Live', () => {
+  const { url, body } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    thinking: true,
+    thinkingBudget: 4096,
+    thinkingLevel: 'medium',
+  });
+  assert.equal(url.searchParams.get('thinking'), 'true');
+  assert.equal(url.searchParams.get('thinking_budget'), '4096');
+  assert.equal(url.searchParams.get('thinking_level'), 'medium');
+  assert.equal(body.thinking, true);
+  assert.equal(body.thinking_budget, 4096);
+  assert.equal(body.thinking_level, 'medium');
+});
+
+test('custom voices and custom voice key serialize correctly', () => {
+  const { url: urlMale } = buildConnectRequest({ ...settings, engine: 'live', voice: 'Custom-Male' });
+  assert.equal(urlMale.searchParams.get('voice'), 'Custom-Male');
+
+  const { url: urlKey, body } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    voice: 'Custom-Key',
+    customVoiceKey: 'my-replicated-voice-id-123',
+  });
+  assert.equal(urlKey.searchParams.get('voice'), 'my-replicated-voice-id-123');
+  assert.equal(urlKey.searchParams.get('custom_voice_key'), 'my-replicated-voice-id-123');
+  assert.equal(body.custom_voice_key, 'my-replicated-voice-id-123');
+});
+
