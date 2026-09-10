@@ -1,0 +1,19 @@
+{
+  "name": "gemini-live-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Developer documentation for building real-time voice agents on the Gemini Live API. Deployed to GitHub Pages, fully decoupled from the Cloud Run app.",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.0",
+    "astro": "^7.3.2",
+    "sharp": "^0.35.4"
+  }
+}

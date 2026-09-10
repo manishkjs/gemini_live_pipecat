@@ -1,0 +1,12 @@
+/* Brand accent tuned toward Google blue. */
+:root {
+  --sl-color-accent-low: #0b2545;
+  --sl-color-accent: #1a73e8;
+  --sl-color-accent-high: #a8c7fa;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d3e3fd;
+  --sl-color-accent: #1a73e8;
+  --sl-color-accent-high: #0b57d0;
+}

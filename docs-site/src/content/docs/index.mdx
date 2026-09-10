@@ -1,0 +1,67 @@
+---
+title: Gemini Live for Developers
+description: Build production-grade, low-latency, interruptible voice agents on the Gemini Live API.
+template: splash
+hero:
+  tagline: Real-time, bidirectional voice agents on Google's Gemini Live API — from your first WebSocket frame to production.
+  actions:
+    - text: Get started
+      link: /gemini_live_pipecat/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/manishkjs/gemini_live_pipecat
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+## Speech in, speech out — in real time
+
+The **Gemini Live API** is a stateful, bidirectional streaming API. You open a
+single WebSocket, stream microphone audio in, and receive generated audio (and
+transcripts, tool calls, and events) back as it is produced — with natural
+turn-taking and barge-in interruption.
+
+This site is the practical field guide: the wire protocol, the failure modes,
+and the operational patterns that separate a demo from a production voice agent.
+
+<CardGrid stagger>
+  <LinkCard
+    title="Getting started"
+    href="/gemini_live_pipecat/getting-started/"
+    description="Prerequisites, endpoints, and your first end-to-end voice turn."
+  />
+  <LinkCard
+    title="Architecture"
+    href="/gemini_live_pipecat/architecture/"
+    description="The duplex model, turn lifecycle, interruptions, and session resumption."
+  />
+  <LinkCard
+    title="Gemini Live configuration"
+    href="/gemini_live_pipecat/gemini-live-configuration/"
+    description="The setup frame, voices, VAD, modalities, and the message envelopes."
+  />
+  <LinkCard
+    title="Tools & function calling"
+    href="/gemini_live_pipecat/tools/"
+    description="Synchronous vs. non-blocking tools, and cancellation on barge-in."
+  />
+  <LinkCard
+    title="Deployment"
+    href="/gemini_live_pipecat/deployment/"
+    description="Ship a voice backend to Cloud Run with HTTPS, WSS, and CORS."
+  />
+  <LinkCard
+    title="Troubleshooting"
+    href="/gemini_live_pipecat/troubleshooting/"
+    description="Close codes, audio-format mismatches, and the silent model fallback."
+  />
+</CardGrid>
+
+:::tip[Two ways to do speech]
+Gemini Live offers **native audio** (one model does speech-to-speech) and a
+**cascade** (Speech-to-Text -> LLM -> Text-to-Speech). This guide covers both.
+See [Architecture](/gemini_live_pipecat/architecture/) for how to choose.
+:::
