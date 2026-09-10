@@ -8,12 +8,22 @@ export default defineConfig({
   server: {
     allowedHosts: true,
     proxy: {
-      "/connect": "http://127.0.0.1:7860",
-      "/api": "http://127.0.0.1:7860",
-      "/diagnostics": "http://127.0.0.1:7860",
+      "/connect": {
+        target: "http://127.0.0.1:7860",
+        changeOrigin: true,
+      },
+      "/api": {
+        target: "http://127.0.0.1:7860",
+        changeOrigin: true,
+      },
+      "/diagnostics": {
+        target: "http://127.0.0.1:7860",
+        changeOrigin: true,
+      },
       "/ws": {
         target: "ws://127.0.0.1:7860",
         ws: true,
+        changeOrigin: true,
       },
     },
   },

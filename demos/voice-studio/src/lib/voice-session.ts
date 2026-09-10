@@ -27,9 +27,6 @@ export type SessionSettings = {
 
 export function getDefaultBackendUrl(): string {
   if (typeof window !== "undefined") {
-    if (window.location.port === "5173" || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
-      return `${window.location.protocol}//${window.location.hostname}:7860`;
-    }
     return window.location.origin;
   }
   return "http://localhost:7860";
@@ -297,9 +294,24 @@ export function validateSocketUrl(value: unknown, backendUrl: string = getDefaul
   const backend = new URL(targetUrl);
   if (!["ws:", "wss:"].includes(socket.protocol) || socket.username || socket.password) throw new Error("The server returned an invalid WebSocket URL.");
   
-  const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1";
-  const hostsMatch = socket.host === backend.host || (isLocal(socket.hostname) && isLocal(backend.hostname) && (socket.port === backend.port || (!socket.port && !backend.port)));
-  if (!hostsMatch) throw new Error("The WebSocket address must match your configured server host.");
-  if (backend.protocol === "https:" && socket.protocol !== "wss:") throw new Error("An HTTPS server must return a secure wss:// address.");
+  if (typeof window !== "undefined") {
+    const isLocalSocket = socket.hostname === "localhost" || socket.hostname === "127.0.0.1";
+    const isLocalPage = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    
+    // If the server returned 127.0.0.1/localhost (due to internal reverse proxying),
+    // but the client is viewing the page through a remote hostname or Cloudtop web proxy,
+    // route WebSocket traffic through the active page host (which reverse-proxies /ws).
+    if (isLocalSocket && !isLocalPage) {
+      socket.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      socket.host = window.location.host;
+    } else if (window.location.protocol === "https:" && socket.protocol === "ws:") {
+      socket.protocol = "wss:";
+    }
+  } else {
+    const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1";
+    const hostsMatch = socket.host === backend.host || (isLocal(socket.hostname) && isLocal(backend.hostname) && (socket.port === backend.port || (!socket.port && !backend.port)));
+    if (!hostsMatch) throw new Error("The WebSocket address must match your configured server host.");
+    if (backend.protocol === "https:" && socket.protocol !== "wss:") throw new Error("An HTTPS server must return a secure wss:// address.");
+  }
   return socket.href;
 }
