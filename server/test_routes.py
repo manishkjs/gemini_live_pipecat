@@ -215,5 +215,86 @@ class TestVoiceProfileRegistry(unittest.TestCase):
         self.assertEqual(voice_profiles.active_count(), 1)
 
 
+class TestSessionScopedDiagnostics(unittest.TestCase):
+    """One process serves many demoers; their metrics must not blend together."""
+
+    def setUp(self):
+        import diagnostic_buffer
+        self.db = diagnostic_buffer
+        self.db.DIAGNOSTIC_LOG_BUFFER.clear()
+        self.db.TURN_LATENCY_RECORDS.clear()
+        self.db.bind_session(None)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.db.bind_session(None)
+        self.db.DIAGNOSTIC_LOG_BUFFER.clear()
+        self.db.TURN_LATENCY_RECORDS.clear()
+
+    def _log_as(self, session_id, message):
+        self.db.bind_session(session_id)
+        self.db.append_raw_log_entry(message)
+
+    def test_records_carry_the_session_that_produced_them(self):
+        self._log_as("s_alice", "alice speaking")
+        self.db.record_turn_latency("llm", 120.0)
+        entry = self.db.DIAGNOSTIC_LOG_BUFFER[-1]
+        self.assertEqual(entry["session_id"], "s_alice")
+        self.assertEqual(self.db.TURN_LATENCY_RECORDS[-1]["session_id"], "s_alice")
+
+    def test_one_session_never_sees_anothers_logs(self):
+        self._log_as("s_alice", "alice speaking")
+        self._log_as("s_bob", "bob speaking")
+        alice = self.db.get_recent_diagnostic_logs(session_id="s_alice")
+        messages = [r["message"] for r in alice]
+        self.assertIn("alice speaking", messages)
+        self.assertNotIn("bob speaking", messages)
+
+    def test_latency_percentiles_are_computed_per_session(self):
+        self.db.bind_session("s_alice")
+        self.db.record_turn_latency("llm", 100.0)
+        self.db.bind_session("s_bob")
+        self.db.record_turn_latency("llm", 900.0)
+        alice = self.db.get_latency_summary(session_id="s_alice")
+        self.assertEqual(alice["llm"]["count"], 1)
+        self.assertEqual(alice["llm"]["max"], 100.0)
+
+    def test_process_level_noise_stays_visible_to_everyone(self):
+        # Startup and framework logs predate any session; hiding them would
+        # make the drawer useless for diagnosing connection failures.
+        self.db.append_raw_log_entry("uvicorn started")
+        self._log_as("s_alice", "alice speaking")
+        bob = [r["message"] for r in self.db.get_recent_diagnostic_logs(session_id="s_bob")]
+        self.assertIn("uvicorn started", bob)
+        self.assertNotIn("alice speaking", bob)
+
+    def test_clearing_one_session_leaves_the_others_intact(self):
+        self._log_as("s_alice", "alice speaking")
+        self._log_as("s_bob", "bob speaking")
+        self.db.clear_diagnostic_logs(session_id="s_alice")
+        remaining = [r["message"] for r in self.db.DIAGNOSTIC_LOG_BUFFER]
+        self.assertNotIn("alice speaking", remaining)
+        self.assertIn("bob speaking", remaining)
+
+    def test_unscoped_clear_still_wipes_everything(self):
+        self._log_as("s_alice", "alice speaking")
+        self.db.clear_diagnostic_logs()
+        self.assertEqual(len(self.db.DIAGNOSTIC_LOG_BUFFER), 0)
+
+    def test_logs_endpoint_filters_and_echoes_the_scope(self):
+        self._log_as("s_alice", "alice speaking")
+        self._log_as("s_bob", "bob speaking")
+        payload = self.client.get("/api/logs?session_id=s_bob").json()
+        self.assertEqual(payload["session_id"], "s_bob")
+        messages = [r["message"] for r in payload["logs"]]
+        self.assertIn("bob speaking", messages)
+        self.assertNotIn("alice speaking", messages)
+
+    def test_websocket_endpoint_accepts_a_session_id(self):
+        import inspect
+        from server import websocket_endpoint
+        self.assertIn("session_id", inspect.signature(websocket_endpoint).parameters)
+
+
 if __name__ == "__main__":
     unittest.main()

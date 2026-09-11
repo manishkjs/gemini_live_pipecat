@@ -34,10 +34,17 @@ type ObservabilityDrawerProps = {
   open: boolean;
   onClose: () => void;
   backendUrl: string;
+  /**
+   * Scopes the drawer to one demo session. The backend diagnostics buffer is
+   * process-global, so without this the drawer shows every concurrent
+   * demoer's logs and blends their latency percentiles together.
+   */
+  sessionId?: string;
   engine?: "live" | "cascade";
 };
 
-export default function ObservabilityDrawer({ open, onClose, backendUrl, engine = "live" }: ObservabilityDrawerProps) {
+export default function ObservabilityDrawer({ open, onClose, backendUrl, sessionId, engine = "live" }: ObservabilityDrawerProps) {
+  const scope = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "";
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null);
   const [traceUrl, setTraceUrl] = useState<string>("https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat");
@@ -61,7 +68,7 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl, engine 
     const fetchTelemetry = async () => {
       try {
         const [logsRes, traceRes] = await Promise.allSettled([
-          fetch(`${base}/api/logs?limit=500`),
+          fetch(`${base}/api/logs?limit=500${scope}`),
           fetch(`${base}/api/trace/current`),
         ]);
 
@@ -93,7 +100,7 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl, engine 
       mounted = false;
       clearInterval(interval);
     };
-  }, [open, backendUrl]);
+  }, [open, backendUrl, scope]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -151,7 +158,8 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl, engine 
     setIsClearing(true);
     try {
       const base = backendUrl.replace(/\/$/, "");
-      await fetch(`${base}/api/logs/clear`, { method: "POST" });
+      // Scoped so clearing your own view cannot wipe another demoer's history.
+      await fetch(`${base}/api/logs/clear?${scope.replace(/^&/, "")}`, { method: "POST" });
       setLogs([]);
       setLatencySummary(null);
     } catch (e) {

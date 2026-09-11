@@ -45,6 +45,10 @@ const TRANSPORT = {
   skipStt:                  { live: null,                         cascade: 'query:skip_stt',              probe: true },
   toolsJson:                { live: 'body:tools',                 cascade: 'body:tools',                  probe: '[{"name":"x"}]' },
 
+  // Partitions the process-global diagnostics buffer so concurrent demoers
+  // do not see each other's logs or blend their latency percentiles.
+  sessionId:                { live: 'query:session_id',           cascade: 'query:session_id',            probe: 's_abc12345' },
+
   // Speaking rate only has meaning where an external TTS service renders the
   // audio. On Live that is the `tts` / cloned-voice path; native audio has no
   // pace knob. So the Live probe turns external TTS on first.

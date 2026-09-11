@@ -129,9 +129,13 @@ async def websocket_endpoint(
     # Opaque, single-use handle minted by /connect. Raw cloning keys are
     # deliberately not accepted here: this URL is logged in several places.
     voice_profile_id: Optional[str] = None,
+    # Stamps every log line and latency sample this session produces, so
+    # concurrent demoers do not blend their metrics together.
+    session_id: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
+    diagnostic_buffer.bind_session(session_id)
     custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
@@ -262,23 +266,31 @@ async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
 @app.get("/api/logs")
-async def get_diagnostic_logs(limit: int = 500):
+async def get_diagnostic_logs(limit: int = 500, session_id: Optional[str] = None):
+    """Recent logs and latency percentiles.
+
+    Pass `session_id` to see only your own session. Omitting it returns
+    everything in the process, which is only meaningful on a single-user box.
+    """
     from diagnostic_buffer import get_recent_diagnostic_logs, get_latency_summary
     return {
-        "logs": get_recent_diagnostic_logs(limit),
-        "latency_summary": get_latency_summary()
+        "logs": get_recent_diagnostic_logs(limit, session_id=session_id),
+        "latency_summary": get_latency_summary(session_id=session_id),
+        "session_id": session_id,
     }
 
 @app.get("/api/metrics/latency")
-async def get_latency_metrics_endpoint():
+async def get_latency_metrics_endpoint(session_id: Optional[str] = None):
     from diagnostic_buffer import get_latency_summary
-    return get_latency_summary()
+    return get_latency_summary(session_id=session_id)
 
 @app.post("/api/logs/clear")
-async def clear_diagnostic_logs_endpoint():
+async def clear_diagnostic_logs_endpoint(session_id: Optional[str] = None):
+    """Clear diagnostics. Scoped to one session unless asked otherwise, so one
+    demoer clicking Clear cannot wipe another's history."""
     from diagnostic_buffer import clear_diagnostic_logs
-    clear_diagnostic_logs()
-    return {"status": "cleared"}
+    clear_diagnostic_logs(session_id=session_id)
+    return {"status": "cleared", "session_id": session_id}
 
 @app.get("/api/trace/current")
 async def get_current_trace_endpoint():

@@ -48,6 +48,7 @@ import {
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
   getDefaultBackendUrl,
+  newSessionId,
   usesExternalTts,
   type Engine,
   type SessionSettings,
@@ -139,7 +140,9 @@ function Picker({
 }
 
 export default function VoiceStudio({ sourceDownload = false }: { sourceDownload?: boolean }) {
-  const [settings, setSettings] = useState<SessionSettings>({ ...DEFAULT_SETTINGS });
+  // Minted once per browser tab so this demoer's logs and latency percentiles
+  // stay separate from anyone else connected to the same backend.
+  const [settings, setSettings] = useState<SessionSettings>({ ...DEFAULT_SETTINGS, sessionId: newSessionId() });
   const [phase, setPhase] = useState<Phase>("idle");
   const [source, setSource] = useState<"preview" | "backend" | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -1584,6 +1587,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
         onClose={() => setObservabilityOpen(false)}
         backendUrl={settings.backendUrl?.trim() || getDefaultBackendUrl()}
         engine={settings.engine}
+        sessionId={settings.sessionId}
       />
     </main>
   );

@@ -41,7 +41,23 @@ export type SessionSettings = {
   toolsJson?: string;
   thinkingLevel?: ThinkingLevel;
   customVoiceKey?: string;
+  /**
+   * Identifies this browser's session to the backend diagnostics buffer.
+   *
+   * The buffer is process-global, so without a session id the Observability
+   * drawer shows every concurrent demoer's logs and blends their latency
+   * percentiles together.
+   */
+  sessionId?: string;
 };
+
+/** A short, non-secret id used only to partition diagnostics by demoer. */
+export function newSessionId(): string {
+  const random = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+  return `s_${random}`;
+}
 
 /** Resolve the reasoning tier to send, or null when the model default should stand. */
 export function resolveThinkingLevel(settings: SessionSettings): ThinkingLevel | null {
@@ -78,6 +94,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
+  sessionId: "",
 };
 
 export const LANGUAGE_MAP: Record<string, string> = {
@@ -268,6 +285,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       vad: settings.vad === false ? "false" : "true",
       context_compression: settings.contextCompression ? "true" : "false",
     };
+    if (settings.sessionId) params.session_id = settings.sessionId;
     // Native audio has no pace parameter, so only send one when a TTS service
     // is actually rendering the audio and can apply it.
     if (usesExternalTts(settings)) {
@@ -290,6 +308,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: settings.vad === false ? "false" : "true",
       skip_stt: settings.skipStt ? "true" : "false",
+      ...(settings.sessionId ? { session_id: settings.sessionId } : {}),
     }).toString();
   } else throw new Error("Choose Gemini Live or Cascade.");
   return url;

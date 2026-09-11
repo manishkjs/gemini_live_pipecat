@@ -1,3 +1,4 @@
+import contextvars
 import logging
 from collections import deque
 from datetime import datetime
@@ -9,6 +10,40 @@ DIAGNOSTIC_LOG_BUFFER: deque = deque(maxlen=1500)
 
 # Structured storage for individual turn latencies across session
 TURN_LATENCY_RECORDS: List[Dict[str, Any]] = []
+
+# Which session a log line or latency sample belongs to.
+#
+# The buffer is process-global, so with several people demoing at once the
+# Observability drawer used to blend everyone's metrics into one set of
+# percentiles. Every record is now stamped with the session that produced it
+# and the API filters on request.
+#
+# This is a ContextVar rather than an argument because most records arrive
+# through the loguru sink, far from any call site we control. Setting it once
+# per session task means everything that session logs — including inside tasks
+# it spawns — inherits the stamp.
+SESSION_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "diagnostic_session_id", default=None
+)
+
+# Records written before any session started, or by process-level machinery.
+UNSCOPED = "__unscoped__"
+
+
+def current_session_id() -> str:
+    return SESSION_ID.get() or UNSCOPED
+
+
+def bind_session(session_id: Optional[str]) -> None:
+    """Attribute everything logged from this context onward to `session_id`."""
+    SESSION_ID.set(session_id or None)
+
+
+def _belongs_to(record: Dict[str, Any], session_id: Optional[str]) -> bool:
+    """Unscoped records are shown to everyone; they are process-level noise."""
+    if not session_id:
+        return True
+    return record.get("session_id") in (session_id, UNSCOPED)
 
 def _numpy_percentile(sorted_values: List[float], p: float) -> float:
     """Calculate percentile using linear interpolation (standard numpy method)."""
@@ -54,7 +89,8 @@ def record_turn_latency(stage: str, value_ms: float, details: str = ""):
         "timestamp": now_str,
         "stage": stage,
         "value_ms": round(float(value_ms), 1),
-        "details": details
+        "details": details,
+        "session_id": current_session_id(),
     }
     TURN_LATENCY_RECORDS.append(entry)
 
@@ -147,7 +183,8 @@ def append_raw_log_entry(message: str, level: str = "INFO"):
         "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
         "level": level,
         "message": clean_msg,
-        "ttfb_ms": ttfb_ms
+        "ttfb_ms": ttfb_ms,
+        "session_id": current_session_id(),
     }
     DIAGNOSTIC_LOG_BUFFER.append(entry)
 
@@ -172,16 +209,23 @@ def append_diagnostic_log(event_type: str, details: str, ttfb_ms: Optional[float
         "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
         "level": "INFO",
         "message": clean_msg,
-        "ttfb_ms": ttfb_ms
+        "ttfb_ms": ttfb_ms,
+        "session_id": current_session_id(),
     }
     DIAGNOSTIC_LOG_BUFFER.append(entry)
 
-def get_latency_summary() -> Dict[str, Any]:
-    """Aggregate all turn latencies and compute official statistical percentiles."""
-    live_vals = [r["value_ms"] for r in TURN_LATENCY_RECORDS if r["stage"] == "live_ttfb"]
-    stt_vals = [r["value_ms"] for r in TURN_LATENCY_RECORDS if r["stage"] == "stt"]
-    llm_vals = [r["value_ms"] for r in TURN_LATENCY_RECORDS if r["stage"] == "llm"]
-    tts_vals = [r["value_ms"] for r in TURN_LATENCY_RECORDS if r["stage"] == "tts"]
+def get_latency_summary(session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Aggregate turn latencies and compute official statistical percentiles.
+
+    Pass `session_id` to see only one demo's numbers. Without it the summary
+    spans every session in the process, which is what you want on a single-user
+    box and misleading anywhere else.
+    """
+    scoped = [r for r in TURN_LATENCY_RECORDS if _belongs_to(r, session_id)]
+    live_vals = [r["value_ms"] for r in scoped if r["stage"] == "live_ttfb"]
+    stt_vals = [r["value_ms"] for r in scoped if r["stage"] == "stt"]
+    llm_vals = [r["value_ms"] for r in scoped if r["stage"] == "llm"]
+    tts_vals = [r["value_ms"] for r in scoped if r["stage"] == "tts"]
 
     # Compute overall turnarounds (for cascaded or live)
     total_vals = []
@@ -201,7 +245,7 @@ def get_latency_summary() -> Dict[str, Any]:
         "llm": compute_percentiles(llm_vals),
         "tts": compute_percentiles(tts_vals),
         "total_turnaround": compute_percentiles(total_vals),
-        "turns": list(TURN_LATENCY_RECORDS)[-100:]  # Recent 100 turns
+        "turns": scoped[-100:]  # Recent 100 turns
     }
 
 class BackendDiagnosticHandler(logging.Handler):
@@ -228,12 +272,23 @@ def setup_global_backend_log_interceptor():
     if not any(isinstance(h, BackendDiagnosticHandler) for h in root_logger.handlers):
         root_logger.addHandler(BackendDiagnosticHandler())
 
-def get_recent_diagnostic_logs(limit: int = 500) -> List[Dict[str, Any]]:
-    return list(DIAGNOSTIC_LOG_BUFFER)[-limit:]
+def get_recent_diagnostic_logs(limit: int = 500, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return [r for r in DIAGNOSTIC_LOG_BUFFER if _belongs_to(r, session_id)][-limit:]
 
-def clear_diagnostic_logs() -> None:
+def clear_diagnostic_logs(session_id: Optional[str] = None) -> None:
+    """Clear diagnostics, optionally for one session only.
+
+    A global clear used to wipe every concurrent demoer's history, so the
+    scoped form is what the UI calls.
+    """
+    if not session_id:
+        DIAGNOSTIC_LOG_BUFFER.clear()
+        TURN_LATENCY_RECORDS.clear()
+        return
+    kept_logs = [r for r in DIAGNOSTIC_LOG_BUFFER if r.get("session_id") != session_id]
     DIAGNOSTIC_LOG_BUFFER.clear()
-    TURN_LATENCY_RECORDS.clear()
+    DIAGNOSTIC_LOG_BUFFER.extend(kept_logs)
+    TURN_LATENCY_RECORDS[:] = [r for r in TURN_LATENCY_RECORDS if r.get("session_id") != session_id]
 
 # Initialize global interceptor immediately on import
 setup_global_backend_log_interceptor()
