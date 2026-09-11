@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, Check, Copy, Edit3, MessageSquare, Mic, RotateCcw, Zap, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { isLivePricingEligible, formatCost } from "@/lib/pricing";
+import { isLivePricingEligible, formatCost, estimateTokens } from "@/lib/pricing";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 import PersonaAvatar from "./persona-avatar";
 
@@ -69,7 +69,6 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <PersonaAvatar key={persona.id} persona={persona} className="empty-portrait" />
               {custom ? (
                 <>
                   <h3>Start with your own instructions.</h3>
@@ -84,12 +83,12 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                       onChange={(e) => update("instructions", e.target.value)}
                       disabled={active}
                       placeholder="You are a helpful voice assistant. Keep replies brief, ask one question at a time, and…"
-                      maxLength={1000}
+                      maxLength={16000}
                       rows={5}
                     />
                     <p className="field-hint">
                       {settings.instructions
-                        ? `${settings.instructions.length}/1000 characters`
+                        ? `${estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens`
                         : "Leave blank to use your backend’s existing system instructions."}
                     </p>
                   </div>
@@ -153,7 +152,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                           value={settings.instructions}
                           onChange={(e) => update("instructions", e.target.value)}
                           disabled={active}
-                          maxLength={1000}
+                          maxLength={16000}
                           rows={4}
                           className="main-prompt-textarea"
                           placeholder="Enter custom persona prompt..."
@@ -161,7 +160,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                         />
                         <div className="main-prompt-footer">
                           <span className="field-hint">
-                            {settings.instructions.length}/1000 characters · Replaces default preset in Gemini Live and Cascade
+                            {estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens · Replaces default preset in Gemini Live and Cascade
                           </span>
                         </div>
                       </div>
@@ -299,15 +298,19 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
 
       <div className="transcript-footer">
         <span>
-          <span className={`status-dot ${active ? "is-active" : ""}`} />
+          {(source === "preview" || active) && (
+            <span className={`status-dot ${active ? "is-active" : ""}`} />
+          )}
           {source === "preview"
             ? "Scripted persona preview · no API calls"
             : active
             ? `Live transcript · ${engineName}`
-            : "Your conversation will appear here"}
+            : ""}
         </span>
         <div>
-          <span className="session-clock">{duration}</span>
+          <span className="session-clock">Total time: {duration}</span>
+          <span title="Total session tokens consumed">Tokens: {tokenCount.toLocaleString()}</span>
+          <span title="Total session live cost">Live cost: {formatCost(sessionCostUSD)}</span>
           {latency !== null && (
             <span title="Measured from user transcript arrival to first response audio">
               Response {(latency / 1000).toFixed(2)}s

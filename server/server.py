@@ -18,6 +18,8 @@ load_dotenv(override=True)
 import diagnostic_buffer
 import voice_profiles
 
+_session_instructions: Dict[str, str] = {}
+
 # Obsolete in pipecat-ai 1.x (which natively uses google-genai)
 # import pipecat.services.gemini_multimodal_live.gemini
 # pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
@@ -123,7 +125,7 @@ async def websocket_endpoint(
     skip_stt: bool = False,
     vad: bool = True,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = None,
+    context_compression_trigger_tokens: Optional[int] = 5000,
     thinking: bool = False,
     thinking_level: Optional[str] = None,
     # Opaque, single-use handle minted by /connect. Raw cloning keys are
@@ -136,6 +138,8 @@ async def websocket_endpoint(
     await websocket.accept()
     print("WebSocket connection accepted")
     diagnostic_buffer.bind_session(session_id)
+    if not system_instruction and session_id and session_id in _session_instructions:
+        system_instruction = _session_instructions.pop(session_id)
     custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
@@ -150,7 +154,7 @@ async def websocket_endpoint(
                 tools=tools,
                 vad=vad,
                 context_compression=context_compression,
-                context_compression_trigger_tokens=context_compression_trigger_tokens,
+                context_compression_trigger_tokens=max(5000, context_compression_trigger_tokens) if context_compression_trigger_tokens is not None else 5000,
                 thinking=thinking,
                 thinking_level=thinking_level,
                 custom_voice_key=custom_voice_key,
@@ -174,81 +178,70 @@ async def websocket_endpoint(
 
 @app.post("/connect")
 async def bot_connect(request: Request) -> Dict[Any, Any]:
+    from urllib.parse import parse_qs, urlencode
     # Get the original query string from the incoming request (e.g., "model=...&voice=...")
-    query_params = request.url.query
+    query_params_raw = request.url.query
+    params_dict: Dict[str, str] = {
+        k: v[-1] for k, v in parse_qs(query_params_raw, keep_blank_values=True).items()
+    }
 
     # Try to get parameters from the JSON body
     try:
         body = await request.json()
         if isinstance(body, dict):
-            # URL-encode system_instruction ONLY if customized and compact to prevent HTTP 400 (Query URL too long)
+            # Store system_instruction and URL-encode if within URL limits
             if "system_instruction" in body:
                 custom_prompt = body["system_instruction"].strip()
-                if custom_prompt and custom_prompt != SYSTEM_PROMPT.strip() and len(custom_prompt) < 1500:
-                    encoded_instruction = quote(custom_prompt)
-                    if query_params:
-                        query_params += f"&system_instruction={encoded_instruction}"
-                    else:
-                        query_params = f"system_instruction={encoded_instruction}"
+                if custom_prompt and custom_prompt != SYSTEM_PROMPT.strip():
+                    session_id = params_dict.get("session_id")
+                    if session_id:
+                        _session_instructions[session_id] = custom_prompt
+                    if len(custom_prompt) < 4500:
+                        params_dict["system_instruction"] = custom_prompt
             
             # URL-encode the tools from the body
             if "tools" in body:
                 import json
-                # Ensure tools is a valid JSON string or object converted to string
                 tools_data = body["tools"]
                 if isinstance(tools_data, (dict, list)):
                     tools_str = json.dumps(tools_data)
                 else:
                     tools_str = str(tools_data)
-                
-                encoded_tools = quote(tools_str)
-                if query_params:
-                    query_params += f"&tools={encoded_tools}"
-                else:
-                    query_params = f"tools={encoded_tools}"
+                params_dict["tools"] = tools_str
 
             if "context_compression" in body:
-                val = "true" if body["context_compression"] else "false"
-                if query_params:
-                    query_params += f"&context_compression={val}"
-                else:
-                    query_params = f"context_compression={val}"
+                params_dict["context_compression"] = "true" if body["context_compression"] else "false"
 
             if "context_compression_trigger_tokens" in body:
-                val = str(body["context_compression_trigger_tokens"])
-                if query_params:
-                    query_params += f"&context_compression_trigger_tokens={val}"
-                else:
-                    query_params = f"context_compression_trigger_tokens={val}"
+                try:
+                    raw_val = int(body["context_compression_trigger_tokens"])
+                    # Strictly enforce minimum 5,000 tokens - do not accept anything less
+                    params_dict["context_compression_trigger_tokens"] = str(max(5000, raw_val))
+                except (ValueError, TypeError):
+                    params_dict["context_compression_trigger_tokens"] = "5000"
 
             if "thinking" in body:
-                val = "true" if body["thinking"] else "false"
-                if query_params:
-                    query_params += f"&thinking={val}"
-                else:
-                    query_params = f"thinking={val}"
+                params_dict["thinking"] = "true" if body["thinking"] else "false"
 
             if "thinking_level" in body:
-                val = str(body["thinking_level"])
-                if query_params:
-                    query_params += f"&thinking_level={val}"
-                else:
-                    query_params = f"thinking_level={val}"
+                params_dict["thinking_level"] = str(body["thinking_level"])
+
+            if "vad" in body:
+                params_dict["vad"] = "false" if body["vad"] is False else "true"
 
             # A cloning key is a credential and must never reach the ws_url,
             # which is written to browser history, access logs and the in-app
             # diagnostics buffer. Exchange it for a single-use, expiring handle.
-            if "custom_voice_key" in body:
+            if "custom_voice_key" in body and body["custom_voice_key"]:
                 profile_id = voice_profiles.register(str(body["custom_voice_key"]))
                 if profile_id:
-                    if query_params:
-                        query_params += f"&voice_profile_id={quote(profile_id)}"
-                    else:
-                        query_params = f"voice_profile_id={quote(profile_id)}"
+                    params_dict["voice_profile_id"] = profile_id
 
     except Exception:
         # Body is not JSON or is empty, so we just ignore it
         pass
+    
+    query_params = urlencode(params_dict)
     
     # Dynamically determine WebSocket scheme (ws vs wss) and host
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)

@@ -16,7 +16,7 @@ import {
   usesExternalTts,
 } from "@/lib/voice-session";
 import { getPersonaPrompt, type PersonaTone } from "@/lib/personas";
-import { isLivePricingEligible, getLiveRateCard } from "@/lib/pricing";
+import { isLivePricingEligible, getLiveRateCard, estimateTokens } from "@/lib/pricing";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 
 function Picker({
@@ -240,16 +240,26 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
               </label>
               {settings.contextCompression && (
                 <div className="field trigger-tokens-field">
-                  <label htmlFor="comp-tokens">Trigger Tokens Threshold</label>
+                  <label htmlFor="comp-tokens">Trigger Tokens Threshold (min 5,000)</label>
                   <Input
                     id="comp-tokens"
                     type="number"
                     min={5000}
                     step={1000}
-                    value={settings.contextCompressionTokens ?? 20000}
+                    value={Math.max(5000, settings.contextCompressionTokens ?? 5000)}
                     disabled={active}
-                    onChange={(e) => updateNumber("contextCompressionTokens", parseInt(e.target.value, 10))}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      updateNumber("contextCompressionTokens", isNaN(val) ? 5000 : Math.max(5000, val));
+                    }}
+                    onBlur={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (isNaN(val) || val < 5000) {
+                        updateNumber("contextCompressionTokens", 5000);
+                      }
+                    }}
                   />
+                  <p className="field-hint">Minimum 5,000 tokens (Vertex AI Live API requires &ge; 5,000 tokens).</p>
                 </div>
               )}
             </div>
@@ -468,14 +478,14 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
             }}
             onChange={(e) => update("instructions", e.target.value)}
             disabled={active}
-            maxLength={1000}
+            maxLength={16000}
             rows={5}
             className="instructions-textarea"
           />
           <div className="instructions-footer">
             <p className="field-hint">
               {settings.instructions
-                ? `${settings.instructions.length}/1000 characters · Replaces default preset`
+                ? `${estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens · Replaces default preset`
                 : custom
                 ? "Using your backend’s existing system instructions."
                 : `Using the ${persona.name} preset. Click inside or 'Customize / Edit' to modify it.`}

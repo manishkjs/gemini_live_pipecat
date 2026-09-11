@@ -13,6 +13,8 @@ import EngineToolbar from "./studio/engine-toolbar";
 import ConversationStage from "./studio/conversation-stage";
 import TranscriptPanel from "./studio/transcript-panel";
 import SettingsDialog from "./studio/settings-dialog";
+import PersonaAvatar from "./studio/persona-avatar";
+import ContextCompressionToast from "./studio/context-compression-toast";
 import "./voice-studio.css";
 
 /** Loaded on demand so the waveform bundle never blocks first paint. */
@@ -40,6 +42,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const [observabilityOpen, setObservabilityOpen] = useState(false);
   const {
     active, audio, error, persona, settings, setError, setSettingsOpen, sound, turnCount,
+    tokenCount, sessionCostUSD, interruptCount, phaseLabel, custom,
   } = studio;
 
   return (
@@ -80,18 +83,35 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
       </div>
     </header>
 
-      <PersonaPicker selected={settings.personaId} active={active} onChoose={studio.choosePersona} />
+      {/* 2-Pane Workspace: Left Pane (~30% Personas) + Right Pane (~70% Gemini Live Tile) */}
+      <div className="studio-workspace">
+        {/* Left Pane: Scrollable Personas List */}
+        <aside className="studio-sidebar" aria-label="Personas selector">
+          <PersonaPicker selected={settings.personaId} active={active} onChoose={studio.choosePersona} />
+        </aside>
 
-      <EngineToolbar
-        settings={settings}
-        active={active}
-        onEngineChange={studio.chooseEngine}
-        onLanguageChange={(value) => studio.update("language", value)}
-      />
+        {/* Right Pane: Gemini Live Tile (~70% of screen) */}
+        <section className="gemini-live-tile" aria-label="Gemini Live Studio Tile">
+          <div className="tile-top-bar">
+            <div className="tile-identity">
+              <span className="gemini-live-badge">GEMINI LIVE TILE</span>
+              <span className={`connection-state ${active ? "is-active" : ""}`}>
+                <span className="status-dot" />
+                {phaseLabel}
+              </span>
+            </div>
 
-      <div className="session-grid">
-        <ConversationStage studio={studio} Wave={Wave} />
-        <TranscriptPanel studio={studio} />
+            <EngineToolbar
+              settings={settings}
+              active={active}
+              onEngineChange={studio.chooseEngine}
+              onLanguageChange={(value) => studio.update("language", value)}
+            />
+          </div>
+
+          <ConversationStage studio={studio} Wave={Wave} />
+          <TranscriptPanel studio={studio} />
+        </section>
       </div>
 
     <AnimatePresence>
@@ -123,6 +143,11 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
 
       <SettingsDialog studio={studio} />
 
+      <ContextCompressionToast
+        event={studio.compressionEvent}
+        onDismiss={studio.dismissCompressionToast}
+      />
+
     {/* THEMED OBSERVABILITY DRAWER */}
     <ObservabilityDrawer
       open={observabilityOpen}
@@ -130,6 +155,10 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
       backendUrl={settings.backendUrl?.trim() || getDefaultBackendUrl()}
       engine={settings.engine}
       sessionId={settings.sessionId}
+      sessionTurnCount={turnCount}
+      sessionTokens={tokenCount}
+      sessionCost={sessionCostUSD}
+      sessionInterrupts={interruptCount}
     />
   </main>
 );

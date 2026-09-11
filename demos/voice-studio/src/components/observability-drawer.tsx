@@ -41,9 +41,23 @@ type ObservabilityDrawerProps = {
    */
   sessionId?: string;
   engine?: "live" | "cascade";
+  sessionTurnCount?: number;
+  sessionTokens?: number;
+  sessionCost?: number;
+  sessionInterrupts?: number;
 };
 
-export default function ObservabilityDrawer({ open, onClose, backendUrl, sessionId, engine = "live" }: ObservabilityDrawerProps) {
+export default function ObservabilityDrawer({
+  open,
+  onClose,
+  backendUrl,
+  sessionId,
+  engine = "live",
+  sessionTurnCount,
+  sessionTokens,
+  sessionCost,
+  sessionInterrupts,
+}: ObservabilityDrawerProps) {
   const scope = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "";
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null);
@@ -139,11 +153,24 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl, session
     const ttsStat = latencySummary?.tts || { count: 0 };
     const liveStat = latencySummary?.live_ttfb || { count: 0 };
 
+    // Prefer exact session values tracked directly in client session state
+    const displayTurns = sessionTurnCount !== undefined && sessionTurnCount > 0
+      ? sessionTurnCount
+      : (turns > 0 ? Math.ceil(turns / 2) : (engine === "live" ? (liveStat.count || 0) : (totalStat.count || 0)));
+
+    const displayInterrupts = sessionInterrupts !== undefined && sessionInterrupts > 0
+      ? sessionInterrupts
+      : interrupts;
+
+    const displayTokens = sessionTokens !== undefined && sessionTokens > 0
+      ? sessionTokens
+      : totalTokens;
+
     return {
-      turns: Math.max(turns, totalStat.count || 0, liveStat.count || 0),
-      interrupts,
+      turns: displayTurns,
+      interrupts: displayInterrupts,
       tools,
-      totalTokens,
+      totalTokens: displayTokens,
       inTokens,
       outTokens,
       totalStat,
@@ -152,7 +179,7 @@ export default function ObservabilityDrawer({ open, onClose, backendUrl, session
       ttsStat,
       liveStat,
     };
-  }, [logs, latencySummary]);
+  }, [logs, latencySummary, sessionTurnCount, sessionInterrupts, sessionTokens, engine]);
 
   const clearLogs = async () => {
     setIsClearing(true);

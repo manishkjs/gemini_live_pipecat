@@ -206,6 +206,8 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       } else if (p.type === "tool_call") {
         events.onMetricUpdate?.("tool_call", p);
       }
+    } else if (data.type === "context_compression") {
+      events.onMetricUpdate?.("context_compression", data.payload);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
     }

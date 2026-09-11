@@ -1,4 +1,5 @@
 import { getPersona, getPersonaPrompt, type PersonaId, type PersonaTone } from "./personas.ts";
+import { estimateTokens } from "./pricing.ts";
 
 export type Engine = "live" | "cascade";
 
@@ -90,7 +91,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   skipStt: false,
   vad: true,
   contextCompression: false,
-  contextCompressionTokens: 20000,
+  contextCompressionTokens: 5000,
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
@@ -245,7 +246,7 @@ export function buildSessionInstructions(settings: SessionSettings): string {
   const persona = getPersona(settings.personaId);
   const language = LANGUAGE_MAP[settings.language] || LANGUAGE_OPTIONS.find(([value]) => value === settings.language)?.[1];
   if (!language) throw new Error("Choose one of the supported session languages.");
-  if (settings.instructions.length > 1000) throw new Error("Keep custom persona instructions under 1,000 characters.");
+  if (estimateTokens(settings.instructions) > 4000) throw new Error("Keep custom persona instructions under 4,000 tokens.");
   const prompt = settings.instructions.trim() || getPersonaPrompt(persona, settings.tone);
   if (!prompt) return ""; // Leave the backend’s existing instructions intact in custom mode.
   return `${prompt} Speak in ${language}, unless the user requests another language.`;
@@ -326,10 +327,8 @@ export function buildConnectRequest(settings: SessionSettings) {
     }
   }
   if (settings.contextCompression) {
-    body.context_compression = true;
-    if (settings.contextCompressionTokens) {
-      body.context_compression_trigger_tokens = settings.contextCompressionTokens;
-    }
+    const rawTokens = settings.contextCompressionTokens ?? 5000;
+    body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
   }
   // A voice cloning key is a credential. It travels in the POST body only, and
   // the server exchanges it for an opaque, short-lived voice_profile_id before

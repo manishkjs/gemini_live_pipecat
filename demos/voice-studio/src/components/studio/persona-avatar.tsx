@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookOpen, Coffee, Heart, SlidersHorizontal, Wallet } from "lucide-react";
+import { BookOpen, Car, Coffee, Heart, Landmark, SlidersHorizontal, TrendingUp, Wallet } from "lucide-react";
 import type { Persona } from "@/lib/personas";
 
 const icons = {
@@ -7,6 +7,9 @@ const icons = {
   "reservation-agent": Coffee,
   storyteller: BookOpen,
   "ai-companion": Heart,
+  "car-negotiator": Car,
+  "groww-advisor": TrendingUp,
+  "wealth-manager": Landmark,
   custom: SlidersHorizontal,
 };
 

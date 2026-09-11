@@ -18,9 +18,12 @@ import type { Message, Phase } from "@/lib/studio-types";
  * presentational -- they read this and call back into it.
  */
 export function useVoiceSession() {
-  // Minted once per browser tab so this demoer's logs and latency percentiles
-  // stay separate from anyone else connected to the same backend.
-  const [settings, setSettings] = useState<SessionSettings>({ ...DEFAULT_SETTINGS, sessionId: newSessionId() });
+  const [settings, setSettings] = useState<SessionSettings>({
+    ...DEFAULT_SETTINGS,
+    contextCompression: true,
+    contextCompressionTokens: 5000,
+    sessionId: newSessionId(),
+  });
   const [phase, setPhase] = useState<Phase>("idle");
   const [source, setSource] = useState<"preview" | "backend" | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -43,6 +46,36 @@ export function useVoiceSession() {
   const [tokenCount, setTokenCount] = useState(0);
   const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
   const [interruptCount, setInterruptCount] = useState(0);
+
+  // Context Compression toast event state
+  const [compressionEvent, setCompressionEvent] = useState<{
+    id: string;
+    tokens?: number;
+    threshold?: number;
+    message?: string;
+  } | null>(null);
+  const compressionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const compressionFired = useRef(false);
+  const prevPromptTokens = useRef(0);
+
+  const triggerCompressionToast = useCallback((payload?: { tokens?: number; threshold?: number; message?: string }) => {
+    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
+    const effectiveThreshold = Math.max(5000, payload?.threshold ?? settings.contextCompressionTokens ?? 5000);
+    setCompressionEvent({
+      id: crypto.randomUUID(),
+      tokens: payload?.tokens,
+      threshold: effectiveThreshold,
+      message: payload?.message,
+    });
+    compressionTimeout.current = setTimeout(() => {
+      setCompressionEvent(null);
+    }, 4500);
+  }, [settings.contextCompressionTokens]);
+
+  const dismissCompressionToast = useCallback(() => {
+    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
+    setCompressionEvent(null);
+  }, []);
 
   const customInstructions = useRef("");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -117,6 +150,7 @@ export function useVoiceSession() {
     setTrack(null);
     setMuted(false);
     setPartialUser("");
+    prevPromptTokens.current = 0;
     if (current) await current.disconnect();
   }, []);
 
@@ -135,6 +169,10 @@ export function useVoiceSession() {
     setTokenCount(0);
     setSessionCostUSD(0);
     setInterruptCount(0);
+    compressionFired.current = false;
+    prevPromptTokens.current = 0;
+    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
+    setCompressionEvent(null);
     followTranscript.current = true;
   };
 
@@ -283,7 +321,9 @@ export function useVoiceSession() {
         },
         onMetricUpdate: (type, val) => {
           if (run.current !== current) return;
-          if (type === "turn_complete") {
+          if (type === "context_compression") {
+            triggerCompressionToast(val);
+          } else if (type === "turn_complete") {
             setTurnCount((c) => c + 1);
           } else if (type === "interruption") {
             setInterruptCount((c) => c + 1);
@@ -338,6 +378,25 @@ export function useVoiceSession() {
           } else if (type === "usage") {
             if (val?.total_token_count) {
               setTokenCount((c) => c + val.total_token_count);
+              if (activeSettings.contextCompression && !compressionFired.current) {
+                const threshold = Math.max(5000, activeSettings.contextCompressionTokens || 5000);
+                const promptTokens = val.prompt_token_count ?? 0;
+                const prevPrompt = prevPromptTokens.current;
+                const dropped = prevPrompt > 1000 && promptTokens < (prevPrompt - 150);
+                if (val.total_token_count >= threshold || dropped) {
+                  compressionFired.current = true;
+                  triggerCompressionToast({
+                    tokens: val.total_token_count,
+                    threshold,
+                    message: dropped
+                      ? `Context compressed (evicted earlier turns; prompt contracted from ${prevPrompt.toLocaleString()} to ${promptTokens.toLocaleString()} tok)`
+                      : undefined,
+                  });
+                }
+                if (promptTokens > 0) {
+                  prevPromptTokens.current = promptTokens;
+                }
+              }
             }
             const turnCost = val?.turnCostUSD ?? (targetEngine === "live" ? calculateTurnCost(settings.model, val)?.totalUSD : undefined);
             if (turnCost) {
@@ -434,6 +493,7 @@ export function useVoiceSession() {
     settings, phase, source, messages, elapsed, muted, sound, error, copied, complete,
     latency, track, partialUser, settingsOpen, showInlineEditor,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, sessionCostUSD, interruptCount,
+    compressionEvent, dismissCompressionToast, triggerCompressionToast,
     // setters the views drive directly
     setMuted, setError, setSettingsOpen, setShowInlineEditor,
     // refs

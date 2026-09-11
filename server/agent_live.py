@@ -222,6 +222,14 @@ class GeminiSessionLoggerMixin:
             if getattr(self, '_bot_turn_text_buffer', '').strip():
                 interrupted_text = self._bot_turn_text_buffer.strip()
                 append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                if not hasattr(self, '_dialogue_history'):
+                    self._dialogue_history = []
+                self._dialogue_history.append({
+                    "role": "Assistant",
+                    "text": f"{interrupted_text} [interrupted]",
+                    "timestamp": time.time()
+                })
+                logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
                 self._bot_turn_text_buffer = ""
 
             elapsed_ms = None
@@ -253,6 +261,15 @@ class GeminiSessionLoggerMixin:
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            if not self._dialogue_history or self._dialogue_history[-1].get("text") != clean_sentence or self._dialogue_history[-1].get("role") != "User":
+                self._dialogue_history.append({
+                    "role": "User",
+                    "text": clean_sentence,
+                    "timestamp": time.time()
+                })
+                logger.info(f"💬 [Transcript User (Turn {len(self._dialogue_history)})]: {clean_sentence}")
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -368,7 +385,25 @@ class GeminiSessionLoggerMixin:
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
                 token_usage=getattr(self, '_last_turn_usage', None)
             )
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            self._dialogue_history.append({
+                "role": "Assistant",
+                "text": full_bot_text,
+                "timestamp": time.time()
+            })
+            logger.info(f"🤖 [Transcript Assistant (Turn {len(self._dialogue_history)})]: {full_bot_text}")
             self._bot_turn_text_buffer = ""
+
+        # Metric Streaming: Turn Complete
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'turn_complete'}
+            }
+        }))
 
     async def _send_repeat_instruction(self, filler_text: str):
         """Send a user-role prompt telling the model to repeat itself."""
@@ -459,18 +494,113 @@ class GeminiSessionLoggerMixin:
             }
         }))
 
-    async def _handle_msg_turn_complete(self, message):
-        await super()._handle_msg_turn_complete(message)
-        
-        # Metric Streaming: Turn Complete
-        await self.push_frame(OutputTransportMessageFrame(message={
-            "label": "rtvi-ai",
-            "type": "server-message",
-            "data": {
-                'type': 'metrics',
-                'payload': {'type': 'turn_complete'}
-            }
-        }))
+        # Check for context compression trigger
+        if getattr(self, '_context_compression_enabled', False):
+            raw_threshold = getattr(self, '_context_compression_trigger_tokens', 5000) or 5000
+            threshold = max(5000, raw_threshold)
+            current_tot = getattr(usage, 'total_token_count', 0)
+            current_prompt = getattr(usage, 'prompt_token_count', 0)
+            last_prompt = getattr(self, '_last_prompt_tokens', 0)
+
+            # Detect compression:
+            # 1. Total tokens reached or exceeded the configured threshold
+            # 2. OR prompt tokens dropped significantly (>150 tokens) while turn count > 1 (signature of FIFO eviction compaction)
+            compression_detected = False
+            if current_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
+                compression_detected = True
+            elif last_prompt > 1000 and current_prompt < (last_prompt - 150):
+                compression_detected = True
+                logger.info(f"🗜️ [Context Compression] Compaction detected! Prompt tokens contracted from {last_prompt} to {current_prompt}")
+
+            if compression_detected:
+                self._context_compression_triggered = True
+                logger.info(f"🗜️ [Context Compression] Triggered! Token count {current_tot} (threshold: {threshold}, prompt: {current_prompt})")
+                append_diagnostic_log(
+                    "🗜️ Context Compression",
+                    f"Triggered at {current_tot} tokens (threshold: {threshold}, prompt: {current_prompt}) · Sliding window active"
+                )
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        "type": "context_compression",
+                        "payload": {
+                            "status": "triggered",
+                            "tokens": current_tot,
+                            "threshold": threshold,
+                            "message": f"Context window compressed at {current_tot} tokens",
+                            "timestamp": time.time(),
+                        }
+                    }
+                }))
+
+                # FactStore: Immediately inject verbatim dialogue transcription logs back into model context
+                await self._inject_transcription_logs()
+
+            self._last_prompt_tokens = current_prompt
+
+    async def _inject_transcription_logs(self):
+        """Inject verbatim dialogue transcription logs into Gemini Live context on compression."""
+        if not getattr(self, '_session', None) or self._disconnecting:
+            logger.warning("🗜️ [FactStore Injection] Cannot inject transcript logs: session not available or disconnecting.")
+            return
+
+        history = getattr(self, '_dialogue_history', [])
+        if not history:
+            logger.info("🗜️ [FactStore Injection] No dialogue history in FactStore to inject.")
+            return
+
+        # Cap injection to the last 10 turns to keep token overhead minimal
+        capped_history = history[-10:] if len(history) > 10 else history
+
+        # Format verbatim dialogue transcription logs for model injection (last 10 turns)
+        injected_lines = [f"{turn['role']}: {turn['text']}" for turn in capped_history]
+        injected_transcript = "\n".join(injected_lines)
+
+        # Full dialogue history across the entire session for backend logs
+        total_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+        total_transcript = "\n".join(total_lines)
+
+        turn_notice = f"last {len(capped_history)}" if len(history) > 10 else "all"
+        prompt_card = (
+            f"[CONVERSATION_TRANSCRIPT_LOG]\n"
+            f"The following is the verbatim transcript log of the {turn_notice} dialogue turns in this session:\n"
+            f"{injected_transcript}\n\n"
+            f"CRITICAL INSTRUCTIONS:\n"
+            f"• Seamlessly continue the conversation with the user from the latest turn.\n"
+            f"• Retain full awareness of all customer details, numbers, preferences, and agreements stated in this transcript.\n"
+            f"• DO NOT repeat greetings, do NOT re-introduce yourself, and do NOT verbally acknowledge this transcript update."
+        )
+
+        logger.info(
+            f"🗜️ [FactStore Injection] Compression compaction triggered! Session turns: {len(history)}, Injecting: last {len(capped_history)} turns ({len(injected_transcript)} chars).\n"
+            f"==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+            f"{total_transcript}\n"
+            f"============================================================================================\n"
+            f"==================== INJECTED TRANSCRIPT PAYLOAD (Last {len(capped_history)} turns) ====================\n"
+            f"{injected_transcript}\n"
+            f"============================================================================================"
+        )
+
+        try:
+            content = Content(
+                role="user",
+                parts=[Part(text=prompt_card)]
+            )
+            await self._session.send_client_content(
+                turns=[content],
+                turn_complete=False
+            )
+            logger.info(
+                f"🗜️ [FactStore Injection] Successfully injected last {len(capped_history)} dialogue turns "
+                f"({len(injected_transcript)} chars) into model context via send_client_content(turn_complete=False)."
+            )
+            append_diagnostic_log(
+                "🗜️ FactStore Injected",
+                f"Restored last {len(capped_history)} turns ({len(injected_transcript)} chars) of verbatim transcript into context."
+            )
+        except Exception as e:
+            logger.error(f"❌ [FactStore Injection] Error sending client_content: {e}")
 
     async def _handle_msg_tool_call(self, message):
         # Metric Streaming: Tool Call
@@ -498,6 +628,13 @@ class GeminiSessionLoggerMixin:
             config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
             config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
         
+        # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
+        if getattr(config, "context_window_compression", None):
+            trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 5000
+            target = int(trigger * 0.8)  # 4000 for 5000 trigger
+            config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
+            logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
+
         await super()._connection_task_handler(config)
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
@@ -746,6 +883,19 @@ async def run_agent_live(
         search_knowledge_base_schema,
     ]
 
+    is_negotiator = bool(system_instruction and ("Ranvir" in system_instruction or "Civic" in system_instruction or "13,500" in system_instruction))
+    deal = None
+    if is_negotiator:
+        import negotiation
+        deal = negotiation.Deal(strict_ladder=True)
+        for s in negotiation.TOOL_SCHEMAS:
+            standard_tools.append(FunctionSchema(
+                name=s["name"],
+                description=s["description"],
+                properties=s["properties"],
+                required=s["required"],
+            ))
+
     if tools:
         try:
             tools_data = json.loads(tools)
@@ -804,11 +954,23 @@ async def run_agent_live(
     if not voice_name and not use_external_tts:
         voice_name = "Aoede"
 
+    # Voice compatibility guard:
+    # Most Gemini Live models (including 2.5 and 3.5) support the full voice library (Aoede, Despina, Puck, etc.).
+    # If a voice like 'Callirhoe' is unmapped on the Vertex Live gateway, fallback gracefully to Aoede.
+    if voice_name and voice_name.lower() == "callirhoe":
+        logger.warning(f"⚠️ Voice '{voice_name}' is currently unmapped on the Vertex Live endpoint. Falling back to 'Aoede'.")
+        voice_name = "Aoede"
+
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
+        trigger = 5000
         if context_compression_trigger_tokens is not None:
-            cwc["trigger_tokens"] = context_compression_trigger_tokens
+            # Google GenAI / Vertex Live API strictly validates trigger_tokens in [5000, 128000]
+            # (throws "1007 None. Context window trigger tokens must be within [5000, 128000]").
+            trigger = max(5000, min(128000, int(context_compression_trigger_tokens)))
+        cwc["trigger_tokens"] = trigger
+        cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
     AI_STUDIO_MODELS = {
         "gemini-3.1-flash-live-preview",
@@ -895,11 +1057,42 @@ async def run_agent_live(
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
+    # Context compression tracking and notification flags
+    effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None
+    llm._context_compression_enabled = context_compression
+    llm._context_compression_trigger_tokens = effective_trigger
+    llm._context_compression_triggered = False
+    llm._last_prompt_tokens = 0
+
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    built_in_tools = {"get_current_time", "search_knowledge_base"}
+
+    if deal:
+        async def handle_concede_price(params: FunctionCallParams):
+            reason = (params.arguments or {}).get("reason", "buyer negotiated price")
+            res = deal.concede(reason)
+            logger.info(f"[Negotiator] concede_price -> {res}")
+            await params.result_callback(res)
+
+        async def handle_include_extra(params: FunctionCallParams):
+            item = (params.arguments or {}).get("item", "")
+            res = deal.grant_extra(item)
+            logger.info(f"[Negotiator] include_extra -> {res}")
+            await params.result_callback(res)
+
+        async def handle_close_deal(params: FunctionCallParams):
+            price = (params.arguments or {}).get("price_usd", 0)
+            res = deal.close(price)
+            logger.info(f"[Negotiator] close_deal -> {res}")
+            await params.result_callback(res)
+
+        llm.register_function("concede_price", handle_concede_price)
+        llm.register_function("include_extra", handle_include_extra)
+        llm.register_function("close_deal", handle_close_deal)
+        built_in_tools.update({"concede_price", "include_extra", "close_deal"})
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
@@ -963,6 +1156,17 @@ async def run_agent_live(
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Pipecat Client disconnected")
+        history = getattr(llm, '_dialogue_history', [])
+        if history:
+            transcript_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+            full_transcript = "\n".join(transcript_lines)
+            logger.info(
+                f"\n==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+                f"{full_transcript}\n"
+                f"============================================================================================\n"
+            )
+        else:
+            logger.info("Pipecat Client disconnected (no dialogue history recorded).")
         GLOBAL_LANGSMITH_TRACER.end_session()
         await task.cancel()
 

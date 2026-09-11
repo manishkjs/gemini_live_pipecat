@@ -1008,7 +1008,8 @@ class WebsocketClientApp {
         connectUrl += `&tts_pace=${livePaceSlider?.value || "1.0"}`;
         connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
         if (contextCompressionToggle?.checked && compressionTokensInput?.value?.trim()) {
-          connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
+          const val = parseInt(compressionTokensInput.value, 10);
+          connectUrl += `&context_compression_trigger_tokens=${Math.max(5000, isNaN(val) ? 5000 : val)}`;
         }
         systemInstructions = geminiSystemInstructionsTextarea?.value || "";
       }

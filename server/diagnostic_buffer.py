@@ -1,5 +1,6 @@
 import contextvars
 import logging
+import time
 from collections import deque
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -10,6 +11,9 @@ DIAGNOSTIC_LOG_BUFFER: deque = deque(maxlen=1500)
 
 # Structured storage for individual turn latencies across session
 TURN_LATENCY_RECORDS: List[Dict[str, Any]] = []
+
+# Debounce cache to prevent duplicate latency measurements within the same turn
+_LAST_LATENCY_TIME: Dict[str, float] = {}
 
 # Which session a log line or latency sample belongs to.
 #
@@ -84,18 +88,30 @@ def record_turn_latency(stage: str, value_ms: float, details: str = ""):
     """Record an individual latency event for a specific stage (stt, llm, tts, live_ttfb)."""
     if value_ms <= 0 or value_ms > 30000:
         return
+    sess = current_session_id()
+    now = time.time()
+    dedup_key = f"{sess}:{stage}"
+    # Debounce duplicate latency measurements for the same turn/session (e.g. raw log + custom calc + Pipecat log)
+    if dedup_key in _LAST_LATENCY_TIME and (now - _LAST_LATENCY_TIME[dedup_key]) < 1.0:
+        return
+    _LAST_LATENCY_TIME[dedup_key] = now
+
     now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     entry = {
         "timestamp": now_str,
         "stage": stage,
         "value_ms": round(float(value_ms), 1),
         "details": details,
-        "session_id": current_session_id(),
+        "session_id": sess,
     }
     TURN_LATENCY_RECORDS.append(entry)
 
 def parse_and_record_latency_from_log(msg: str):
     """Auto-extract and record latency measurements from log strings."""
+    # If the message is already from append_diagnostic_log, skip parsing because append_diagnostic_log directly records it
+    if msg.startswith("[⚡") or msg.startswith("[LLM") or msg.startswith("[STT") or msg.startswith("[TTS"):
+        return
+
     lower = msg.lower()
     
     # 1. Native Gemini Live TTFB

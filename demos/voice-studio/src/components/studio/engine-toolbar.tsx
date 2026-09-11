@@ -18,28 +18,28 @@ export default function EngineToolbar({
   return (
     <div className="workspace-toolbar">
       <div className="engine-choice">
-        <span className="eyebrow">02 / CHOOSE YOUR ENGINE</span>
+        <span className="eyebrow">ENGINE</span>
         <Tabs value={settings.engine} onValueChange={onEngineChange}>
           <TabsList aria-label="Voice engine" className="engine-tabs">
             <TabsTrigger value="live" disabled={active}>
-              <Radio size={16} />Gemini Live
+              <Radio size={14} />Gemini Live
             </TabsTrigger>
             <TabsTrigger value="cascade" disabled={active}>
-              <Layers3 size={16} />Cascade
+              <Layers3 size={14} />Cascade
             </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
       <div className="language-choice">
-        <span className="eyebrow">03 / LANGUAGE</span>
+        <span className="eyebrow">LANGUAGE</span>
         <Select
           value={settings.language}
           onValueChange={onLanguageChange}
           disabled={active}
         >
           <SelectTrigger className="language-select-trigger" aria-label="Select session language">
-            <Globe2 size={15} />
+            <Globe2 size={14} />
             <SelectValue />
           </SelectTrigger>
           <SelectContent position="popper">
@@ -51,12 +51,6 @@ export default function EngineToolbar({
           </SelectContent>
         </Select>
       </div>
-
-      <p className="engine-description">
-        {settings.engine === "live"
-          ? "Native 2-way audio with bidirectional streaming & low-latency voice."
-          : "Speech recognition (STT) → language model (LLM) → voice synthesis (TTS)."}
-      </p>
     </div>
   );
 }

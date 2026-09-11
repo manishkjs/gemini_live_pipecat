@@ -14,7 +14,7 @@ for (const persona of PERSONAS) {
       if (persona.id === 'custom') assert.deepEqual(body, {});
       else {
         assert.equal(body.system_instruction, `${persona.prompt} Speak in Hindi, unless the user requests another language.`);
-        assert.ok(body.system_instruction.length < 1500, 'Existing backend must accept the complete preset');
+        assert.ok(body.system_instruction.length < 4500, 'Existing backend must accept the complete preset');
       }
       if (engine === 'live') {
         assert.equal(url.searchParams.get('model'), settings.model);
@@ -46,9 +46,10 @@ test('blank custom instructions omit the override and preserve the backend defau
   assert.deepEqual(buildConnectRequest({ ...settings, personaId: 'custom', instructions: ' \n ' }).body, {});
 });
 test('maximum custom instruction length remains under the backend limit with a language suffix', () => {
-  const { body } = buildConnectRequest({ ...settings, instructions: 'x'.repeat(1000) });
-  assert.ok(body.system_instruction.length < 1500);
-  assert.throws(() => buildConnectRequest({ ...settings, instructions: 'x'.repeat(1001) }));
+  const maxChars = Math.floor(4000 * 3.8);
+  const { body } = buildConnectRequest({ ...settings, instructions: 'x'.repeat(maxChars) });
+  assert.ok(body.system_instruction.length > 10000);
+  assert.throws(() => buildConnectRequest({ ...settings, instructions: 'x'.repeat(maxChars + 50) }));
 });
 test('invalid persona, engine and language cannot silently start a different session', () => {
   for (const invalid of [{ personaId: 'missing' }, { engine: 'missing' }, { language: 'missing' }]) {

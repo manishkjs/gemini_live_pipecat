@@ -204,3 +204,12 @@ export function formatCost(usd: number): string {
   if (usd < 1.0) return `$${usd.toFixed(4)}`;
   return `$${usd.toFixed(2)}`;
 }
+
+/**
+ * Estimates LLM token count for a text string.
+ * Standard heuristic (~3.8 characters per token for multi-turn prompts).
+ */
+export function estimateTokens(text: string): number {
+  if (!text || !text.trim()) return 0;
+  return Math.max(1, Math.round(text.trim().length / 3.8));
+}
