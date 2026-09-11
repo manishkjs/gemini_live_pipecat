@@ -622,6 +622,30 @@ class StartTriggerProcessor(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+VALID_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+
+
+def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[str]) -> dict:
+    """Build the Gemini reasoning config for a Live session.
+
+    Gemini 3 replaced the numeric `thinking_budget` with discrete `thinking_level`
+    tiers, and the API rejects any request carrying both. We therefore only ever
+    emit `thinking_level`. An empty dict means "no explicit config", letting the
+    model apply its own default tier.
+    See https://ai.google.dev/gemini-api/docs/thinking
+    """
+    # Models with "thinking" in the name reason by default; honour that even if
+    # the client did not explicitly opt in.
+    if not thinking and "thinking" not in model.lower():
+        return {}
+
+    level = (thinking_level or "").strip().lower()
+    if level not in VALID_THINKING_LEVELS:
+        # Lite and 3.1-class models are latency sensitive, so bias them low.
+        level = "minimal" if ("3.1" in model or "flash-lite" in model) else "medium"
+    return {"thinking_level": level}
+
+
 async def run_agent_live(
     websocket: WebSocket,
     model: str,
@@ -634,7 +658,6 @@ async def run_agent_live(
     context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = None,
     thinking: bool = False,
-    thinking_budget: Optional[int] = None,
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
 ):
@@ -789,19 +812,7 @@ async def run_agent_live(
             except Exception as sm_err:
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
-        thinking_config = None
-        if thinking or "thinking" in clean_model.lower():
-            th_dict = {}
-            if thinking_budget is not None and thinking_budget > 0:
-                th_dict["thinking_budget"] = thinking_budget
-            if thinking_level:
-                th_dict["thinking_level"] = thinking_level
-            if not th_dict:
-                if "3.1" in clean_model or "flash-lite" in clean_model:
-                    th_dict["thinking_level"] = "minimal"
-                else:
-                    th_dict["thinking_budget"] = 2048
-            thinking_config = th_dict
+        thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
 
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
@@ -810,7 +821,7 @@ async def run_agent_live(
             language=pipecat_language,
             modalities=llm_modalities,
             context_window_compression=cwc,
-            thinking=thinking_config or {},
+            thinking=thinking_config,
         )
         ai_studio_params = {
             "api_key": gemini_api_key,
@@ -826,19 +837,7 @@ async def run_agent_live(
         if clean_model in ["gemini-3.5-live-preview", "gemini-3.5-live-extended-thinking-preview"]:
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
-        thinking_config = None
-        if thinking or "thinking" in clean_model.lower():
-            th_dict = {}
-            if thinking_budget is not None and thinking_budget > 0:
-                th_dict["thinking_budget"] = thinking_budget
-            if thinking_level:
-                th_dict["thinking_level"] = thinking_level
-            if not th_dict:
-                if "3.1" in clean_model or "flash-lite" in clean_model:
-                    th_dict["thinking_level"] = "minimal"
-                else:
-                    th_dict["thinking_budget"] = 2048
-            thinking_config = th_dict
+        thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
 
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
@@ -847,7 +846,7 @@ async def run_agent_live(
             language=pipecat_language,
             modalities=llm_modalities,
             context_window_compression=cwc,
-            thinking=thinking_config or {},
+            thinking=thinking_config,
         )
         vertex_params = {
             "project_id": project_id,

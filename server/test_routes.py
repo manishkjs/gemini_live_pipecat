@@ -55,5 +55,55 @@ class TestDiagnosticsAndTracing(unittest.TestCase):
         GLOBAL_LANGSMITH_TRACER.record_interruption(200.0)
         GLOBAL_LANGSMITH_TRACER.end_session("Session finished")
 
+
+class TestThinkingConfig(unittest.TestCase):
+    """Gemini 3 rejects requests that carry both thinking_budget and
+    thinking_level, so the Live path must only ever emit thinking_level."""
+
+    def test_disabled_by_default(self):
+        from agent_live import build_thinking_config
+        self.assertEqual(build_thinking_config("gemini-3.5-flash-live-preview", False, None), {})
+
+    def test_never_emits_deprecated_budget(self):
+        from agent_live import build_thinking_config
+        models = [
+            "gemini-3.5-flash-live-preview",
+            "gemini-3.1-flash-live-preview",
+            "gemini-3.5-flash-lite-live-preview",
+            "gemini-live-2.5-flash-native-audio",
+        ]
+        for model in models:
+            for level in [None, "minimal", "low", "medium", "high"]:
+                config = build_thinking_config(model, True, level)
+                self.assertNotIn("thinking_budget", config, f"{model}/{level} leaked thinking_budget")
+
+    def test_explicit_level_is_forwarded(self):
+        from agent_live import build_thinking_config
+        for level in ["minimal", "low", "medium", "high"]:
+            config = build_thinking_config("gemini-3.5-flash-live-preview", True, level)
+            self.assertEqual(config, {"thinking_level": level})
+
+    def test_unknown_level_falls_back_instead_of_forwarding_garbage(self):
+        from agent_live import build_thinking_config
+        config = build_thinking_config("gemini-3.5-flash-live-preview", True, "turbo")
+        self.assertEqual(config, {"thinking_level": "medium"})
+
+    def test_latency_sensitive_models_default_to_minimal(self):
+        from agent_live import build_thinking_config
+        self.assertEqual(
+            build_thinking_config("gemini-3.1-flash-live-preview", True, None),
+            {"thinking_level": "minimal"},
+        )
+        self.assertEqual(
+            build_thinking_config("gemini-3.5-flash-lite-live-preview", True, None),
+            {"thinking_level": "minimal"},
+        )
+
+    def test_thinking_named_model_reasons_without_opt_in(self):
+        from agent_live import build_thinking_config
+        config = build_thinking_config("gemini-3.5-live-extended-thinking-preview", False, None)
+        self.assertEqual(config, {"thinking_level": "medium"})
+
+
 if __name__ == "__main__":
     unittest.main()

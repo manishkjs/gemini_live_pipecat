@@ -1,6 +1,24 @@
 import { getPersona, type PersonaId } from "./personas.ts";
 
 export type Engine = "live" | "cascade";
+
+/**
+ * Gemini 3 replaced the numeric `thinking_budget` with discrete `thinking_level`
+ * tiers. Sending both in one request is rejected with HTTP 400, so the studio
+ * models reasoning as a single choice. "off" means send no thinking config at
+ * all and let the model apply its own default.
+ * See https://ai.google.dev/gemini-api/docs/thinking
+ */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high";
+
+export const THINKING_LEVELS: [ThinkingLevel, string][] = [
+  ["off", "Off (model default)"],
+  ["minimal", "Minimal (lowest latency)"],
+  ["low", "Low (brief reasoning)"],
+  ["medium", "Medium (balanced)"],
+  ["high", "High (deep reasoning)"],
+];
+
 export type SessionSettings = {
   backendUrl: string;
   engine: Engine;
@@ -19,11 +37,16 @@ export type SessionSettings = {
   contextCompression?: boolean;
   contextCompressionTokens?: number;
   toolsJson?: string;
-  thinking?: boolean;
-  thinkingBudget?: number;
-  thinkingLevel?: "minimal" | "low" | "medium" | "high";
+  thinkingLevel?: ThinkingLevel;
   customVoiceKey?: string;
 };
+
+/** Resolve the reasoning tier to send, or null when the model default should stand. */
+export function resolveThinkingLevel(settings: SessionSettings): ThinkingLevel | null {
+  const level = settings.thinkingLevel;
+  if (!level || level === "off") return null;
+  return level;
+}
 
 export function getDefaultBackendUrl(): string {
   if (typeof window !== "undefined") {
@@ -50,9 +73,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   contextCompression: false,
   contextCompressionTokens: 20000,
   toolsJson: "",
-  thinking: false,
-  thinkingBudget: 0,
-  thinkingLevel: "minimal",
+  thinkingLevel: "off",
   customVoiceKey: "",
 };
 
@@ -224,14 +245,10 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts: settings.tts ? "true" : "false",
       context_compression: settings.contextCompression ? "true" : "false",
     };
-    if (settings.thinking) {
+    const thinkingLevel = resolveThinkingLevel(settings);
+    if (thinkingLevel) {
       params.thinking = "true";
-      if (settings.thinkingBudget !== undefined && settings.thinkingBudget > 0) {
-        params.thinking_budget = String(settings.thinkingBudget);
-      }
-      if (settings.thinkingLevel) {
-        params.thinking_level = settings.thinkingLevel;
-      }
+      params.thinking_level = thinkingLevel;
     }
     if (settings.customVoiceKey?.trim()) {
       params.custom_voice_key = settings.customVoiceKey.trim();
@@ -272,18 +289,9 @@ export function buildConnectRequest(settings: SessionSettings) {
       body.context_compression_trigger_tokens = settings.contextCompressionTokens;
     }
   }
-  if (settings.thinking) {
-    body.thinking = true;
-    if (settings.thinkingBudget !== undefined && settings.thinkingBudget > 0) {
-      body.thinking_budget = settings.thinkingBudget;
-    }
-    if (settings.thinkingLevel) {
-      body.thinking_level = settings.thinkingLevel;
-    }
-  }
-  if (settings.customVoiceKey?.trim()) {
-    body.custom_voice_key = settings.customVoiceKey.trim();
-  }
+  // NOTE: thinking_level and custom_voice_key intentionally travel only in the
+  // query string (see buildConnectUrl). The backend appends body fields onto
+  // that same query, so repeating them here would duplicate every parameter.
   return { url: buildConnectUrl(settings), body };
 }
 
@@ -297,15 +305,27 @@ export function validateSocketUrl(value: unknown, backendUrl: string = getDefaul
   if (typeof window !== "undefined") {
     const isLocalSocket = socket.hostname === "localhost" || socket.hostname === "127.0.0.1";
     const isLocalPage = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-    
+
     // If the server returned 127.0.0.1/localhost (due to internal reverse proxying),
     // but the client is viewing the page through a remote hostname or Cloudtop web proxy,
     // route WebSocket traffic through the active page host (which reverse-proxies /ws).
     if (isLocalSocket && !isLocalPage) {
       socket.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      socket.host = window.location.host;
-    } else if (window.location.protocol === "https:" && socket.protocol === "ws:") {
-      socket.protocol = "wss:";
+      // Assign hostname and port separately: setting `host` to a portless value
+      // leaves any existing port in place, which would carry the backend's
+      // :7860 onto the proxy host and break the upgrade.
+      socket.hostname = window.location.hostname;
+      socket.port = window.location.port;
+    } else {
+      // Any other destination must belong to the configured backend or the page
+      // currently being viewed. Without this, a spoofed /connect response could
+      // redirect the microphone stream to an attacker-controlled host.
+      if (socket.host !== backend.host && socket.host !== window.location.host) {
+        throw new Error("The WebSocket address must match your configured server host.");
+      }
+      if (window.location.protocol === "https:" && socket.protocol === "ws:") {
+        socket.protocol = "wss:";
+      }
     }
   } else {
     const isLocal = (h: string) => h === "localhost" || h === "127.0.0.1";

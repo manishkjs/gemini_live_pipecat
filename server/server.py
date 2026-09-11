@@ -123,7 +123,6 @@ async def websocket_endpoint(
     context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = None,
     thinking: bool = False,
-    thinking_budget: Optional[int] = None,
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
 ):
@@ -143,7 +142,6 @@ async def websocket_endpoint(
                 context_compression=context_compression,
                 context_compression_trigger_tokens=context_compression_trigger_tokens,
                 thinking=thinking,
-                thinking_budget=thinking_budget,
                 thinking_level=thinking_level,
                 custom_voice_key=custom_voice_key,
             )
@@ -218,13 +216,6 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                     query_params += f"&thinking={val}"
                 else:
                     query_params = f"thinking={val}"
-
-            if "thinking_budget" in body:
-                val = str(body["thinking_budget"])
-                if query_params:
-                    query_params += f"&thinking_budget={val}"
-                else:
-                    query_params = f"thinking_budget={val}"
 
             if "thinking_level" in body:
                 val = str(body["thinking_level"])

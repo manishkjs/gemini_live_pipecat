@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildConnectRequest, buildConnectUrl, buildBackendPageUrl, validateSocketUrl, DEFAULT_SETTINGS } from '../src/lib/voice-session.ts';
+import { buildConnectRequest, buildConnectUrl, buildBackendPageUrl, validateSocketUrl, THINKING_LEVELS, DEFAULT_SETTINGS } from '../src/lib/voice-session.ts';
 import { PERSONAS } from '../src/lib/personas.ts';
 const settings = { ...DEFAULT_SETTINGS, backendUrl: 'https://voice.example.com', language: 'hi-IN' };
 
@@ -77,6 +77,67 @@ test('permits a local HTTP and WebSocket pair for local development', () => {
   assert.equal(validateSocketUrl('ws://localhost:7860/ws', 'http://127.0.0.1:7860'), 'ws://localhost:7860/ws');
 });
 
+/**
+ * validateSocketUrl branches on `typeof window`, and every test above runs in
+ * Node where that is undefined. These stub a window so the branch the browser
+ * actually executes is covered too.
+ */
+function withBrowser(location, run) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  globalThis.window = { location };
+  try {
+    return run();
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'window', previous);
+    else delete globalThis.window;
+  }
+}
+
+// A real window.location always defines `port` ("" when the URL uses the
+// protocol default), so the stub must too.
+const cloudtop = { hostname: 'rangarok.c.googlers.com', host: 'rangarok.c.googlers.com', port: '', protocol: 'https:' };
+
+test('in a browser, a loopback ws_url is rewritten onto the page host for proxying', () => {
+  withBrowser(cloudtop, () => {
+    // The backend's :7860 must not survive; the proxy listens on the page host.
+    assert.equal(
+      validateSocketUrl('ws://127.0.0.1:7860/ws?voice=Aoede', 'https://rangarok.c.googlers.com'),
+      'wss://rangarok.c.googlers.com/ws?voice=Aoede',
+    );
+  });
+});
+
+test('in a browser, the page port is preserved when the page is served on one', () => {
+  const tunnelled = { hostname: 'rangarok.c.googlers.com', host: 'rangarok.c.googlers.com:5173', port: '5173', protocol: 'http:' };
+  withBrowser(tunnelled, () => {
+    assert.equal(
+      validateSocketUrl('ws://127.0.0.1:7860/ws', 'http://rangarok.c.googlers.com:5173'),
+      'ws://rangarok.c.googlers.com:5173/ws',
+    );
+  });
+});
+
+test('in a browser, a foreign WebSocket host is still rejected', () => {
+  withBrowser(cloudtop, () => {
+    for (const url of ['wss://attacker.example.com/ws', 'ws://attacker.example.com/ws', 'wss://evil.test:443/ws']) {
+      assert.throws(() => validateSocketUrl(url, 'https://rangarok.c.googlers.com'), /must match your configured server host/);
+    }
+  });
+});
+
+test('in a browser, the configured backend host and the page host are both allowed', () => {
+  withBrowser(cloudtop, () => {
+    assert.equal(
+      validateSocketUrl('wss://voice.example.com/ws', 'https://voice.example.com'),
+      'wss://voice.example.com/ws',
+    );
+    assert.equal(
+      validateSocketUrl('ws://rangarok.c.googlers.com/ws', 'https://voice.example.com'),
+      'wss://rangarok.c.googlers.com/ws',
+    );
+  });
+});
+
 test('every prepared persona defines an appropriate default voice', () => {
   for (const persona of PERSONAS) {
     assert.ok(typeof persona.defaultVoice === 'string' && persona.defaultVoice.length > 0);
@@ -111,27 +172,46 @@ test('backend page shortcuts reject unsafe or credential-bearing navigation targ
   }
 });
 
-test('thinking configuration serializes correctly for Gemini Live', () => {
-  const { url, body } = buildConnectRequest({
+test('thinking level serializes correctly for Gemini Live', () => {
+  const { url } = buildConnectRequest({
     ...settings,
     engine: 'live',
-    thinking: true,
-    thinkingBudget: 4096,
     thinkingLevel: 'medium',
   });
   assert.equal(url.searchParams.get('thinking'), 'true');
-  assert.equal(url.searchParams.get('thinking_budget'), '4096');
   assert.equal(url.searchParams.get('thinking_level'), 'medium');
-  assert.equal(body.thinking, true);
-  assert.equal(body.thinking_budget, 4096);
-  assert.equal(body.thinking_level, 'medium');
+});
+
+test('thinking level "off" sends no reasoning config at all', () => {
+  for (const thinkingLevel of ['off', undefined]) {
+    const { url, body } = buildConnectRequest({ ...settings, engine: 'live', thinkingLevel });
+    assert.equal(url.searchParams.get('thinking'), null);
+    assert.equal(url.searchParams.get('thinking_level'), null);
+    assert.equal(body.thinking_level, undefined);
+  }
+});
+
+test('the deprecated thinking_budget is never sent for any level', () => {
+  // Gemini 3 rejects requests carrying both thinking_budget and thinking_level.
+  for (const thinkingLevel of ['off', 'minimal', 'low', 'medium', 'high']) {
+    const { url, body } = buildConnectRequest({ ...settings, engine: 'live', thinkingLevel });
+    assert.equal(url.searchParams.get('thinking_budget'), null);
+    assert.equal(body.thinking_budget, undefined);
+  }
+});
+
+test('every advertised thinking level is accepted and round-trips', () => {
+  for (const [value] of THINKING_LEVELS) {
+    const { url } = buildConnectRequest({ ...settings, engine: 'live', thinkingLevel: value });
+    assert.equal(url.searchParams.get('thinking_level'), value === 'off' ? null : value);
+  }
 });
 
 test('custom voices and custom voice key serialize correctly', () => {
   const { url: urlMale } = buildConnectRequest({ ...settings, engine: 'live', voice: 'Custom-Male' });
   assert.equal(urlMale.searchParams.get('voice'), 'Custom-Male');
 
-  const { url: urlKey, body } = buildConnectRequest({
+  const { url: urlKey } = buildConnectRequest({
     ...settings,
     engine: 'live',
     voice: 'Custom-Key',
@@ -139,6 +219,20 @@ test('custom voices and custom voice key serialize correctly', () => {
   });
   assert.equal(urlKey.searchParams.get('voice'), 'my-replicated-voice-id-123');
   assert.equal(urlKey.searchParams.get('custom_voice_key'), 'my-replicated-voice-id-123');
-  assert.equal(body.custom_voice_key, 'my-replicated-voice-id-123');
+});
+
+test('parameters are not duplicated across the query string and the body', () => {
+  // The backend appends body fields onto the existing query string, so anything
+  // sent twice ends up twice in the generated ws_url.
+  const { url, body } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    thinkingLevel: 'high',
+    voice: 'Custom-Key',
+    customVoiceKey: 'voicekey_abc123',
+  });
+  for (const key of Object.keys(body)) {
+    assert.equal(url.searchParams.has(key), false, `"${key}" is sent in both the query and the body`);
+  }
 });
 
