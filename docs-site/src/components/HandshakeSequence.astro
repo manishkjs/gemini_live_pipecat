@@ -1,0 +1,255 @@
+---
+/**
+ * Animated handshake sequence: the order of frames on the wire.
+ *
+ * DuplexFlow shows the steady state. This shows *sequence* — that `setup` goes
+ * first and alone, that nothing may be sent until `setupComplete` arrives, and
+ * where interrupted / goAway land in the timeline.
+ *
+ * One 12s loop. Two animations are composed on the continuous packets: a fast
+ * `travel` for movement and a slow `gate` for visibility, so they only appear
+ * during the streaming phase.
+ *
+ * Pure CSS/SVG, no JS.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Frame order is not a suggestion. Everything below the green line is gated on setupComplete.',
+} = Astro.props;
+
+// Continuous-phase packet stagger (seconds within a 1.4s sub-loop).
+const stream = [0, 0.35, 0.7, 1.05];
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 400" role="img" aria-labelledby="hs-title hs-desc">
+    <title id="hs-title">Gemini Live WebSocket frame sequence</title>
+    <desc id="hs-desc">
+      A sequence diagram. First the client sends a setup frame on its own. The
+      server replies with setupComplete. Only then may the client stream
+      continuous realtimeInput audio at 16 kHz while the server streams
+      serverContent audio back at 24 kHz. Later the server may send an
+      interrupted signal when the user barges in, and a goAway signal before the
+      connection closes, at which point the client reconnects using its
+      resumption handle.
+    </desc>
+
+    <!-- lifelines -->
+    <text x="150" y="38" class="actor">Your client</text>
+    <text x="610" y="38" class="actor">Gemini Live</text>
+    <line x1="150" y1="52" x2="150" y2="372" class="lifeline" />
+    <line x1="610" y1="52" x2="610" y2="372" class="lifeline" />
+
+    <!-- ① setup -->
+    <g class="step s1">
+      <text x="380" y="82" class="label">setup</text>
+      <line x1="150" y1="95" x2="610" y2="95" class="arrow" />
+      <polygon points="610,95 599,90 599,100" class="head" />
+      <circle class="pulse" cx="150" cy="95" r="5" />
+      <text x="122" y="99" class="num">①</text>
+      <text x="380" y="112" class="note">first frame, alone</text>
+    </g>
+
+    <!-- ② setupComplete -->
+    <g class="step s2">
+      <text x="380" y="148" class="label ok">setupComplete</text>
+      <line x1="610" y1="161" x2="150" y2="161" class="arrow ok" />
+      <polygon points="150,161 161,156 161,166" class="head ok" />
+      <circle class="pulse ok" cx="610" cy="161" r="5" />
+      <text x="122" y="165" class="num">②</text>
+    </g>
+
+    <!-- the gate -->
+    <line x1="60" y1="180" x2="700" y2="180" class="gate-line" />
+    <text x="700" y="174" class="gate-text">↑ handshake · ↓ gated on it</text>
+
+    <!-- ③ realtimeInput -->
+    <g class="step s3">
+      <text x="380" y="207" class="label">realtimeInput · 16 kHz PCM</text>
+      <line x1="150" y1="220" x2="610" y2="220" class="arrow" />
+      <polygon points="610,220 599,215 599,225" class="head" />
+      <text x="122" y="224" class="num">③</text>
+    </g>
+    {stream.map((d) => (
+      <circle class="pkt up" cx="152" cy="220" r="4" style={`animation-delay:${d}s, 0s`} />
+    ))}
+
+    <!-- ④ serverContent -->
+    <g class="step s4">
+      <line x1="610" y1="252" x2="150" y2="252" class="arrow green" />
+      <polygon points="150,252 161,247 161,257" class="head green" />
+      <text x="380" y="272" class="label green">serverContent · 24 kHz PCM</text>
+      <text x="122" y="256" class="num">④</text>
+    </g>
+    {stream.map((d) => (
+      <circle class="pkt down" cx="608" cy="252" r="4" style={`animation-delay:${d + 0.17}s, 0s`} />
+    ))}
+
+    <text x="380" y="292" class="note">both directions, simultaneously</text>
+
+    <!-- ⑤ interrupted -->
+    <g class="step s5">
+      <text x="380" y="315" class="label warn">interrupted</text>
+      <line x1="610" y1="328" x2="150" y2="328" class="arrow warn" />
+      <polygon points="150,328 161,323 161,333" class="head warn" />
+      <circle class="pulse warn" cx="610" cy="328" r="5" />
+      <text x="122" y="332" class="num">⑤</text>
+      <text x="380" y="345" class="note warn">user barged in — flush playback</text>
+    </g>
+
+    <!-- ⑥ goAway -->
+    <g class="step s6">
+      <line x1="610" y1="368" x2="150" y2="368" class="arrow" />
+      <polygon points="150,368 161,363 161,373" class="head" />
+      <circle class="pulse" cx="610" cy="368" r="5" />
+      <text x="122" y="372" class="num">⑥</text>
+      <text x="380" y="388" class="note">goAway — reconnect with resumption handle</text>
+    </g>
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .diagram { margin: 1.75rem 0; }
+  .diagram svg { width: 100%; height: auto; overflow: visible; }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .actor {
+    font-size: 13px;
+    font-weight: 600;
+    text-anchor: middle;
+    fill: var(--sl-color-white);
+  }
+  .lifeline {
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 5;
+  }
+
+  .arrow { stroke: var(--sl-color-gray-5); stroke-width: 1.5; }
+  .head { fill: var(--sl-color-gray-5); }
+  .arrow.ok, .head.ok { stroke: #34a853; fill: #34a853; }
+  .arrow.ok { stroke: #34a853; }
+  .arrow.green, .head.green { stroke: #34a853; fill: #34a853; }
+  .arrow.warn, .head.warn { stroke: #ea4335; fill: #ea4335; }
+
+  .label {
+    font-size: 12.5px;
+    text-anchor: middle;
+    fill: var(--sl-color-white);
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+  }
+  .label.ok, .label.green { fill: #34a853; }
+  .label.warn { fill: #ea4335; }
+
+  .note {
+    font-size: 11px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-3);
+    font-style: italic;
+  }
+  .note.warn { fill: #ea4335; font-style: normal; }
+
+  .num {
+    font-size: 13px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-4);
+  }
+
+  .gate-line {
+    stroke: #34a853;
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+    opacity: 0.5;
+  }
+  .gate-text {
+    font-size: 10.5px;
+    text-anchor: end;
+    fill: #34a853;
+    opacity: 0.85;
+  }
+
+  /* ── one 12s story ── */
+  .step { opacity: 0.18; }
+  .s1 { animation: reveal 12s linear infinite; animation-delay: 0s; }
+  .s2 { animation: reveal 12s linear infinite; animation-delay: 1.1s; }
+  .s3 { animation: reveal-hold 12s linear infinite; animation-delay: 2.3s; }
+  .s4 { animation: reveal-hold 12s linear infinite; animation-delay: 2.5s; }
+  .s5 { animation: reveal 12s linear infinite; animation-delay: 8.2s; }
+  .s6 { animation: reveal 12s linear infinite; animation-delay: 9.8s; }
+
+  /* A step lights up, stays lit for the rest of the cycle, then resets. */
+  @keyframes reveal {
+    0%        { opacity: 0.18; }
+    4%, 88%   { opacity: 1; }
+    94%, 100% { opacity: 0.18; }
+  }
+  @keyframes reveal-hold {
+    0%        { opacity: 0.18; }
+    4%, 62%   { opacity: 1; }
+    70%, 100% { opacity: 0.35; }
+  }
+
+  /* Travelling pulses for the one-shot frames. */
+  .pulse { fill: var(--sl-color-accent); }
+  .pulse.ok { fill: #34a853; }
+  .pulse.warn { fill: #ea4335; }
+  .s1 .pulse { animation: go-right 12s linear infinite; }
+  .s2 .pulse { animation: go-left 12s linear infinite; }
+  .s5 .pulse { animation: go-left 12s linear infinite; }
+  .s6 .pulse { animation: go-left 12s linear infinite; }
+
+  @keyframes go-right {
+    0%        { transform: translateX(0); opacity: 0; }
+    2%        { opacity: 1; }
+    7%        { transform: translateX(450px); opacity: 1; }
+    8%, 100%  { transform: translateX(450px); opacity: 0; }
+  }
+  @keyframes go-left {
+    0%        { transform: translateX(0); opacity: 0; }
+    2%        { opacity: 1; }
+    7%        { transform: translateX(-450px); opacity: 1; }
+    8%, 100%  { transform: translateX(-450px); opacity: 0; }
+  }
+
+  /* Continuous packets: fast travel + slow visibility gate, composed. */
+  .pkt.up {
+    fill: var(--sl-color-accent);
+    animation: travel-right 1.4s linear infinite, gate 12s linear infinite;
+  }
+  .pkt.down {
+    fill: #34a853;
+    animation: travel-left 1.4s linear infinite, gate 12s linear infinite;
+  }
+  @keyframes travel-right {
+    from { transform: translateX(0); }
+    to   { transform: translateX(450px); }
+  }
+  @keyframes travel-left {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-450px); }
+  }
+  @keyframes gate {
+    0%, 21%   { opacity: 0; }
+    24%, 66%  { opacity: 1; }
+    70%, 100% { opacity: 0; }
+  }
+
+  /* Static frame: every step legible at once, packets mid-flight. */
+  @media (prefers-reduced-motion: reduce) {
+    .step, .pulse, .pkt { animation: none !important; }
+    .step { opacity: 1; }
+    .pulse { opacity: 1; }
+    .pkt { opacity: 1; }
+    .pkt.up:nth-of-type(even)  { transform: translateX(220px); }
+    .pkt.down:nth-of-type(odd) { transform: translateX(-220px); }
+  }
+</style>

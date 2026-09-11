@@ -4,6 +4,7 @@ description: From zero to a working Gemini Live voice turn — the real endpoint
 ---
 
 import { Steps, Aside, Badge } from '@astrojs/starlight/components';
+import HandshakeSequence from '../../components/HandshakeSequence.astro';
 
 You can have a Gemini Live agent talking back to you in about fifteen minutes.
 Most of that time is authentication. Almost all of the pain that follows comes
@@ -164,14 +165,7 @@ The SDK hides the handshake. When you write your own client — and for a
 production voice backend you probably will — this is the shape you are
 implementing:
 
-```text
-client ──setup─────────────────▶ server    ① first frame, alone
-client ◀──setupComplete───────── server    ② the green light
-client ──realtimeInput(audio)──▶ server    ③ continuous, 16 kHz PCM
-client ◀──serverContent(audio)── server    ④ continuous, 24 kHz PCM
-client ◀──interrupted─────────── server    ⑤ user barged in — flush playback
-client ◀──goAway──────────────── server    ⑥ reconnect with resumption handle
-```
+<HandshakeSequence />
 
 A minimal `setup` frame:
 
