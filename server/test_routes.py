@@ -105,5 +105,115 @@ class TestThinkingConfig(unittest.TestCase):
         self.assertEqual(config, {"thinking_level": "medium"})
 
 
+class TestSystemPromptComposition(unittest.TestCase):
+    """A caller-supplied system instruction is authoritative.
+
+    An earlier revision appended a global "never ask for the user's name" rule
+    to every Live session, which silently contradicted custom instructions and
+    changed the behaviour of the original client. These tests keep that from
+    coming back.
+    """
+
+    def test_custom_instruction_is_not_rewritten(self):
+        from agent_live import compose_live_system_prompt
+        instruction = "You are a receptionist. Ask the caller for their name and greet them by it."
+        prompt = compose_live_system_prompt(instruction, "female", "en-US")
+        self.assertTrue(prompt.startswith(instruction), "The caller's instruction must survive verbatim")
+        self.assertNotIn("Never ask for the user's name", prompt)
+
+    def test_custom_instruction_only_gains_the_language_directive(self):
+        from agent_live import compose_live_system_prompt
+        instruction = "Be terse."
+        prompt = compose_live_system_prompt(instruction, "female", "hi-IN")
+        self.assertEqual(prompt, "Be terse.\n\nIMPORTANT: You must converse in hi-IN language.")
+
+    def test_default_prompt_still_carries_the_shared_house_rules(self):
+        from agent_live import compose_live_system_prompt
+        prompt = compose_live_system_prompt(None, "female", "en-US")
+        self.assertIn("Never ask for the user's name", prompt)
+        self.assertIn("gender-neutral", prompt)
+
+    def test_default_prompt_still_honours_voice_gender(self):
+        from agent_live import compose_live_system_prompt
+        male = compose_live_system_prompt(None, "male", "en-US")
+        self.assertIn("male AI assistant", male)
+        self.assertNotIn("female AI assistant", male)
+
+
+class TestVadPlumbing(unittest.TestCase):
+    """The VAD toggle must reach the transport, not stop at the UI."""
+
+    def test_enabled_builds_an_analyzer(self):
+        from agent_live import build_live_vad_analyzer
+        self.assertIsNotNone(build_live_vad_analyzer(True))
+
+    def test_disabled_defers_to_server_side_turn_detection(self):
+        from agent_live import build_live_vad_analyzer
+        self.assertIsNone(build_live_vad_analyzer(False))
+
+    def test_both_engines_accept_a_vad_argument(self):
+        import inspect
+        from agent_live import run_agent_live
+        from agent import run_agent
+        for fn in (run_agent_live, run_agent):
+            self.assertIn("vad", inspect.signature(fn).parameters, f"{fn.__name__} ignores the VAD toggle")
+
+    def test_websocket_endpoint_accepts_vad_and_rejects_raw_keys(self):
+        import inspect
+        from server import websocket_endpoint
+        params = inspect.signature(websocket_endpoint).parameters
+        self.assertIn("vad", params)
+        self.assertIn("voice_profile_id", params)
+        self.assertNotIn(
+            "custom_voice_key",
+            params,
+            "The WebSocket URL is logged; it must only ever carry an opaque profile id",
+        )
+
+
+class TestVoiceProfileRegistry(unittest.TestCase):
+    def setUp(self):
+        import voice_profiles
+        voice_profiles.clear()
+
+    def test_key_is_exchanged_for_an_opaque_handle(self):
+        import voice_profiles
+        secret = "super-secret-cloning-key"
+        profile_id = voice_profiles.register(secret)
+        self.assertTrue(voice_profiles.is_profile_id(profile_id))
+        self.assertNotIn(secret, profile_id)
+        self.assertEqual(voice_profiles.consume(profile_id), secret)
+
+    def test_handles_are_single_use(self):
+        import voice_profiles
+        profile_id = voice_profiles.register("k")
+        self.assertEqual(voice_profiles.consume(profile_id), "k")
+        self.assertIsNone(voice_profiles.consume(profile_id))
+
+    def test_handles_expire(self):
+        import voice_profiles
+        profile_id = voice_profiles.register("k", ttl_seconds=-1)
+        self.assertIsNone(voice_profiles.consume(profile_id))
+
+    def test_empty_and_unknown_inputs_are_inert(self):
+        import voice_profiles
+        self.assertIsNone(voice_profiles.register(""))
+        self.assertIsNone(voice_profiles.register("   "))
+        self.assertIsNone(voice_profiles.register(None))
+        self.assertIsNone(voice_profiles.consume("vp_does-not-exist"))
+        self.assertIsNone(voice_profiles.consume(None))
+
+    def test_connect_never_puts_the_key_in_the_websocket_url(self):
+        import voice_profiles
+        secret = "cloning-key-that-must-not-leak"
+        client = TestClient(app)
+        response = client.post("/connect?bot_type=gemini-live", json={"custom_voice_key": secret})
+        self.assertEqual(response.status_code, 200)
+        ws_url = response.json()["ws_url"]
+        self.assertNotIn(secret, ws_url)
+        self.assertIn("voice_profile_id=vp_", ws_url)
+        self.assertEqual(voice_profiles.active_count(), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

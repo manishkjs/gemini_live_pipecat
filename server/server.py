@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Load environment variables
 load_dotenv(override=True)
 import diagnostic_buffer
+import voice_profiles
 
 # Obsolete in pipecat-ai 1.x (which natively uses google-genai)
 # import pipecat.services.gemini_multimodal_live.gemini
@@ -120,14 +121,18 @@ async def websocket_endpoint(
     stt_language: str = "en-US",
     tools: Optional[str] = None,
     skip_stt: bool = False,
+    vad: bool = True,
     context_compression: bool = True,
     context_compression_trigger_tokens: Optional[int] = None,
     thinking: bool = False,
     thinking_level: Optional[str] = None,
-    custom_voice_key: Optional[str] = None,
+    # Opaque, single-use handle minted by /connect. Raw cloning keys are
+    # deliberately not accepted here: this URL is logged in several places.
+    voice_profile_id: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
+    custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
             await run_agent_live(
@@ -139,6 +144,7 @@ async def websocket_endpoint(
                 tts=tts,
                 tts_pace=tts_pace,
                 tools=tools,
+                vad=vad,
                 context_compression=context_compression,
                 context_compression_trigger_tokens=context_compression_trigger_tokens,
                 thinking=thinking,
@@ -156,6 +162,7 @@ async def websocket_endpoint(
                 tts_model=tts_model,
                 system_instruction=system_instruction,
                 skip_stt=skip_stt,
+                vad=vad,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")
@@ -224,12 +231,16 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                 else:
                     query_params = f"thinking_level={val}"
 
+            # A cloning key is a credential and must never reach the ws_url,
+            # which is written to browser history, access logs and the in-app
+            # diagnostics buffer. Exchange it for a single-use, expiring handle.
             if "custom_voice_key" in body:
-                val = quote(str(body["custom_voice_key"]))
-                if query_params:
-                    query_params += f"&custom_voice_key={val}"
-                else:
-                    query_params = f"custom_voice_key={val}"
+                profile_id = voice_profiles.register(str(body["custom_voice_key"]))
+                if profile_id:
+                    if query_params:
+                        query_params += f"&voice_profile_id={quote(profile_id)}"
+                    else:
+                        query_params = f"voice_profile_id={quote(profile_id)}"
 
     except Exception:
         # Body is not JSON or is empty, so we just ignore it

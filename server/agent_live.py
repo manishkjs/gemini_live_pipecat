@@ -646,6 +646,37 @@ def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[s
     return {"thinking_level": level}
 
 
+def compose_live_system_prompt(
+    system_instruction: Optional[str],
+    gender: str,
+    language: str,
+) -> str:
+    """Build the system prompt for a Live session.
+
+    A caller-supplied ``system_instruction`` is authoritative and passes through
+    untouched apart from the language directive. Earlier revisions appended a
+    global "never ask for the user's name" rule here unconditionally, which
+    silently contradicted custom instructions that legitimately needed to ask.
+    That rule now lives where it belongs: in the shared default prompt
+    (``system_prompt.SYSTEM_PROMPT``) and in each persona's own prompt, both of
+    which a caller can override.
+    """
+    base = system_instruction if system_instruction else SYSTEM_PROMPT.replace("female", gender)
+    return f"{base}\n\nIMPORTANT: You must converse in {language} language."
+
+
+def build_live_vad_analyzer(vad: bool) -> Optional[SileroVADAnalyzer]:
+    """Client-side turn detection for the Live pipeline.
+
+    Returning ``None`` hands endpointing to Gemini's own server-side turn
+    detection. That is a legitimate configuration for native audio, not a
+    degraded one, but it changes interruption behaviour — so it stays opt-in.
+    """
+    if not vad:
+        return None
+    return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
+
+
 async def run_agent_live(
     websocket: WebSocket,
     model: str,
@@ -660,17 +691,15 @@ async def run_agent_live(
     thinking: bool = False,
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
+    vad: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
-    
-    neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
-    if not system_instruction:
-        neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + neutrality_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
+
+    prompt_text = compose_live_system_prompt(system_instruction, gender, language)
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
@@ -686,12 +715,13 @@ async def run_agent_live(
         "tr-TR": Language.TR_TR, "vi-VN": Language.VI_VN,
     }
     pipecat_language = language_map.get(language, Language.EN_US)
-    
+
+    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (server-side turn detection)'}")
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)), serializer=CustomProtobufSerializer(),
+            vad_analyzer=build_live_vad_analyzer(vad), serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
@@ -757,10 +787,16 @@ async def run_agent_live(
                     logger.error(f"Failed to read {voice_env}: {e}")
         
         if cloned_key_content:
-            tts_service = GoogleTTSService(voice_cloning_key=cloned_key_content, params=GoogleTTSService.InputParams(language=Language.EN_US))
+            tts_service = GoogleTTSService(
+                voice_cloning_key=cloned_key_content,
+                params=GoogleTTSService.InputParams(language=Language.EN_US, speaking_rate=tts_pace),
+            )
         else:
             voice_id = voice if voice and not voice.startswith("Custom") else "Aoede"
-            tts_service = GoogleTTSService(voice_id=f"{language}-Chirp3-HD-{voice_id}", params=GoogleTTSService.InputParams(language=pipecat_language))
+            tts_service = GoogleTTSService(
+                voice_id=f"{language}-Chirp3-HD-{voice_id}",
+                params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
+            )
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
     

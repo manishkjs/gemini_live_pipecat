@@ -48,10 +48,11 @@ import {
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
   getDefaultBackendUrl,
+  usesExternalTts,
   type Engine,
   type SessionSettings,
 } from "@/lib/voice-session";
-import { PERSONAS, getPersona, type Persona, type PersonaId } from "@/lib/personas";
+import { PERSONAS, getPersona, getPersonaPrompt, type Persona, type PersonaId, type PersonaTone } from "@/lib/personas";
 import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
 import { isLivePricingEligible, getLiveRateCard, formatCost, calculateTurnCost } from "@/lib/pricing";
 import ObservabilityDrawer from "./observability-drawer";
@@ -1235,23 +1236,28 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                   </div>
                 </div>
 
-                <div className="settings-slider-field">
-                  <div className="slider-label-row">
-                    <label htmlFor="live-pace-slider">Speaking Rate (Pace)</label>
-                    <span className="slider-val">{(settings.ttsPace ?? 1.0).toFixed(2)}x</span>
+                {/* Native audio has no pace parameter — the model speaks it
+                    directly. Only show the control when a TTS service is
+                    rendering the audio and can honour it. */}
+                {usesExternalTts(settings) && (
+                  <div className="settings-slider-field">
+                    <div className="slider-label-row">
+                      <label htmlFor="live-pace-slider">Speaking Rate (Pace)</label>
+                      <span className="slider-val">{(settings.ttsPace ?? 1.0).toFixed(2)}x</span>
+                    </div>
+                    <input
+                      id="live-pace-slider"
+                      type="range"
+                      min="0.25"
+                      max="2.0"
+                      step="0.05"
+                      value={settings.ttsPace ?? 1.0}
+                      disabled={active}
+                      onChange={(e) => updateNumber("ttsPace", parseFloat(e.target.value))}
+                      className="range-slider"
+                    />
                   </div>
-                  <input
-                    id="live-pace-slider"
-                    type="range"
-                    min="0.25"
-                    max="2.0"
-                    step="0.05"
-                    value={settings.ttsPace ?? 1.0}
-                    disabled={active}
-                    onChange={(e) => updateNumber("ttsPace", parseFloat(e.target.value))}
-                    className="range-slider"
-                  />
-                </div>
+                )}
 
                 <div className="advanced-toggles">
                   <label className="toggle-label">
@@ -1272,6 +1278,11 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                     />
                     <span>Voice Activity Detection (VAD)</span>
                   </label>
+                  <p className="field-hint">
+                    {settings.vad === false
+                      ? "Off — Gemini's server-side turn detection decides when you have finished speaking."
+                      : "On — Silero detects your turn boundaries locally, which drives interruption handling."}
+                  </p>
                   <label className="toggle-label">
                     <input
                       type="checkbox"
@@ -1398,6 +1409,23 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                     className="range-slider"
                   />
                 </div>
+
+                <div className="advanced-toggles">
+                  <label className="toggle-label">
+                    <input
+                      type="checkbox"
+                      checked={settings.vad ?? true}
+                      disabled={active}
+                      onChange={(e) => updateBool("vad", e.target.checked)}
+                    />
+                    <span>Voice Activity Detection (VAD)</span>
+                  </label>
+                  <p className="field-hint">
+                    {settings.vad === false
+                      ? "Off — the STT service's own endpointing decides when your turn ends."
+                      : "On — Silero gates audio into the STT service and marks turn boundaries."}
+                  </p>
+                </div>
               </>
             )}
 
@@ -1416,6 +1444,33 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
               <p className="field-hint">Optional OpenAPI tool definitions executed live during conversational turns.</p>
             </div>
 
+            {/* PERSONA REGISTER */}
+            {!custom && persona.signaturePrompt && (
+              <div className="field">
+                <label htmlFor="persona-tone">Persona tone</label>
+                <Select
+                  value={settings.tone}
+                  onValueChange={(value) => update("tone", value as PersonaTone)}
+                  disabled={active || Boolean(settings.instructions)}
+                >
+                  <SelectTrigger id="persona-tone">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper">
+                    <SelectItem value="professional">Professional (default)</SelectItem>
+                    <SelectItem value="signature">Signature ({persona.agentName} in character)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="field-hint">
+                  {settings.instructions
+                    ? "Custom instructions are in effect, so the persona register is not used."
+                    : settings.tone === "signature"
+                      ? `The original, high-character ${persona.name.toLowerCase()}. Best for audiences who know the demo.`
+                      : "The same scenario played straight. Suited to a general audience."}
+                </p>
+              </div>
+            )}
+
             {/* SYSTEM / PERSONA INSTRUCTIONS */}
             <div className="field">
               <div className="instructions-label">
@@ -1432,7 +1487,9 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                       variant="outline"
                       size="sm"
                       disabled={active}
-                      onClick={() => update("instructions", persona.prompt)}
+                      // Seed from the register currently in effect, not always the
+                      // professional one, so editing does not silently revert tone.
+                      onClick={() => update("instructions", getPersonaPrompt(persona, settings.tone))}
                       className="edit-instructions-btn"
                     >
                       <Edit3 size={12} />

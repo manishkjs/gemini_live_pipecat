@@ -97,6 +97,19 @@ export interface TurnCostResult {
   audioOutUSD: number;
   textInUSD: number;
   textOutUSD: number;
+  /**
+   * Prompt tokens that `prompt_token_count` bills but `prompt_tokens_details`
+   * never attributes to a modality. Non-zero on `gemini-3.1-flash-live-preview`
+   * on every turn (b/560037988); zero on 2.5 and 3.5, which reconcile exactly.
+   */
+  residualTokens: number;
+  residualUSD: number;
+  /**
+   * True when any part of this figure rests on an assumption rather than on
+   * reported modality detail — either because details were absent entirely, or
+   * because they did not sum to the reported token count.
+   */
+  estimated: boolean;
   tier: LivePricingTier;
   rateCard: LiveRateCard;
 }
@@ -108,6 +121,8 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   if (!usage) return null;
   const card = getLiveRateCard(model);
   if (!card) return null;
+
+  let estimated = false;
 
   const pd = (usage.prompt_details || {}) as Record<string, number>;
   let audioInTokens = 0;
@@ -126,7 +141,16 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   // If prompt details didn't specify modality, prompt tokens are predominantly text (system prompt + history)
   if (audioInTokens === 0 && textInTokens === 0 && usage.prompt_token_count) {
     textInTokens = usage.prompt_token_count;
+    estimated = true;
   }
+
+  // Some models report a partial breakdown: the details are present but sum to
+  // less than prompt_token_count. Those tokens are still billed, so price them
+  // rather than dropping them. We cannot know their modality, so we charge the
+  // text rate — the conservative of the two — and flag the turn as estimated.
+  const attributedIn = audioInTokens + textInTokens;
+  const residualTokens = Math.max(0, (usage.prompt_token_count ?? attributedIn) - attributedIn);
+  if (residualTokens > 0) estimated = true;
 
   const rd = (usage.response_details || {}) as Record<string, number>;
   let audioOutTokens = 0;
@@ -145,14 +169,16 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   // In Gemini Live native audio flow, model response without explicit text detail is audio output
   if (audioOutTokens === 0 && textOutTokens === 0 && usage.response_token_count) {
     audioOutTokens = usage.response_token_count;
+    estimated = true;
   }
 
   const audioInUSD = (audioInTokens / 1_000_000) * card.audioInPerMillion;
   const textInUSD = (textInTokens / 1_000_000) * card.textInPerMillion;
   const audioOutUSD = (audioOutTokens / 1_000_000) * card.audioOutPerMillion;
   const textOutUSD = (textOutTokens / 1_000_000) * card.textOutPerMillion;
+  const residualUSD = (residualTokens / 1_000_000) * card.textInPerMillion;
 
-  const totalUSD = audioInUSD + textInUSD + audioOutUSD + textOutUSD;
+  const totalUSD = audioInUSD + textInUSD + audioOutUSD + textOutUSD + residualUSD;
 
   return {
     totalUSD,
@@ -160,6 +186,9 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
     audioOutUSD,
     textInUSD,
     textOutUSD,
+    residualTokens,
+    residualUSD,
+    estimated,
     tier: card.tier,
     rateCard: card,
   };

@@ -132,3 +132,52 @@ test('formatCost formats fractional cents with elegance', () => {
   assert.equal(formatCost(0.0245), '$0.0245');
   assert.equal(formatCost(1.23456), '$1.23');
 });
+
+/**
+ * gemini-3.1-flash-live-preview returns prompt_tokens_details that are present
+ * but do not sum to prompt_token_count. Measured over a 4-turn session the
+ * shortfall was 620 tokens — 12.6% of prompt volume — while 2.5 and 3.5
+ * reconciled exactly. See b/560037988.
+ *
+ * The old fallback only fired when BOTH modality buckets were zero, so this
+ * residual was silently priced at $0: the studio told the user a turn was free
+ * when Google was billing for it.
+ */
+test('unattributed prompt tokens are surfaced rather than silently dropped', () => {
+  // Turn 3 of the measured 3.1 session, verbatim.
+  const usage = {
+    prompt_token_count: 1692,
+    response_token_count: 175,
+    prompt_details: { text: 633, audio: 838 },
+    response_details: { audio: 175 },
+  };
+  const result = calculateTurnCost('gemini-3.1-flash-live-preview', usage);
+  assert.equal(result.residualTokens, 221, '1692 - (633 + 838) = 221 unattributed tokens');
+  assert.ok(result.residualUSD > 0, 'Unattributed tokens must be billed, not ignored');
+  assert.equal(result.estimated, true, 'A turn we cannot fully attribute is an estimate');
+  assert.ok(
+    result.totalUSD > result.audioInUSD + result.textInUSD + result.audioOutUSD + result.textOutUSD,
+    'The residual must be part of the total',
+  );
+});
+
+test('models whose usage reconciles exactly report no residual and no estimate', () => {
+  // Turn 3 of the measured 2.5 session: 628 + 429 === 1057.
+  const usage = {
+    prompt_token_count: 1057,
+    response_token_count: 194,
+    prompt_details: { audio: 628, text: 429 },
+    response_details: { audio: 146, text: 48 },
+  };
+  const result = calculateTurnCost('gemini-live-2.5-flash-native-audio', usage);
+  assert.equal(result.residualTokens, 0);
+  assert.equal(result.residualUSD, 0);
+  assert.equal(result.estimated, false);
+});
+
+test('a response with no modality detail at all is still flagged as estimated', () => {
+  const usage = { prompt_token_count: 500, response_token_count: 100 };
+  const result = calculateTurnCost('gemini-live-2.5-flash-native-audio', usage);
+  assert.equal(result.estimated, true, 'Assuming prompt=text and response=audio is a guess, and must say so');
+  assert.ok(result.totalUSD > 0);
+});

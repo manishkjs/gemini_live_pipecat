@@ -234,18 +234,23 @@ test('every advertised thinking level is accepted and round-trips', () => {
   }
 });
 
-test('custom voices and custom voice key serialize correctly', () => {
+test('custom voices serialize by name and the cloning key never enters the URL', () => {
   const { url: urlMale } = buildConnectRequest({ ...settings, engine: 'live', voice: 'Custom-Male' });
   assert.equal(urlMale.searchParams.get('voice'), 'Custom-Male');
 
-  const { url: urlKey } = buildConnectRequest({
+  const key = 'my-replicated-voice-id-123';
+  const { url: urlKey, body } = buildConnectRequest({
     ...settings,
     engine: 'live',
     voice: 'Custom-Key',
-    customVoiceKey: 'my-replicated-voice-id-123',
+    customVoiceKey: key,
   });
-  assert.equal(urlKey.searchParams.get('voice'), 'my-replicated-voice-id-123');
-  assert.equal(urlKey.searchParams.get('custom_voice_key'), 'my-replicated-voice-id-123');
+  // The selection is a voice *name*; the credential behind it stays in the body
+  // so it never reaches browser history, access logs or the diagnostics buffer.
+  assert.equal(urlKey.searchParams.get('voice'), 'Custom-Key');
+  assert.equal(urlKey.searchParams.get('custom_voice_key'), null);
+  assert.equal(decodeURIComponent(urlKey.href).includes(key), false);
+  assert.equal(body.custom_voice_key, key);
 });
 
 test('parameters are not duplicated across the query string and the body', () => {

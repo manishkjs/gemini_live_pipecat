@@ -1,4 +1,4 @@
-import { getPersona, type PersonaId } from "./personas.ts";
+import { getPersona, getPersonaPrompt, type PersonaId, type PersonaTone } from "./personas.ts";
 
 export type Engine = "live" | "cascade";
 
@@ -23,6 +23,8 @@ export type SessionSettings = {
   backendUrl: string;
   engine: Engine;
   personaId: PersonaId;
+  /** Which register of the selected persona to run. Defaults to professional. */
+  tone: PersonaTone;
   model: string;
   voice: string;
   language: string;
@@ -59,6 +61,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   backendUrl: typeof window !== "undefined" ? getDefaultBackendUrl() : "http://localhost:7860",
   engine: "live",
   personaId: "debt-collector",
+  tone: "professional",
   model: "gemini-3.5-flash-live-preview",
   voice: "Aoede",
   language: "hi-IN",
@@ -202,12 +205,31 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["Custom-Female", "Custom Clone Voice (Female)"],
 ];
 
+/** Cloned-voice selections are backed by a voice cloning key rather than a named Gemini voice. */
+export function isClonedVoice(voice: string): boolean {
+  return voice === "Custom-Male" || voice === "Custom-Female" || voice === "Custom-Key";
+}
+
+/**
+ * True when a separate TTS service renders the audio, rather than the model
+ * emitting native audio itself.
+ *
+ * This mirrors `use_external_tts = tts or is_custom_voice` in
+ * `server/agent_live.py`. It matters because speaking rate is a property of the
+ * TTS request: native-audio Live has no pace parameter, so a pace control is
+ * only honest when this returns true.
+ */
+export function usesExternalTts(settings: SessionSettings): boolean {
+  if (settings.engine === "cascade") return true;
+  return Boolean(settings.tts) || isClonedVoice(settings.voice);
+}
+
 export function buildSessionInstructions(settings: SessionSettings): string {
   const persona = getPersona(settings.personaId);
   const language = LANGUAGE_MAP[settings.language] || LANGUAGE_OPTIONS.find(([value]) => value === settings.language)?.[1];
   if (!language) throw new Error("Choose one of the supported session languages.");
   if (settings.instructions.length > 1000) throw new Error("Keep custom persona instructions under 1,000 characters.");
-  const prompt = settings.instructions.trim() || persona.prompt;
+  const prompt = settings.instructions.trim() || getPersonaPrompt(persona, settings.tone);
   if (!prompt) return ""; // Leave the backend’s existing instructions intact in custom mode.
   return `${prompt} Speak in ${language}, unless the user requests another language.`;
 }
@@ -234,38 +256,39 @@ export function buildConnectUrl(settings: SessionSettings): URL {
   const url = validatedBackendUrl(targetUrl);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/connect`;
   if (settings.engine === "live") {
-    const effectiveVoice = (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim())
-      ? settings.customVoiceKey.trim()
-      : settings.voice;
     const params: Record<string, string> = {
       bot_type: "gemini-live",
       model: settings.model,
-      voice: effectiveVoice,
+      voice: settings.voice,
       language: settings.language,
       tts: settings.tts ? "true" : "false",
+      // Turn detection defaults on: the interruption handling in the Live
+      // pipeline depends on client-side VAD frames. Switching it off hands
+      // endpointing to Gemini's own server-side turn detection.
+      vad: settings.vad === false ? "false" : "true",
       context_compression: settings.contextCompression ? "true" : "false",
     };
+    // Native audio has no pace parameter, so only send one when a TTS service
+    // is actually rendering the audio and can apply it.
+    if (usesExternalTts(settings)) {
+      params.tts_pace = String(settings.ttsPace ?? 1.0);
+    }
     const thinkingLevel = resolveThinkingLevel(settings);
     if (thinkingLevel) {
       params.thinking = "true";
       params.thinking_level = thinkingLevel;
     }
-    if (settings.customVoiceKey?.trim()) {
-      params.custom_voice_key = settings.customVoiceKey.trim();
-    }
     url.search = new URLSearchParams(params).toString();
   } else if (settings.engine === "cascade") {
-    const effectiveVoice = (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim())
-      ? settings.customVoiceKey.trim()
-      : settings.voice;
     url.search = new URLSearchParams({
       bot_type: "tts-llm-stt",
       stt_model: settings.sttModel,
       llm_model: settings.llmModel,
       tts_model: settings.ttsModel,
-      tts_voice: effectiveVoice,
+      tts_voice: settings.voice,
       stt_language: settings.language,
-      tts_pace: String(settings.ttsPace ?? "1.0"),
+      tts_pace: String(settings.ttsPace ?? 1.0),
+      vad: settings.vad === false ? "false" : "true",
       skip_stt: settings.skipStt ? "true" : "false",
     }).toString();
   } else throw new Error("Choose Gemini Live or Cascade.");
@@ -289,9 +312,16 @@ export function buildConnectRequest(settings: SessionSettings) {
       body.context_compression_trigger_tokens = settings.contextCompressionTokens;
     }
   }
-  // NOTE: thinking_level and custom_voice_key intentionally travel only in the
-  // query string (see buildConnectUrl). The backend appends body fields onto
-  // that same query, so repeating them here would duplicate every parameter.
+  // A voice cloning key is a credential. It travels in the POST body only, and
+  // the server exchanges it for an opaque, short-lived voice_profile_id before
+  // any WebSocket URL is minted — so it never reaches browser history, access
+  // logs, or the in-app diagnostics buffer.
+  if (settings.customVoiceKey?.trim()) {
+    body.custom_voice_key = settings.customVoiceKey.trim();
+  }
+  // NOTE: thinking_level intentionally travels only in the query string (see
+  // buildConnectUrl). The backend appends body fields onto that same query, so
+  // repeating it here would duplicate the parameter.
   return { url: buildConnectUrl(settings), body };
 }
 

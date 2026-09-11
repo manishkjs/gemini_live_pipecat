@@ -645,10 +645,15 @@ async def run_agent(
     tts_voice_prompt: Optional[str] = None,
     system_instruction: Optional[str] = None,
     skip_stt: bool = False,
+    vad: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
+    # With VAD disabled the STT service's own endpointing decides turn
+    # boundaries. That is a slower but sometimes steadier signal on noisy input,
+    # so it is offered as a choice rather than silently forced on.
+    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'}")
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
             confidence=0.7,
@@ -656,8 +661,8 @@ async def run_agent(
             stop_secs=0.4,
             min_volume=0.6,
         )
-    )
-    vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
+    ) if vad else None
+    vad_processor = VADProcessor(vad_analyzer=vad_analyzer) if vad_analyzer else None
 
     transport = FastAPIWebsocketTransport(
         websocket,
@@ -855,7 +860,7 @@ async def run_agent(
         pipeline_elements = [
             transport.input(),
             start_trigger,
-            vad_processor,
+            *([vad_processor] if vad_processor else []),
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
