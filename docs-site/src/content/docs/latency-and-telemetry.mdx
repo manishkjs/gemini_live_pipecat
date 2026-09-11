@@ -1,0 +1,175 @@
+---
+title: Latency & telemetry
+description: Measure the number users actually feel — and avoid the measurement traps that produce confident, wrong numbers.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+There is only one latency number your users experience:
+
+> **From the moment they stop speaking, to the moment they hear the first
+> syllable of the reply.**
+
+Everything else is diagnostic detail. Measure the felt number first, then break
+it down when it is too high.
+
+## What to measure
+
+| Metric | Definition | Applies to |
+| --- | --- | --- |
+| **Live TTFB** | End of user speech → first audio chunk received | Native audio |
+| **STT latency** | End of user speech → finalized transcript | Cascade |
+| **LLM TTFT** | Transcript submitted → first generated token | Cascade |
+| **TTS latency** | First token → first synthesized audio chunk | Cascade |
+
+<Aside type="caution" title="Never mix the two label sets">
+A native Live session has **no STT or TTS stage**. Showing "STT: 0 ms" for a
+native session is not a zero — it is a category error, and it teaches your team
+to distrust the dashboard. Bind labels to the pipeline type explicitly:
+
+```javascript
+const isCascade = connectedBotType === 'stt-llm-tts';
+// Native  →  "⚡ Live TTFB: 640ms"
+// Cascade →  "STT: 210ms | ⚡ LLM TTFB: 380ms | TTS: 190ms"
+```
+</Aside>
+
+## First-packet TTFB for native audio
+
+Whichever arrives first — a transcription fragment or an audio chunk — stops the
+clock. Latch it once per turn:
+
+```python
+if self._current_turn_ttft is None and self._ttfb_start is not None:
+    self._current_turn_ttft = time.time() - self._ttfb_start
+    self._ttfb_start = None          # latch: first packet only
+```
+
+Start `_ttfb_start` when the server signals end of user speech, not when you
+finish sending audio. Those differ by however deep your input buffer is.
+
+## The 2 ms trap
+
+This one produces beautiful, completely fictional numbers — and almost everyone
+hits it once.
+
+<Aside type="danger" title="Do not measure STT latency from the last audio frame">
+Audio frames flow continuously, roughly every 20 ms, **including during
+silence**. So `now - last_audio_frame_time` is always a tiny number. You will see
+~2 ms STT latency, conclude your pipeline is extraordinary, and ship a metric
+that measures nothing but your frame interval.
+</Aside>
+
+The transcript result tells you when speech *actually* ended, as an offset from
+the start of the stream. Use that:
+
+```text
+STT latency = now − (stream_start_wall_time + result_end_offset)
+```
+
+```python
+class CustomGoogleSTTService(GoogleSTTService):
+    async def _request_generator(self):
+        self._stream_start_wall_time = time.time()   # anchor the stream
+        async for req in super()._request_generator():
+            yield req
+
+    async def _process_responses(self, streaming_recognize):
+        async for response in streaming_recognize:
+            for result in response.results:
+                if not result.is_final:
+                    continue
+
+                stt_latency = None
+                offset = getattr(result, "result_end_offset", None)
+                if offset is not None and self._stream_start_wall_time:
+                    # Speech v2 returns a native timedelta, NOT a protobuf
+                    # Duration — there is no .nanos attribute here.
+                    secs = offset.total_seconds() if hasattr(offset, "total_seconds") else float(offset)
+                    speech_ended_wall = self._stream_start_wall_time + secs
+                    elapsed = time.time() - speech_ended_wall
+
+                    # Sanity window: reject idle-stream and clock-skew garbage.
+                    if 0.05 <= elapsed <= 15.0:
+                        stt_latency = elapsed
+
+                if stt_latency is not None:
+                    await self.emit_metric("stt_latency", stt_latency)
+```
+
+<Aside type="note" title="SDK gotcha">
+In the Google Cloud Speech v2 Python SDK, `result_end_offset` is a native
+`datetime.timedelta`. Code written against the protobuf `Duration` API — reaching
+for `.seconds` and `.nanos` — throws or silently misreads. Call
+`.total_seconds()`.
+</Aside>
+
+## Guard every timer
+
+Real-world streams produce absurd values. Two guards remove nearly all of them:
+
+- **Sanity window.** Reject anything outside roughly `0.05 s – 15 s`. Below that
+  is a measurement artifact; above it is an idle timer that was never reset.
+- **Reset on connect.** `resetMetrics()` must purge every latency buffer when a
+  session starts. Stale values from the previous call are worse than no values.
+
+## Bind metrics to the right turn
+
+Latency events often arrive **before** the UI bubble they describe exists. Attach
+them naively and each number lands on the *previous* turn — an off-by-one that
+makes every dashboard subtly wrong.
+
+Buffer early arrivals and bind at creation time:
+
+```javascript
+let pendingLLMLatency = null;
+
+function onMetric(type, value) {
+  if (type === 'llm_ttfb') pendingLLMLatency = value;   // park it
+}
+
+function createBotBubble() {
+  const bubble = renderBubble();
+  if (pendingLLMLatency !== null) {
+    bubble.latency = pendingLLMLatency;                  // bind, then clear
+    pendingLLMLatency = null;
+  }
+  return bubble;
+}
+```
+
+## A zero-disk diagnostic buffer
+
+Full-session logs are useless mid-incident. Keep the **last ~1500 events** in an
+in-memory ring buffer and expose it:
+
+```python
+from collections import deque
+diagnostic_buffer = deque(maxlen=1500)   # bounded: never touches disk
+```
+
+- `GET /api/logs` — dump the buffer.
+- `POST /api/logs/clear` — reset between test runs.
+- Poll every ~1.5 s from a debug pane.
+
+### Log turns, not tokens
+
+Streaming produces one event per fragment. Logging each one buries the signal.
+
+- **User speech:** flush a line on end-of-sentence punctuation (`.`, `?`, `!`,
+  `।`) or on VAD stop.
+- **Model speech:** accumulate into a turn buffer; flush on `turnComplete` or
+  `interrupted`.
+
+That way one conversational turn produces one log line — which is what you
+actually want to read at 3am.
+
+## Watch in production
+
+- **First-audio latency p50 and p95.** The average hides the calls that hurt.
+- **Interruption effectiveness.** Did queued audio really stop on `interrupted`?
+- **Reconnect frequency.** Beyond the expected 10–15 minute rotation, rising
+  reconnects mean network or config trouble.
+- **Tool latency.** Slow tools are the usual cause of dead air.
+- **`usageMetadata` per turn.** Token and duration accounting — your cost model
+  and your early warning for runaway context growth.

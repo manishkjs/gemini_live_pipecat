@@ -1,0 +1,338 @@
+---
+title: Getting started
+description: From zero to a working Gemini Live voice turn — the real endpoints, the real code, and the six things that will break first.
+---
+
+import { Steps, Aside, Badge } from '@astrojs/starlight/components';
+
+You can have a Gemini Live agent talking back to you in about fifteen minutes.
+Most of that time is authentication. Almost all of the pain that follows comes
+from six specific mistakes — so this page front-loads them instead of leaving
+them for you to discover at 2am.
+
+<Aside type="tip" title="The one-sentence version">
+Open a WebSocket, send **`setup`** and nothing else, wait for **`setupComplete`**,
+then stream 16 kHz PCM in and play 24 kHz PCM out.
+</Aside>
+
+## 1. Pick your surface
+
+This is the first decision, and getting it wrong costs you an afternoon.
+
+| | **Vertex AI** <Badge text="production" variant="success" /> | **AI Studio** <Badge text="prototyping" variant="note" /> |
+| --- | --- | --- |
+| **Host** | `us-central1-aiplatform.googleapis.com` | `generativelanguage.googleapis.com` |
+| **API version** | `v1beta1` | `v1alpha` / `v1beta` |
+| **WebSocket path** | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` |
+| **Auth** | OAuth bearer (ADC / service account) | `?key=$GEMINI_API_KEY` |
+| **Model form** | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` | `models/<model>` |
+| **Org policy, VPC-SC, CMEK** | Yes | No |
+
+<Aside type="danger" title="Newest Live models are gated on public AI Studio">
+The current-generation Live preview models are **experiment-gated** on the public
+AI Studio gateway. Connecting there returns close code **`1008` Policy
+Violation** — which looks exactly like an auth failure and sends people down the
+wrong rabbit hole for hours.
+
+**If you are building anything real, use Vertex AI.** Use AI Studio only for
+throwaway prototypes on a generally-available Live model.
+</Aside>
+
+## 2. Authenticate (Vertex path)
+
+<Steps>
+
+1. **Enable the API and set your project.**
+
+   ```bash
+   export PROJECT_ID="your-project-id"
+   export LOCATION="us-central1"
+
+   gcloud config set project "$PROJECT_ID"
+   gcloud services enable aiplatform.googleapis.com
+   ```
+
+2. **Grant yourself the right role.** Live needs `aiplatform.endpoints.predict`,
+   which comes with `roles/aiplatform.user`.
+
+   ```bash
+   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+     --member="user:$(gcloud config get-value account)" \
+     --role="roles/aiplatform.user"
+   ```
+
+   Building a cascade (STT → LLM → TTS) instead? Add `roles/speech.client` and
+   `roles/texttospeech.client`.
+
+3. **Set up Application Default Credentials — including the quota project.**
+
+   ```bash
+   gcloud auth application-default login
+   gcloud auth application-default set-quota-project "$PROJECT_ID"
+   ```
+
+   <Aside type="caution">
+   Skipping `set-quota-project` is the single most common setup failure. Your
+   token authenticates fine, then every call fails with a quota or permission
+   error that never mentions the real cause.
+   </Aside>
+
+</Steps>
+
+## 3. Your first voice turn
+
+This script opens a session, sends a text turn, and writes the model's spoken
+reply to a `.wav` you can play. It is deliberately the smallest thing that
+proves your credentials, endpoint, model name, and audio path all work.
+
+```bash
+pip install "google-genai>=1.0.0"
+```
+
+```python title="first_turn.py"
+import asyncio, os, wave
+from google import genai
+from google.genai import types
+
+MODEL = "gemini-live-2.5-flash"  # use a Live model available to your project
+
+client = genai.Client(
+    vertexai=True,
+    project=os.environ["PROJECT_ID"],
+    location=os.environ.get("LOCATION", "us-central1"),
+)
+
+config = types.LiveConnectConfig(
+    # AUDIO only. Never ["AUDIO", "TEXT"] — see the gotchas below.
+    response_modalities=["AUDIO"],
+    system_instruction="You are a warm, concise voice assistant. Keep replies short.",
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Aoede")
+        )
+    ),
+    # Ask for text alongside audio so you can debug what was actually said.
+    output_audio_transcription=types.AudioTranscriptionConfig(),
+)
+
+async def main() -> None:
+    async with client.aio.live.connect(model=MODEL, config=config) as session:
+        # setup + setupComplete are handled for you by the SDK here.
+        await session.send_client_content(
+            turns=types.Content(
+                role="user",
+                parts=[types.Part(text="Say hello and tell me one fact about the ocean.")],
+            ),
+            turn_complete=True,
+        )
+
+        pcm = bytearray()
+        async for message in session.receive():
+            sc = message.server_content
+            if not sc:
+                continue
+            if sc.model_turn:
+                for part in sc.model_turn.parts:
+                    if part.inline_data and part.inline_data.data:
+                        pcm.extend(part.inline_data.data)
+            if sc.output_transcription and sc.output_transcription.text:
+                print(sc.output_transcription.text, end="", flush=True)
+            if sc.turn_complete:
+                break
+
+    # Output is 24 kHz, 16-bit, mono.
+    with wave.open("reply.wav", "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(24000)
+        f.writeframes(bytes(pcm))
+    print(f"\nWrote reply.wav ({len(pcm) / 48000:.1f}s)")
+
+asyncio.run(main())
+```
+
+```bash
+PROJECT_ID="$PROJECT_ID" python first_turn.py && open reply.wav
+```
+
+If you hear a voice, your plumbing is correct and everything from here is
+refinement.
+
+## 4. What the raw protocol looks like
+
+The SDK hides the handshake. When you write your own client — and for a
+production voice backend you probably will — this is the shape you are
+implementing:
+
+```text
+client ──setup─────────────────▶ server    ① first frame, alone
+client ◀──setupComplete───────── server    ② the green light
+client ──realtimeInput(audio)──▶ server    ③ continuous, 16 kHz PCM
+client ◀──serverContent(audio)── server    ④ continuous, 24 kHz PCM
+client ◀──interrupted─────────── server    ⑤ user barged in — flush playback
+client ◀──goAway──────────────── server    ⑥ reconnect with resumption handle
+```
+
+A minimal `setup` frame:
+
+```json
+{
+  "setup": {
+    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/MODEL",
+    "systemInstruction": {
+      "parts": [{ "text": "You are a warm, concise voice assistant." }]
+    },
+    "generationConfig": {
+      "responseModalities": ["AUDIO"],
+      "speechConfig": {
+        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": "Aoede" } }
+      }
+    },
+    "outputAudioTranscription": {},
+    "realtimeInputConfig": {
+      "automaticActivityDetection": {
+        "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+        "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+        "silenceDurationMs": 1200
+      }
+    },
+    "sessionResumption": {},
+    "contextWindowCompression": { "slidingWindow": {} }
+  }
+}
+```
+
+The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log that
+session ID — it is the stable key that survives every reconnect, and the only
+sane thing to index your traces by.
+
+<Aside type="tip" title="Why those VAD numbers">
+`LOW` sensitivity on both ends plus a **1200 ms** silence window is the setting
+that survives contact with real users. Higher sensitivity triggers on breathing
+and room noise; a shorter silence window guillotines people mid-thought.
+</Aside>
+
+## 5. Audio formats
+
+| Direction | Format |
+| --- | --- |
+| **Input** (you → model) | 16 kHz, 16-bit little-endian, **mono** PCM — `audio/pcm;rate=16000` |
+| **Output** (model → you) | 24 kHz, 16-bit, **mono** PCM — `audio/pcm;rate=24000` |
+
+These are not negotiable, and they are **different rates in each direction**.
+Resample on the client if your capture device disagrees.
+
+<Aside type="caution" title="The chipmunk test">
+Playback too fast and high-pitched? You are playing 24 kHz audio at 16 kHz — or
+some other rate mismatch. Slow and demonic? The reverse. Before debugging
+anything else, confirm both rates independently.
+</Aside>
+
+Capture audio with the browser constraints that actually matter:
+
+```javascript
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    sampleRate: 16000,
+    echoCancellation: true,   // critical — stops the model hearing itself
+    noiseSuppression: true,
+    autoGainControl: true,
+    channelCount: 1,
+  },
+});
+```
+
+<Aside type="danger" title="echoCancellation is not optional">
+Without it, speaker output bleeds back into the microphone, the server's VAD
+hears "the user" the moment the agent starts talking, and the agent interrupts
+itself in a loop. This looks like a mysterious model bug. It is an audio-routing
+bug.
+</Aside>
+
+Do the PCM capture and resampling in an **`AudioWorklet`**, not on the main
+thread — DOM rendering will otherwise stutter your audio. See
+[Audio engineering](/gemini_live_pipecat/audio-engineering/).
+
+## 6. The six things that will break first
+
+<Steps>
+
+1. **You sent something before `setupComplete`.**
+   `setup` must be the first frame and must travel alone. Anything else before
+   the acknowledgement is a protocol violation and the socket closes. Gate every
+   send behind a "handshake done" flag.
+
+2. **You asked for `["AUDIO", "TEXT"]`.**
+   A session returns audio **or** text — never both as response modalities.
+   Requesting both closes the connection with **`1007`**. If you want a
+   transcript alongside speech, that is `outputAudioTranscription`, not a second
+   modality.
+
+3. **The session ended after ten minutes and you called it a crash.**
+   The server rotates sessions roughly every **10–15 minutes**. It emits a
+   `sessionResumptionUpdate`, then closes with **`1008`**. This is normal.
+   Reconnect using the stored handle and replay unconfirmed messages. If you did
+   not implement resumption, every long call will "randomly" drop.
+
+4. **You tried to change the system instruction mid-session.**
+   System instructions are **immutable** once `setup` is acknowledged. There is
+   no update frame. To change persona, tear down the socket and open a new one.
+
+5. **You are testing over a corporate web-preview proxy.**
+   Proxy URLs frequently refuse the WebSocket upgrade and you get close code
+   **`1006`** with no explanation. Forward the port over SSH instead:
+
+   ```bash
+   ssh -L 7860:localhost:7860 <your-vm>.c.googlers.com
+   ```
+
+   Then open `http://localhost:7860/`. Browsers treat `localhost` as a secure
+   context, so microphone access works without TLS.
+
+6. **You did not flush the playback queue on `interrupted`.**
+   Barge-in only feels natural if you *immediately* discard buffered audio the
+   moment `interrupted` arrives. Otherwise the agent keeps talking over the user
+   from a queue that is already several seconds deep.
+
+</Steps>
+
+## 7. Close-code decoder
+
+| Code | Almost always means |
+| --- | --- |
+| **`1000`** | Clean shutdown. Nothing to do. |
+| **`1006`** | Abnormal close, no handshake. Proxy blocked the upgrade, TLS failed, or the network dropped. |
+| **`1007`** | Invalid payload. Usually `["AUDIO","TEXT"]`, a bad voice name, or malformed `setup`. |
+| **`1008`** | Policy violation. Either normal session rotation, or a model gated on your surface. |
+| **`1011`** | Server-side error. Retry with backoff. |
+
+<Aside type="note">
+Voice names are **case-sensitive**. `aoede` fails; `Aoede` works — and the
+failure surfaces at setup time as a generic close, not a helpful message.
+</Aside>
+
+## 8. Verify before you build
+
+Run through this once. Every item catches a bug that is far more expensive later.
+
+- [ ] `setupComplete` arrives and you logged the `sessionId`.
+- [ ] You hear speech, at natural pitch, from `reply.wav`.
+- [ ] Output transcription matches what you hear.
+- [ ] Talking over the agent produces an `interrupted` signal — and playback
+      actually stops.
+- [ ] A call left running for 20 minutes survives at least one reconnect.
+- [ ] `usageMetadata` is being recorded so you can reason about cost.
+- [ ] Time from end-of-speech to first audio chunk is measured, not guessed.
+
+## Next steps
+
+- [Architecture](/gemini_live_pipecat/architecture/) — turns, interruptions, and
+  the resumption state machine you now know you need.
+- [Audio engineering](/gemini_live_pipecat/audio-engineering/) — worklets, jitter
+  buffers, backpressure, and client-side VAD.
+- [Gemini Live configuration](/gemini_live_pipecat/gemini-live-configuration/) —
+  every `setup` option in detail.
+- [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/) — measure
+  the number your users actually feel.
+- [Tools & function calling](/gemini_live_pipecat/tools/) — keep the conversation
+  alive while your backend works.

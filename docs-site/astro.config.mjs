@@ -42,7 +42,9 @@ export default defineConfig({
           items: [
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Gemini Live configuration', slug: 'gemini-live-configuration' },
+            { label: 'Audio engineering', slug: 'audio-engineering' },
             { label: 'Tools & function calling', slug: 'tools' },
+            { label: 'Choosing a framework', slug: 'frameworks' },
           ],
         },
         {
@@ -50,6 +52,7 @@ export default defineConfig({
           items: [
             { label: 'Deployment', slug: 'deployment' },
             { label: 'Diagnostics', slug: 'diagnostics' },
+            { label: 'Latency & telemetry', slug: 'latency-and-telemetry' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },

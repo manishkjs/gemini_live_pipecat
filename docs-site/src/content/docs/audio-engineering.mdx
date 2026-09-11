@@ -1,0 +1,158 @@
+---
+title: Audio engineering
+description: Worklets, jitter buffers, backpressure, and client-side VAD — the client-side work that decides whether your agent sounds human.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The model is rarely what makes a voice agent feel bad. The **client audio path**
+is. Choppy playback, the agent talking over itself, a barge-in that takes 400 ms
+to register — all of these are engineering problems on your side of the socket.
+
+Fix audio at the source, keep it off the main thread, and buffer it adaptively.
+
+## Clean the signal at the source
+
+Everything downstream inherits the quality of your capture. Set these
+constraints before a single byte reaches your transport:
+
+```javascript
+const stream = await navigator.mediaDevices.getUserMedia({
+  audio: {
+    sampleRate: 16000,
+    echoCancellation: true,    // stops the AI hearing itself through speakers
+    noiseSuppression: true,    // improves SNR in real rooms
+    autoGainControl: true,     // normalizes wildly different mic levels
+    channelCount: 1,           // mono
+  },
+});
+```
+
+<Aside type="danger" title="Echo cancellation prevents self-interruption">
+Without `echoCancellation`, speaker output leaks into the microphone. Server-side
+VAD hears speech the instant the agent starts talking and fires `interrupted` —
+so the agent cuts itself off, over and over. Everyone's first instinct is to
+blame VAD tuning. It is almost always the echo path.
+</Aside>
+
+`autoGainControl` matters more than it looks: laptop mics, AirPods, and USB
+headsets differ by tens of decibels. Without normalization, VAD thresholds that
+work on your machine fail on everyone else's.
+
+## Get audio off the main thread
+
+Use an **`AudioWorklet`** for PCM capture and resampling. It runs on a dedicated
+real-time audio thread, so React re-renders, layout, and garbage collection
+cannot stutter your capture.
+
+<Aside type="caution">
+`ScriptProcessorNode` runs on the **main thread**. It is deprecated, and under UI
+load it drops frames — which sounds like network trouble and gets debugged as
+network trouble. Keep it only as a fallback for legacy browsers.
+</Aside>
+
+```javascript
+await audioContext.audioWorklet.addModule('/pcm-capture-worklet.js');
+const capture = new AudioWorkletNode(audioContext, 'pcm-capture');
+capture.port.onmessage = (e) => sendPcmChunk(e.data); // Int16Array, 16 kHz
+source.connect(capture);
+```
+
+## Buffer adaptively in both directions
+
+Networks do not deliver audio evenly. Two buffers absorb that unevenness.
+
+| Buffer | Sits where | Job |
+| --- | --- | --- |
+| **Input ring buffer** | Mic → socket | Absorb capture jitter; hold audio when the socket is congested |
+| **Output jitter buffer** | Socket → speaker | Queue a few chunks, then play at a steady cadence |
+
+Both should be **adaptive**. A fixed buffer is either too shallow on bad networks
+(choppy) or too deep on good ones (laggy). Scale depth from observed
+inter-arrival jitter.
+
+<Aside type="tip" title="The jitter-buffer tradeoff">
+Playing the first chunk the instant it arrives gives the lowest possible latency
+and the worst possible smoothness. Queuing 3–5 chunks costs you a few tens of
+milliseconds and removes most audible choppiness. Tune deliberately — do not
+leave it at whatever you wrote first.
+</Aside>
+
+## Respect WebSocket backpressure
+
+A WebSocket will happily accept more data than the network can carry. The excess
+piles up in the socket's send buffer, and your "real-time" audio arrives seconds
+late.
+
+```javascript
+const HIGH_WATER_MARK = 256 * 1024; // bytes
+
+function sendPcmChunk(chunk) {
+  if (socket.bufferedAmount > HIGH_WATER_MARK) {
+    outboundQueue.push(chunk);   // hold client-side; do not bloat the socket
+    return;
+  }
+  socket.send(chunk);
+}
+```
+
+Monitor `bufferedAmount` on every send. If it stays above the mark, you are
+sending faster than the link allows and must drop or downsample rather than
+queue forever.
+
+### Circuit breaker
+
+Repeated send failures usually mean a degraded link. Hammering it makes things
+worse.
+
+<Steps>
+
+1. Count consecutive transmission errors.
+2. Above a threshold, **trip** — stop sending and surface a "reconnecting" state.
+3. Wait with exponential backoff, then send a probe.
+4. On success, **close** the breaker and resume.
+
+</Steps>
+
+## Client-side VAD for instant barge-in
+
+Server VAD is authoritative, but it costs a network round trip. For the *feel* of
+instant interruption, also detect speech locally:
+
+- Analyse mic level on the client.
+- The moment local speech is detected, **stop speaker playback immediately** and
+  flush the output jitter buffer.
+- Keep streaming audio to the server and let its `interrupted` signal remain the
+  source of truth for conversation state.
+
+This is a deliberate split: **local VAD controls playback, server VAD controls
+the conversation.** The user perceives the agent stopping the instant they speak,
+while your state machine stays consistent with the server.
+
+<Aside type="note">
+Do not use local VAD to gate what you *send*. Clipping the start of speech is far
+more damaging to transcription accuracy than sending a little extra silence.
+</Aside>
+
+## Turn coverage and barge-in context
+
+When you configure server VAD, `turnCoverage` decides what the model actually
+hears:
+
+| Setting | Behavior | Use when |
+| --- | --- | --- |
+| **`TURN_INCLUDES_ALL_INPUT`** | All audio counts toward the turn, including while the model speaks | **Default for barge-in** — the model keeps full context when interrupted |
+| `TURN_INCLUDES_ONLY_ACTIVITY` | Only active speech segments | Very noisy rooms where cleaner transcripts matter more than interrupt context |
+
+Prefer `TURN_INCLUDES_ALL_INPUT` unless you have measured a reason not to.
+Interruptions that begin abruptly lose context under the alternative.
+
+## Checklist
+
+- [ ] `echoCancellation`, `noiseSuppression`, `autoGainControl` all enabled.
+- [ ] Capture and resampling run in an `AudioWorklet`.
+- [ ] Output jitter buffer exists and its depth is tuned, not accidental.
+- [ ] `bufferedAmount` is checked before every send.
+- [ ] A circuit breaker exists for repeated failures.
+- [ ] Local VAD stops playback immediately on user speech.
+- [ ] `interrupted` flushes every queued output chunk.

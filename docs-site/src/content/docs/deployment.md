@@ -34,6 +34,42 @@ What matters for real-time voice:
 - **Concurrency** — each active call consumes an instance slot. Size max instances
   to your expected concurrent-call peak.
 
+## When Cloud Run is not enough
+
+Cloud Run is the fastest way to ship, and it is genuinely fine for many voice
+workloads. But a voice session is **stateful**, and three Cloud Run behaviors
+work against that:
+
+- **Scale-to-zero cold starts** add seconds to the first call after idle.
+- **Reconnects can land on a different instance.** Session affinity is
+  best-effort; if in-memory session state does not follow the socket, the
+  reconnect resumes into an empty context.
+- **Request timeouts** cap session length even at the maximum.
+
+:::tip[Move to GKE when reconnect correctness matters]
+Deploy on GKE with `sessionAffinity: ClientIP` to pin a client to a specific pod
+for the life of the WebSocket, and scale with an HPA driven by **active socket
+count** rather than CPU. A voice pod can be CPU-idle while saturated with calls.
+:::
+
+The durable fix, on either platform, is to **stop keeping session state only in
+process memory**. Persist the resumption handle and conversation state in Redis
+or a database keyed by the stable session ID, and any instance can pick up a
+reconnect.
+
+## Sizing
+
+Each active call occupies a slot for its entire duration — this is not
+request/response traffic where concurrency multiplies throughput.
+
+```text
+instances_needed ≈ peak_concurrent_calls / concurrency_per_instance
+```
+
+Set `--concurrency` to what one instance can genuinely carry (audio processing is
+CPU-bound; measure it), keep `--min-instances 1` to avoid cold starts on the
+first call, and load-test at your real peak before launch.
+
 ## HTTPS and WSS
 
 A browser on an HTTPS page can only open a **secure** WebSocket (`wss://`). Serve
