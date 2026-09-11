@@ -43,11 +43,12 @@ Almost always an invalid `setup` frame. Check, in this order:
 
 The WebSocket **upgrade** never completed. The model never saw you.
 
-- **Corporate proxies and web-preview URLs** frequently drop WS upgrades. Forward
-  the port over SSH instead and hit `localhost`:
+- **Proxies and web-preview URLs** frequently drop WS upgrades. If you are
+  developing on a remote VM, forward the port over SSH and hit `localhost`
+  instead of the proxy hostname:
 
   ```bash
-  ssh -L 7860:localhost:7860 <your-vm>.c.googlers.com
+  ssh -L 7860:localhost:7860 user@your-dev-vm
   ```
 
 - **Mixed content** — an HTTPS page cannot open a `ws://` socket. It must be

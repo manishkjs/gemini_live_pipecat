@@ -1,0 +1,103 @@
+---
+title: Architecture
+description: The duplex streaming model, turn lifecycle, interruptions, and session resumption.
+---
+
+import DuplexFlow from '../../components/DuplexFlow.astro';
+import BargeIn from '../../components/BargeIn.astro';
+import SessionLifecycle from '../../components/SessionLifecycle.astro';
+
+Gemini Live is **stateful and bidirectional**. Four ideas explain almost
+everything you will see in production: the two input channels, the turn
+lifecycle, interruptions, and session resumption.
+
+## It is a conversation, not a request
+
+<DuplexFlow />
+
+There is no "send request, await response." Audio moves in both directions
+continuously over a single socket, and the model can start speaking before you
+have stopped.
+
+## Two input channels (do not confuse them)
+
+| Channel | Purpose | Enters history? | Interrupts model? |
+| --- | --- | --- | --- |
+| **`realtimeInput`** | Continuous mic/camera stream | No | No |
+| **`clientContent`** | Deliberate, turn-based messages | Yes | Yes |
+
+Send live microphone audio as `realtimeInput`. Use `clientContent` only for
+explicit turns you want remembered.
+
+:::caution
+Getting this backwards is a classic. Mic audio sent as `clientContent` interrupts
+the model constantly and bloats context. A real user turn sent as `realtimeInput`
+is never remembered.
+:::
+
+## The turn lifecycle
+
+Three signals, and they are **not** interchangeable:
+
+| Signal | What it actually means |
+| --- | --- |
+| **`generationComplete`** | The model stopped generating. Your buffer may still hold seconds of audio. |
+| **`turnComplete`** | The logical end of the turn. |
+| **`interrupted`** | The user barged in. Stop and discard queued audio *now*. |
+
+The gap between the first two is where most "the agent talks over me" bugs live.
+
+## Interruptions (barge-in)
+
+<BargeIn />
+
+Natural conversation requires talking over the agent. When the server detects
+speech during playback it sends `interrupted` — and the audio you must throw away
+is audio **you have already received**. If you only stop requesting new chunks,
+the agent keeps talking from the queue.
+
+Treat it as a hard, immediate stop:
+
+```javascript
+function onInterrupted() {
+  playbackQueue.length = 0;   // drop everything not yet played
+  currentSource?.stop();      // kill the chunk mid-flight
+}
+```
+
+## Session resumption
+
+<SessionLifecycle />
+
+The server ends sessions proactively roughly every 10–15 minutes. **This is
+routine.** It emits a `sessionResumptionUpdate` carrying a handle, then closes
+with `1008`. Treat that close as expected, not as a failure.
+
+To survive it transparently:
+
+1. **Enable resumption** in `setup`.
+2. **Number and buffer** every message you send.
+3. The server tells you the **last index it safely received** — discard buffered
+   messages up to there.
+4. On reconnect, open a new socket **with the stored handle**, then **replay the
+   remaining buffer before sending anything new**.
+5. If the handle expired, start fresh.
+
+```text
+… ─▶ [msg 7] [msg 8] [msg 9]        buffered, unconfirmed
+server: "received through 7"        drop 1–7
+socket drops ─▶ reconnect(handle) ─▶ replay [8][9] ─▶ resume
+```
+
+:::tip
+Higher-level frameworks usually manage this for you. On a raw WebSocket, you own
+this state machine — and it is the single largest chunk of work in a production
+voice backend.
+:::
+
+## Jitter buffering
+
+Networks deliver audio chunks unevenly. A small **playout buffer** — queue a few
+chunks, then play at a steady cadence — trades a little latency for a lot of
+smoothness. Tune it deliberately; see
+[Audio engineering](/gemini_live_pipecat/audio-engineering/).

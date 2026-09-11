@@ -278,12 +278,13 @@ thread — DOM rendering will otherwise stutter your audio. See
    System instructions are **immutable** once `setup` is acknowledged. There is
    no update frame. To change persona, tear down the socket and open a new one.
 
-5. **You are testing over a corporate web-preview proxy.**
-   Proxy URLs frequently refuse the WebSocket upgrade and you get close code
-   **`1006`** with no explanation. Forward the port over SSH instead:
+5. **You are testing through a proxy or web-preview URL.**
+   Many proxies silently refuse the WebSocket upgrade and you get close code
+   **`1006`** with no explanation. If you develop on a remote VM, forward the
+   port over SSH instead:
 
    ```bash
-   ssh -L 7860:localhost:7860 <your-vm>.c.googlers.com
+   ssh -L 7860:localhost:7860 user@your-dev-vm
    ```
 
    Then open `http://localhost:7860/`. Browsers treat `localhost` as a secure

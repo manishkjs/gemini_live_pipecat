@@ -1,0 +1,169 @@
+---
+/**
+ * Animated latency waterfall: native speech-to-speech vs. an STT→LLM→TTS cascade.
+ *
+ * Replaces a comparison table with something you feel. The cascade's three
+ * stages are strictly serial, and watching them chain makes the cost obvious in
+ * a way "higher latency" never does.
+ *
+ * Scale: 1000 ms == 500 px, origin x=150. Pure CSS/SVG, no JS.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Indicative shape, not a benchmark — your numbers will differ. The structure is the point: cascade stages are serial, so they add up.',
+} = Astro.props;
+
+const ticks = [0, 250, 500, 750, 1000];
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="wf-title wf-desc">
+    <title id="wf-title">Latency comparison: native audio versus a cascade pipeline</title>
+    <desc id="wf-desc">
+      Native speech-to-speech produces first audio in roughly 640 milliseconds as
+      a single stage. A cascade runs three serial stages — speech-to-text at
+      about 210 milliseconds, the language model at about 380, and text-to-speech
+      at about 190 — totalling roughly 780 milliseconds before the user hears
+      anything.
+    </desc>
+
+    <!-- native -->
+    <text x="138" y="58" class="row-label">Native</text>
+    <text x="138" y="74" class="row-sub">one model</text>
+    <rect x="150" y="40" width="320" height="30" rx="4" class="bar native" />
+    <text x="310" y="60" class="bar-text">Live TTFB</text>
+    <g class="hear native-hear">
+      <circle cx="470" cy="55" r="5" />
+      <text x="482" y="59">user hears reply · ~640 ms</text>
+    </g>
+
+    <!-- cascade -->
+    <text x="138" y="128" class="row-label">Cascade</text>
+    <text x="138" y="144" class="row-sub">three hops</text>
+    <rect x="150" y="110" width="105" height="30" rx="4" class="bar stt" />
+    <text x="202" y="130" class="bar-text sm">STT</text>
+    <rect x="255" y="110" width="190" height="30" rx="4" class="bar llm" />
+    <text x="350" y="130" class="bar-text">LLM</text>
+    <rect x="445" y="110" width="95" height="30" rx="4" class="bar tts" />
+    <text x="492" y="130" class="bar-text sm">TTS</text>
+    <g class="hear cascade-hear">
+      <circle cx="540" cy="125" r="5" />
+      <text x="552" y="129">~780 ms</text>
+    </g>
+
+    <!-- axis -->
+    <line x1="150" y1="176" x2="650" y2="176" class="axis-line" />
+    {ticks.map((ms) => (
+      <line x1={150 + ms / 2} y1="176" x2={150 + ms / 2} y2="182" class="tick" />
+    ))}
+    {ticks.map((ms) => (
+      <text x={150 + ms / 2} y="196" class="tick-label">{ms}</text>
+    ))}
+    <text x="400" y="214" class="axis-title">milliseconds to first audio</text>
+
+    <text x="400" y="238" class="verdict">Serial stages add. That is the whole tradeoff.</text>
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .diagram { margin: 1.75rem 0; }
+  .diagram svg { width: 100%; height: auto; overflow: visible; }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .row-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-anchor: end;
+    fill: var(--sl-color-white);
+  }
+  .row-sub {
+    font-size: 10.5px;
+    text-anchor: end;
+    fill: var(--sl-color-gray-4);
+  }
+
+  .bar {
+    transform-box: fill-box;
+    transform-origin: left center;
+    stroke-width: 1;
+  }
+  .bar.native { fill: #34a853; fill-opacity: 0.45; stroke: #34a853; }
+  .bar.stt { fill: var(--sl-color-accent); fill-opacity: 0.3; stroke: var(--sl-color-accent); }
+  .bar.llm { fill: var(--sl-color-accent); fill-opacity: 0.45; stroke: var(--sl-color-accent); }
+  .bar.tts { fill: var(--sl-color-accent); fill-opacity: 0.6; stroke: var(--sl-color-accent); }
+
+  .bar-text {
+    font-size: 11.5px;
+    text-anchor: middle;
+    fill: var(--sl-color-white);
+    font-weight: 500;
+  }
+  .bar-text.sm { font-size: 10.5px; }
+
+  /* 5s cycle. 1000 ms of real latency == 50% of the cycle, so both rows race
+     against one shared clock and the cascade visibly finishes later. */
+  .bar.native { animation: grow-native 5s linear infinite; }
+  .bar.stt { animation: grow-stt 5s linear infinite; }
+  .bar.llm { animation: grow-llm 5s linear infinite; }
+  .bar.tts { animation: grow-tts 5s linear infinite; }
+
+  @keyframes grow-native {
+    0%        { transform: scaleX(0); }
+    32%, 88%  { transform: scaleX(1); }
+    92%, 100% { transform: scaleX(0); }
+  }
+  @keyframes grow-stt {
+    0%          { transform: scaleX(0); }
+    10.5%, 88%  { transform: scaleX(1); }
+    92%, 100%   { transform: scaleX(0); }
+  }
+  @keyframes grow-llm {
+    0%, 10.5%   { transform: scaleX(0); }
+    29.5%, 88%  { transform: scaleX(1); }
+    92%, 100%   { transform: scaleX(0); }
+  }
+  @keyframes grow-tts {
+    0%, 29.5%   { transform: scaleX(0); }
+    39%, 88%    { transform: scaleX(1); }
+    92%, 100%   { transform: scaleX(0); }
+  }
+
+  .bar-text, .hear { animation: fade-in 5s linear infinite; }
+  @keyframes fade-in {
+    0%, 8%    { opacity: 0; }
+    20%, 88%  { opacity: 1; }
+    92%, 100% { opacity: 0; }
+  }
+
+  .hear circle { fill: currentColor; }
+  .hear text { font-size: 11px; fill: currentColor; font-weight: 500; }
+  .hear.native-hear { color: #34a853; animation-delay: 0.4s; }
+  .hear.cascade-hear { color: var(--sl-color-accent); animation-delay: 0.75s; }
+
+  .axis-line { stroke: var(--sl-color-gray-5); stroke-width: 1; }
+  .tick { stroke: var(--sl-color-gray-5); stroke-width: 1; }
+  .tick-label { font-size: 10px; text-anchor: middle; fill: var(--sl-color-gray-4); }
+  .axis-title { font-size: 10.5px; text-anchor: middle; fill: var(--sl-color-gray-4); }
+  .verdict {
+    font-size: 12px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-2);
+    font-weight: 500;
+  }
+
+  /* Static frame: both rows complete, which is the comparison itself. */
+  @media (prefers-reduced-motion: reduce) {
+    .bar, .bar-text, .hear { animation: none !important; }
+    .bar { transform: scaleX(1); }
+    .bar-text, .hear { opacity: 1; }
+  }
+</style>

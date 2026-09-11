@@ -4,6 +4,7 @@ description: Measure the number users actually feel — and avoid the measuremen
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import LatencyWaterfall from '../../components/LatencyWaterfall.astro';
 
 There is only one latency number your users experience:
 
@@ -12,6 +13,8 @@ There is only one latency number your users experience:
 
 Everything else is diagnostic detail. Measure the felt number first, then break
 it down when it is too high.
+
+<LatencyWaterfall />
 
 ## What to measure
 

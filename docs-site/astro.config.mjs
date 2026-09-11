@@ -9,9 +9,9 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   site: 'https://manishkjs.github.io',
   base: '/gemini_live_pipecat',
-  // Allow the Cloudtop IDE proxy (*.proxy.googlers.com) and rangarok host to
-  // reach the local dev/preview servers. Only affects local serving, never the
-  // built static output that ships to GitHub Pages.
+  // Allow remote dev hosts / IDE proxies to reach the local dev and preview
+  // servers. Only affects local serving, never the built static output that
+  // ships to GitHub Pages. Add your own hostnames here if you develop on a VM.
   vite: {
     server: { allowedHosts: ['.googlers.com'] },
     preview: { allowedHosts: ['.googlers.com'] },
