@@ -153,7 +153,8 @@ asyncio.run(main())
 ```
 
 ```bash
-PROJECT_ID="$PROJECT_ID" python first_turn.py && open reply.wav
+PROJECT_ID="$PROJECT_ID" python first_turn.py
+# then play reply.wav — macOS: `open reply.wav` · Linux: `xdg-open reply.wav`
 ```
 
 If you hear a voice, your plumbing is correct and everything from here is
@@ -222,16 +223,15 @@ some other rate mismatch. Slow and demonic? The reverse. Before debugging
 anything else, confirm both rates independently.
 </Aside>
 
-Capture audio with the browser constraints that actually matter:
+Capture audio with the two constraints that matter most — the full set is in
+[Audio engineering](/gemini_live_pipecat/audio-engineering/#clean-the-signal-at-the-source):
 
 ```javascript
 const stream = await navigator.mediaDevices.getUserMedia({
   audio: {
     sampleRate: 16000,
     echoCancellation: true,   // critical — stops the model hearing itself
-    noiseSuppression: true,
-    autoGainControl: true,
-    channelCount: 1,
+    // plus noiseSuppression, autoGainControl, channelCount: 1
   },
 });
 ```
@@ -293,13 +293,16 @@ thread — DOM rendering will otherwise stutter your audio. See
 
 ## 7. Close-code decoder
 
+The three you will hit first:
+
 | Code | Almost always means |
 | --- | --- |
-| **`1000`** | Clean shutdown. Nothing to do. |
 | **`1006`** | Abnormal close, no handshake. Proxy blocked the upgrade, TLS failed, or the network dropped. |
 | **`1007`** | Invalid payload. Usually `["AUDIO","TEXT"]`, a bad voice name, or malformed `setup`. |
 | **`1008`** | Policy violation. Either normal session rotation, or a model gated on your surface. |
-| **`1011`** | Server-side error. Retry with backoff. |
+
+The full table — `1000`, `1011`, and how to tell rotation from a real policy block
+— lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
 
 <Aside type="note">
 Voice names are **case-sensitive**. `aoede` fails; `Aoede` works — and the
@@ -325,9 +328,13 @@ Run through this once. Every item catches a bug that is far more expensive later
   the resumption state machine you now know you need.
 - [Audio engineering](/gemini_live_pipecat/audio-engineering/) — worklets, jitter
   buffers, backpressure, and client-side VAD.
-- [Gemini Live configuration](/gemini_live_pipecat/gemini-live-configuration/) —
-  every `setup` option in detail.
+- [Configuration reference](/gemini_live_pipecat/gemini-live-configuration/) —
+  every `setup` option and wire envelope in one place.
 - [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/) — measure
   the number your users actually feel.
+- [Optimization patterns](/gemini_live_pipecat/optimization/) — keep long
+  sessions cheap without dropping the conversation.
 - [Tools & function calling](/gemini_live_pipecat/tools/) — keep the conversation
   alive while your backend works.
+- [Deployment](/gemini_live_pipecat/deployment/) — ship the WebSocket backend to
+  Cloud Run or GKE without the session-affinity and timeout traps.

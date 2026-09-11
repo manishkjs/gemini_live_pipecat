@@ -51,6 +51,13 @@ if self._current_turn_ttft is None and self._ttfb_start is not None:
 Start `_ttfb_start` when the server signals end of user speech, not when you
 finish sending audio. Those differ by however deep your input buffer is.
 
+<Aside type="note" title="Client time is not server time">
+The number above is *client-observed* — end of user speech to first packet
+**received**. It is not the same as server time-to-first-byte, which excludes the
+network path back to you. Both are valid; just label every metric with which one
+it is, or you will compare numbers that never measured the same thing.
+</Aside>
+
 ## The 2 ms trap
 
 This one produces beautiful, completely fictional numbers — and almost everyone

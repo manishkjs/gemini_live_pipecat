@@ -11,10 +11,12 @@ export default defineConfig({
   base: '/gemini_live_pipecat',
   // Allow remote dev hosts / IDE proxies to reach the local dev and preview
   // servers. Only affects local serving, never the built static output that
-  // ships to GitHub Pages. Add your own hostnames here if you develop on a VM.
+  // ships to GitHub Pages. Set DEV_ALLOWED_HOSTS (comma-separated) if you
+  // develop on a remote VM behind a proxy; otherwise any host is allowed
+  // locally, which is safe because this never touches the published site.
   vite: {
-    server: { allowedHosts: ['.googlers.com'] },
-    preview: { allowedHosts: ['.googlers.com'] },
+    server: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
+    preview: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
   },
   integrations: [
     starlight({
@@ -34,14 +36,14 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Getting started', slug: 'getting-started' },
-            { label: 'Voice playground', slug: 'voice-playground' },
+            { label: 'Voice Studio', slug: 'voice-playground' },
           ],
         },
         {
           label: 'Concepts',
           items: [
             { label: 'Architecture', slug: 'architecture' },
-            { label: 'Gemini Live configuration', slug: 'gemini-live-configuration' },
+            { label: 'Configuration reference', slug: 'gemini-live-configuration' },
             { label: 'Audio engineering', slug: 'audio-engineering' },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
@@ -50,9 +52,9 @@ export default defineConfig({
         {
           label: 'Operate',
           items: [
-            { label: 'Deployment', slug: 'deployment' },
-            { label: 'Diagnostics', slug: 'diagnostics' },
             { label: 'Latency & telemetry', slug: 'latency-and-telemetry' },
+            { label: 'Optimization patterns', slug: 'optimization' },
+            { label: 'Deployment', slug: 'deployment' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },

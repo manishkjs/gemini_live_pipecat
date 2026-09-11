@@ -134,7 +134,7 @@ sluggish. Queue a few chunks, then play at a steady cadence.
 
 If STT latency reads around **2 ms**, you are measuring the audio frame interval,
 not speech latency. See [the 2 ms
-trap](/gemini_live_pipecat/latency-and-telemetry/).
+trap](/gemini_live_pipecat/latency-and-telemetry/#the-2-ms-trap).
 
 ## Long sessions crash or degrade
 

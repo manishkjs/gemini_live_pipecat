@@ -7,6 +7,7 @@ import DuplexFlow from '../../components/DuplexFlow.astro';
 import BargeIn from '../../components/BargeIn.astro';
 import SessionLifecycle from '../../components/SessionLifecycle.astro';
 import MessageReplay from '../../components/MessageReplay.astro';
+import { Aside } from '@astrojs/starlight/components';
 
 Gemini Live is **stateful and bidirectional**. Four ideas explain almost
 everything you will see in production: the two input channels, the turn
@@ -30,11 +31,11 @@ have stopped.
 Send live microphone audio as `realtimeInput`. Use `clientContent` only for
 explicit turns you want remembered.
 
-:::caution
+<Aside type="caution">
 Getting this backwards is a classic. Mic audio sent as `clientContent` interrupts
 the model constantly and bloats context. A real user turn sent as `realtimeInput`
 is never remembered.
-:::
+</Aside>
 
 ## The turn lifecycle
 
@@ -86,11 +87,12 @@ To survive it transparently:
 
 <MessageReplay />
 
-:::tip
-Higher-level frameworks usually manage this for you. On a raw WebSocket, you own
-this state machine — and it is the single largest chunk of work in a production
+<Aside type="tip">
+Higher-level frameworks usually manage this for you — see
+[Choosing a framework](/gemini_live_pipecat/frameworks/). On a raw WebSocket you
+own this state machine, and it is the single largest chunk of work in a production
 voice backend.
-:::
+</Aside>
 
 ## Jitter buffering
 

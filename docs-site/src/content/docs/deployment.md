@@ -82,9 +82,20 @@ If your UI is hosted on a different origin than the backend (it usually is),
 configure the backend to **allow that origin**. A missing CORS allowance is the
 most common "it works locally but not in production" bug.
 
-## Secrets
+## Credentials
 
-Never bake API keys into the image. Mount them at runtime:
+**On Vertex AI (recommended), you ship no API key at all.** Cloud Run and GKE
+workloads authenticate as their **service account** through Application Default
+Credentials — grant that account `roles/aiplatform.user` and the SDK finds the
+credentials automatically. Nothing to mount, nothing to leak.
+
+```bash
+gcloud run deploy voice-backend \
+  --service-account="voice-backend@$PROJECT_ID.iam.gserviceaccount.com"
+```
+
+Only the **AI Studio** path needs an API key — and even then it belongs in Secret
+Manager, never in the image:
 
 ```bash
 gcloud run deploy voice-backend \
