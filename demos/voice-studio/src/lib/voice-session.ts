@@ -303,8 +303,9 @@ export function validateSocketUrl(value: unknown, backendUrl: string = getDefaul
   if (!["ws:", "wss:"].includes(socket.protocol) || socket.username || socket.password) throw new Error("The server returned an invalid WebSocket URL.");
   
   if (typeof window !== "undefined") {
-    const isLocalSocket = socket.hostname === "localhost" || socket.hostname === "127.0.0.1";
-    const isLocalPage = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    const isLoopback = (host: string) => host === "localhost" || host === "127.0.0.1";
+    const isLocalSocket = isLoopback(socket.hostname);
+    const isLocalPage = isLoopback(window.location.hostname);
 
     // If the server returned 127.0.0.1/localhost (due to internal reverse proxying),
     // but the client is viewing the page through a remote hostname or Cloudtop web proxy,
@@ -317,10 +318,18 @@ export function validateSocketUrl(value: unknown, backendUrl: string = getDefaul
       socket.hostname = window.location.hostname;
       socket.port = window.location.port;
     } else {
-      // Any other destination must belong to the configured backend or the page
+      // Any other destination must live on the configured backend or the page
       // currently being viewed. Without this, a spoofed /connect response could
       // redirect the microphone stream to an attacker-controlled host.
-      if (socket.host !== backend.host && socket.host !== window.location.host) {
+      //
+      // Compare hostnames, not host:port: the page and the WebSocket routinely
+      // sit on different ports of the same machine (Vite on :5173 proxying to
+      // the backend on :7860), and loopback is spelled both "localhost" and
+      // "127.0.0.1" interchangeably.
+      const sameAsPage = socket.hostname === window.location.hostname;
+      const sameAsBackend = socket.hostname === backend.hostname;
+      const bothLoopback = isLocalSocket && isLocalPage;
+      if (!sameAsPage && !sameAsBackend && !bothLoopback) {
         throw new Error("The WebSocket address must match your configured server host.");
       }
       if (window.location.protocol === "https:" && socket.protocol === "ws:") {

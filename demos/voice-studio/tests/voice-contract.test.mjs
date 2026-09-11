@@ -107,6 +107,33 @@ test('in a browser, a loopback ws_url is rewritten onto the page host for proxyi
   });
 });
 
+test('in a browser on localhost, a loopback ws_url on the backend port is accepted', () => {
+  // Regression: Vite serves the page on :5173 while /connect reports the
+  // backend's own ws://127.0.0.1:7860/ws. Both are loopback, so this is the
+  // ordinary local development pairing and must not be rejected.
+  const localPage = { hostname: 'localhost', host: 'localhost:5173', port: '5173', protocol: 'http:' };
+  withBrowser(localPage, () => {
+    assert.equal(
+      validateSocketUrl('ws://127.0.0.1:7860/ws?bot_type=gemini-live', 'http://localhost:5173'),
+      'ws://127.0.0.1:7860/ws?bot_type=gemini-live',
+    );
+    assert.equal(
+      validateSocketUrl('ws://localhost:7860/ws', 'http://localhost:5173'),
+      'ws://localhost:7860/ws',
+    );
+  });
+});
+
+test('in a browser, the same host on a different port is accepted', () => {
+  // The page and the WebSocket routinely differ only by port.
+  withBrowser(cloudtop, () => {
+    assert.equal(
+      validateSocketUrl('wss://rangarok.c.googlers.com:7860/ws', 'https://rangarok.c.googlers.com'),
+      'wss://rangarok.c.googlers.com:7860/ws',
+    );
+  });
+});
+
 test('in a browser, the page port is preserved when the page is served on one', () => {
   const tunnelled = { hostname: 'rangarok.c.googlers.com', host: 'rangarok.c.googlers.com:5173', port: '5173', protocol: 'http:' };
   withBrowser(tunnelled, () => {
