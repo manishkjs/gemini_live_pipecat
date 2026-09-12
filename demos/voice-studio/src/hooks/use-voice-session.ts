@@ -22,7 +22,7 @@ export function useVoiceSession() {
   const [settings, setSettings] = useState<SessionSettings>({
     ...DEFAULT_SETTINGS,
     contextCompression: true,
-    contextCompressionTokens: 5000,
+    contextCompressionTokens: 2500,
     sessionId: newSessionId(),
   });
   const [phase, setPhase] = useState<Phase>("idle");
@@ -85,7 +85,7 @@ export function useVoiceSession() {
 
   const triggerCompressionToast = useCallback((payload?: { tokens?: number; threshold?: number; message?: string }) => {
     if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
-    const effectiveThreshold = Math.max(5000, payload?.threshold ?? settings.contextCompressionTokens ?? 5000);
+    const effectiveThreshold = Math.max(2000, payload?.threshold ?? settings.contextCompressionTokens ?? 2500);
     setCompressionEvent({
       id: crypto.randomUUID(),
       tokens: payload?.tokens,

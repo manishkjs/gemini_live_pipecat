@@ -613,8 +613,8 @@ class GeminiSessionLoggerMixin:
 
         # Check for context compression trigger
         if getattr(self, '_context_compression_enabled', False):
-            raw_threshold = getattr(self, '_context_compression_trigger_tokens', 5000) or 5000
-            threshold = max(5000, raw_threshold)
+            raw_threshold = getattr(self, '_context_compression_trigger_tokens', 2500) or 2500
+            threshold = max(2000, raw_threshold)
             current_tot = getattr(usage, 'total_token_count', 0)
             current_prompt = getattr(usage, 'prompt_token_count', 0)
             last_prompt = getattr(self, '_last_prompt_tokens', 0)
@@ -749,8 +749,8 @@ class GeminiSessionLoggerMixin:
         
         # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
         if getattr(config, "context_window_compression", None):
-            trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 5000
-            target = int(trigger * 0.8)  # 4000 for 5000 trigger
+            trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 2500
+            target = int(trigger * 0.8)  # 2000 for 2500 trigger
             config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
             logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
 
@@ -1109,11 +1109,10 @@ async def run_agent_live(
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
-        trigger = 5000
+        trigger = 2500
         if context_compression_trigger_tokens is not None:
-            # Google GenAI / Vertex Live API strictly validates trigger_tokens in [5000, 128000]
-            # (throws "1007 None. Context window trigger tokens must be within [5000, 128000]").
-            trigger = max(5000, min(128000, int(context_compression_trigger_tokens)))
+            # Allow down to 2,000 tokens (tested trigger threshold)
+            trigger = max(2000, min(128000, int(context_compression_trigger_tokens)))
         cwc["trigger_tokens"] = trigger
         cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
@@ -1203,7 +1202,7 @@ async def run_agent_live(
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     # Context compression tracking and notification flags
-    effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None
+    effective_trigger = (max(2000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 2500) if context_compression else None
     llm._context_compression_enabled = context_compression
     llm._context_compression_trigger_tokens = effective_trigger
     llm._context_compression_triggered = False

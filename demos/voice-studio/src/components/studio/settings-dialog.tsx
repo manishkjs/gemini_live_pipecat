@@ -388,26 +388,26 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
 
                   {settings.contextCompression && (
                     <div className="field trigger-tokens-field">
-                      <label htmlFor="comp-tokens">Trigger Tokens Threshold (min 5,000)</label>
+                      <label htmlFor="comp-tokens">Trigger Tokens Threshold (min 2,000)</label>
                       <Input
                         id="comp-tokens"
                         type="number"
-                        min={5000}
-                        step={1000}
-                        value={Math.max(5000, settings.contextCompressionTokens ?? 5000)}
+                        min={2000}
+                        step={500}
+                        value={Math.max(2000, settings.contextCompressionTokens ?? 2500)}
                         disabled={active}
                         onChange={(e) => {
                           const val = parseInt(e.target.value, 10);
-                          updateNumber("contextCompressionTokens", isNaN(val) ? 5000 : Math.max(5000, val));
+                          updateNumber("contextCompressionTokens", isNaN(val) ? 2500 : Math.max(2000, val));
                         }}
                         onBlur={(e) => {
                           const val = parseInt(e.target.value, 10);
-                          if (isNaN(val) || val < 5000) {
-                            updateNumber("contextCompressionTokens", 5000);
+                          if (isNaN(val) || val < 2000) {
+                            updateNumber("contextCompressionTokens", 2500);
                           }
                         }}
                       />
-                      <p className="field-hint">Minimum 5,000 tokens (Vertex AI Live API requires &ge; 5,000 tokens).</p>
+                      <p className="field-hint">Minimum 2,000 tokens (tested trigger threshold).</p>
                     </div>
                   )}
                 </>
