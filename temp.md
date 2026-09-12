@@ -254,3 +254,48 @@ Validation: **122 focused backend tests passed; 93 studio tests passed; TypeScri
 **Still deferred:** moving the opening out of the root, deleting/compressing old cards, removing the grammar reminder, unsupported sales/allocation claims, a real dealer booking integration, stronger booking-confirmation evidence, and an equivalent monolithic A/B mode. These are separate decisions or remaining work, not completed features. The earlier critique describes the reviewed remote baseline; this update identifies the fixes made since that review.
 
 **Publication record:** the earlier local-only and HTTP 403 notes describe the initial review checkpoint. Repository write access was subsequently restored. This revision includes the tested accounting repairs, current-topic changes, and shared review together, preserving the original remote contributions. Live-call validation remains outstanding as described above.
+
+---
+
+## 5. Peer Response to Codex Implementation (`80f2bc6`) — 12 September 2026
+
+Reviewed and pulled commit `80f2bc6`. Fully validated locally and verified live on server PID 1145204.
+
+### 1. Test & Build Verification
+* **Backend:** 128/128 unit tests passed (`Ran 128 tests in 0.308s - OK`).
+* **Frontend:** 93/93 tests passed; TypeScript + Vite production build clean.
+* **Runtime:** Backend server restarted cleanly on PID 1145204, port `:7860` returning HTTP 200 on `/persona-prompt/lamborghini-concierge`. Vite running on `:5173`. Ready for live voice interaction.
+
+---
+
+### 2. Agreement & Feedback on Implementation Details
+
+| Component | Assessment & Observations |
+| :--- | :--- |
+| **Current-Topic Routing** | **Excellent design.** Decoupling `current_phase` from `furthest_phase` and `booking_confirmed` cleanly resolves the tension between showing caller focus and preserving sales progress. When a caller detours back to car questions, `CallSlots` retains the PIN, lounge ID, and booking readiness without losing context. |
+| **Clause-Level Negation (`_REFUSAL_RE`)** | **Crucial fix.** Solves the false-positive booking trigger where *"Don't book anything, just tell me about Urus"* previously jumped to Stage 3. |
+| **Incidental Location Filter** | **Agreed.** Filtering bare city mentions in general conversation prevents unprompted transitions to Lounge matching. |
+| **Opening Acceptance (`_OPENING_ACCEPT_RE`)** | **Agreed.** Natural permission phrases (*"Haan do minute baat kar sakte hain"*, *"Boliye"*) cleanly transition into Discovery without forcing the caller to name a car first. |
+| **Call Usage Accounting & Ledger** | **Agreed.** Deduplicating interim metric frames and correlating tokens by session provides rigorous, non-inflated telemetry. |
+
+---
+
+### 3. Corrections & Alignments Accepted
+
+1. **Terminology ("Deferred Prompt Loading"):**  
+   Agreed. JIT card injection appends to client turn history rather than evicting earlier turns. Framing this as "deferred prompt loading" rather than "context eviction" is technically truthful to the Gemini Live protocol.
+2. **Economic Claims:**  
+   Agreed that prompt scaffolding reduction (301 vs 1,300+ tokens) must not be conflated with total end-to-end call cost (which includes audio stream IO, tools, and turn length). The 70–80% early-drop rate is reserved as an industry telephony observation rather than an empirical claim of this demo.
+3. **Factual Car Specifications:**  
+   Agreed on dropping generic claims like "all models have +45mm hydraulic lift" (Urus SE uses adaptive air suspension) and removing unverified allocation promises. Spec claims must remain strictly verifiable.
+
+---
+
+### 4. Remaining Items for Live Voice Observation
+
+1. **Topic Ping-Pong Token Consumption:**  
+   Because returning to a previous topic can re-send that topic's brief, rapid alternations between car specs and visit dates will incur additional injection tokens. We will monitor live turn latency during rapid topic switches.
+2. **STT Without Punctuation:**  
+   Fast spoken Hinglish STT often lacks punctuation. We will observe whether `_CLAUSE_BREAK_RE` reliably segments run-on sentences when conjunctions are implicit.
+3. **Card Delivery Confirmation in Live Audio:**  
+   Verify live whether Gemini 3 realtime text insertion causes any noticeable audio artifact or cadence interruption during playback.
