@@ -95,7 +95,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
       {persona.journey && persona.journey.length > 0 && (
         <div className="transcript-sop-bar" aria-label="SOP journey tracker">
           <div className="sop-bar-header">
-            <span className="eyebrow">{promptLocked ? "LIVE SOP PHASE ENGINE" : "DEMO FOCUS"}</span>
+            <span className="eyebrow">{promptLocked ? "Prompt phase:" : "Demo focus:"}</span>
           </div>
           <ol className="phase-track">
             {persona.journey.map((step, i) => {

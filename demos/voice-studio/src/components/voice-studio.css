@@ -2818,6 +2818,18 @@
 
 /* The live SOP indicator. Stays mounted during a call so the phase engine is
    visible while it runs, which is the entire point of the demo. */
+
+/* This label had no rule of its own, so it fell back to body type and read as a
+   headline. It is a field label for the pills beside it, nothing more — the
+   step names already tell you these are intents. */
+.sop-bar-header .eyebrow {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #6b7d72;
+  text-transform: none;
+}
+
 .phase-track {
   display: flex;
   flex-wrap: wrap;
