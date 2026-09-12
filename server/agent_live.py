@@ -33,15 +33,20 @@ from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 
+from collections import deque
+import numpy as np
+
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (
     EndTaskFrame,
     Frame,
+    InputAudioRawFrame,
     InterruptionFrame,
     CancelFrame,
     LLMMessagesAppendFrame,
     TextFrame,
+    TTSStoppedFrame,
     OutputTransportMessageFrame,
     InputTransportMessageFrame,
     StartFrame,
@@ -482,6 +487,9 @@ class GeminiSessionLoggerMixin:
                 await flush()
             except Exception as exc:
                 logger.warning(f"[Persona] Deferred card failed: {exc}")
+        st = getattr(self, "start_trigger", None)
+        if st is not None:
+            st.open_gate("bot turn complete")
 
     async def inject_directive(
         self, text: str, tag: str = "Directive", speak_now: bool = True,
@@ -850,13 +858,52 @@ class UserIdleProcessor(FrameProcessor):
 
 
 class StartTriggerProcessor(FrameProcessor):
-    def __init__(self, language: str = "en-US"):
+    """Handles client start_trigger and gates microphone audio during initial greeting.
+
+    For Gemini 3.1 Live Preview, open duplex microphone streaming before the user
+    speaks causes server-side audio metering to leak ~201 prompt tokens on Turn 1.
+    When `gate_mic_on_greeting` is active:
+      - Raw audio chunks during silence/ambient noise are dropped from downstream.
+      - If the user speaks (voice barge-in, RMS > 650 for >=2 frames), an interruption
+        is immediately broadcast to halt the bot greeting and the mic gate opens.
+      - If the bot finishes the greeting uninterrupted, BotStoppedSpeakingFrame or
+        TTSStoppedFrame opens the gate cleanly.
+      - A 12s safety watchdog auto-opens the gate if no signal arrives.
+    """
+
+    def __init__(
+        self,
+        language: str = "en-US",
+        gate_mic_on_greeting: bool = False,
+    ):
         super().__init__()
         self.language = language
         self.triggered = False
+        self.gate_mic_on_greeting = gate_mic_on_greeting
+        self._mic_gated = gate_mic_on_greeting
+        self._pre_buffer = deque(maxlen=10)  # ~200ms pre-speech buffer to prevent onset clipping
+        self._consecutive_speech_frames = 0
+        self._gate_start_time = time.monotonic()
+        self._max_gate_duration = 12.0  # Safety timeout
+        if self._mic_gated:
+            logger.info("[StartTriggerProcessor] Client mic gating enabled for initial greeting turn.")
+
+    def open_gate(self, reason: str = "manual"):
+        if self._mic_gated:
+            logger.info(f"[GreetingAudioGate] Opening client microphone gate (reason: {reason}).")
+            self._mic_gated = False
+            self._pre_buffer.clear()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         await super().process_frame(frame, direction)
+
+        # 1. Gate release on bot completion signals (travels upstream from output transport or downstream from LLM)
+        if isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
+            self.open_gate(f"{type(frame).__name__} received")
+            await self.push_frame(frame, direction)
+            return
+
+        # 2. Handle start_trigger message from client
         if isinstance(frame, InputTransportMessageFrame):
             message = frame.message
             if isinstance(message, dict) and message.get("type") == "start_trigger":
@@ -870,11 +917,62 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
+                    self._gate_start_time = time.monotonic()
                     greeting_text = "Hey!" if self.language == "hi-IN" else "Hello!"
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
                     await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
                     await self.push_frame(LLMRunFrame())
                 return
+
+        # 3. Audio input gating & user barge-in detection during initial greeting
+        if isinstance(frame, InputAudioRawFrame):
+            if not self._mic_gated:
+                await self.push_frame(frame, direction)
+                return
+
+            # Safety watchdog: auto-open if greeting exceeds max duration
+            if (time.monotonic() - self._gate_start_time) > self._max_gate_duration:
+                self.open_gate("watchdog timeout 12s expired")
+                await self.push_frame(frame, direction)
+                return
+
+            # Voice activity check on incoming PCM chunk (RMS energy)
+            audio_bytes = getattr(frame, "audio", None)
+            if not audio_bytes:
+                return
+
+            samples = np.frombuffer(audio_bytes, dtype=np.int16)
+            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) if len(samples) > 0 else 0.0
+
+            # Barge-in speech threshold:
+            # Silence/background room noise with open mic is RMS ~40 to 250.
+            # Human speech speaking into mic is typically RMS 1,200 to 10,000+.
+            # Requiring 2 consecutive frames (>40ms) with RMS > 650 prevents single click/breath false triggers.
+            if rms > 650.0:
+                self._consecutive_speech_frames += 1
+                if self._consecutive_speech_frames >= 2:
+                    logger.info(
+                        f"[GreetingAudioGate] User voice barge-in detected during initial greeting! "
+                        f"(RMS={rms:.1f}, frames={self._consecutive_speech_frames}). "
+                        "Broadcasting interruption and opening microphone gate."
+                    )
+                    self._mic_gated = False
+                    # Abort bot greeting playback immediately
+                    await self.broadcast_interruption()
+                    # Flush onset frames from pre_buffer so first syllable is preserved
+                    while self._pre_buffer:
+                        buffered_frame = self._pre_buffer.popleft()
+                        await self.push_frame(buffered_frame, direction)
+                    # Forward active speech frame downstream to model
+                    await self.push_frame(frame, direction)
+                    return
+            else:
+                self._consecutive_speech_frames = 0
+
+            # Ambient noise / silence during greeting: store in rolling pre_buffer and drop from downstream!
+            self._pre_buffer.append(frame)
+            return
+
         await self.push_frame(frame, direction)
 
 
@@ -1264,9 +1362,16 @@ async def run_agent_live(
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
+    gate_mic_on_greeting = "3.1" in (model or "")
+    start_trigger = StartTriggerProcessor(
+        language=language,
+        gate_mic_on_greeting=gate_mic_on_greeting,
+    )
+    llm.start_trigger = start_trigger
+
     pipeline = Pipeline([
         transport.input(),
-        StartTriggerProcessor(language=language),
+        start_trigger,
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
