@@ -342,3 +342,93 @@ PYTHONPATH=server python -m pytest -q \
 ```
 
 The UI code is unchanged in this follow-up; its previous 93-test/build result has not been presented as a new run. Real voice-call timing, extra responses from realtime text, and end-to-end savings remain unverified here. The next useful evidence is an actual recorded call, not another prompt-endpoint health check.
+---
+
+## 7. Architecture Retrospective & Live Call Failure Analysis (For Codex) — 12 September 2026
+
+### 1. The Core Architectural Discrepancy
+
+* **The Product Vision:**
+  The demo was conceived around a clean, elegant **Prompt Card Engine**:
+  * Pragya operates in **one single prompt card at a time**.
+  * The active card defines her immediate conversational scope, tone, and goals.
+  * Based on caller responses, the model determines when it is time to transition, and the server injects the next phase prompt card.
+  * The system was meant to be pure, pristine **content engineering**.
+
+* **What Actually Got Built (The Over-Engineering Cascade):**
+  Instead of letting prompt cards guide the model, the system accumulated a 500-line server-side regex state machine (`_REFUSAL_RE`, `_CLAUSE_BREAK_RE`, `_PINCODE_RE`, `_CITY_RE`, `_OPENING_ACCEPT_RE`) and defensive `CallSlots` gating trying to puppet-master the conversation from the outside:
+  1. *Step 1 (UI Desync Panic):* In early runs, the UI phase light didn't move because the model didn't reliably invoke `get_phase_card`.
+  2. *Step 2 (Regex Takeover):* Phase tracking was moved to server regexes over the transcript.
+  3. *Step 3 (Premature Booking Domino):* Server regexes eagerly jumped phases on single keywords, causing the model to prematurely trigger booking calls with blank dates.
+  4. *Step 4 (Defensive Gating Explosion):* `CallSlots`, write-time validators, day/clock regexes, and invalidation cascades were built to catch the premature bookings.
+  5. *Step 5 (Multi-Clause Refusals):* Regex false-positives (*"Don't book..."*) necessitated clause-splitting and refusal parsers.
+
+The result: The engineering focus shifted heavily into external plumbing, leaving the prompt cards rigid and vulnerable to conversational loops.
+
+---
+
+### 2. Forensic Analysis of the Live Call Failure (The 3x Repetition Loop)
+
+In our latest live test against PID 1145204, Pragya was caught in two severe repetition loops.
+
+#### Loop 1: The "Price" Attractor Trap (Turns 15–23)
+```text
+[15] Assistant: ...क्या आप इसकी कीमत जानना चाहते हैं?
+[16] User: अ अच्छा क्या बोल रहे थे आप?
+[17] Assistant: मैं पूछ रही थी कि क्या आप इसकी कीमत जानना चाहते हैं?
+[18] User: आप बताइए।
+[19] Assistant: मैं पूछ रही थी कि क्या आप इसकी कीमत जानना चाहते हैं?
+[20] User: हां, बताइए।
+[21] Assistant: मैं पूछ रही थी कि क्या आप इसकी कीमत जानना चाहते हैं?
+[22] User: हां, बताइए ना, आप कीमत बता नहीं रहे हो।
+[23] Assistant: जी, Urus SE की एक्स-शोरूम कीमत लगभग चार करोड़ सत्तावन लाख रुपये है...
+```
+
+#### Loop 2: Garbled STT / Fragment Echo (Turns 43–50)
+```text
+[43] Assistant: Achcha, Aventador SVJ! ...क्या आप उसके बारे में कुछ और जानना चाहते हैं?
+[44] User: दो मुखी
+[45] Assistant: क्या आप उसके बारे में कुछ और जानना चाहते हैं?
+[46] User: Unfull.
+[47] User: आप?
+[48] Assistant: क्या आप उसके बारे में कुछ और जानना चाहते हैं?
+[49] User: वन का
+[50] Assistant: क्या आप उसके बारे में कुछ और जानना चाहते हैं?
+```
+
+#### Root Causes:
+1. **Prompt Constraint Colliding with Hinglish Idiom:**
+   * In `SOP_02_DISCOVERY`, the card specifies:  
+     `• One vivid sensory detail, then a question back to them.`  
+     `• Price, when they ask: Urus SE about four crore fifty-seven lakh...`
+   * Because of *"Price, when they ask"*, Pragya refused to volunteer the price in Turn 15, instead attaching the trailing question: *"क्या आप इसकी कीमत जानना चाहते हैं?"*.
+   * In Hindi, when the caller responded **"आप बताइए"** / **"हां, बताइए"**, the caller meant: *"Yes, go ahead and tell me."*
+   * But the model interpreted *"आप बताइए"* as a clarification mirror (*"You tell me what you were saying"*), so it repeated its question.
+   * Once an autoregressive model repeats a phrase twice, it creates an attention attractor loop that repeated until broken by the explicit phrase: *"आप कीमत बता नहीं रहे हो"*.
+2. **Missing Fragment / Noise Fallback:**
+   * In Loop 2, when STT returned 1-word audio noise (`दो मुखी`, `Unfull.`, `आप?`), the card had no instructions for handling garbled input, causing the model to echo its last closing question 4 times.
+
+---
+
+### 3. Gemini Live Reality: Managing "1 Single Card" in Duplex History
+
+In the Gemini Live protocol:
+* `send_client_content()` appends into conversation history; it does **not** evict or replace earlier cards.
+* If Card 2, Card 3, and Card 4 are injected sequentially, all cards remain in the retained context.
+* **Solution for Single-Card Focus:** Every injected card must explicitly override prior scope at the very top:
+  ```text
+  [CURRENT ACTIVE STAGE: LOUNGE VISIT]
+  This briefing overrides all previous stage instructions. 
+  Your sole focus now is collecting the PIN code, day, and time.
+  ```
+
+---
+
+### 4. Action Plan for Prompt & Content Engineering
+
+1. **Card Content Fixes in `SOP_02_DISCOVERY`:**
+   * *Hinglish Agreement Rule:* Add explicit handling: *"If the caller says 'आप बताइए', 'हाँ बताओ', or agrees, immediately state the price or feature directly — do not re-ask your question."*
+   * *Volunteer Prices Naturally:* Remove the rigid prohibition on volunteering pricing when discussing car fit.
+   * *Noise/Fragment Fallback:* *"If caller audio is unclear or a single fragmentary word, briefly ask them to repeat once rather than echoing your previous question."*
+2. **De-escalate Regex Complexity:**
+   * Transition focus from adding more server-side regex heuristics to making the cards resilient, natural, and conversational.
