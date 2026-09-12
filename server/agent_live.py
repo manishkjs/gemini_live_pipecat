@@ -667,10 +667,10 @@ class GeminiSessionLoggerMixin:
             logger.info("🗜️ [FactStore Injection] No dialogue history in FactStore to inject.")
             return
 
-        # Cap injection to the last 10 turns to keep token overhead minimal
-        capped_history = history[-10:] if len(history) > 10 else history
+        # Cap injection to the last 5 turns to keep token overhead minimal
+        capped_history = history[-5:] if len(history) > 5 else history
 
-        # Format verbatim dialogue transcription logs for model injection (last 10 turns)
+        # Format verbatim dialogue transcription logs for model injection (last 5 turns)
         injected_lines = [f"{turn['role']}: {turn['text']}" for turn in capped_history]
         injected_transcript = "\n".join(injected_lines)
 
@@ -678,7 +678,7 @@ class GeminiSessionLoggerMixin:
         total_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
         total_transcript = "\n".join(total_lines)
 
-        turn_notice = f"last {len(capped_history)}" if len(history) > 10 else "all"
+        turn_notice = f"last {len(capped_history)}" if len(history) > 5 else "all"
         prompt_card = (
             f"[CONVERSATION_TRANSCRIPT_LOG]\n"
             f"The following is the verbatim transcript log of the {turn_notice} dialogue turns in this session:\n"
