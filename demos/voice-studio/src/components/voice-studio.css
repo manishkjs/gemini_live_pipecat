@@ -45,8 +45,6 @@
 .persona-card-top,
 .workspace-toolbar,
 .engine-choice,
-.transcript-heading,
-.transcript-heading > div,
 .transcript-footer,
 .transcript-footer > div,
 .studio-footer,
@@ -703,78 +701,26 @@
   height: 100%;
 }
 
-.transcript-heading {
-  height: 44px;
-  min-height: 44px;
-  border-bottom: 1px solid #20272b;
-  padding: 0 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: #13171a;
-  flex-shrink: 0;
-}
-
-.transcript-heading > div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.transcript-title-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.transcript-title-row h2 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #eaf0eb;
-  margin: 0;
-}
-
-.transcript-badge {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
+/* The transcript heading bar was removed: its title, engine badge and live
+   ticker all duplicated information shown in the footer and the observability
+   drawer, and it cost 44px of transcript height to do it. The copy-transcript
+   control moved into the footer. */
+.footer-copy {
+  width: 24px;
+  height: 24px;
+  margin-left: 2px;
   color: #8da094;
-  background: #1a2225;
-  border: 1px solid #2e393d;
-  border-radius: 4px;
-  padding: 2px 6px;
+  opacity: 0.7;
+  transition: opacity 140ms var(--ease-fluid, ease), color 140ms ease;
 }
 
-.live-metrics-ticker {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 8px;
+.footer-copy:hover:not(:disabled) {
+  opacity: 1;
+  color: #eaf0eb;
 }
 
-.ticker-pill {
-  font-size: 10px;
-  padding: 1.5px 6px;
-  border-radius: 4px;
-  background: #1b2326;
-  border: 1px solid #2e393d;
-  color: #9cb19a;
-}
-
-.ticker-pill strong {
-  color: #e5efdc;
-  font-weight: 600;
-}
-
-.ticker-pill.cost-pill {
-  color: #93c5fd;
-  border-color: rgba(147, 197, 253, 0.3);
-  background: rgba(147, 197, 253, 0.08);
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+.footer-copy:disabled {
+  opacity: 0.25;
 }
 
 .transcript-scroll {
@@ -2466,22 +2412,6 @@
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
-.cost-pill {
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.3);
-  color: #a7f3d0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.cost-pill strong {
-  color: #34d399;
-}
-
-.cost-pill .cost-icon {
-  color: #34d399;
-}
 
 /* Settings Dialog Live Pricing Callout */
 .live-pricing-callout {
@@ -2570,36 +2500,8 @@
   margin: 0 2px;
 }
 
-/* Transcript title row and live ticker */
-.transcript-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.live-metrics-ticker {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: 8px;
-  flex-wrap: wrap;
-}
-
-.ticker-pill {
-  font-size: 10.5px;
-  font-family: ui-monospace, monospace;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 2px 7px;
-  border-radius: 5px;
-  color: #94a3b8;
-}
-
-.ticker-pill strong {
-  color: #38bdf8;
-  font-weight: 700;
-}
+/* (The transcript title row and live metrics ticker were removed — turns,
+   latency, tokens and cost are reported once, in the transcript footer.) */
 
 .obs-badge {
   font-size: 10px;

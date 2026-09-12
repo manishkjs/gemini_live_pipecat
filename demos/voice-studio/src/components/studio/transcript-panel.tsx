@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRight, Check, Copy, Edit3, Lock, MessageSquare, Mic, RotateCcw, Zap, DollarSign } from "lucide-react";
+import { ArrowRight, Check, Copy, Edit3, Lock, Mic, RotateCcw, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { isLivePricingEligible, formatCost, estimateTokens, formatTokens, totalIn, totalOut } from "@/lib/pricing";
@@ -13,8 +13,8 @@ import PersonaAvatar from "./persona-avatar";
 export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   const {
     active, copied, copyTranscript, custom, duration, engineName, followTranscript,
-    lastSTT, lastTTFB, latency, messages, partialUser, persona, phase, reduced, sessionCostUSD,
-    settings, setShowInlineEditor, showInlineEditor, tokenCount, tokenSplit, transcript, turnCount,
+    latency, messages, partialUser, persona, phase, reduced, sessionCostUSD,
+    settings, setShowInlineEditor, showInlineEditor, tokenCount, tokenSplit, transcript,
     update, currentPhase, visitedPhases, phaseDirective, confirmedBooking,
   } = studio;
 
@@ -88,36 +88,8 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
 
   return (
     <section className="transcript-panel" aria-labelledby="transcript-heading">
-      <div className="transcript-heading">
-        <div className="transcript-title-row">
-          <MessageSquare size={18} />
-          <h2 id="transcript-heading">Conversation</h2>
-          <span className="transcript-badge">{engineName.toUpperCase()}</span>
-          {active && (
-            <div className="live-metrics-ticker">
-              <span className="ticker-pill">Turns: <strong>{turnCount}</strong></span>
-              {lastSTT !== null && <span className="ticker-pill">STT: <strong>{lastSTT}ms</strong></span>}
-              {lastTTFB !== null && <span className="ticker-pill">TTFB: <strong>{lastTTFB}ms</strong></span>}
-              {tokenCount > 0 && <span className="ticker-pill">Tokens: <strong>{tokenCount}</strong></span>}
-              {isLivePricingEligible(settings.engine, settings.model) && sessionCostUSD > 0 && (
-                <span className="ticker-pill cost-pill" title="Estimated live session token spend">
-                  <DollarSign size={10} />
-                  <span>{formatCost(sessionCostUSD)}</span>
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => void copyTranscript()}
-          disabled={!messages.length}
-          aria-label={copied ? "Transcript copied" : "Copy transcript"}
-        >
-          {copied ? <Check size={17} /> : <Copy size={17} />}
-        </Button>
-      </div>
+      <h2 id="transcript-heading" className="sr-only">Conversation</h2>
+
 
       {/* Live SOP Phase Engine / DEMO FOCUS tracker: stays mounted during calls */}
       {persona.journey && persona.journey.length > 0 && (
@@ -461,6 +433,18 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               Response {(latency / 1000).toFixed(2)}s
             </span>
           )}
+          {/* Lives here since the heading row was removed — this is now the only
+              place session-wide controls and readouts belong. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="footer-copy"
+            onClick={() => void copyTranscript()}
+            disabled={!messages.length}
+            aria-label={copied ? "Transcript copied" : "Copy transcript"}
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />}
+          </Button>
         </div>
       </div>
     </section>
