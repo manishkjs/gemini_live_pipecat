@@ -221,7 +221,7 @@ class TestTranscriptDrivenPhaseTelemetry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moves, ["SOP_02_DISCOVERY", "SOP_03_PINCODE"])
 
     async def test_small_talk_emits_nothing(self):
-        self.assertEqual(await self._transitions_for(["haan ji", "theek hai"]), [])
+        self.assertEqual(await self._transitions_for(["namaste", "theek hai"]), [])
 
     async def test_other_personas_emit_no_phase_telemetry(self):
         arch = get_persona_architecture("debt-collector")
@@ -236,13 +236,7 @@ class TestTranscriptDrivenPhaseTelemetry(unittest.IsolatedAsyncioTestCase):
 
 
 class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
-    """A phase move must be *proof a new prompt landed*, not a regex guess.
-
-    The phase light previously reported only that the tracker had matched some
-    caller speech. It now reports that the matching SOP card was pushed into the
-    live session, so a demo operator watching the light knows the model is
-    actually working off new instructions.
-    """
+    """Topic selection and briefing delivery are separate observable events."""
 
     def _arch_with(self, llm):
         arch = get_persona_architecture("lamborghini-concierge")
@@ -291,7 +285,7 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
         llm = _RecordingLLM()
         arch = self._arch_with(llm)
         broadcast, _ = self._recorder()
-        await arch.on_user_transcript("haan ji theek hai", broadcast)
+        await arch.on_user_transcript("namaste", broadcast)
         self.assertEqual(llm.injected, [])
 
     async def test_a_confirmed_booking_pushes_the_aftercare_card(self):
@@ -309,8 +303,8 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[STAGE 4 OF 4", text)
         self.assertFalse(speak_now)
 
-    async def test_each_card_is_pushed_at_most_once(self):
-        """The tracker is monotonic, so a phase's card must not be re-sent."""
+    async def test_same_topic_does_not_resend_unchanged_card(self):
+        """Successive product questions share a briefing."""
         llm = _RecordingLLM()
         arch = self._arch_with(llm)
         broadcast, _ = self._recorder()
@@ -319,6 +313,67 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
             await arch.on_user_transcript(text, broadcast)
 
         self.assertEqual(len(llm.injected), 1)
+
+    async def test_topic_detour_preserves_pin_and_refreshes_the_brief(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+        for text in ["PIN 560048", "Actually, tell me about the Revuelto engine", "Book a visit please"]:
+            await arch.on_user_transcript(text, broadcast)
+        self.assertEqual([e["phase_id"] for e in events], ["SOP_03_PINCODE", "SOP_02_DISCOVERY", "SOP_03_PINCODE"])
+        self.assertEqual(arch.slots.get("pincode"), "560048")
+        self.assertIn("PIN code 560048", llm.injected[-1][0])
+        self.assertEqual([e["revision"] for e in events], [1, 2, 3])
+
+    async def test_same_phase_pin_correction_refreshes_once(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, _ = self._recorder()
+        for text in ["PIN 560048", "PIN 110037", "PIN 110037"]:
+            await arch.on_user_transcript(text, broadcast)
+        self.assertEqual(len(llm.injected), 2)
+        self.assertIn("PIN code 110037", llm.injected[-1][0])
+        self.assertNotIn("PIN code 560048", llm.injected[-1][0])
+
+    async def test_failed_card_retries_on_same_topic(self):
+        llm = _RecordingLLM(delivers=False)
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+        await arch.on_user_transcript("Tell me about the Urus", broadcast)
+        self.assertEqual(events[-1]["delivery_status"], "failed")
+        llm._delivers = True
+        await arch.on_user_transcript("Urus engine please", broadcast)
+        self.assertEqual(events[-1]["delivery_status"], "sent")
+        await arch.on_user_transcript("More about the Urus", broadcast)
+        self.assertEqual(len(llm.injected), 2)
+
+    async def test_pending_card_flushes_once_and_keeps_latest_topic(self):
+        llm = _RecordingLLM(delivers=False)
+        llm._last_directive_status = "pending"
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+        await arch.on_user_transcript("PIN 560048", broadcast)
+        await arch.on_user_transcript("Tell me about the Revuelto", broadcast)
+        self.assertEqual(events[-1]["delivery_status"], "pending")
+        llm._delivers = True
+        await arch.flush_pending_card()
+        self.assertIn("SOP_02_DISCOVERY", llm.injected[-1][1])
+        self.assertEqual(events[-1]["delivery_status"], "sent")
+        count = len(llm.injected)
+        await arch.flush_pending_card()
+        self.assertEqual(len(llm.injected), count)
+
+    async def test_confirmed_booking_is_retained_during_a_product_detour(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        await llm.handlers["create_appointment_booking"](
+            _Params({"pincode": "400051", "date": "Saturday", "time": "4:00 PM"})
+        )
+        reference = arch.slots.get("booking_ref")
+        await arch.on_user_transcript("What about the Urus engine?")
+        self.assertEqual(arch.tracker.current_phase, "SOP_02_DISCOVERY")
+        self.assertEqual(arch.slots.get("booking_ref"), reference)
+        self.assertIn("visit is already confirmed", llm.injected[-1][0])
 
     async def test_a_dead_session_reports_no_card_but_still_advances(self):
         """Claiming delivery on a closing socket would be a lying indicator."""

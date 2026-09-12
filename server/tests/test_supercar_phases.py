@@ -40,9 +40,10 @@ class TestPhaseDetection(unittest.TestCase):
             detect_phase("mera pincode hai 5 6 0 0 0 1"), SOP_03_PINCODE
         )
 
-    def test_city_reaches_phase_three(self):
+    def test_incidental_city_is_not_visit_intent(self):
         for city in ["Delhi", "mumbai", "Bengaluru", "Aerocity", "BKC"]:
-            self.assertEqual(detect_phase(f"main {city} mein rehta hoon"), SOP_03_PINCODE, city)
+            self.assertIsNone(detect_phase(f"main {city} mein rehta hoon"), city)
+            self.assertEqual(detect_phase(f"Is the Urus comfortable in {city} traffic?"), SOP_02_DISCOVERY)
 
     def test_the_word_pincode_alone_reaches_phase_three(self):
         self.assertEqual(detect_phase("mera pin code bataun kya?"), SOP_03_PINCODE)
@@ -91,15 +92,43 @@ class TestTrackerProgression(unittest.TestCase):
         self.assertEqual(tracker.observe_booking_confirmed(), SOP_04_BOOKED)
 
     def test_can_skip_straight_to_pincode(self):
-        """A caller who opens with their city never passed through discovery."""
+        """An explicit visit request can skip discovery."""
         tracker = PragyaPhaseTracker()
-        self.assertEqual(tracker.observe_user_text("main Mumbai se hoon"), SOP_03_PINCODE)
+        self.assertEqual(tracker.observe_user_text("Book a visit in Mumbai"), SOP_03_PINCODE)
 
-    def test_never_rewinds(self):
+    def test_returns_to_current_topic_without_losing_milestone(self):
         tracker = PragyaPhaseTracker()
         tracker.observe_user_text("pincode 400051")
-        self.assertIsNone(tracker.observe_user_text("aur Urus ka engine kaisa hai?"))
-        self.assertEqual(tracker.current_phase, SOP_03_PINCODE)
+        self.assertEqual(tracker.observe_user_text("aur Urus ka engine kaisa hai?"), SOP_02_DISCOVERY)
+        self.assertEqual(tracker.current_phase, SOP_02_DISCOVERY)
+        self.assertEqual(tracker.furthest_phase, SOP_03_PINCODE)
+
+    def test_refusal_beats_booking_words_in_both_languages(self):
+        for speech in ["Don't book anything; just tell me about the Urus", "I am not interested in a test drive", "abhi booking nahi karni", "अभी बुकिंग नहीं करनी"]:
+            tracker = PragyaPhaseTracker()
+            tracker.observe_user_text("PIN 400051")
+            self.assertEqual(tracker.observe_user_text(speech), SOP_02_DISCOVERY, speech)
+
+    def test_latest_explicit_topic_wins(self):
+        self.assertEqual(detect_phase("My PIN is 560048. Actually, tell me about the Revuelto engine"), SOP_02_DISCOVERY)
+        self.assertEqual(detect_phase("I like the Urus, but book a visit please"), SOP_03_PINCODE)
+
+    def test_opening_acceptance_is_contextual(self):
+        for speech in ["Yes, I have two minutes", "haan bataiye", "हाँ बताइए"]:
+            tracker = PragyaPhaseTracker()
+            self.assertEqual(tracker.observe_user_text(speech), SOP_02_DISCOVERY)
+            tracker.observe_user_text("PIN 560048")
+            self.assertIsNone(tracker.observe_user_text(speech))
+            self.assertEqual(tracker.current_phase, SOP_03_PINCODE)
+
+    def test_booking_survives_product_detour_and_reference_question(self):
+        tracker = PragyaPhaseTracker()
+        tracker.observe_booking_confirmed()
+        self.assertEqual(tracker.observe_user_text("Tell me about the Revuelto engine"), SOP_02_DISCOVERY)
+        self.assertTrue(tracker.booking_confirmed)
+        self.assertEqual(tracker.furthest_phase, SOP_04_BOOKED)
+        self.assertEqual(tracker.observe_user_text("What is my booking reference?"), SOP_04_BOOKED)
+        self.assertEqual(tracker.observe_user_text("Reschedule my appointment"), SOP_03_PINCODE)
 
     def test_repeating_a_phase_signal_emits_no_second_transition(self):
         """Only genuine changes are announced, so the UI does not flicker."""

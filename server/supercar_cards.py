@@ -200,6 +200,12 @@ def render_state_line(state: Optional[Mapping[str, Any]]) -> str:
     missing = [_SLOT_LABELS[key] for key in _BOOKING_SLOTS if not state.get(key)]
 
     parts = []
+    if state.get("booking_status") == "confirmed":
+        reference = state.get("booking_ref", "available in the booking result")
+        parts.append(
+            f"The visit is already confirmed, reference {reference}. "
+            "Answer their current question; arrange another visit only if they request it."
+        )
     if known:
         parts.append("They have already told you: " + ", ".join(known) + ".")
     if missing:
@@ -256,4 +262,3 @@ def get_pragya_root_system_instruction() -> str:
         "reply. Numbers as words.\n\n"
         "Your one tool is create_appointment_booking."
     )
-

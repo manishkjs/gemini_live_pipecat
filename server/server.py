@@ -336,9 +336,9 @@ async def clear_diagnostic_logs_endpoint(session_id: Optional[str] = None):
     return {"status": "cleared", "session_id": session_id}
 
 @app.get("/api/trace/current")
-async def get_current_trace_endpoint():
+async def get_current_trace_endpoint(session_id: Optional[str] = None):
     from tracing import GLOBAL_LANGSMITH_TRACER
-    return {"trace_url": GLOBAL_LANGSMITH_TRACER.get_current_trace_url()}
+    return {"trace_url": GLOBAL_LANGSMITH_TRACER.get_current_trace_url(session_id)}
 
 # Mount the static files directory
 possible_dist_dirs = [

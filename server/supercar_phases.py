@@ -14,9 +14,8 @@ regex pass over a transcript that already exists.
 
 Invariants
 ----------
-* **Monotonic.** A sales funnel only moves forward. A caller circling back to
-  models after giving a PIN code has not un-given the PIN code, and a tracker
-  that rewinds reads as a bug to anyone watching the demo.
+* **Current topic.** The highlight follows the caller back to cars or onward
+  to a visit. Collected slots and the furthest milestone are retained separately.
 * **Evidence-based.** Phase 4 is reached only by an executed booking, never by
   the caller merely agreeing. The tracker must not be able to claim a booking
   the backend never made.
@@ -106,6 +105,29 @@ _DISCOVERY_RE = re.compile(
     r"टेस्ट\s*ड्राइव|दिखाओ|दिखाइए|देखना|देखनी|देखने|रंग|बुकिंग)"
 )
 
+# Refusal beats the booking keyword it contains. Evaluate bounded clauses so
+# a later positive request can still change the topic. Ambiguous speech keeps
+# the current topic; these rules do not claim to understand every paraphrase.
+_REFUSAL_RE = re.compile(
+    r"\b(don['’]?t|do\s+not|not\s+(?:now|ready|interested)|no\s+(?:thanks|booking|visit)|"
+    r"stop|cancel|nahi|nahin|mat)\b|नहीं|नही|मत\s|रद्द"
+)
+_OPENING_ACCEPT_RE = re.compile(
+    r"^(yes|yeah|yep|sure|okay|ok|go\s+ahead|haan|han|ha)\b"
+    r"|^(जी|हाँ|हां|बोलिए|बताइए|बताओ)|\b(two minutes|do minute|bataiye|boliye)\b"
+)
+_AFTERCARE_RE = re.compile(
+    r"\b(confirmation|reference|booking\s*(id|number)|address|parking|"
+    r"thank\s*you|thanks|goodbye|bye)\b|पुष्टि|रेफरेंस|पता|पार्किंग|धन्यवाद"
+)
+_VISIT_CHANGE_RE = re.compile(
+    r"\b(reschedule|cancel|change\s+(?:my\s+|the\s+)?(?:booking|appointment|day|time|date))\b"
+    r"|रद्द|समय\s*बदल|दिन\s*बदल"
+)
+_CLAUSE_BREAK_RE = re.compile(
+    r"[.!?;,]+|\b(?:but|however|actually|instead|lekin)\b|लेकिन|मगर"
+)
+
 # Spoken digits, English and Hindi, so "one one zero zero three seven" and
 # "एक एक शून्य शून्य तीन सात" both normalise to a matchable pincode.
 _SPOKEN_DIGITS = {
@@ -144,34 +166,27 @@ def normalize_for_pincode(text: str) -> str:
 
 
 def detect_phase(text: str) -> Optional[str]:
-    """The furthest phase the caller's own words justify, or None.
-
-    Returns ``None`` rather than ``SOP_01_OPENING`` for unremarkable speech:
-    "no evidence of a move" and "evidence of being in phase 1" are different
-    claims, and conflating them would re-announce phase 1 on every turn.
-    """
+    """Identify the latest explicit topic; leave ambiguous speech unchanged."""
     if not text or not text.strip():
         return None
 
-    normalized = normalize_for_pincode(text)
     lowered = (text or "").lower().translate(_DEVANAGARI_DIGITS)
-
-    if (
-        _PINCODE_RE.search(normalized)
-        or _CITY_RE.search(lowered)
-        or _PIN_WORD_RE.search(lowered)
-        or _BOOKING_INTENT_RE.search(lowered)
-    ):
-        return SOP_03_PINCODE
-
-    if _DISCOVERY_RE.search(lowered):
-        return SOP_02_DISCOVERY
-
-    return None
+    topic = None
+    for clause in _CLAUSE_BREAK_RE.split(lowered):
+        booking = _BOOKING_INTENT_RE.search(clause)
+        pin = _PIN_WORD_RE.search(clause) or _PINCODE_RE.search(normalize_for_pincode(clause))
+        if _REFUSAL_RE.search(clause) and (booking or pin):
+            topic = SOP_02_DISCOVERY
+        elif pin or booking:
+            topic = SOP_03_PINCODE
+        elif _DISCOVERY_RE.search(clause):
+            topic = SOP_02_DISCOVERY
+        # A city alone is context, not consent to organise a visit.
+    return topic
 
 
 class PragyaPhaseTracker:
-    """Monotonic funnel position for one call.
+    """Current topic, retained milestones, and booking evidence for one call.
 
     Deliberately holds no reference to the LLM, the transport or the event bus:
     it answers "did this utterance move the call forward, and to where", and
@@ -181,6 +196,8 @@ class PragyaPhaseTracker:
 
     def __init__(self) -> None:
         self.current_phase: str = SOP_01_OPENING
+        self.furthest_phase: str = SOP_01_OPENING
+        self.booking_confirmed = False
 
     @property
     def current_index(self) -> int:
@@ -190,22 +207,36 @@ class PragyaPhaseTracker:
         return _PHASE_TITLE.get(phase_id, phase_id)
 
     def _advance_to(self, phase_id: str) -> Optional[str]:
-        """Move forward to ``phase_id``; return it only if this was a change."""
+        """Select a topic without erasing a previously reached milestone."""
         target = _PHASE_INDEX.get(phase_id)
-        if target is None or target <= self.current_index:
+        if target is None or phase_id == self.current_phase:
             return None
         self.current_phase = phase_id
+        if target > _PHASE_INDEX[self.furthest_phase]:
+            self.furthest_phase = phase_id
         return phase_id
 
     def observe_user_text(self, text: str) -> Optional[str]:
-        """Advance on caller speech. Returns the new phase, or None if unmoved."""
+        """Select on caller speech. Ambiguous acknowledgements retain the topic."""
         detected = detect_phase(text)
+        lowered = (text or "").strip().lower()
+        if self.booking_confirmed:
+            if _VISIT_CHANGE_RE.search(lowered):
+                detected = SOP_03_PINCODE
+            elif _AFTERCARE_RE.search(lowered) and detected != SOP_02_DISCOVERY:
+                detected = SOP_04_BOOKED
+        if (
+            detected is None and self.current_phase == SOP_01_OPENING
+            and _OPENING_ACCEPT_RE.search(lowered) and not _REFUSAL_RE.search(lowered)
+        ):
+            detected = SOP_02_DISCOVERY
         if detected is None:
             return None
         return self._advance_to(detected)
 
     def observe_booking_confirmed(self) -> Optional[str]:
         """A booking actually executed: the only route into the final phase."""
+        self.booking_confirmed = True
         return self._advance_to(SOP_04_BOOKED)
 
     def observe_booking_request(self) -> Optional[str]:
@@ -420,4 +451,3 @@ class CallSlots:
         if key == "visit_time":
             return text if resolves_to_a_time(text) else None
         return text
-

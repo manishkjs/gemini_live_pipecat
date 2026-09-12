@@ -55,7 +55,7 @@ export type SessionSettings = {
 /** A short, non-secret id used only to partition diagnostics by demoer. */
 export function newSessionId(): string {
   const random = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID().slice(0, 8)
+    ? crypto.randomUUID()
     : Math.random().toString(36).slice(2, 10);
   return `s_${random}`;
 }

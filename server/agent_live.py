@@ -11,7 +11,8 @@ from datetime import datetime
 import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
-from diagnostic_buffer import append_diagnostic_log
+from diagnostic_buffer import append_diagnostic_log, current_session_id
+from response_identity import ResponseIdentity
 from tracing import GLOBAL_LANGSMITH_TRACER
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -114,6 +115,30 @@ async def get_current_time(params: FunctionCallParams):
 
 class GeminiSessionLoggerMixin:
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
+
+    @property
+    def response_identity(self):
+        if not hasattr(self, "_response_identity"):
+            self._response_identity = ResponseIdentity(current_session_id())
+        return self._response_identity
+
+    async def _handle_msg_model_turn(self, message):
+        self.response_identity.begin()
+        await super()._handle_msg_model_turn(message)
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            data = frame.message.get("data", {})
+            if data.get("type") == "transcription" and data.get("participant", "").lower() != "user":
+                data = {**data, "response_id": self.response_identity.begin()}
+            elif data.get("type") == "metrics":
+                payload = data.get("payload", {})
+                response_id = self.response_identity.current
+                if payload.get("type") == "usage":
+                    response_id = self.response_identity.completed or response_id
+                data = {**data, "payload": self.response_identity.stamp(payload, response_id=response_id)}
+            frame.message = {**frame.message, "data": data}
+        await super().push_frame(frame, direction)
 
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
@@ -370,6 +395,7 @@ class GeminiSessionLoggerMixin:
                     self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
+        self.response_identity.begin()
         await super()._handle_msg_output_transcription(message)
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
             text = message.server_content.output_transcription.text
@@ -413,6 +439,7 @@ class GeminiSessionLoggerMixin:
             }))
 
     async def _handle_msg_turn_complete(self, message):
+        self.response_identity.begin()
         await super()._handle_msg_turn_complete(message)
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
@@ -420,7 +447,8 @@ class GeminiSessionLoggerMixin:
             GLOBAL_LANGSMITH_TRACER.record_bot_turn(
                 full_bot_text,
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
-                token_usage=getattr(self, '_last_turn_usage', None)
+                # Usage arrives after turn_complete; never attach the previous response's usage.
+                token_usage=None
             )
             if not hasattr(self, '_dialogue_history'):
                 self._dialogue_history = []
@@ -441,39 +469,45 @@ class GeminiSessionLoggerMixin:
                 'payload': {'type': 'turn_complete'}
             }
         }))
+        self.response_identity.finish()
+        architecture = getattr(self, "persona_architecture", None)
+        flush = getattr(architecture, "flush_pending_card", None)
+        if flush is not None:
+            try:
+                await flush()
+            except Exception as exc:
+                logger.warning(f"[Persona] Deferred card failed: {exc}")
 
     async def inject_directive(
         self, text: str, tag: str = "Directive", speak_now: bool = True
     ) -> bool:
-        """Hand the live model an out-of-band, user-role instruction mid-call.
+        """Send a directive using the selected Live model's text protocol.
 
-        This is the one supported way to steer a session that is already open
-        (mid-call SOP cards, repeat-after-filler prompts, and anything else that
-        must reach the model without the caller having said it).
-
-        ``speak_now=True`` commits the turn, so the model answers the directive
-        immediately — right for "say this now", wrong for anything else. With
-        ``speak_now=False`` the text is appended to context without closing the
-        turn, so it silently shapes the model's *next* reply to the caller
-        instead of racing it.
-
-        Returns ``True`` only when the turn actually reached the model. Callers
-        report *delivery*, not intent — a phase light that claims a new prompt
-        went in when the socket was already closing is worse than no light.
+        A successful SDK write is reported as sent, not as proof of application
+        to a particular response. Quiet cards wait while generation is active:
+        client content can interrupt even with turn_complete=False. Gemini 3
+        uses realtime text for mid-call updates, as in the pinned provider.
         """
+        self._last_directive_status = "failed"
         if self._disconnecting or not self._session:
             logger.warning(f"[{tag}] Not delivered — session is not live.")
+            return False
+        if not speak_now and getattr(self, "_bot_is_responding", False):
+            self._last_directive_status = "pending"
             return False
         try:
             if speak_now:
                 await self._create_single_response([{"role": "user", "content": text}])
+            elif getattr(self, "_is_gemini_3", False):
+                await self._session.send_realtime_input(text=text)
             else:
                 await self._session.send_client_content(
                     turns=[Content(role="user", parts=[Part(text=text)])],
                     turn_complete=False,
                 )
-            mode = "speaks now" if speak_now else "silent"
-            logger.info(f"[{tag}] Delivered to model (~{estimate_tokens(text)} tok, {mode}).")
+            self._last_directive_status = "sent"
+            mode = "respond now" if speak_now else "briefing"
+            logger.info(f"[{tag}] Sent (~{estimate_tokens(text)} estimated tokens, {mode}).")
             return True
         except Exception as e:
             logger.error(f"[{tag}] Injection failed: {e}")
@@ -547,8 +581,15 @@ class GeminiSessionLoggerMixin:
             "response_token_count": getattr(usage, 'response_token_count', 0),
             "total_token_count": getattr(usage, 'total_token_count', 0),
             "prompt_details": prompt_details,
-            "response_details": response_details
+            "response_details": response_details,
+            "cached_content_token_count": getattr(usage, "cached_content_token_count", None),
+            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+            "tool_use_prompt_token_count": getattr(usage, "tool_use_prompt_token_count", None),
+            "phase": "final",
+            "service": "live",
+            "revision": 0,
         }
+        self._last_turn_usage = usage_dict
         
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
@@ -1226,7 +1267,7 @@ async def run_agent_live(
         context_aggregator.assistant(),
     ])
 
-    session_id = f"session_{int(time.time()*1000)}"
+    session_id = current_session_id()
     trace_url = GLOBAL_LANGSMITH_TRACER.start_session(session_id, model=model, voice=voice, language=language)
 
     task = PipelineTask(pipeline, params=PipelineParams(
@@ -1263,4 +1304,7 @@ async def run_agent_live(
         GLOBAL_LANGSMITH_TRACER.end_session()
         await task.cancel()
 
-    await PipelineRunner(handle_sigint=False).run(task)
+    try:
+        await PipelineRunner(handle_sigint=False).run(task)
+    finally:
+        GLOBAL_LANGSMITH_TRACER.end_session()

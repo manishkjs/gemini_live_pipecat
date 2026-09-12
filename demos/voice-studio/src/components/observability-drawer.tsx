@@ -106,7 +106,7 @@ export default function ObservabilityDrawer({
       try {
         const [logsRes, traceRes] = await Promise.allSettled([
           fetch(`${base}/api/logs?limit=500${scope}`),
-          fetch(`${base}/api/trace/current`),
+          fetch(`${base}/api/trace/current?${scope.replace(/^&/, "")}`),
         ]);
 
         if (mounted && logsRes.status === "fulfilled" && logsRes.value.ok) {
@@ -182,7 +182,7 @@ export default function ObservabilityDrawer({
 
     // Prefer exact session values tracked directly in client session state
     const displayTurns =
-      sessionTurnCount !== undefined && sessionTurnCount > 0
+      sessionTurnCount !== undefined
         ? sessionTurnCount
         : turns > 0
           ? Math.ceil(turns / 2)
@@ -191,10 +191,10 @@ export default function ObservabilityDrawer({
             : totalStat.count || 0;
 
     const displayInterrupts =
-      sessionInterrupts !== undefined && sessionInterrupts > 0 ? sessionInterrupts : interrupts;
+      sessionInterrupts !== undefined ? sessionInterrupts : interrupts;
 
     const displayTokens =
-      sessionTokens !== undefined && sessionTokens > 0 ? sessionTokens : totalTokens;
+      sessionTokens !== undefined ? sessionTokens : totalTokens;
 
     // The log scrape below counts every turn the SERVER has seen since it
     // booted, while `sessionTokens` resets with each call. Mixing the two put

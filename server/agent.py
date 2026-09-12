@@ -4,6 +4,8 @@ import asyncio
 from typing import Optional, List
 import re
 from loguru import logger
+from diagnostic_buffer import current_session_id
+from response_identity import ResponseIdentity
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -20,7 +22,7 @@ from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   StartFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
+                                   StartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
                                    InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
@@ -515,6 +517,36 @@ class CustomGoogleTTSService(GoogleTTSService):
                 }))
 
 class CustomGoogleVertexLLMService(GoogleVertexLLMService):
+    @property
+    def response_identity(self):
+        if not hasattr(self, "_response_identity"):
+            self._response_identity = ResponseIdentity(current_session_id())
+        return self._response_identity
+
+    async def _process_context(self, context):
+        self.response_identity.begin()
+        try:
+            await super()._process_context(context)
+        finally:
+            self.response_identity.finish()
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        identity = self.response_identity.current
+        if isinstance(frame, TextFrame):
+            frame.response_id = identity
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            data = frame.message.get("data", {})
+            if data.get("type") == "metrics":
+                data = {**data, "payload": self.response_identity.stamp(data.get("payload", {}))}
+                frame.message = {**frame.message, "data": data}
+        await super().push_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseEndFrame):
+            await super().push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai", "type": "server-message",
+                "data": {"type": "metrics", "payload": self.response_identity.stamp({"type": "turn_complete"})},
+            }), direction)
+
+
     def _maybe_unset_thinking_budget(self, generation_params: dict):
         try:
             model = self._settings.model or ""
@@ -569,7 +601,11 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
                         "response_token_count": completion_tokens,
                         "total_token_count": total_tokens,
                         "prompt_details": {"text": prompt_tokens},
-                        "response_details": {"text": completion_tokens}
+                        "response_details": {"text": completion_tokens},
+                        "phase": "final", "service": "llm", "revision": 0,
+                        "model": self._settings.model,
+                        "cached_content_token_count": getattr(metrics, "cache_read_input_tokens", None),
+                        "thoughts_token_count": getattr(metrics, "reasoning_tokens", None),
                     }
                 }
             }
@@ -598,6 +634,7 @@ class TranscriptionBroadcaster(FrameProcessor):
                         "data": {
                             'type': 'transcription',
                             'participant': self.participant,
+                            'response_id': getattr(frame, 'response_id', None),
                             'text': ui_text
                         }
                     }))

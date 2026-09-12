@@ -13,9 +13,9 @@ import PersonaAvatar from "./persona-avatar";
 export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   const {
     active, copied, copyTranscript, custom, duration, engineName, followTranscript,
-    latency, messages, partialUser, persona, phase, reduced, sessionCostUSD,
+    latency, messages, partialUser, persona, phase, reduced, sessionCostUSD, sessionCostBounds,
     settings, setShowInlineEditor, showInlineEditor, tokenCount, tokenSplit, transcript,
-    update, currentPhase, visitedPhases,
+    update, currentPhase, visitedPhases, phaseDelivery,
   } = studio;
 
   // Resolve against the selected tone. Reading `persona.prompt` directly showed
@@ -95,15 +95,25 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
       {persona.journey && persona.journey.length > 0 && (
         <div className="transcript-sop-bar" aria-label="SOP journey tracker">
           <div className="sop-bar-header">
-            <span className="eyebrow">{promptLocked ? "Prompt phase:" : "Demo focus:"}</span>
+            <span className="eyebrow">{promptLocked ? "Current topic:" : "Demo focus:"}</span>
+            {active && persona.id === "lamborghini-concierge" && phaseDelivery && (
+              <span className="eyebrow" role="status" title={
+                phaseDelivery === "sent" ? "Brief sent to the session; this does not confirm which reply used it."
+                  : phaseDelivery === "pending" ? "Waiting for the current response to finish before sending the brief."
+                    : "The brief was not sent. It will be retried on the next caller transcript."
+              }>
+                {phaseDelivery === "sent" ? "Brief sent" : phaseDelivery === "pending" ? "Brief pending" : "Brief failed"}
+              </span>
+            )}
           </div>
           <ol className="phase-track">
             {persona.journey.map((step, i) => {
-              const isActive = active ? i === activeSopIndex : i === 0;
+              const isActive = i === activeSopIndex;
               const isVisited = visitedPhases.some((p) => SOP_MAP[p] === i);
               return (
                 <li
                   key={step}
+                  aria-current={isActive ? "step" : undefined}
                   className={`phase-step ${isActive ? "is-active" : isVisited ? "is-visited" : ""}`}
                 >
                   <span className="step-num">{i + 1}</span>
@@ -320,7 +330,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                                 message.metrics?.turnCostUSD !== undefined &&
                                 message.metrics.turnCostUSD > 0 && (
                                   <span className="cost-tag" title="Turn cost (audio/text tokens)">
-                                    {formatCost(message.metrics.turnCostUSD)}
+                                    {message.metrics.costEstimated ? "≈ " : ""}{formatCost(message.metrics.turnCostUSD)}
                                   </span>
                                 )}
                             </div>
@@ -397,7 +407,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               (tokenSplit.residualOut ? ` + ${tokenSplit.residualOut.toLocaleString()} unattributed` : "")
             }
           >
-            Tokens: {tokenCount.toLocaleString()}
+            Call tokens: {tokenCount.toLocaleString()}
             {tokenCount > 0 && (
               <span className="token-split">
                 {" ("}
@@ -410,12 +420,19 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                 <span className="tok-dir">out {formatTokens(totalOut(tokenSplit))}</span>
                 <span className="tok-modality">
                   {" "}aud {formatTokens(tokenSplit.audioOut)} · txt {formatTokens(tokenSplit.textOut)}
+                  {tokenSplit.residualOut > 0 && <> · ?{formatTokens(tokenSplit.residualOut)}</>}
                 </span>
                 {")"}
               </span>
             )}
           </span>
-          <span title="Total session live cost">Live cost: {formatCost(sessionCostUSD)}</span>
+          {isLivePricingEligible(settings.engine, settings.model) && (
+            <span title="List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported.">
+              Model cost: {!sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
+                ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
+                : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
+            </span>
+          )}
           {latency !== null && (
             <span title="Measured from user transcript arrival to first response audio">
               Response {(latency / 1000).toFixed(2)}s

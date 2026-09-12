@@ -25,6 +25,7 @@ it gets back.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import asyncio
 from enum import Enum
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
@@ -268,6 +269,12 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         self._tracker = None
         self._slots = None
         self._llm = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._pending_card = None
+        self._card_delivery_status = None
+        self._phase_broadcast = None
+        self._phase_event_revision = 0
 
     @property
     def tracker(self):
@@ -311,47 +318,83 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return list(SUPERCAR_TOOL_SCHEMAS)
 
     async def _push_phase_card(self, phase_id: str, reason: str = "") -> bool:
-        """Deliver the card for ``phase_id`` into the live session, silently.
+        """Send a changed briefing; serialize writes and retain unsent work."""
+        async with self._card_lock:
+            return await self._send_phase_card(phase_id, reason)
 
-        Returns whether the model actually received it. The phase light is only
-        honest if it reports delivery — otherwise the UI says "new prompt is in"
-        while Pragya is still working off the old one.
-
-        The card is injected with ``speak_now=False``: it is a brief for her
-        *next* reply to the caller, not something to answer out loud. Committing
-        the turn here made her respond to the card and collide with the reply
-        she was already forming.
-        """
+    async def _send_phase_card(self, phase_id: str, reason: str = "") -> bool:
         from loguru import logger
 
-        if phase_id in self.CARDLESS_PHASES:
+        if phase_id != self.tracker.current_phase or phase_id in self.CARDLESS_PHASES:
             return False
 
+        state = self.slots.as_dict()
+        key = (phase_id, tuple(sorted(state.items())))
+        if key == self._last_card_key:
+            self._pending_card = None
+            self._card_delivery_status = "sent"
+            return True
+        self._pending_card = (phase_id, reason)
         inject = getattr(self._llm, "inject_directive", None)
         if inject is None:
-            # No live session (tests, replay, a transport without the hook).
-            # The phase still advances; it just cannot claim a card went in.
+            self._card_delivery_status = "failed"
             return False
 
         from supercar_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
 
         card = PRAGYA_SUPERCAR_CARDS.get(phase_id)
         if card is None:
+            self._card_delivery_status = "failed"
             logger.warning(f"[Pragya/Card] No card authored for {phase_id}.")
             return False
 
-        delivered = await inject(
-            format_supercar_prompt_card(
-                card, context=reason, state=self.slots.as_dict()
-            ),
-            tag=f"Pragya/Card {phase_id}",
-            speak_now=False,
-        )
+        try:
+            delivered = await inject(
+                format_supercar_prompt_card(card, context=reason, state=state),
+                tag=f"Pragya/Card {phase_id}",
+                speak_now=False,
+            )
+        except Exception as exc:
+            logger.warning(f"[Pragya/Card] Send failed: {exc}")
+            self._card_delivery_status = "failed"
+            return False
+        if delivered:
+            self._last_card_key = key
+            self._pending_card = None
+            self._card_delivery_status = "sent"
+        else:
+            status = getattr(self._llm, "_last_directive_status", None)
+            self._card_delivery_status = "pending" if status == "pending" else "failed"
         return bool(delivered)
 
+    async def _broadcast_phase(self, reason: str, card_pushed: bool, broadcast=None) -> None:
+        emit = broadcast or self._phase_broadcast
+        if emit is None:
+            return
+        self._phase_event_revision += 1
+        await emit({
+            "type": "phase_transition",
+            "phase_id": self.tracker.current_phase,
+            "title": self.tracker.title_of(self.tracker.current_phase),
+            "reason": reason[:120],
+            "card_pushed": card_pushed,
+            "delivery_status": self._card_delivery_status,
+            "revision": self._phase_event_revision,
+            "furthest_phase": self.tracker.furthest_phase,
+            "slots": self.slots.as_dict(),
+        })
+
+    async def flush_pending_card(self) -> None:
+        """Retry a deferred briefing once generation ends, without a busy loop."""
+        if self._pending_card and self._card_delivery_status == "pending":
+            phase_id, reason = self._pending_card
+            sent = await self._push_phase_card(phase_id, reason)
+            await self._broadcast_phase(reason, sent)
+
     async def on_user_transcript(self, text: str, broadcast=None) -> None:
-        """Capture what they said, then advance the funnel on real moves only."""
-        from loguru import logger
+        """Follow the topic while preserving slots and retrying unsent briefs."""
+        if broadcast is not None:
+            self._phase_broadcast = broadcast
 
         # Slots first: a card pushed by this same utterance should already know
         # the PIN code the caller just read out, rather than asking for it back.
@@ -359,29 +402,19 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
         tracker = self.tracker
         moved = tracker.observe_user_text(text)
-        if not moved:
+        if not moved and not self._pending_card and not (
+            captured and tracker.current_phase not in self.CARDLESS_PHASES
+        ):
             if captured and broadcast:
                 await broadcast(
                     {"type": "call_state", "slots": self.slots.as_dict()}
                 )
             return
 
-        card_pushed = await self._push_phase_card(moved, reason=text[:120])
-        logger.info(
-            f"[Pragya/Phase] -> {moved} ({tracker.title_of(moved)}) "
-            f"card_pushed={card_pushed}"
-        )
-        if broadcast:
-            await broadcast(
-                {
-                    "type": "phase_transition",
-                    "phase_id": moved,
-                    "title": tracker.title_of(moved),
-                    "reason": text[:120],
-                    "card_pushed": card_pushed,
-                    "slots": self.slots.as_dict(),
-                }
-            )
+        previous_status = self._card_delivery_status
+        card_pushed = await self._push_phase_card(tracker.current_phase, reason=text[:120])
+        if moved or captured or previous_status != self._card_delivery_status:
+            await self._broadcast_phase(text, card_pushed, broadcast)
 
     def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
         from loguru import logger
@@ -390,6 +423,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         # Kept so a phase advance can push its SOP card straight into the live
         # session -- the phase light is meant to be proof a new prompt landed.
         self._llm = llm
+        self._phase_broadcast = broadcast
 
         async def handle_create_appointment_booking(params):
             args = params.arguments or {}
@@ -420,17 +454,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                     f"[Pragya/Booking] held back, missing={missing} "
                     f"card_pushed={card_pushed}"
                 )
-                if broadcast:
-                    await broadcast(
-                        {
-                            "type": "phase_transition",
-                            "phase_id": target,
-                            "title": self.tracker.title_of(target),
-                            "reason": "collecting " + ", ".join(missing),
-                            "card_pushed": card_pushed,
-                            "slots": self.slots.as_dict(),
-                        }
-                    )
+                await self._broadcast_phase("collecting " + ", ".join(missing), card_pushed, broadcast)
                 await params.result_callback(
                     {"status": "needs_info", "missing": missing}
                 )
@@ -461,8 +485,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                 )
                 moved = self.tracker.observe_booking_confirmed()
                 if moved:
-                    # Lands just ahead of the tool result, so the confirmation
-                    # she reads out is already governed by the aftercare card.
+                    # Request aftercare; a busy model may defer the briefing.
                     card_pushed = await self._push_phase_card(
                         moved, reason="appointment confirmed"
                     )
@@ -470,17 +493,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                         f"[Pragya/Phase] -> {moved} ({self.tracker.title_of(moved)}) "
                         f"card_pushed={card_pushed}"
                     )
-                    if broadcast:
-                        await broadcast(
-                            {
-                                "type": "phase_transition",
-                                "phase_id": moved,
-                                "title": self.tracker.title_of(moved),
-                                "reason": "appointment confirmed",
-                                "card_pushed": card_pushed,
-                                "slots": self.slots.as_dict(),
-                            }
-                        )
+                    await self._broadcast_phase("appointment confirmed", card_pushed, broadcast)
                 if broadcast:
                     await broadcast(
                         {
