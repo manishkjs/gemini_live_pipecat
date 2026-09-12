@@ -1,14 +1,7 @@
-"""Lamborghini Experience Lounge lookup, appointment booking, and Phase Card tool schemas.
-
-Provides deterministic tool execution for Pragya's Lamborghini VIP outbound sales concierge:
-1. `get_phase_card`: Fetches modular JIT SOP phase cards (SOP 01-06).
-2. `get_exp_center`: Looks up authorized Lamborghini lounges by city or pincode.
-3. `create_appointment_booking`: Books 15-minute VIP Lounge private viewings / test drives.
-"""
+"""Pragya phase-switch tools and the existing in-memory demo booking backend."""
 
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -111,58 +104,50 @@ def create_appointment_booking(
 # Tool Schemas for Gemini Live / Pipecat
 # ---------------------------------------------------------------------------
 
+# Gemini normalizes speech into these formats; the server never parses speech.
+_BOOKING_FIELDS = {
+    "pincode": {"type": "string", "description": "Six ASCII digits, e.g. 560048. Convert spoken digits; omit if unknown."},
+    "date": {"type": "string", "description": "Caller-chosen day: YYYY-MM-DD, Today, Tomorrow, Day after tomorrow, or an English weekday. Clarify ambiguous dates."},
+    "time": {"type": "string", "description": "Caller-chosen time in India: HH:MM (24-hour) or h:mm AM/PM. Clarify vague times."},
+    "vehicle_variant": {"type": "string", "description": "Optional caller-selected car, or undecided. Omit if not discussed."},
+}
+
+switch_phase_schema = FunctionSchema(
+    name="switch_phase",
+    description=(
+        "Select the conversation's current phase and load its context before replying. "
+        "Discovery for car discussion, Lounge Visit for arranging a visit, Booked only after "
+        "a successful booking. Change phase when the conversation changes, not every turn. "
+        "Include any known booking details from the caller; omit unknown fields."
+    ),
+    properties={
+        "phase_id": {
+            "type": "string",
+            "enum": ["SOP_02_DISCOVERY", "SOP_03_PINCODE", "SOP_04_BOOKED"],
+            "description": "The phase to use now.",
+        },
+        **_BOOKING_FIELDS,
+    },
+    required=["phase_id"],
+)
+
 create_appointment_booking_schema = FunctionSchema(
     name="create_appointment_booking",
-    description="Book an exclusive VIP Lounge private viewing or test drive appointment based on the client's 6-digit PIN code or city.",
+    description=(
+        "Create a demo lounge booking after the caller confirms PIN, day and time. "
+        "Use only details the caller supplied. On success, switch_phase to SOP_04_BOOKED."
+    ),
     properties={
-        "pincode": {
-            "type": "string",
-            "description": "The customer's 6-digit postal PIN code (e.g. '110037', '400051', '560001') or city ('Delhi', 'Mumbai', 'Bengaluru').",
-        },
-        "date": {
-            "type": "string",
-            "description": "The scheduled date (e.g. 'Tomorrow', 'Saturday, 14th September').",
-        },
-        "time": {
-            "type": "string",
-            "description": "The scheduled time slot (e.g. '11:00 AM', '3:30 PM').",
-        },
-        "vehicle_variant": {
-            "type": "string",
-            "description": "The Lamborghini model chosen (e.g. 'Revuelto', 'Urus SE', 'Temerario').",
-        },
+        **_BOOKING_FIELDS,
         "customer_name_or_phone": {
             "type": "string",
-            "description": "Customer contact number or name if provided.",
+            "description": "Customer contact or name, only if supplied.",
         },
     },
     required=["pincode", "date", "time"],
 )
 
-get_phase_card_schema = FunctionSchema(
-    name="get_phase_card",
-    description="Retrieve active SOP conversational instructions and boundaries for a specific phase.",
-    properties={
-        "phase": {
-            "type": "string",
-            "description": "Target phase name.",
-        },
-    },
-    required=["phase"],
-)
-
-get_exp_center_schema = FunctionSchema(
-    name="get_exp_center",
-    description="Look up nearest Lamborghini Experience Lounges by city name or 6-digit Indian pincode.",
-    properties={
-        "city_or_pincode": {
-            "type": "string",
-            "description": "City or 6-digit pincode.",
-        },
-    },
-    required=["city_or_pincode"],
-)
-
 SUPERCAR_TOOL_SCHEMAS: List[FunctionSchema] = [
+    switch_phase_schema,
     create_appointment_booking_schema,
 ]

@@ -189,7 +189,7 @@ async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[s
     sends. Without this endpoint the studio could only preview its own local
     copy, which would silently disagree with the running session.
 
-    If `phase` is specified (e.g. SOP_02_PRODUCT_DISCOVERY), returns the JIT
+    If `phase` is specified (e.g. SOP_02_DISCOVERY), returns the JIT
     card formatted prompt for live phase inspection.
     """
     from persona_registry import (

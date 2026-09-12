@@ -29,10 +29,9 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   // editor here would be a lie.
   const promptLocked = Boolean(persona.architectureLocked);
 
-  // Canonical phase identifiers, emitted by the server's deterministic tracker
-  // (server/supercar_phases.py). They are derived from what the caller says,
-  // not from whether the model happened to call a tool, so the tracker keeps
-  // moving even on a turn that uses no tools at all.
+  // Gemini selects the phase through switch_phase. The backend emits these
+  // canonical identifiers after sending the requested card; retained milestones
+  // and booking details remain separate from the current conversation topic.
   const SOP_MAP: Record<string, number> = {
     SOP_01_OPENING: 0,
     SOP_02_DISCOVERY: 1,

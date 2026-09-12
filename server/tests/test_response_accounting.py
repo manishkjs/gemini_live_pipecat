@@ -6,6 +6,7 @@ without loading the audio/model dependency graph.
 """
 import ast
 import asyncio
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -40,8 +41,8 @@ def adapter_class(filename, class_name, methods):
         "FrameDirection": SimpleNamespace(DOWNSTREAM="downstream"),
         "OutputTransportMessageFrame": OutputFrame,
         "TextFrame": TextFrame, "LLMFullResponseEndFrame": EndFrame,
-        "logger": SimpleNamespace(info=lambda *a: None, warning=lambda *a: None, error=lambda *a: None),
-        "Content": SimpleNamespace, "Part": SimpleNamespace,
+        "logger": SimpleNamespace(info=lambda *a: None, warning=lambda *a: None, error=lambda *a: None, debug=lambda *a: None),
+        "Content": SimpleNamespace, "Part": SimpleNamespace, "re": re,
         "estimate_tokens": lambda text: len(text),
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
@@ -109,6 +110,67 @@ class TestResponseEvents(unittest.IsolatedAsyncioTestCase):
         service._session.send_client_content.side_effect = RuntimeError("socket closed")
         self.assertFalse(await service.inject_directive("card", speak_now=False))
         self.assertEqual(service._last_directive_status, "failed")
+
+    async def test_phase_tool_sends_card_before_acknowledging_on_both_live_protocols(self):
+        from persona_registry import JITPhaseCardsArchitecture
+
+        for gemini3 in (False, True):
+            with self.subTest(gemini3=gemini3):
+                service = self.directive_service(gemini3=gemini3)
+                # A tool can arrive after output transcription sets this flag.
+                service._bot_is_responding = True
+                handlers = {}
+                service.register_function = lambda name, handler: handlers.update({name: handler})
+                architecture = JITPhaseCardsArchitecture()
+                architecture.register_handlers(service)
+                order = []
+
+                async def sent(**kwargs):
+                    order.append("card")
+
+                send = service._session.send_realtime_input if gemini3 else service._session.send_client_content
+                send.side_effect = sent
+
+                async def acknowledge(result):
+                    self.assertEqual(order, ["card"])
+                    self.assertEqual(result["delivery_status"], "sent")
+                    order.append("function_response")
+
+                params = SimpleNamespace(arguments={"phase_id": "SOP_03_PINCODE", "pincode": "560048"},
+                                         result_callback=AsyncMock(side_effect=acknowledge))
+                await handlers["switch_phase"](params)
+                self.assertEqual(order, ["card", "function_response"])
+                self.assertEqual(architecture.tracker.current_phase, "SOP_03_PINCODE")
+                self.assertEqual(service._last_directive_status, "sent")
+                service._create_single_response.assert_not_awaited()
+
+    async def test_pragya_short_agreements_reach_model_without_forced_repeat(self):
+        from persona_registry import JITPhaseCardsArchitecture, MonolithicArchitecture
+
+        mixin = adapter_class("agent_live.py", "GeminiSessionLoggerMixin", {"_handle_msg_input_transcription"})
+
+        class TranscriptionBase:
+            async def _handle_msg_input_transcription(self, message):
+                self.transcripts.append(message.server_content.input_transcription.text)
+
+        class Service(mixin, TranscriptionBase):
+            pass
+
+        for architecture, expects_repeat in ((JITPhaseCardsArchitecture(), False), (MonolithicArchitecture(), True)):
+            service = Service()
+            service.persona_architecture = architecture
+            service._repeat_on_filler_pending = True
+            service._user_is_speaking = False
+            service._send_repeat_instruction = AsyncMock()
+            service.transcripts = []
+            message = SimpleNamespace(server_content=SimpleNamespace(input_transcription=SimpleNamespace(text="आप बताइए।")))
+            await service._handle_msg_input_transcription(message)
+            self.assertEqual(service.transcripts, ["आप बताइए।"])
+            self.assertFalse(service._repeat_on_filler_pending)
+            if expects_repeat:
+                service._send_repeat_instruction.assert_awaited_once()
+            else:
+                service._send_repeat_instruction.assert_not_awaited()
 
     async def test_live_usage_after_completion_keeps_response_identity(self):
         mixin = adapter_class("agent_live.py", "GeminiSessionLoggerMixin", {

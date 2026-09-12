@@ -324,9 +324,8 @@ class GeminiSessionLoggerMixin:
                 }
             }))
 
-            # Persona telemetry rides on the transcript that already exists, so
-            # progress tracking costs no tokens and cannot be skipped by the
-            # model declining to call a tool. Never allowed to break the call.
+            # Optional transcript telemetry. Pragya inherits the no-op hook;
+            # Gemini's switch_phase tool owns her phase and collected fields.
             architecture = getattr(self, "persona_architecture", None)
             if architecture is not None:
                 try:
@@ -338,6 +337,12 @@ class GeminiSessionLoggerMixin:
 
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
+        if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
+            # Short speech can be consent or a real answer ("आप बताइए").
+            # Let Gemini interpret it, without a regex/word-count repeat rule.
+            self._repeat_on_filler_pending = False
+            self._post_interruption_buffer = ""
+            return await super()._handle_msg_input_transcription(message)
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
@@ -479,20 +484,23 @@ class GeminiSessionLoggerMixin:
                 logger.warning(f"[Persona] Deferred card failed: {exc}")
 
     async def inject_directive(
-        self, text: str, tag: str = "Directive", speak_now: bool = True
+        self, text: str, tag: str = "Directive", speak_now: bool = True,
+        at_tool_boundary: bool = False,
     ) -> bool:
         """Send a directive using the selected Live model's text protocol.
 
         A successful SDK write is reported as sent, not as proof of application
         to a particular response. Quiet cards wait while generation is active:
-        client content can interrupt even with turn_complete=False. Gemini 3
-        uses realtime text for mid-call updates, as in the pinned provider.
+        client content can interrupt even with turn_complete=False. A blocking
+        tool boundary is different: the model is waiting for its function result,
+        so its requested card must be sent before that result. Gemini 3 uses
+        realtime text for mid-call updates, as in the pinned provider.
         """
         self._last_directive_status = "failed"
         if self._disconnecting or not self._session:
             logger.warning(f"[{tag}] Not delivered — session is not live.")
             return False
-        if not speak_now and getattr(self, "_bot_is_responding", False):
+        if not speak_now and not at_tool_boundary and getattr(self, "_bot_is_responding", False):
             self._last_directive_status = "pending"
             return False
         try:

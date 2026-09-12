@@ -1,3 +1,8 @@
+> **Current owner decision — supersedes earlier routing proposals:** Gemini chooses
+> Pragya's phase through `switch_phase`. Remove speech/regex routing entirely.
+> The implementation and validation are recorded in section 8 below. Earlier
+> token counts, fixed pacing rules and cost claims are historical, not current results.
+
 # Context Engineering & Prompt Card Architecture Blueprint (Pragya)
 
 ## 1. Why JIT Prompt Cards Are the Optimal Architecture
@@ -432,3 +437,89 @@ In the Gemini Live protocol:
    * *Noise/Fragment Fallback:* *"If caller audio is unclear or a single fragmentary word, briefly ask them to repeat once rather than echoing your previous question."*
 2. **De-escalate Regex Complexity:**
    * Transition focus from adding more server-side regex heuristics to making the cards resilient, natural, and conversational.
+
+
+---
+
+## 8. Implemented: Gemini selects the context card — 12 September 2026
+
+### Response to section 7 and the owner
+
+The proposed direction makes sense: keep the model in charge of conversational
+intent, use rich natural-language cards, and explicitly supersede prior phase
+instructions. The reported repetition loops justify improving the prompt, but
+claims about a specific “attention attractor” or a proven prompt cause remain
+hypotheses until a controlled replay isolates them.
+
+The `agents` branch demonstrates the intended pattern: the root prompt tells
+Gemini to call `switch_agent`, and its handler changes the instruction. This
+implementation follows that ownership model with `switch_phase`, preserving
+our current Live transport and Pipecat result callback instead of copying the
+older `update_system_instruction` handler.
+[Reference prompt](https://github.com/manishkjs/gemini_live_pipecat/blob/agents/server/system_prompt.py),
+[reference Live handler](https://github.com/manishkjs/gemini_live_pipecat/blob/agents/server/agent_live.py).
+
+### What changed
+
+- Removed all Pragya transcript classifiers, multilingual keyword lists, regex
+  parsing, transcript PIN extraction, and automatic booking-driven phase changes.
+- Exactly two declared tools: `switch_phase` and `create_appointment_booking`.
+  Opening is the root instruction; Discovery, Lounge Visit and Visit Confirmed
+  are the three injectable cards. There is no extra classifier/model request.
+- Gemini supplies the target phase and any already-heard PIN/day/time/car fields.
+  The server checks tool formats, sends the requested card, acknowledges the tool,
+  and keeps the existing UI phase event contract. The booking result alone supplies
+  confirmation evidence. Gemini explicitly selects Booked after reading it.
+- Every card starts with `CURRENT PHASE` and “Disregard instructions in all earlier
+  phase cards.” The visit card focuses on PIN, day and time, asking only for missing
+  details. Discovery uses natural English rules, including answering “आप बताइए”
+  directly; unclear audio gets clarification rather than an echoed question.
+- Found a separate concrete mechanism behind possible repetition: the Live adapter
+  injects REPEAT directives for short post-interruption speech, including “आप बताइए”.
+  Pragya now bypasses that regex/word-count path and passes transcription to Gemini.
+  A regression test exercises the real adapter method and verifies that the prior
+  behavior remains for other personas. This proves the mechanism can cause a
+  repeat; it does not prove which historical turns were affected without their trace.
+- Failed delivery keeps the previous active phase. The same tool can retry. An
+  identical successfully delivered card is not appended twice; changed known
+  fields or returning from another phase can produce a fresh card.
+- The tool sends context before its function response even when the provider's
+  responding flag is still set. Quiet 2.5 cards use client content; Gemini 3 uses
+  realtime text. No reconnect or system-instruction replacement was added.
+- The only studio source edit is an architecture comment. Layout, persona flow,
+  transcripts, Observability, call accounting, and other persona tools remain intact.
+
+### Boundaries of this change
+
+Tool validation checks shape, not truth: Gemini must extract facts faithfully,
+clarify ambiguous times and get agreement to the readback. This is deliberately
+not replaced with a speech parser. Booking requires PIN/day/time; car choice is
+optional. The existing booking stub/sample location mapping remains a demo and
+has no actual messaging, availability, cancellation or rescheduling integration.
+Exact unverified price figures and promises of messages/car allocation were
+removed from the prompt cards.
+
+A phase override changes behavioral scope, not retained context or billing.
+`send_client_content` appends; function schemas/results and earlier cards still
+contribute tokens. Measure the whole call against an equivalent monolithic
+baseline. No 75% saving or invoice-accuracy claim follows from this change.
+[Live protocol](https://ai.google.dev/api/live).
+
+### Validation
+
+- Focused backend regression suite: **88 passed**, plus **2 passing protocol
+  subtests**. Covers model tool selection, send-before-function-response ordering
+  for both Live text protocols, failed-send retry, preserved fields/booking evidence,
+  no transcript-driven phase changes, short-agreement handling, persona isolation,
+  negotiation and response accounting.
+- Studio tests: **93 passed**, including Observability shortcuts and current-topic
+  return with booking retention.
+- Studio production build: **passed**. The existing bundle-size warning remains.
+- Python syntax compilation and `git diff --check`: **passed**.
+- The old regex test cases were removed with their implementation; this lower test
+  count is not a partial run of those obsolete behavior tests.
+
+The live script is in `demos/voice-studio/CALL_ACCOUNTING.md`. A real microphone
+call against the configured provider is still needed to evaluate Gemini's phase
+choices, Hindi agreement handling, and whether realtime text causes an extra
+response. Local handler tests do not prove that acoustic behavior.

@@ -35,7 +35,7 @@ class TestDeterministicRouting(unittest.TestCase):
         arch = get_persona_architecture("car-negotiator")
         self.assertIsInstance(arch, NegotiatorLadderArchitecture)
         names = {s.name for s in arch.get_tool_schemas()}
-        self.assertNotIn("get_phase_card", names)
+        self.assertNotIn("switch_phase", names)
         self.assertNotIn("create_appointment_booking", names)
 
     def test_other_personas_get_no_persona_tools(self):
@@ -66,7 +66,7 @@ class TestDeterministicRouting(unittest.TestCase):
         arch = get_persona_architecture("lamborghini-concierge")
         names = {s.name for s in arch.get_tool_schemas()}
         self.assertEqual(
-            names, {"create_appointment_booking"}
+            names, {"switch_phase", "create_appointment_booking"}
         )
 
     def test_unknown_persona_falls_back_safely(self):
@@ -99,349 +99,179 @@ class TestPromptAuthority(unittest.TestCase):
         self.assertEqual(arch.compose_system_prompt("You are Meera."), "You are Meera.")
 
 
-class TestPhaseCards(unittest.IsolatedAsyncioTestCase):
-    async def test_deck_is_keyed_by_tracker_phase_ids(self):
-        """One card per injectable call state, so no mapping table can drift."""
-        self.assertEqual(
-            set(PRAGYA_SUPERCAR_CARDS),
-            {"SOP_02_DISCOVERY", "SOP_03_PINCODE", "SOP_04_BOOKED"},
-        )
+class TestModelSelectedCards(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.arch = JITPhaseCardsArchitecture()
+        self.llm = _RecordingLLM()
+        self.events = []
+        self.broadcast = AsyncMock(side_effect=self.events.append)
+        self.arch.register_handlers(self.llm, self.broadcast)
 
-    async def test_discovery_card_names_only_the_current_lineup(self):
-        content = format_supercar_prompt_card(
-            get_pragya_phase_card("discovery"), context="caller asked about the V12"
-        )
-        for model in ("Revuelto", "Urus SE", "Temerario"):
-            self.assertIn(model, content)
-        self.assertIn("caller asked about the V12", content)
+    async def call(self, tool, **arguments):
+        params = _Params(arguments)
+        await self.llm.handlers[tool](params)
+        params.result_callback.assert_awaited_once()
+        return params.result_callback.call_args.args[0]
 
-    async def test_every_card_carries_the_always_block(self):
-        for key in PRAGYA_SUPERCAR_CARDS:
-            content = format_supercar_prompt_card(get_pragya_phase_card(key))
-            self.assertIn("— ALWAYS —", content, key)
-            # The owner-in-trouble override is not a stage; it is a standing
-            # rule, so it has to ride on every single card.
-            self.assertIn("a car they already own is giving trouble", content, key)
+    async def select(self, phase_id, **arguments):
+        return await self.call("switch_phase", phase_id=phase_id, **arguments)
 
-    async def test_no_card_sends_her_after_a_tool_that_does_not_exist(self):
-        """A card naming an undeclared tool makes her narrate a dead step."""
-        for key in PRAGYA_SUPERCAR_CARDS:
-            content = format_supercar_prompt_card(get_pragya_phase_card(key))
-            for ghost in ["get_phase_card", "get_exp_center", "service_override("]:
-                self.assertNotIn(ghost, content, f"{key} -> {ghost}")
+    async def test_transcripts_never_select_a_phase_or_extract_fields(self):
+        for speech in ("हाँ, दो मिनट बात करते हैं", "बुक कर दो, मेरा PIN 560048 है",
+                       "no appointment, tell me about the Urus", "Tomorrow at 3 PM"):
+            await self.arch.on_user_transcript(speech, self.broadcast)
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+        self.assertEqual(self.arch.slots.as_dict(), {"booking_status": "not_started"})
+        self.assertEqual(self.llm.injected, [])
+        self.broadcast.assert_not_awaited()
 
-    async def test_the_caller_sets_the_direction(self):
-        """A caller who says "just book me in" must not be walked back.
+    async def test_model_can_select_discovery_then_visit_with_known_pin(self):
+        await self.select("SOP_02_DISCOVERY")
+        result = await self.select("SOP_03_PINCODE", pincode="560048")
+        self.assertEqual(result["status"], "success")
+        text = self.llm.injected[-1]["text"]
+        self.assertTrue(text.startswith("[CURRENT PHASE: LOUNGE VISIT]"))
+        self.assertIn("PIN code 560048", text)
+        self.assertIn("Still needed to book: day, time.", text)
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_03_PINCODE")
+        self.assertEqual([e["phase_id"] for e in self.events], ["SOP_02_DISCOVERY", "SOP_03_PINCODE"])
+        self.assertEqual([e["revision"] for e in self.events], [1, 2])
+        self.assertTrue(all(e["card_pushed"] and e["delivery_status"] == "sent" for e in self.events))
 
-        The previous rule -- finish this stage before opening the next -- read
-        as licence to do exactly that.
-        """
-        for key in PRAGYA_SUPERCAR_CARDS:
-            content = format_supercar_prompt_card(get_pragya_phase_card(key))
-            self.assertIn("The caller decides where this goes", content, key)
+    async def test_model_can_skip_discovery_and_return_without_losing_slots(self):
+        await self.select("SOP_03_PINCODE", pincode="560048", date="Tomorrow", time="15:00")
+        await self.select("SOP_02_DISCOVERY")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_02_DISCOVERY")
+        self.assertEqual(self.arch.tracker.furthest_phase, "SOP_03_PINCODE")
+        self.assertEqual(self.arch.slots.get("pincode"), "560048")
+        self.assertEqual(self.arch.slots.get("visit_time"), "15:00")
 
-    async def test_the_stage_vocabulary_stays_internal(self):
-        """The caller hears "shall we look at your nearest Lounge?", not "phase 3"."""
-        for key in PRAGYA_SUPERCAR_CARDS:
-            content = format_supercar_prompt_card(get_pragya_phase_card(key))
-            self.assertIn("keep the stage names to", content, key)
+    async def test_unknown_or_premature_booked_phase_has_no_effect(self):
+        for phase_id in (None, [], "discovery", "SOP_01_OPENING", "SOP_04_BOOKED"):
+            result = await self.select(phase_id, pincode="560048")
+            self.assertEqual(result["status"], "invalid_phase")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+        self.assertIsNone(self.arch.slots.get("pincode"))
+        self.assertEqual(self.llm.injected, [])
+        self.assertEqual(self.events, [])
 
-    async def test_booking_returns_reference_and_broadcasts(self):
-        arch = JITPhaseCardsArchitecture()
-        llm = _RecordingLLM()
-        events = []
+    async def test_identical_request_is_idempotent_but_new_fields_refresh_card(self):
+        await self.select("SOP_03_PINCODE", pincode="560048")
+        result = await self.select("SOP_03_PINCODE", pincode="560048")
+        self.assertEqual(result["delivery_status"], "already_sent")
+        self.assertEqual(len(self.llm.injected), 1)
+        await self.select("SOP_03_PINCODE", date="Saturday")
+        self.assertEqual(len(self.llm.injected), 2)
+        self.assertIn("day Saturday", self.llm.injected[-1]["text"])
 
-        async def broadcast(payload):
-            events.append(payload)
+    async def test_failed_card_does_not_change_phase_and_tool_can_retry(self):
+        await self.select("SOP_02_DISCOVERY")
+        self.llm.delivers = False
+        result = await self.select("SOP_03_PINCODE", pincode="560048")
+        self.assertEqual(result["status"], "delivery_failed")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_02_DISCOVERY")
+        self.assertEqual(self.events[-1]["delivery_status"], "failed")
+        self.assertFalse(self.events[-1]["card_pushed"])
+        self.llm.delivers = True
+        await self.select("SOP_03_PINCODE")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_03_PINCODE")
+        self.assertIn("PIN code 560048", self.llm.injected[-1]["text"])
 
-        arch.register_handlers(llm, broadcast=broadcast)
-        params = _Params({
-            "pincode": "110037",
-            "date": "Tomorrow",
-            "time": "11:00 AM",
-            "vehicle_variant": "Lamborghini Revuelto",
-        })
-        await llm.handlers["create_appointment_booking"](params)
+    async def test_send_exception_returns_failure_and_can_retry(self):
+        self.llm.inject_directive = AsyncMock(side_effect=RuntimeError("socket closed"))
+        result = await self.select("SOP_02_DISCOVERY")
+        self.assertEqual(result["status"], "delivery_failed")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+        self.llm.inject_directive = AsyncMock(return_value=True)
+        self.assertEqual((await self.select("SOP_02_DISCOVERY"))["status"], "success")
 
-        res = params.result_callback.call_args.args[0]
-        self.assertEqual(res["status"], "confirmed")
-        self.assertTrue(res["booking_id"].startswith("LAMBO-"))
-        self.assertEqual(res["city"], "New Delhi")
-        self.assertTrue(any(e["type"] == "booking_confirmed" for e in events))
+    async def test_reselecting_delivered_card_clears_a_later_send_failure(self):
+        await self.select("SOP_02_DISCOVERY")
+        self.llm.delivers = False
+        await self.select("SOP_03_PINCODE")
+        result = await self.select("SOP_02_DISCOVERY")
+        self.assertEqual(result["delivery_status"], "already_sent")
+        self.assertEqual(self.events[-1]["delivery_status"], "sent")
+        self.assertEqual(len(self.llm.injected), 2)
 
-    async def test_booking_also_closes_the_funnel(self):
-        """The tracker must reach the final phase without any extra tool."""
-        arch = JITPhaseCardsArchitecture()
-        llm = _RecordingLLM()
-        events = []
+    async def test_card_is_sent_before_function_response(self):
+        params = _Params({"phase_id": "SOP_02_DISCOVERY"})
 
-        async def broadcast(payload):
-            events.append(payload)
+        async def response(result):
+            self.assertEqual(len(self.llm.injected), 1)
+            self.assertTrue(self.llm.injected[0]["at_tool_boundary"])
+            self.assertFalse(self.llm.injected[0]["speak_now"])
+            self.assertNotIn("CURRENT PHASE", str(result))
+            self.assertEqual(result["status"], "success")
 
-        arch.register_handlers(llm, broadcast=broadcast)
-        await llm.handlers["create_appointment_booking"](
-            _Params({"pincode": "400051", "date": "Saturday", "time": "4:00 PM"})
-        )
+        params.result_callback.side_effect = response
+        await self.llm.handlers["switch_phase"](params)
+        params.result_callback.assert_awaited_once()
 
-        transitions = [e for e in events if e["type"] == "phase_transition"]
-        self.assertEqual([t["phase_id"] for t in transitions], ["SOP_04_BOOKED"])
+    async def test_ui_failure_does_not_lose_function_response(self):
+        self.broadcast.side_effect = RuntimeError("browser disconnected")
+        result = await self.select("SOP_02_DISCOVERY")
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_02_DISCOVERY")
 
+    async def test_invalid_tool_field_is_reported_without_selecting_phase(self):
+        result = await self.select("SOP_03_PINCODE", pincode="my pin is 560048")
+        self.assertEqual(result["status"], "invalid_arguments")
+        self.assertEqual(result["invalid_fields"], ["pincode"])
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+        self.assertEqual(self.llm.injected, [])
 
-class TestTranscriptDrivenPhaseTelemetry(unittest.IsolatedAsyncioTestCase):
-    """The UI tracker must advance on speech alone, with no tool involved.
+    async def test_booking_requires_details_but_does_not_force_visit_phase(self):
+        result = await self.call("create_appointment_booking", pincode="560048")
+        self.assertEqual(result, {"status": "needs_info", "missing": ["visit_date", "visit_time"]})
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+        self.assertFalse(self.arch.tracker.booking_confirmed)
+        self.assertEqual(self.llm.injected, [])
 
-    This is the regression that motivated the deterministic tracker: the caller
-    gave a PIN code, the call clearly progressed, and the UI still displayed
-    Phase 1 because progress had been wired to a tool call.
-    """
+    async def test_invalid_new_booking_field_cannot_reuse_an_old_value(self):
+        await self.select("SOP_03_PINCODE", pincode="560048", date="Saturday", time="15:00")
+        result = await self.call("create_appointment_booking", date="Next week", time="morning")
+        self.assertEqual(result["status"], "invalid_arguments")
+        self.assertFalse(self.arch.tracker.booking_confirmed)
 
-    async def _transitions_for(self, utterances):
-        arch = get_persona_architecture("lamborghini-concierge")
-        events = []
+    async def test_booking_then_explicit_booked_phase_and_product_detour(self):
+        await self.select("SOP_03_PINCODE", pincode="110037")
+        result = await self.call("create_appointment_booking", date="Tomorrow", time="11:00 AM")
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(result["city"], "New Delhi")
+        self.assertTrue(self.arch.tracker.booking_confirmed)
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_03_PINCODE")
+        self.assertEqual(len(self.llm.injected), 1)
+        self.assertTrue(any(e["type"] == "booking_confirmed" for e in self.events))
+        await self.select("SOP_04_BOOKED")
+        self.assertIn(result["booking_id"], self.llm.injected[-1]["text"])
+        await self.select("SOP_02_DISCOVERY")
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_02_DISCOVERY")
+        self.assertEqual(self.arch.tracker.furthest_phase, "SOP_04_BOOKED")
+        self.assertEqual(self.arch.slots.get("booking_ref"), result["booking_id"])
 
-        async def broadcast(payload):
-            events.append(payload)
-
-        for text in utterances:
-            await arch.on_user_transcript(text, broadcast)
-        return [e["phase_id"] for e in events if e["type"] == "phase_transition"]
-
-    async def test_a_spoken_pincode_advances_to_phase_three(self):
-        moves = await self._transitions_for(["mera pincode 110037 hai"])
-        self.assertEqual(moves, ["SOP_03_PINCODE"])
-
-    async def test_a_full_funnel_emits_each_move_once_and_in_order(self):
-        moves = await self._transitions_for([
-            "haan bataiye",
-            "Revuelto ke baare mein batao",
-            "Urus bhi dekhni hai",
-            "mera pin code 560001 hai",
-            "Bengaluru hi theek rahega",
-        ])
-        self.assertEqual(moves, ["SOP_02_DISCOVERY", "SOP_03_PINCODE"])
-
-    async def test_small_talk_emits_nothing(self):
-        self.assertEqual(await self._transitions_for(["namaste", "theek hai"]), [])
-
-    async def test_other_personas_emit_no_phase_telemetry(self):
-        arch = get_persona_architecture("debt-collector")
-        events = []
-
-        async def broadcast(payload):
-            events.append(payload)
-
-        await arch.on_user_transcript("mera pincode 110037 hai", broadcast)
-        self.assertEqual(events, [])
-
-
-
-class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
-    """Topic selection and briefing delivery are separate observable events."""
-
-    def _arch_with(self, llm):
-        arch = get_persona_architecture("lamborghini-concierge")
-        arch.register_handlers(llm, broadcast=None)
-        return arch
-
-    @staticmethod
-    def _recorder():
-        """An awaitable broadcast plus the list it fills."""
-        events = []
-
-        async def broadcast(payload):
-            events.append(payload)
-
-        return broadcast, events
-
-    async def test_discovery_speech_pushes_the_discovery_card(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-
-        await arch.on_user_transcript("Revuelto ke baare mein batao", broadcast)
-
-        self.assertEqual(len(llm.injected), 1)
-        text, tag, speak_now = llm.injected[0]
-        self.assertIn("SOP_02_DISCOVERY", tag)
-        self.assertIn("[STAGE 2 OF 4", text)
-        # Silent: the card briefs her next reply, it is not a turn to answer.
-        self.assertFalse(speak_now)
-        self.assertTrue(events[0]["card_pushed"])
-
-    async def test_a_pincode_pushes_the_lounge_matching_card(self):
-        """Giving a city or PIN is what stage 3 exists to handle."""
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-
-        await arch.on_user_transcript("mera pincode 110037 hai", broadcast)
-
-        self.assertIn("SOP_03_PINCODE", llm.injected[0][1])
-        self.assertIn("[STAGE 3 OF 4", llm.injected[0][0])
-        self.assertEqual(events[0]["phase_id"], "SOP_03_PINCODE")
-        self.assertTrue(events[0]["card_pushed"])
-
-    async def test_small_talk_pushes_nothing(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, _ = self._recorder()
-        await arch.on_user_transcript("namaste", broadcast)
-        self.assertEqual(llm.injected, [])
-
-    async def test_a_confirmed_booking_pushes_the_aftercare_card(self):
-        """Stage 4 used to be a dead end; she now gets a brief for the close."""
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-
-        await llm.handlers["create_appointment_booking"](
-            _Params({"pincode": "400051", "date": "Saturday", "time": "4:00 PM"})
-        )
-
-        self.assertEqual(len(llm.injected), 1)
-        text, tag, speak_now = llm.injected[0]
-        self.assertIn("SOP_04_BOOKED", tag)
-        self.assertIn("[STAGE 4 OF 4", text)
-        self.assertFalse(speak_now)
-
-    async def test_same_topic_does_not_resend_unchanged_card(self):
-        """Successive product questions share a briefing."""
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, _ = self._recorder()
-
-        for text in ["Urus dikhao", "Temerario bhi batao", "Revuelto ke baare mein"]:
-            await arch.on_user_transcript(text, broadcast)
-
-        self.assertEqual(len(llm.injected), 1)
-
-    async def test_topic_detour_preserves_pin_and_refreshes_the_brief(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-        for text in ["PIN 560048", "Actually, tell me about the Revuelto engine", "Book a visit please"]:
-            await arch.on_user_transcript(text, broadcast)
-        self.assertEqual([e["phase_id"] for e in events], ["SOP_03_PINCODE", "SOP_02_DISCOVERY", "SOP_03_PINCODE"])
-        self.assertEqual(arch.slots.get("pincode"), "560048")
-        self.assertIn("PIN code 560048", llm.injected[-1][0])
-        self.assertEqual([e["revision"] for e in events], [1, 2, 3])
-
-    async def test_same_phase_pin_correction_refreshes_once(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, _ = self._recorder()
-        for text in ["PIN 560048", "PIN 110037", "PIN 110037"]:
-            await arch.on_user_transcript(text, broadcast)
-        self.assertEqual(len(llm.injected), 2)
-        self.assertIn("PIN code 110037", llm.injected[-1][0])
-        self.assertNotIn("PIN code 560048", llm.injected[-1][0])
-
-    async def test_spoken_pin_and_unpunctuated_detour_keep_state_and_topic_aligned(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-        await arch.on_user_transcript("five, six, zero, zero, four, eight", broadcast)
-        self.assertEqual(events[-1]["phase_id"], "SOP_03_PINCODE")
-        self.assertEqual(events[-1]["slots"]["pincode"], "560048")
-        await arch.on_user_transcript("my PIN is 560048 now tell me about the Revuelto engine", broadcast)
-        self.assertEqual(events[-1]["phase_id"], "SOP_02_DISCOVERY")
-        self.assertEqual(events[-1]["slots"]["pincode"], "560048")
-        self.assertIn("PIN code 560048", llm.injected[-1][0])
-
-    async def test_failed_card_retries_on_same_topic(self):
-        llm = _RecordingLLM(delivers=False)
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-        await arch.on_user_transcript("Tell me about the Urus", broadcast)
-        self.assertEqual(events[-1]["delivery_status"], "failed")
-        llm._delivers = True
-        await arch.on_user_transcript("Urus engine please", broadcast)
-        self.assertEqual(events[-1]["delivery_status"], "sent")
-        await arch.on_user_transcript("More about the Urus", broadcast)
-        self.assertEqual(len(llm.injected), 2)
-
-    async def test_pending_card_flushes_once_and_keeps_latest_topic(self):
-        llm = _RecordingLLM(delivers=False)
-        llm._last_directive_status = "pending"
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-        await arch.on_user_transcript("PIN 560048", broadcast)
-        await arch.on_user_transcript("Tell me about the Revuelto", broadcast)
-        self.assertEqual(events[-1]["delivery_status"], "pending")
-        llm._delivers = True
-        await arch.flush_pending_card()
-        self.assertIn("SOP_02_DISCOVERY", llm.injected[-1][1])
-        self.assertEqual(events[-1]["delivery_status"], "sent")
-        count = len(llm.injected)
-        await arch.flush_pending_card()
-        self.assertEqual(len(llm.injected), count)
-
-    async def test_confirmed_booking_is_retained_during_a_product_detour(self):
-        llm = _RecordingLLM()
-        arch = self._arch_with(llm)
-        await llm.handlers["create_appointment_booking"](
-            _Params({"pincode": "400051", "date": "Saturday", "time": "4:00 PM"})
-        )
-        reference = arch.slots.get("booking_ref")
-        await arch.on_user_transcript("What about the Urus engine?")
-        self.assertEqual(arch.tracker.current_phase, "SOP_02_DISCOVERY")
-        self.assertEqual(arch.slots.get("booking_ref"), reference)
-        self.assertIn("visit is already confirmed", llm.injected[-1][0])
-
-    async def test_a_dead_session_reports_no_card_but_still_advances(self):
-        """Claiming delivery on a closing socket would be a lying indicator."""
-        llm = _RecordingLLM(delivers=False)
-        arch = self._arch_with(llm)
-        broadcast, events = self._recorder()
-
-        await arch.on_user_transcript("Revuelto dikhao", broadcast)
-
-        self.assertEqual(events[0]["phase_id"], "SOP_02_DISCOVERY")
-        self.assertFalse(events[0]["card_pushed"])
-
-    async def test_telemetry_survives_an_llm_with_no_injection_hook(self):
-        """Replay/offline transports have no live session to push into."""
-
-        class _NoInjection:
-            def register_function(self, name, handler):
-                pass
-
-        arch = self._arch_with(_NoInjection())
-        broadcast, events = self._recorder()
-
-        await arch.on_user_transcript("Revuelto dikhao", broadcast)
-
-        self.assertEqual(events[0]["phase_id"], "SOP_02_DISCOVERY")
-        self.assertFalse(events[0]["card_pushed"])
+    async def test_calls_do_not_share_phase_or_booking_fields(self):
+        await self.select("SOP_03_PINCODE", pincode="560048")
+        other = JITPhaseCardsArchitecture()
+        self.assertEqual(other.tracker.current_phase, "SOP_01_OPENING")
+        self.assertIsNone(other.slots.get("pincode"))
 
 
 class _Params:
-    """Stand-in for pipecat's FunctionCallParams."""
-
     def __init__(self, arguments):
         self.arguments = arguments
         self.result_callback = AsyncMock()
 
 
 class _RecordingLLM:
-    """Stand-in for ``CustomGeminiLiveVertexLLMService``.
-
-    ``delivers=False`` models a session that is closing: the real service
-    returns ``False`` rather than raising, and callers must not report a card
-    as pushed.
-    """
-
-    def __init__(self, delivers=True):
+    def __init__(self):
         self.handlers = {}
         self.injected = []
-        self._delivers = delivers
+        self.delivers = True
 
     def register_function(self, name, handler):
         self.handlers[name] = handler
 
-    async def inject_directive(self, text, tag="Directive", speak_now=True):
-        self.injected.append((text, tag, speak_now))
-        return self._delivers
-
-
-if __name__ == "__main__":
-    unittest.main()
+    async def inject_directive(self, text, tag="Directive", speak_now=True, at_tool_boundary=False):
+        self.injected.append(dict(text=text, tag=tag, speak_now=speak_now, at_tool_boundary=at_tool_boundary))
+        return self.delivers

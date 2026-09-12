@@ -37,7 +37,7 @@ class ArchitecturePattern(str, Enum):
     MONOLITHIC_STATIC = "monolithic_static"
     #: Ranvir's strict concession ladder with server-authoritative deal state.
     STATE_LADDER_NEGOTIATOR = "negotiator_ladder"
-    #: Pragya's just-in-time SOP Phase Cards fetched via ``get_phase_card``.
+    #: Pragya's context cards selected by Gemini through ``switch_phase``.
     JIT_PHASE_CARDS = "jit_phase_cards"
 
 
@@ -121,6 +121,7 @@ class BasePersonaArchitecture(ABC):
     """
 
     pattern: ArchitecturePattern = ArchitecturePattern.MONOLITHIC_STATIC
+    model_controls_conversation = False
 
     def has_exclusive_tools(self) -> bool:
         """If True, only get_tool_schemas() are passed to the model, omitting global standard_tools."""
@@ -238,32 +239,14 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
 
 
 class JITPhaseCardsArchitecture(BasePersonaArchitecture):
-    """Pragya. One tool, one prompt, and server-derived funnel telemetry.
+    """Gemini chooses a phase; the server delivers its card and validates tools.
 
-    Two things used to be conflated and are now separated:
-
-    * **What the model can do** -- exactly one tool,
-      ``create_appointment_booking``. Every extra declared tool is re-billed as
-      prompt text on every single turn, so the tool list is the smallest set
-      that can still complete the call's actual goal.
-    * **Where the call has got to** -- derived on the server from the caller's
-      own transcript (see :mod:`supercar_phases`). Previously the UI advanced
-      only when the model called ``get_phase_card``, which meant a caller could
-      give their PIN code, get booked, and still be displayed as "Phase 1"
-      because no tool had happened to fire. Progress display is now independent
-      of the model's tool choices, and costs nothing.
+    Opening lives in the root instruction. No transcript observer, classifier,
+    forced sequence or background model call selects the other three phases.
     """
 
     pattern = ArchitecturePattern.JIT_PHASE_CARDS
-
-    #: The one phase that is deliberately not delivered as a card.
-    #:
-    #: The deck is keyed by the tracker's own phase IDs, so every other advance
-    #: looks its card up directly — there is no translation table to drift.
-    #: ``SOP_01_OPENING`` is excluded because the opening already *is* the root
-    #: system instruction: the tracker starts there and never "moves" into it,
-    #: so pushing that card would re-brief her on a call she has already begun.
-    CARDLESS_PHASES = frozenset({"SOP_01_OPENING"})
+    model_controls_conversation = True
 
     def __init__(self) -> None:
         self._tracker = None
@@ -271,31 +254,21 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         self._llm = None
         self._card_lock = asyncio.Lock()
         self._last_card_key = None
-        self._pending_card = None
         self._card_delivery_status = None
         self._phase_broadcast = None
         self._phase_event_revision = 0
 
     @property
     def tracker(self):
-        """Lazily built so importing this module stays dependency-free."""
         if self._tracker is None:
             from supercar_phases import PragyaPhaseTracker
-
             self._tracker = PragyaPhaseTracker()
         return self._tracker
 
     @property
     def slots(self):
-        """What the caller has actually told us, as opposed to what was said.
-
-        Conversation history alone is too fragile to carry the prerequisites of
-        a booking: a model reading back over a long call will happily fill a
-        gap with something plausible. This is the one place a fact counts.
-        """
         if self._slots is None:
             from supercar_phases import CallSlots
-
             self._slots = CallSlots()
         return self._slots
 
@@ -303,80 +276,29 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return True
 
     def compose_system_prompt(self, system_instruction: Optional[str]) -> Optional[str]:
-        """Always the outbound concierge root prompt, whatever the client sent.
-
-        Client input is discarded here on purpose: the call's opening contract
-        is load-bearing, and a well-meant demo edit would break it silently.
-        """
         from supercar_cards import get_pragya_root_system_instruction
-
         return get_pragya_root_system_instruction()
 
     def get_tool_schemas(self) -> List[Any]:
         from supercar_tools import SUPERCAR_TOOL_SCHEMAS
-
         return list(SUPERCAR_TOOL_SCHEMAS)
 
-    async def _push_phase_card(self, phase_id: str, reason: str = "") -> bool:
-        """Send a changed briefing; serialize writes and retain unsent work."""
-        async with self._card_lock:
-            return await self._send_phase_card(phase_id, reason)
+    async def _emit(self, payload: Dict[str, Any]) -> None:
+        """A UI connection failure must not prevent the model's tool response."""
+        if self._phase_broadcast is not None:
+            try:
+                await self._phase_broadcast(payload)
+            except Exception as exc:
+                from loguru import logger
+                logger.warning(f"[Pragya] UI event failed: {exc}")
 
-    async def _send_phase_card(self, phase_id: str, reason: str = "") -> bool:
-        from loguru import logger
-
-        if phase_id != self.tracker.current_phase or phase_id in self.CARDLESS_PHASES:
-            return False
-
-        state = self.slots.as_dict()
-        key = (phase_id, tuple(sorted(state.items())))
-        if key == self._last_card_key:
-            self._pending_card = None
-            self._card_delivery_status = "sent"
-            return True
-        self._pending_card = (phase_id, reason)
-        inject = getattr(self._llm, "inject_directive", None)
-        if inject is None:
-            self._card_delivery_status = "failed"
-            return False
-
-        from supercar_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
-
-        card = PRAGYA_SUPERCAR_CARDS.get(phase_id)
-        if card is None:
-            self._card_delivery_status = "failed"
-            logger.warning(f"[Pragya/Card] No card authored for {phase_id}.")
-            return False
-
-        try:
-            delivered = await inject(
-                format_supercar_prompt_card(card, context=reason, state=state),
-                tag=f"Pragya/Card {phase_id}",
-                speak_now=False,
-            )
-        except Exception as exc:
-            logger.warning(f"[Pragya/Card] Send failed: {exc}")
-            self._card_delivery_status = "failed"
-            return False
-        if delivered:
-            self._last_card_key = key
-            self._pending_card = None
-            self._card_delivery_status = "sent"
-        else:
-            status = getattr(self._llm, "_last_directive_status", None)
-            self._card_delivery_status = "pending" if status == "pending" else "failed"
-        return bool(delivered)
-
-    async def _broadcast_phase(self, reason: str, card_pushed: bool, broadcast=None) -> None:
-        emit = broadcast or self._phase_broadcast
-        if emit is None:
-            return
+    async def _broadcast_phase(self, card_pushed: bool) -> None:
         self._phase_event_revision += 1
-        await emit({
+        await self._emit({
             "type": "phase_transition",
             "phase_id": self.tracker.current_phase,
             "title": self.tracker.title_of(self.tracker.current_phase),
-            "reason": reason[:120],
+            "reason": "model selected phase" if card_pushed else "card delivery failed; phase unchanged",
             "card_pushed": card_pushed,
             "delivery_status": self._card_delivery_status,
             "revision": self._phase_event_revision,
@@ -384,134 +306,110 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
             "slots": self.slots.as_dict(),
         })
 
-    async def flush_pending_card(self) -> None:
-        """Retry a deferred briefing once generation ends, without a busy loop."""
-        if self._pending_card and self._card_delivery_status == "pending":
-            phase_id, reason = self._pending_card
-            sent = await self._push_phase_card(phase_id, reason)
-            await self._broadcast_phase(reason, sent)
+    def _collect_fields(self, args: Dict[str, Any]) -> List[str]:
+        return self.slots.propose(
+            pincode=args.get("pincode"),
+            visit_date=args.get("date"),
+            visit_time=args.get("time"),
+            car_choice=args.get("vehicle_variant"),
+        )
 
-    async def on_user_transcript(self, text: str, broadcast=None) -> None:
-        """Follow the topic while preserving slots and retrying unsent briefs."""
-        if broadcast is not None:
-            self._phase_broadcast = broadcast
-
-        # Slots first: a card pushed by this same utterance should already know
-        # the PIN code the caller just read out, rather than asking for it back.
-        captured = self.slots.observe_user_text(text)
-
-        tracker = self.tracker
-        moved = tracker.observe_user_text(text)
-        if not moved and not self._pending_card and not (
-            captured and tracker.current_phase not in self.CARDLESS_PHASES
-        ):
-            if captured and broadcast:
-                await broadcast(
-                    {"type": "call_state", "slots": self.slots.as_dict()}
-                )
-            return
-
-        previous_status = self._card_delivery_status
-        card_pushed = await self._push_phase_card(tracker.current_phase, reason=text[:120])
-        if moved or captured or previous_status != self._card_delivery_status:
-            await self._broadcast_phase(text, card_pushed, broadcast)
-
-    def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
         from loguru import logger
+        from supercar_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
+
+        phase_id = args.get("phase_id")
+        try:
+            self.tracker.validate_phase(phase_id)
+        except ValueError as exc:
+            return {"status": "invalid_phase", "message": str(exc)}
+
+        invalid = self._collect_fields(args)
+        if invalid:
+            return {"status": "invalid_arguments", "invalid_fields": invalid}
+
+        state = self.slots.as_dict()
+        key = (phase_id, tuple(sorted(state.items())))
+        if key == self._last_card_key:
+            if self._card_delivery_status != "sent":
+                self._card_delivery_status = "sent"
+                await self._broadcast_phase(True)
+            return {"status": "success", "phase_id": phase_id, "delivery_status": "already_sent"}
+
+        try:
+            # This blocking tool has paused Gemini. Send context BEFORE its
+            # function response, even if the provider's responding flag is set.
+            delivered = await self._llm.inject_directive(
+                format_supercar_prompt_card(PRAGYA_SUPERCAR_CARDS[phase_id], state=state),
+                tag=f"Pragya/Card {phase_id}", speak_now=False, at_tool_boundary=True,
+            )
+        except Exception as exc:
+            logger.warning(f"[Pragya/Card] Send failed: {exc}")
+            delivered = False
+
+        self._card_delivery_status = "sent" if delivered else "failed"
+        if delivered:
+            self._last_card_key = key
+            self.tracker.select_phase(phase_id)
+        await self._broadcast_phase(bool(delivered))
+        if not delivered:
+            return {
+                "status": "delivery_failed", "phase_id": self.tracker.current_phase,
+                "message": "The new card was not sent. Retry switch_phase before using that phase.",
+            }
+        # The card is already in context. Do not duplicate it in the tool result.
+        return {"status": "success", "phase_id": phase_id, "delivery_status": "sent"}
+
+    async def _book_appointment(self, args: Dict[str, Any]) -> Dict[str, Any]:
         from supercar_tools import create_appointment_booking
 
-        # Kept so a phase advance can push its SOP card straight into the live
-        # session -- the phase light is meant to be proof a new prompt landed.
+        invalid = self._collect_fields(args)
+        await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
+        if invalid:
+            return {"status": "invalid_arguments", "invalid_fields": invalid}
+        missing = self.slots.missing_for_booking()
+        if missing:
+            return {"status": "needs_info", "missing": missing}
+
+        res = create_appointment_booking(
+            pincode=self.slots.get("pincode"),
+            date=self.slots.get("visit_date"),
+            time=self.slots.get("visit_time"),
+            customer_name_or_phone=args.get("customer_name_or_phone", ""),
+            vehicle_variant=self.slots.get("car_choice") or "the car chosen at the Lounge",
+        )
+        if res.get("status") == "confirmed":
+            self.slots.set_tool(booking_status="confirmed", booking_ref=res.get("booking_id"))
+            self.slots.set_server(lounge_id=res.get("center_id"), lounge_name=res.get("center_name"))
+            self.tracker.booking_confirmed = True
+            await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
+            await self._emit({
+                "type": "booking_confirmed",
+                **{key: res.get(key) for key in (
+                    "booking_id", "center_name", "city", "address", "date", "time", "vehicle_variant",
+                )},
+            })
+        # Recording a booking does not select a card. Gemini chooses the next
+        # phase after reading this tool result, just as for any topic change.
+        return res
+
+    def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
         self._llm = llm
         self._phase_broadcast = broadcast
 
+        async def handle_switch_phase(params):
+            async with self._card_lock:
+                result = await self._switch_phase(params.arguments or {})
+            await params.result_callback(result)
+
         async def handle_create_appointment_booking(params):
-            args = params.arguments or {}
+            async with self._card_lock:
+                result = await self._book_appointment(params.arguments or {})
+            await params.result_callback(result)
 
-            # The model proposes what it heard; the store keeps only what it
-            # can verify. A blank never erases something already captured, so a
-            # second fuller call completes the first rather than resetting it.
-            self.slots.propose(
-                pincode=args.get("pincode")
-                or args.get("city_or_pincode")
-                or args.get("city"),
-                visit_date=args.get("date"),
-                visit_time=args.get("time"),
-                car_choice=args.get("vehicle_variant"),
-            )
-
-            missing = self.slots.missing_for_booking()
-            if missing:
-                # Reaching for this tool *is* stage three. Rather than letting
-                # the gaps be invented -- observed live: date='Next week',
-                # time='' -- hand her the stage-three card, rendered with what
-                # is already known, and let the conversation fill them in.
-                target = self.tracker.observe_booking_request() or "SOP_03_PINCODE"
-                card_pushed = await self._push_phase_card(
-                    target, reason="booking attempted before it was ready"
-                )
-                logger.info(
-                    f"[Pragya/Booking] held back, missing={missing} "
-                    f"card_pushed={card_pushed}"
-                )
-                await self._broadcast_phase("collecting " + ", ".join(missing), card_pushed, broadcast)
-                await params.result_callback(
-                    {"status": "needs_info", "missing": missing}
-                )
-                return
-
-            res = create_appointment_booking(
-                pincode=self.slots.get("pincode", ""),
-                date=self.slots.get("visit_date", ""),
-                time=self.slots.get("visit_time", ""),
-                customer_name_or_phone=args.get("customer_name_or_phone")
-                or args.get("customer_phone", ""),
-                vehicle_variant=self.slots.get("car_choice")
-                or "the car chosen at the Lounge",
-                center_id=args.get("center_id"),
-            )
-            logger.info(f"[Pragya/Booking] booking -> {res.get('booking_id')} ({res.get('center_name')})")
-
-            if res.get("status") == "confirmed":
-                # Only the tool may declare this. The caller agreeing is not a
-                # booking, and neither is the model saying so.
-                self.slots.set_tool(
-                    booking_status="confirmed",
-                    booking_ref=res.get("booking_id"),
-                )
-                self.slots.set_server(
-                    lounge_id=res.get("center_id"),
-                    lounge_name=res.get("center_name"),
-                )
-                moved = self.tracker.observe_booking_confirmed()
-                if moved:
-                    # Request aftercare; a busy model may defer the briefing.
-                    card_pushed = await self._push_phase_card(
-                        moved, reason="appointment confirmed"
-                    )
-                    logger.info(
-                        f"[Pragya/Phase] -> {moved} ({self.tracker.title_of(moved)}) "
-                        f"card_pushed={card_pushed}"
-                    )
-                    await self._broadcast_phase("appointment confirmed", card_pushed, broadcast)
-                if broadcast:
-                    await broadcast(
-                        {
-                            "type": "booking_confirmed",
-                            "booking_id": res.get("booking_id"),
-                            "center_name": res.get("center_name"),
-                            "city": res.get("city"),
-                            "address": res.get("address"),
-                            "date": res.get("date"),
-                            "time": res.get("time"),
-                            "vehicle_variant": res.get("vehicle_variant"),
-                        }
-                    )
-
-            await params.result_callback(res)
-
+        llm.register_function("switch_phase", handle_switch_phase)
         llm.register_function("create_appointment_booking", handle_create_appointment_booking)
-        return ["create_appointment_booking"]
+        return ["switch_phase", "create_appointment_booking"]
 
 
 _ARCHITECTURE_IMPLEMENTATIONS = {

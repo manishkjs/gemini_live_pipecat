@@ -1,173 +1,73 @@
-"""Unit tests for the deterministic, zero-token Pragya phase tracker."""
-
+"""Explicit model phase selection and structured booking argument validation."""
 import unittest
-
 from supercar_phases import (
-    PRAGYA_PHASES,
-    SOP_01_OPENING,
-    SOP_02_DISCOVERY,
-    SOP_03_PINCODE,
-    SOP_04_BOOKED,
-    PragyaPhaseTracker,
-    detect_phase,
-    normalize_for_pincode,
+    CallSlots, PragyaPhaseTracker, SOP_01_OPENING, SOP_02_DISCOVERY,
+    SOP_03_PINCODE, SOP_04_BOOKED, resolves_to_a_day, resolves_to_a_time,
 )
 
 
-class TestPincodeNormalization(unittest.TestCase):
-    def test_spaced_digits_collapse(self):
-        self.assertIn("110037", normalize_for_pincode("mera pin 1 1 0 0 3 7 hai"))
-
-    def test_spoken_english_digits_collapse(self):
-        self.assertIn(
-            "110037",
-            normalize_for_pincode("one one zero zero three seven"),
-        )
-
-    def test_spoken_hindi_digits_collapse(self):
-        self.assertIn("110037", normalize_for_pincode("एक एक शून्य शून्य तीन सात"))
-
-    def test_hyphenated_pincode_collapses(self):
-        self.assertIn("110037", normalize_for_pincode("110-037"))
-
-
-class TestPhaseDetection(unittest.TestCase):
-    def test_bare_pincode_reaches_phase_three(self):
-        self.assertEqual(detect_phase("400051"), SOP_03_PINCODE)
-
-    def test_spoken_pincode_reaches_phase_three(self):
-        self.assertEqual(
-            detect_phase("mera pincode hai 5 6 0 0 0 1"), SOP_03_PINCODE
-        )
-
-    def test_incidental_city_is_not_visit_intent(self):
-        for city in ["Delhi", "mumbai", "Bengaluru", "Aerocity", "BKC"]:
-            self.assertIsNone(detect_phase(f"main {city} mein rehta hoon"), city)
-            self.assertEqual(detect_phase(f"Is the Urus comfortable in {city} traffic?"), SOP_02_DISCOVERY)
-
-    def test_the_word_pincode_alone_reaches_phase_three(self):
-        self.assertEqual(detect_phase("mera pin code bataun kya?"), SOP_03_PINCODE)
-
-    def test_model_talk_reaches_phase_two(self):
-        for cue in ["Revuelto", "Urus SE", "Temerario", "kitne ka hai"]:
-            self.assertEqual(detect_phase(f"mujhe {cue} ke baare mein batao"), SOP_02_DISCOVERY, cue)
-
-    def test_asking_to_book_reaches_phase_three_directly(self):
-        """Stage 3 is where prerequisites get collected, not a reward for
-        having sat through the pitch. Someone who opens with "book me a visit"
-        should land there without being walked through discovery first.
-        """
-        for cue in [
-            "can I book a visit",
-            "mujhe test drive karni hai",
-            "schedule an appointment please",
-            "मुझे अपॉइंटमेंट चाहिए",
-        ]:
-            self.assertEqual(detect_phase(cue), SOP_03_PINCODE, cue)
-
-    def test_pincode_outranks_model_talk_in_the_same_sentence(self):
-        """The furthest signal wins; a PIN code is a stronger buying signal."""
-        self.assertEqual(
-            detect_phase("Revuelto dekhni hai, mera pincode 110037 hai"),
-            SOP_03_PINCODE,
-        )
-
-    def test_small_talk_moves_nothing(self):
-        for chatter in ["haan ji", "theek hai", "namaste", "", "   "]:
-            self.assertIsNone(detect_phase(chatter), chatter)
-
-    def test_a_phone_number_is_not_mistaken_for_a_pincode(self):
-        """Ten digits is a phone number. Only an exact six-digit run is a PIN."""
-        self.assertNotEqual(detect_phase("9876543210"), SOP_03_PINCODE)
-
-    def test_refusal_covers_not_no_appointment_and_negative_contractions(self):
-        for speech in ["I'd rather not book anything", "no appointment please", "no appointments please", "I won't book today", "I can't book today"]:
-            self.assertEqual(detect_phase(speech), SOP_02_DISCOVERY, speech)
-
-    def test_positive_phrases_are_not_mistaken_for_refusal(self):
-        for speech in ["no problem book a visit", "I can't wait to book a visit", "I cannot wait to book a visit", "I want to not only book a visit"]:
-            self.assertEqual(detect_phase(speech), SOP_03_PINCODE, speech)
-
-    def test_comma_separated_spoken_pin_stays_in_one_clause(self):
-        for speech in ["five, six, zero, zero, four, eight", "एक, एक, शून्य, शून्य, तीन, सात", "1, 1, 0, 0, 3, 7", "five, six zero, zero four eight"]:
-            self.assertEqual(detect_phase(speech), SOP_03_PINCODE, speech)
-
-    def test_comma_separated_phone_number_does_not_become_a_partial_pin(self):
-        for speech in ["nine, eight, seven, six, five, four, three, two, one, zero", "9, 8, 7, 6, 5, 4, 3, 2, 1, 0"]:
-            self.assertIsNone(detect_phase(speech), speech)
-
-    def test_explicit_topic_switch_without_punctuation(self):
-        for speech in ["my PIN is 560048 now tell me about the Revuelto engine", "mera PIN 560048 hai ab Urus ka engine batao", "मेरा पिन 560048 है अब इंजन के बारे में बताओ", "five, six, zero, zero, four, eight, tell me about the Revuelto engine"]:
-            self.assertEqual(detect_phase(speech), SOP_02_DISCOVERY, speech)
-        self.assertEqual(detect_phase("I do not want to book now"), SOP_02_DISCOVERY)
-
-
-class TestTrackerProgression(unittest.TestCase):
-    def test_starts_at_opening(self):
-        self.assertEqual(PragyaPhaseTracker().current_phase, SOP_01_OPENING)
-
-    def test_walks_the_funnel_forward(self):
+class TestPhaseSelection(unittest.TestCase):
+    def test_current_topic_can_return_while_progress_is_retained(self):
         tracker = PragyaPhaseTracker()
-        self.assertEqual(tracker.observe_user_text("Revuelto ke specs batao"), SOP_02_DISCOVERY)
-        self.assertEqual(tracker.observe_user_text("mera pincode 110037"), SOP_03_PINCODE)
-        self.assertEqual(tracker.observe_booking_confirmed(), SOP_04_BOOKED)
-
-    def test_can_skip_straight_to_pincode(self):
-        """An explicit visit request can skip discovery."""
-        tracker = PragyaPhaseTracker()
-        self.assertEqual(tracker.observe_user_text("Book a visit in Mumbai"), SOP_03_PINCODE)
-
-    def test_returns_to_current_topic_without_losing_milestone(self):
-        tracker = PragyaPhaseTracker()
-        tracker.observe_user_text("pincode 400051")
-        self.assertEqual(tracker.observe_user_text("aur Urus ka engine kaisa hai?"), SOP_02_DISCOVERY)
-        self.assertEqual(tracker.current_phase, SOP_02_DISCOVERY)
+        self.assertEqual(tracker.current_phase, SOP_01_OPENING)
+        tracker.select_phase(SOP_03_PINCODE)
+        tracker.select_phase(SOP_02_DISCOVERY)
+        self.assertEqual(tracker.current_index, 1)
         self.assertEqual(tracker.furthest_phase, SOP_03_PINCODE)
 
-    def test_refusal_beats_booking_words_in_both_languages(self):
-        for speech in ["Don't book anything; just tell me about the Urus", "I am not interested in a test drive", "abhi booking nahi karni", "अभी बुकिंग नहीं करनी"]:
-            tracker = PragyaPhaseTracker()
-            tracker.observe_user_text("PIN 400051")
-            self.assertEqual(tracker.observe_user_text(speech), SOP_02_DISCOVERY, speech)
-
-    def test_latest_explicit_topic_wins(self):
-        self.assertEqual(detect_phase("My PIN is 560048. Actually, tell me about the Revuelto engine"), SOP_02_DISCOVERY)
-        self.assertEqual(detect_phase("I like the Urus, but book a visit please"), SOP_03_PINCODE)
-
-    def test_opening_acceptance_is_contextual(self):
-        for speech in ["Yes, I have two minutes", "haan bataiye", "हाँ बताइए"]:
-            tracker = PragyaPhaseTracker()
-            self.assertEqual(tracker.observe_user_text(speech), SOP_02_DISCOVERY)
-            tracker.observe_user_text("PIN 560048")
-            self.assertIsNone(tracker.observe_user_text(speech))
-            self.assertEqual(tracker.current_phase, SOP_03_PINCODE)
-
-    def test_booking_survives_product_detour_and_reference_question(self):
+    def test_booked_requires_tool_evidence(self):
         tracker = PragyaPhaseTracker()
-        tracker.observe_booking_confirmed()
-        self.assertEqual(tracker.observe_user_text("Tell me about the Revuelto engine"), SOP_02_DISCOVERY)
+        with self.assertRaises(ValueError):
+            tracker.select_phase(SOP_04_BOOKED)
+        self.assertEqual(tracker.current_phase, SOP_01_OPENING)
+        tracker.booking_confirmed = True
+        tracker.select_phase(SOP_04_BOOKED)
+        tracker.select_phase(SOP_02_DISCOVERY)
         self.assertTrue(tracker.booking_confirmed)
         self.assertEqual(tracker.furthest_phase, SOP_04_BOOKED)
-        self.assertEqual(tracker.observe_user_text("What is my booking reference?"), SOP_04_BOOKED)
-        self.assertEqual(tracker.observe_user_text("Reschedule my appointment"), SOP_03_PINCODE)
-
-    def test_repeating_a_phase_signal_emits_no_second_transition(self):
-        """Only genuine changes are announced, so the UI does not flicker."""
-        tracker = PragyaPhaseTracker()
-        self.assertEqual(tracker.observe_user_text("Urus dekhni hai"), SOP_02_DISCOVERY)
-        self.assertIsNone(tracker.observe_user_text("haan Urus hi"))
-
-    def test_booking_is_the_only_route_to_the_final_phase(self):
-        """Agreeing to visit is not a booking; only an executed booking is."""
-        tracker = PragyaPhaseTracker()
-        tracker.observe_user_text("haan main Saturday ko aa jaunga, book kar do")
-        self.assertNotEqual(tracker.current_phase, SOP_04_BOOKED)
-        tracker.observe_booking_confirmed()
-        self.assertEqual(tracker.current_phase, SOP_04_BOOKED)
-
-    def test_phase_definitions_are_contiguous_and_ordered(self):
-        self.assertEqual([p.index for p in PRAGYA_PHASES], [0, 1, 2, 3])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestStructuredSlots(unittest.TestCase):
+    def test_pin_is_an_exact_structured_field_not_a_speech_match(self):
+        for pin in ("PIN 560048", "5600489999", "5 6 0 0 4 8", "५६००४८", "012345", "Mumbai", 560048):
+            slots = CallSlots()
+            self.assertEqual(slots.propose(pincode=pin), ["pincode"])
+            self.assertIsNone(slots.get("pincode"))
+        self.assertEqual(slots.propose(pincode="560048"), [])
+        self.assertEqual(slots.get("pincode"), "560048")
+
+    def test_blank_optional_fields_retain_collected_values(self):
+        slots = CallSlots()
+        slots.propose(pincode="560048", visit_date="Tomorrow", visit_time="3 PM")
+        slots.propose(pincode="", visit_date=None, car_choice="")
+        self.assertTrue(slots.is_bookable())
+        self.assertIsNone(slots.get("car_choice"))
+
+    def test_invalid_fields_are_reported_and_cannot_replace_valid_values(self):
+        slots = CallSlots()
+        slots.propose(visit_date="Saturday", visit_time="15:30")
+        self.assertEqual(slots.propose(visit_date="Next week", visit_time="morning"), ["visit_date", "visit_time"])
+        self.assertEqual(slots.get("visit_date"), "Saturday")
+        self.assertEqual(slots.get("visit_time"), "15:30")
+
+    def test_day_validation_does_not_search_sentences(self):
+        for day in ("Tomorrow", "Day after tomorrow", "Saturday", "2026-09-19"):
+            self.assertTrue(resolves_to_a_day(day), day)
+        for day in ("", "next week", "not tomorrow", "2026-02-30", "20260919", "Saturday or Sunday"):
+            self.assertFalse(resolves_to_a_day(day), day)
+
+    def test_clock_validation_requires_a_concrete_time(self):
+        for time in ("15:30", "11:00 AM", "3 PM", "3pm"):
+            self.assertTrue(resolves_to_a_time(time), time)
+        for time in ("", "morning", "sometime at 3 PM", "25:00", "13 PM", "3 PM or 4 PM"):
+            self.assertFalse(resolves_to_a_time(time), time)
+
+    def test_model_cannot_claim_booking_or_lounge_ownership(self):
+        slots = CallSlots()
+        slots.propose(booking_status="confirmed", booking_ref="fake", lounge_name="fake")
+        self.assertEqual(slots.as_dict(), {"booking_status": "not_started"})
+        slots.set_tool(booking_status="confirmed", booking_ref="LAMBO-123")
+        slots.set_server(lounge_name="Demo Lounge")
+        slots.propose(pincode="110037")
+        self.assertIsNone(slots.get("lounge_name"))
+        self.assertEqual(slots.get("booking_ref"), "LAMBO-123")

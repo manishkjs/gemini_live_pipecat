@@ -63,9 +63,9 @@ class TestSupercarTools(unittest.TestCase):
         self.assertEqual(booking["center_id"], "LAMBO_DEL_AERO")
         self.assertIn("Aerocity", booking["address"])
 
-    def test_only_one_tool_schema_registered(self):
+    def test_model_phase_and_booking_tools_registered(self):
         schema_names = [s.name for s in SUPERCAR_TOOL_SCHEMAS]
-        self.assertEqual(schema_names, ["create_appointment_booking"])
+        self.assertEqual(schema_names, ["switch_phase", "create_appointment_booking"])
 
 
 if __name__ == "__main__":
