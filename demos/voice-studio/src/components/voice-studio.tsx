@@ -42,7 +42,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const [observabilityOpen, setObservabilityOpen] = useState(false);
   const {
     active, audio, error, persona, settings, setError, setSettingsOpen, sound, turnCount,
-    tokenCount, sessionCostUSD, interruptCount, phaseLabel, custom,
+    tokenCount, tokenSplit, sessionCostUSD, interruptCount, phaseLabel, custom,
   } = studio;
 
   return (
@@ -105,7 +105,6 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
               settings={settings}
               active={active}
               onEngineChange={studio.chooseEngine}
-              onLanguageChange={(value) => studio.update("language", value)}
             />
           </div>
 
@@ -157,6 +156,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
       sessionId={settings.sessionId}
       sessionTurnCount={turnCount}
       sessionTokens={tokenCount}
+      sessionTokenSplit={tokenSplit}
       sessionCost={sessionCostUSD}
       sessionInterrupts={interruptCount}
     />

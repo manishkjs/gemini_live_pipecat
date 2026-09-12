@@ -58,20 +58,38 @@ _PHASE_TITLE = {p.phase_id: p.title for p in PRAGYA_PHASES}
 # text is normalised before matching rather than the pattern being loosened.
 _PINCODE_RE = re.compile(r"\b\d{6}\b")
 
+# Callers speak Hindi and Chirp returns Devanagari, so every keyword list must
+# carry both scripts. Devanagari has no \b word boundary that Python's `re`
+# recognises against Latin \w, so the Devanagari alternatives are matched
+# without boundaries -- safe here because these are long, distinctive strings.
 _CITY_RE = re.compile(
     r"\b(delhi|new delhi|dilli|aerocity|gurgaon|gurugram|noida|"
     r"mumbai|bombay|bkc|bandra|thane|"
     r"bengaluru|bangalore|lavelle|koramangala|indiranagar)\b"
+    r"|(दिल्ली|दिल्लि|एरोसिटी|गुड़गांव|गुरुग्राम|नोएडा|"
+    r"मुंबई|मुम्बई|बंबई|बांद्रा|ठाणे|"
+    r"बेंगलुरु|बेंगलूरु|बैंगलोर|बंगलौर|कोरमंगला|इंदिरानगर)"
 )
 
 # "pin code", "pincode", "पिन कोड", "area code", "postal code".
-_PIN_WORD_RE = re.compile(r"(pin\s*-?\s*code|pincode|pin\s+kod|postal\s+code|area\s+code|पिन)")
+_PIN_WORD_RE = re.compile(
+    r"(pin\s*-?\s*code|pincode|pin\s+kod|postal\s+code|area\s+code"
+    r"|पिन\s*कोड|पिनकोड|पिन|डाक\s*कोड|क्षेत्र\s*कोड)"
+)
 
+# `s?` suffixes matter: the original list had "car" but not "cars", so the most
+# obvious discovery question in English -- "which cars do you have" -- did not
+# match. Anchor plurals rather than enumerating them.
 _DISCOVERY_RE = re.compile(
     r"\b(revuelto|urus|temerario|huracan|huracán|aventador|gallardo|lamborghini|lambo|"
-    r"supercar|super\s*car|model|models|variant|engine|v12|v10|v8|hybrid|spec|specs|"
-    r"specification|price|pricing|cost|kitne|kitna|kitni|crore|showroom|lounge|"
-    r"test\s*drive|visit|dekhna|dekhni|dekh|gaadi|gadi|car)\b"
+    r"supercars?|super\s*cars?|models?|variants?|engines?|v12|v10|v8|hybrids?|specs?|"
+    r"specifications?|prices?|pricing|costs?|kitne|kitna|kitni|crore|showrooms?|lounges?|"
+    r"test\s*drives?|visits?|dekhna|dekhni|dekhiye|dekh|dikhao|gaadi|gaadiyan|gadi|cars?|"
+    r"electric|petrol|colour|color|booking|interested)\b"
+    r"|(गाड़ी|गाडी|गाड़ियां|कार|कारें|कारों|मॉडल|मोडल|वेरिएंट|वैरिएंट|"
+    r"सुपरकार|लेम्बोर्गिनी|लंबोर्गिनी|इंजन|हाइब्रिड|इलेक्ट्रिक|पेट्रोल|"
+    r"कीमत|दाम|प्राइस|कितने|कितना|कितनी|करोड़|शोरूम|लाउंज|"
+    r"टेस्ट\s*ड्राइव|दिखाओ|दिखाइए|देखना|देखनी|देखने|रंग|बुकिंग)"
 )
 
 # Spoken digits, English and Hindi, so "one one zero zero three seven" and
@@ -90,6 +108,10 @@ _SPOKEN_DIGITS = {
 }
 
 
+# Chirp returns Devanagari numerals for spoken digits in Hindi sessions.
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
 def normalize_for_pincode(text: str) -> str:
     """Collapse spoken or spaced-out digits into contiguous numerals.
 
@@ -97,7 +119,7 @@ def normalize_for_pincode(text: str) -> str:
     all become ``"110037"`` so a single strict six-digit pattern can match all
     three. Loosening the pattern instead would match phone numbers and prices.
     """
-    lowered = (text or "").lower()
+    lowered = (text or "").lower().translate(_DEVANAGARI_DIGITS)
     tokens = re.split(r"[\s,\-\.]+", lowered)
     out: List[str] = []
     for token in tokens:
@@ -118,7 +140,7 @@ def detect_phase(text: str) -> Optional[str]:
         return None
 
     normalized = normalize_for_pincode(text)
-    lowered = (text or "").lower()
+    lowered = (text or "").lower().translate(_DEVANAGARI_DIGITS)
 
     if _PINCODE_RE.search(normalized) or _CITY_RE.search(lowered) or _PIN_WORD_RE.search(lowered):
         return SOP_03_PINCODE

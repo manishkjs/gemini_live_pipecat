@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useMemo } from "react";
+import { totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
 import {
   X,
   Trash2,
@@ -60,6 +61,7 @@ type ObservabilityDrawerProps = {
   engine?: "live" | "cascade";
   sessionTurnCount?: number;
   sessionTokens?: number;
+  sessionTokenSplit?: TokenSplit;
   sessionCost?: number;
   sessionInterrupts?: number;
 };
@@ -72,6 +74,7 @@ export default function ObservabilityDrawer({
   engine = "live",
   sessionTurnCount,
   sessionTokens,
+  sessionTokenSplit,
   sessionCost,
   sessionInterrupts,
 }: ObservabilityDrawerProps) {
@@ -193,20 +196,27 @@ export default function ObservabilityDrawer({
     const displayTokens =
       sessionTokens !== undefined && sessionTokens > 0 ? sessionTokens : totalTokens;
 
+    // The log scrape below counts every turn the SERVER has seen since it
+    // booted, while `sessionTokens` resets with each call. Mixing the two put
+    // "TOKENS 11,120" directly above "In: 28,319". Prefer the session-scoped
+    // split so all three numbers describe the same window.
+    const displayIn = sessionTokenSplit ? totalIn(sessionTokenSplit) : inTokens;
+    const displayOut = sessionTokenSplit ? totalOut(sessionTokenSplit) : outTokens;
+
     return {
       turns: displayTurns,
       interrupts: displayInterrupts,
       tools,
       totalTokens: displayTokens,
-      inTokens,
-      outTokens,
+      inTokens: displayIn,
+      outTokens: displayOut,
       totalStat,
       llmStat,
       sttStat,
       ttsStat,
       liveStat,
     };
-  }, [logs, latencySummary, sessionTurnCount, sessionInterrupts, sessionTokens, engine]);
+  }, [logs, latencySummary, sessionTurnCount, sessionInterrupts, sessionTokens, sessionTokenSplit, engine]);
 
   // Derived status tag: "Waiting for session" / "Updating" / "Telemetry unavailable"
   const statusState = useMemo(() => {

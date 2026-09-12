@@ -1,19 +1,16 @@
-import { Layers3, Radio, Globe2 } from "lucide-react";
+import { Layers3, Radio } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { LANGUAGE_OPTIONS, type SessionSettings } from "@/lib/voice-session";
+import type { SessionSettings } from "@/lib/voice-session";
 
-/** 02 / CHOOSE YOUR ENGINE and 03 / LANGUAGE */
+/** Engine selection. Language lives in Settings -- one control, one home. */
 export default function EngineToolbar({
   settings,
   active,
   onEngineChange,
-  onLanguageChange,
 }: {
   settings: SessionSettings;
   active: boolean;
   onEngineChange: (value: string) => void;
-  onLanguageChange: (value: string) => void;
 }) {
   return (
     <div className="workspace-toolbar">
@@ -29,27 +26,6 @@ export default function EngineToolbar({
             </TabsTrigger>
           </TabsList>
         </Tabs>
-      </div>
-
-      <div className="language-choice">
-        <span className="eyebrow">LANGUAGE</span>
-        <Select
-          value={settings.language}
-          onValueChange={onLanguageChange}
-          disabled={active}
-        >
-          <SelectTrigger className="language-select-trigger" aria-label="Select session language">
-            <Globe2 size={14} />
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent position="popper">
-            {LANGUAGE_OPTIONS.map(([v, l]) => (
-              <SelectItem value={v} key={v}>
-                {l}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
       </div>
     </div>
   );
