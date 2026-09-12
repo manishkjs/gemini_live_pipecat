@@ -221,6 +221,101 @@ class TestTranscriptDrivenPhaseTelemetry(unittest.IsolatedAsyncioTestCase):
 
 
 
+class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
+    """A phase move must be *proof a new prompt landed*, not a regex guess.
+
+    The phase light previously reported only that the tracker had matched some
+    caller speech. It now reports that the matching SOP card was pushed into the
+    live session, so a demo operator watching the light knows the model is
+    actually working off new instructions.
+    """
+
+    def _arch_with(self, llm):
+        arch = get_persona_architecture("wealth-manager")
+        arch.register_handlers(llm, broadcast=None)
+        return arch
+
+    @staticmethod
+    def _recorder():
+        """An awaitable broadcast plus the list it fills."""
+        events = []
+
+        async def broadcast(payload):
+            events.append(payload)
+
+        return broadcast, events
+
+    async def test_discovery_speech_pushes_the_discovery_card(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+
+        await arch.on_user_transcript("Revuelto ke baare mein batao", broadcast)
+
+        self.assertEqual(len(llm.injected), 1)
+        text, tag = llm.injected[0]
+        self.assertIn("SOP_02_PRODUCT_DISCOVERY", tag)
+        self.assertIn("DO THIS NOW:", text)
+        self.assertIn("[ACTIVE_SOP_DIRECTIVE: SOP_02_PRODUCT_DISCOVERY", text)
+        self.assertTrue(events[0]["card_pushed"])
+
+    async def test_a_pincode_pushes_the_booking_card(self):
+        """Giving a city or PIN is the booking card's own trigger."""
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+
+        await arch.on_user_transcript("mera pincode 110037 hai", broadcast)
+
+        self.assertIn("SOP_04_STORE_BOOKING", llm.injected[0][1])
+        self.assertEqual(events[0]["phase_id"], "SOP_03_PINCODE")
+        self.assertTrue(events[0]["card_pushed"])
+
+    async def test_small_talk_pushes_nothing(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, _ = self._recorder()
+        await arch.on_user_transcript("haan ji theek hai", broadcast)
+        self.assertEqual(llm.injected, [])
+
+    async def test_each_card_is_pushed_at_most_once(self):
+        """The tracker is monotonic, so a phase's card must not be re-sent."""
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, _ = self._recorder()
+
+        for text in ["Urus dikhao", "Aventador bhi batao", "Revuelto ke baare mein"]:
+            await arch.on_user_transcript(text, broadcast)
+
+        self.assertEqual(len(llm.injected), 1)
+
+    async def test_a_dead_session_reports_no_card_but_still_advances(self):
+        """Claiming delivery on a closing socket would be a lying indicator."""
+        llm = _RecordingLLM(delivers=False)
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+
+        await arch.on_user_transcript("Revuelto dikhao", broadcast)
+
+        self.assertEqual(events[0]["phase_id"], "SOP_02_DISCOVERY")
+        self.assertFalse(events[0]["card_pushed"])
+
+    async def test_telemetry_survives_an_llm_with_no_injection_hook(self):
+        """Replay/offline transports have no live session to push into."""
+
+        class _NoInjection:
+            def register_function(self, name, handler):
+                pass
+
+        arch = self._arch_with(_NoInjection())
+        broadcast, events = self._recorder()
+
+        await arch.on_user_transcript("Revuelto dikhao", broadcast)
+
+        self.assertEqual(events[0]["phase_id"], "SOP_02_DISCOVERY")
+        self.assertFalse(events[0]["card_pushed"])
+
+
 class _Params:
     """Stand-in for pipecat's FunctionCallParams."""
 
@@ -230,11 +325,24 @@ class _Params:
 
 
 class _RecordingLLM:
-    def __init__(self):
+    """Stand-in for ``CustomGeminiLiveVertexLLMService``.
+
+    ``delivers=False`` models a session that is closing: the real service
+    returns ``False`` rather than raising, and callers must not report a card
+    as pushed.
+    """
+
+    def __init__(self, delivers=True):
         self.handlers = {}
+        self.injected = []
+        self._delivers = delivers
 
     def register_function(self, name, handler):
         self.handlers[name] = handler
+
+    async def inject_directive(self, text, tag="Directive"):
+        self.injected.append((text, tag))
+        return self._delivers
 
 
 if __name__ == "__main__":

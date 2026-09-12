@@ -246,8 +246,30 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.JIT_PHASE_CARDS
 
+    #: Which authored SOP card to hand the model when the funnel advances.
+    #:
+    #: The tracker models the *call's* four observable states; the card deck was
+    #: authored around six *topics*, several of which (pricing, service
+    #: override, objections) are things a caller can raise at any point rather
+    #: than places the funnel gets to. They are reached by the model's own
+    #: judgement via the navigation footer, not by this map.
+    #:
+    #: Two deliberate omissions:
+    #: * ``SOP_01_OPENING`` — the opening is already the root system
+    #:   instruction; the tracker starts there and never "moves" into it.
+    #: * ``SOP_04_BOOKED`` — by then the booking tool result is already coming
+    #:   back with the confirmation to read out. Pushing the booking card there
+    #:   would tell Pragya to start asking for a city she has just booked.
+    PHASE_CARD_FOR: Dict[str, str] = {
+        "SOP_02_DISCOVERY": "SOP_02_PRODUCT_DISCOVERY",
+        # The caller has just given a city or PIN code. That is the booking
+        # card's own trigger, so hand her the booking play immediately.
+        "SOP_03_PINCODE": "SOP_04_STORE_BOOKING",
+    }
+
     def __init__(self) -> None:
         self._tracker = None
+        self._llm = None
 
     @property
     def tracker(self):
@@ -276,6 +298,46 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
         return list(SUPERCAR_TOOL_SCHEMAS)
 
+    async def _push_phase_card(self, phase_id: str, reason: str = "") -> bool:
+        """Deliver the SOP card for ``phase_id`` into the live session.
+
+        Returns whether the model actually received it. The phase light is only
+        honest if it reports delivery — otherwise the UI says "new prompt is in"
+        while Pragya is still working off the old one.
+        """
+        from loguru import logger
+
+        card_key = self.PHASE_CARD_FOR.get(phase_id)
+        if not card_key:
+            return False
+
+        inject = getattr(self._llm, "inject_directive", None)
+        if inject is None:
+            # No live session (tests, replay, a transport without the hook).
+            # The phase still advances; it just cannot claim a card went in.
+            return False
+
+        from supercar_cards import (
+            PRAGYA_SUPERCAR_CARDS,
+            format_supercar_prompt_card,
+            get_immediate_directive,
+        )
+
+        card = PRAGYA_SUPERCAR_CARDS.get(card_key)
+        if card is None:
+            logger.warning(f"[Pragya/Card] No card authored for {card_key}.")
+            return False
+
+        # The immediate directive leads, because the card lands mid-call and the
+        # first thing the model needs is a sentence to say, not a document to
+        # read. The full card then governs the rest of the phase.
+        payload = (
+            f"DO THIS NOW: {get_immediate_directive(card)}\n\n"
+            f"{format_supercar_prompt_card(card, context=reason)}"
+        )
+        delivered = await inject(payload, tag=f"Pragya/Card {card_key}")
+        return bool(delivered)
+
     async def on_user_transcript(self, text: str, broadcast=None) -> None:
         """Advance the funnel from caller speech and announce real moves only."""
         from loguru import logger
@@ -285,7 +347,11 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         if not moved:
             return
 
-        logger.info(f"[Pragya/Phase] -> {moved} ({tracker.title_of(moved)})")
+        card_pushed = await self._push_phase_card(moved, reason=text[:120])
+        logger.info(
+            f"[Pragya/Phase] -> {moved} ({tracker.title_of(moved)}) "
+            f"card_pushed={card_pushed}"
+        )
         if broadcast:
             await broadcast(
                 {
@@ -293,12 +359,17 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                     "phase_id": moved,
                     "title": tracker.title_of(moved),
                     "reason": text[:120],
+                    "card_pushed": card_pushed,
                 }
             )
 
     def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
         from loguru import logger
         from supercar_tools import create_appointment_booking
+
+        # Kept so a phase advance can push its SOP card straight into the live
+        # session -- the phase light is meant to be proof a new prompt landed.
+        self._llm = llm
 
         async def handle_create_appointment_booking(params):
             args = params.arguments or {}
@@ -329,6 +400,9 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                             "phase_id": moved,
                             "title": self.tracker.title_of(moved),
                             "reason": "appointment confirmed",
+                            # No card here on purpose: the tool result itself is
+                            # the new instruction, and it is already in flight.
+                            "card_pushed": False,
                         }
                     )
                 if broadcast:

@@ -423,24 +423,40 @@ class GeminiSessionLoggerMixin:
             }
         }))
 
+    async def inject_directive(self, text: str, tag: str = "Directive") -> bool:
+        """Hand the live model an out-of-band, user-role instruction mid-call.
+
+        This is the one supported way to steer a session that is already open
+        (mid-call SOP cards, repeat-after-filler prompts, and anything else that
+        must reach the model without the caller having said it).
+
+        Returns ``True`` only when the turn actually reached the model. Callers
+        report *delivery*, not intent — a phase light that claims a new prompt
+        went in when the socket was already closing is worse than no light.
+        """
+        if self._disconnecting or not self._session:
+            logger.warning(f"[{tag}] Not delivered — session is not live.")
+            return False
+        try:
+            await self._create_single_response([{"role": "user", "content": text}])
+            logger.info(f"[{tag}] Delivered to model ({len(text)} chars).")
+            return True
+        except Exception as e:
+            logger.error(f"[{tag}] Injection failed: {e}")
+            return False
+
     async def _send_repeat_instruction(self, filler_text: str):
         """Send a user-role prompt telling the model to repeat itself."""
-        if self._disconnecting or not self._session:
-            return
-        try:
-            await self._create_single_response([{
-                "role": "user",
-                "content": (
-                    f"The user just said '{filler_text}' which is a short "
-                    f"filler/acknowledgment while you were speaking. They did NOT "
-                    f"ask a new question. Please REPEAT your previous response "
-                    f"from the beginning — resume exactly what you were saying "
-                    f"before the interruption."
-                ),
-            }])
-            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
-        except Exception as e:
-            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+        await self.inject_directive(
+            (
+                f"The user just said '{filler_text}' which is a short "
+                f"filler/acknowledgment while you were speaking. They did NOT "
+                f"ask a new question. Please REPEAT your previous response "
+                f"from the beginning — resume exactly what you were saying "
+                f"before the interruption."
+            ),
+            tag="RepeatOnFiller",
+        )
 
     # ── Session ID & token usage logging ──────────────────────────────
 
