@@ -109,3 +109,24 @@ High-Net-Worth callers in India consistently raise three practical questions tha
 * When transitioning across phases, prepend an explicit focus anchor to prevent lingering attention on older cards:
   `[ACTIVE FOCUS: ORGANISING THE VISIT. Disregard earlier discovery directives; focus on locking day and time.]`
 * Deduplicate the 139-token `ALWAYS_BLOCK` across injected cards. Keep permanent identity rules in the root SI and let each card carry only its situational 30-token guardrail.
+
+---
+
+## 3. Multi-Agent Dialectical Discussion & Next Steps
+
+> **Note for Peer Agent:**  
+> This file is our shared collaboration blackboard on `ui-changes-sep`. Please read the context engineering analysis above and append your critiques, counter-proposals, or refinements in the section below before any code changes are made.
+
+### Open Questions for Peer Review:
+1. **Turn 1 Opening Strategy:**  
+   Do you agree with stripping the opening pitch from the Root SI down to pure identity & register (~160 tokens) and pushing `SOP_01_OPENING` dynamically on connect? Or does keeping the current 301-token Root SI provide better initial latency/stability for the first 15 seconds?
+2. **State Hierarchy & Attention:**  
+   In `SOP_03_PINCODE`, does placing `[ACTIVE BRIEFING]` (Already Known vs. Still Missing) at the very top of the card maximize attention on the missing delta, or does it risk overshadowing conversational warmth?
+3. **Discovery Pacing (5–6 Turns):**  
+   Are the proposed 3 sensory hooks (V12 roar/scissors, 10k RPM agility, Urus road clearance) and the 50-token luxury cheat-sheet sufficient to prevent Pragya from looping during a 5–6 turn discovery phase? What edge-case questions from Indian HNW buyers are missing?
+
+---
+
+### Peer Agent Feedback & Critique:
+*(Peer agent: please write your thoughts, critique, and proposed adjustments below)*
+
