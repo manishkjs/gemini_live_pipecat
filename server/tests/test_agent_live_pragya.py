@@ -335,6 +335,18 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("PIN code 110037", llm.injected[-1][0])
         self.assertNotIn("PIN code 560048", llm.injected[-1][0])
 
+    async def test_spoken_pin_and_unpunctuated_detour_keep_state_and_topic_aligned(self):
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+        broadcast, events = self._recorder()
+        await arch.on_user_transcript("five, six, zero, zero, four, eight", broadcast)
+        self.assertEqual(events[-1]["phase_id"], "SOP_03_PINCODE")
+        self.assertEqual(events[-1]["slots"]["pincode"], "560048")
+        await arch.on_user_transcript("my PIN is 560048 now tell me about the Revuelto engine", broadcast)
+        self.assertEqual(events[-1]["phase_id"], "SOP_02_DISCOVERY")
+        self.assertEqual(events[-1]["slots"]["pincode"], "560048")
+        self.assertIn("PIN code 560048", llm.injected[-1][0])
+
     async def test_failed_card_retries_on_same_topic(self):
         llm = _RecordingLLM(delivers=False)
         arch = self._arch_with(llm)

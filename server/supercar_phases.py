@@ -109,7 +109,9 @@ _DISCOVERY_RE = re.compile(
 # a later positive request can still change the topic. Ambiguous speech keeps
 # the current topic; these rules do not claim to understand every paraphrase.
 _REFUSAL_RE = re.compile(
-    r"\b(don['’]?t|do\s+not|not\s+(?:now|ready|interested)|no\s+(?:thanks|booking|visit)|"
+    r"\b(don['’]?t|won['’]?t|wouldn['’]?t|not(?!\s+(?:only|just)\b)|"
+    r"can['’]?t(?!\s+wait\b)|cannot(?!\s+wait\b)|"
+    r"no\s+(?:thanks|bookings?|visits?|appointments?|test\s*drives?|slots?)|"
     r"stop|cancel|nahi|nahin|mat)\b|नहीं|नही|मत\s|रद्द"
 )
 _OPENING_ACCEPT_RE = re.compile(
@@ -126,6 +128,11 @@ _VISIT_CHANGE_RE = re.compile(
 )
 _CLAUSE_BREAK_RE = re.compile(
     r"[.!?;,]+|\b(?:but|however|actually|instead|lekin)\b|लेकिन|मगर"
+    # Split an explicit new request, not every occurrence of "now" (as in
+    # "not now"). Implicit topic changes still need transcript evaluation.
+    r"|\b(?:now|ab|pehle|phir)\s+(?=(?:tell|explain|show|describe|what|how|"
+    r"book|schedule|reserve|batao|bataiye|dikhao|revuelto|urus|temerario)\b)"
+    r"|(?:अब|पहले|फिर)\s+(?=(?:बताओ|बताइए|दिखाओ|कार|इंजन|गाड़ी|कीमत|बुक|अपॉइंटमेंट))"
 )
 
 # Spoken digits, English and Hindi, so "one one zero zero three seven" and
@@ -142,6 +149,12 @@ _SPOKEN_DIGITS = {
     "eight": "8", "aath": "8", "आठ": "8",
     "nine": "9", "nau": "9", "नौ": "9",
 }
+
+# Commas inside a spoken number are digit separators, not new topics. Keep
+# the entire run together (including ten-digit phone numbers), so splitting
+# it cannot turn part of a phone number into a six-digit PIN.
+_DIGIT_TOKEN = r"(?:[0-9]|" + "|".join(re.escape(word) for word in _SPOKEN_DIGITS) + r")"
+_DIGIT_RUN_RE = re.compile(rf"(?<!\w){_DIGIT_TOKEN}(?:[\s,]+{_DIGIT_TOKEN})+(?!\w)")
 
 
 # Chirp returns Devanagari numerals for spoken digits in Hindi sessions.
@@ -171,6 +184,7 @@ def detect_phase(text: str) -> Optional[str]:
         return None
 
     lowered = (text or "").lower().translate(_DEVANAGARI_DIGITS)
+    lowered = _DIGIT_RUN_RE.sub(lambda match: match.group(0).replace(",", " "), lowered)
     topic = None
     for clause in _CLAUSE_BREAK_RE.split(lowered):
         booking = _BOOKING_INTENT_RE.search(clause)

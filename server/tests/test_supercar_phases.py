@@ -80,6 +80,27 @@ class TestPhaseDetection(unittest.TestCase):
         """Ten digits is a phone number. Only an exact six-digit run is a PIN."""
         self.assertNotEqual(detect_phase("9876543210"), SOP_03_PINCODE)
 
+    def test_refusal_covers_not_no_appointment_and_negative_contractions(self):
+        for speech in ["I'd rather not book anything", "no appointment please", "no appointments please", "I won't book today", "I can't book today"]:
+            self.assertEqual(detect_phase(speech), SOP_02_DISCOVERY, speech)
+
+    def test_positive_phrases_are_not_mistaken_for_refusal(self):
+        for speech in ["no problem book a visit", "I can't wait to book a visit", "I cannot wait to book a visit", "I want to not only book a visit"]:
+            self.assertEqual(detect_phase(speech), SOP_03_PINCODE, speech)
+
+    def test_comma_separated_spoken_pin_stays_in_one_clause(self):
+        for speech in ["five, six, zero, zero, four, eight", "एक, एक, शून्य, शून्य, तीन, सात", "1, 1, 0, 0, 3, 7", "five, six zero, zero four eight"]:
+            self.assertEqual(detect_phase(speech), SOP_03_PINCODE, speech)
+
+    def test_comma_separated_phone_number_does_not_become_a_partial_pin(self):
+        for speech in ["nine, eight, seven, six, five, four, three, two, one, zero", "9, 8, 7, 6, 5, 4, 3, 2, 1, 0"]:
+            self.assertIsNone(detect_phase(speech), speech)
+
+    def test_explicit_topic_switch_without_punctuation(self):
+        for speech in ["my PIN is 560048 now tell me about the Revuelto engine", "mera PIN 560048 hai ab Urus ka engine batao", "मेरा पिन 560048 है अब इंजन के बारे में बताओ", "five, six, zero, zero, four, eight, tell me about the Revuelto engine"]:
+            self.assertEqual(detect_phase(speech), SOP_02_DISCOVERY, speech)
+        self.assertEqual(detect_phase("I do not want to book now"), SOP_02_DISCOVERY)
+
 
 class TestTrackerProgression(unittest.TestCase):
     def test_starts_at_opening(self):

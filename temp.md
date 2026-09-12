@@ -299,3 +299,46 @@ Reviewed and pulled commit `80f2bc6`. Fully validated locally and verified live 
    Fast spoken Hinglish STT often lacks punctuation. We will observe whether `_CLAUSE_BREAK_RE` reliably segments run-on sentences when conjunctions are implicit.
 3. **Card Delivery Confirmation in Live Audio:**  
    Verify live whether Gemini 3 realtime text insertion causes any noticeable audio artifact or cadence interruption during playback.
+
+---
+
+## 6. Follow-up review of the implementer's feedback — 12 September 2026
+
+Pulled `0faa8de`. This commit adds feedback only; the application code is unchanged from `80f2bc6`.
+
+**Assessment:** the agreement on current-topic routing, retained state, deferred prompt loading, and separating prompt savings from total call cost makes sense. The three remaining observation areas are useful. There are two evidence qualifications:
+
+- The implementer reports 128 backend tests, 93 frontend tests, and a successful build. The different backend count may reflect a different test selection; recording the exact command and output will make it reproducible. A server restart and HTTP 200 on the prompt endpoint demonstrate a running service, not a completed voice call or correct audio/card timing. The reported PID belongs to the implementer's environment and has not been independently inspected here.
+- Calling the 70–80% early-drop figure an industry observation does not provide a source. Keep it out of customer savings claims and use measured scenario frequencies for this demo.
+
+The STT concern can already be partly reproduced without a live provider. Against `80f2bc6`, these transcripts produce incorrect behavior:
+
+| Transcript | Reproduced result | Required behavior |
+| --- | --- | --- |
+| “I'd rather not book anything” | Lounge matching | Respect refusal; do not enter booking collection. |
+| “no appointment please” | Lounge matching | Respect refusal; do not enter booking collection. |
+| “five, six, zero, zero, four, eight” | Opening, despite `CallSlots` capturing PIN 560048 | Select Lounge matching and preserve the same PIN. |
+| “my PIN is 560048 now tell me about the Revuelto engine” | Lounge matching | Follow the explicit current product topic while retaining the PIN. |
+
+These are gaps in the existing deterministic rules, including a spoken-PIN regression introduced by clause splitting. Fix them within the approved current-topic behavior: cover the missing negations, keep comma-separated digit runs together, and recognise explicit topic-switch markers before a request. This does not add an LLM classifier, remove context, change the root opening, or guarantee understanding of implicit topic changes.
+
+For live validation, capture the model/provider, a shared call ID, caller transcript, topic transitions, briefing status/timing, provider usage events, and observed audio behavior. Compare matched discovery/visit scripts with and without deliberate topic detours; report the additional tokens and latency, not only card counts. Keep delivery marked as sent rather than claiming that a particular response definitely used the briefing.
+
+### Follow-up fixes and verification
+
+The four reproduced cases above are now corrected. Negation coverage includes the missing “not” and “no appointment” forms while preserving positive requests such as “no problem, book a visit” and “I can't wait to book.” Commas inside spoken digit runs no longer split PINs into separate topics; ten-digit phone numbers remain excluded. Explicit request markers such as “now tell me,” “ab Urus,” and “अब इंजन” allow a product detour while retaining the captured PIN. This remains a bounded deterministic classifier; implicit switches and other paraphrases still need evaluation.
+
+Added six regression tests, including an architecture-level transcript/card/state check. Independently ran the same focused backend selection after these changes: **128 tests passed**. Exact command from the repository root (using the test environment's Python):
+
+```bash
+PYTHONPATH=server python -m pytest -q \
+  server/tests/test_response_accounting.py \
+  server/tests/test_negotiation.py \
+  server/tests/test_persona_registry.py \
+  server/tests/test_supercar_phases.py \
+  server/tests/test_supercar_cards.py \
+  server/tests/test_supercar_tools.py \
+  server/tests/test_agent_live_pragya.py
+```
+
+The UI code is unchanged in this follow-up; its previous 93-test/build result has not been presented as a new run. Real voice-call timing, extra responses from realtime text, and end-to-end savings remain unverified here. The next useful evidence is an actual recorded call, not another prompt-endpoint health check.
