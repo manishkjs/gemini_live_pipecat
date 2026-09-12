@@ -52,11 +52,20 @@ class TestSupercarTools(unittest.TestCase):
         self.assertEqual(booking["vehicle_variant"], "Lamborghini Aventador")
         self.assertIn("confirmed", booking["confirmation_message"].lower())
 
-    def test_tool_schemas_registered(self):
+    def test_create_appointment_booking_by_pincode(self):
+        booking = create_appointment_booking(
+            pincode="110037",
+            date="Saturday",
+            time="4:00 PM",
+            vehicle_variant="Revuelto",
+        )
+        self.assertEqual(booking["status"], "confirmed")
+        self.assertEqual(booking["center_id"], "LAMBO_DEL_AERO")
+        self.assertIn("Aerocity", booking["address"])
+
+    def test_only_one_tool_schema_registered(self):
         schema_names = [s.name for s in SUPERCAR_TOOL_SCHEMAS]
-        self.assertIn("get_exp_center", schema_names)
-        self.assertIn("create_appointment_booking", schema_names)
-        self.assertIn("get_phase_card", schema_names)
+        self.assertEqual(schema_names, ["create_appointment_booking"])
 
 
 if __name__ == "__main__":

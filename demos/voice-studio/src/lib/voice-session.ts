@@ -268,6 +268,23 @@ export function buildBackendPageUrl(backendUrl: string, page: "original" | "diag
   return url.href;
 }
 
+/**
+ * Where to read the prompt the backend will actually run for a persona.
+ *
+ * Architecture-managed personas have their prompt composed server-side, so the
+ * studio has to ask for it rather than display its own local copy.
+ */
+export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string): string {
+  const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
+  const url = validatedBackendUrl(targetUrl);
+  const base = url.pathname.replace(/\/$/, "");
+  url.pathname = `${base}/persona-prompt/${encodeURIComponent(settings.personaId)}`;
+  url.search = phase ? new URLSearchParams({ phase }).toString() : "";
+  return url.href;
+}
+
+
+
 export function buildConnectUrl(settings: SessionSettings): URL {
   buildSessionInstructions(settings);
   const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
@@ -285,6 +302,10 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       // endpointing to Gemini's own server-side turn detection.
       vad: settings.vad === false ? "false" : "true",
       context_compression: settings.contextCompression ? "true" : "false",
+      // Selects the persona's execution architecture server-side. The backend
+      // routes on this id alone and never inspects prompt text, so editing a
+      // prompt can no longer silently disable a persona's engine.
+      persona_id: settings.personaId,
     };
     if (settings.sessionId) params.session_id = settings.sessionId;
     // Native audio has no pace parameter, so only send one when a TTS service
@@ -309,6 +330,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: settings.vad === false ? "false" : "true",
       skip_stt: settings.skipStt ? "true" : "false",
+      persona_id: settings.personaId,
       ...(settings.sessionId ? { session_id: settings.sessionId } : {}),
     }).toString();
   } else throw new Error("Choose Gemini Live or Cascade.");

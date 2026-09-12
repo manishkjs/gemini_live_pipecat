@@ -280,6 +280,18 @@ class GeminiSessionLoggerMixin:
                 }
             }))
 
+            # Persona telemetry rides on the transcript that already exists, so
+            # progress tracking costs no tokens and cannot be skipped by the
+            # model declining to call a tool. Never allowed to break the call.
+            architecture = getattr(self, "persona_architecture", None)
+            if architecture is not None:
+                try:
+                    await architecture.on_user_transcript(
+                        clean_sentence, getattr(self, "persona_broadcast", None)
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"[Persona] on_user_transcript failed: {exc}")
+
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
         if not message.server_content.input_transcription:
@@ -316,7 +328,13 @@ class GeminiSessionLoggerMixin:
                 clean = buffer.rstrip('।.!?\n').strip()
                 word_count = len(clean.split()) if clean else 0
 
-                if word_count <= filler_max_words:
+                # A digit is never a backchannel. Live 2026-09-12: the caller
+                # said "600048", the one-word test called it a filler, and the
+                # model was told to repeat itself -- so it re-asked for the PIN
+                # it had already booked with.
+                has_digits = any(ch.isdigit() for ch in clean)
+
+                if word_count <= filler_max_words and not has_digits:
                     logger.info(
                         f"[RepeatOnFiller] Filler detected: '{buffer}' "
                         f"({word_count} word(s)). Sending repeat instruction."
@@ -814,6 +832,9 @@ def build_live_vad_analyzer(vad: bool) -> Optional[SileroVADAnalyzer]:
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
 
 
+from persona_registry import get_persona_architecture
+
+
 async def run_agent_live(
     websocket: WebSocket,
     model: str,
@@ -829,6 +850,10 @@ async def run_agent_live(
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     vad: bool = True,
+    # Selects the persona's execution architecture. This is the ONLY input that
+    # decides which persona tooling loads -- the system instruction is never
+    # inspected for that purpose. See server/persona_registry.py.
+    persona_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -836,7 +861,23 @@ async def run_agent_live(
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
 
-    prompt_text = compose_live_system_prompt(system_instruction, gender, language)
+    # Resolved before the prompt is composed: an architecture may own its system
+    # instruction outright. Routing is on persona_id alone -- the instruction text
+    # is never inspected to decide behaviour. See server/persona_registry.py.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
+    )
+    effective_instruction = persona_architecture.compose_system_prompt(system_instruction)
+    if effective_instruction is not system_instruction:
+        logger.info(
+            "System instruction supplied by architecture "
+            f"{persona_architecture.pattern.value}; client-provided text ignored."
+        )
+
+    prompt_text = compose_live_system_prompt(effective_instruction, gender, language)
+
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
@@ -864,37 +905,40 @@ async def run_agent_live(
     )
 
     # Dynamic Tool & RAG / Memory Registration
-    standard_tools = [
-        FunctionSchema(
-            name="get_current_time",
-            description="Get the current time.",
-            properties={
-                "is_explicit_request": {
-                    "type": "boolean",
-                    "description": (
-                        "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                        "- Explaining schedules or timelines.\n"
-                        "- Mentioning time casually in conversation."
-                    )
-                }
-            },
-            required=["is_explicit_request"]
-        ),
-        search_knowledge_base_schema,
-    ]
+    # Persona tooling is resolved from the persona_id supplied at connect time.
+    # The system instruction is NEVER inspected to decide this: prompt text
+    # describes behaviour, it must not select infrastructure. Editing a prompt
+    # can no longer silently disable an engine, and a persona that happens to
+    # mention a car no longer inherits car tooling.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
+    )
 
-    is_negotiator = bool(system_instruction and ("Ranvir" in system_instruction or "Civic" in system_instruction or "13,500" in system_instruction))
-    deal = None
-    if is_negotiator:
-        import negotiation
-        deal = negotiation.Deal(strict_ladder=True)
-        for s in negotiation.TOOL_SCHEMAS:
-            standard_tools.append(FunctionSchema(
-                name=s["name"],
-                description=s["description"],
-                properties=s["properties"],
-                required=s["required"],
-            ))
+    if getattr(persona_architecture, "has_exclusive_tools", lambda: False)():
+        standard_tools = list(persona_architecture.get_tool_schemas())
+    else:
+        standard_tools = [
+            FunctionSchema(
+                name="get_current_time",
+                description="Get the current time.",
+                properties={
+                    "is_explicit_request": {
+                        "type": "boolean",
+                        "description": (
+                            "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                            "- Explaining schedules or timelines.\n"
+                            "- Mentioning time casually in conversation."
+                        )
+                    }
+                },
+                required=["is_explicit_request"]
+            ),
+            search_knowledge_base_schema,
+        ]
+        standard_tools.extend(persona_architecture.get_tool_schemas())
+
 
     if tools:
         try:
@@ -1068,29 +1112,26 @@ async def run_agent_live(
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
     built_in_tools = {"get_current_time", "search_knowledge_base"}
 
-    if deal:
-        async def handle_concede_price(params: FunctionCallParams):
-            reason = (params.arguments or {}).get("reason", "buyer negotiated price")
-            res = deal.concede(reason)
-            logger.info(f"[Negotiator] concede_price -> {res}")
-            await params.result_callback(res)
+    # Persona-specific tools are owned by the architecture strategy resolved from
+    # persona_id. Adding a new persona architecture therefore never requires an
+    # edit here -- see server/persona_registry.py.
+    async def broadcast_persona_event(payload: dict):
+        """Push a persona telemetry event to the client over RTVI."""
+        await llm.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": payload,
+        }))
 
-        async def handle_include_extra(params: FunctionCallParams):
-            item = (params.arguments or {}).get("item", "")
-            res = deal.grant_extra(item)
-            logger.info(f"[Negotiator] include_extra -> {res}")
-            await params.result_callback(res)
+    built_in_tools.update(
+        persona_architecture.register_handlers(llm, broadcast=broadcast_persona_event)
+    )
 
-        async def handle_close_deal(params: FunctionCallParams):
-            price = (params.arguments or {}).get("price_usd", 0)
-            res = deal.close(price)
-            logger.info(f"[Negotiator] close_deal -> {res}")
-            await params.result_callback(res)
+    # Give the service the architecture and a channel to the client, so a
+    # completed user transcript can update persona telemetry without a tool.
+    llm.persona_architecture = persona_architecture
+    llm.persona_broadcast = broadcast_persona_event
 
-        llm.register_function("concede_price", handle_concede_price)
-        llm.register_function("include_extra", handle_include_extra)
-        llm.register_function("close_deal", handle_close_deal)
-        built_in_tools.update({"concede_price", "include_extra", "close_deal"})
     
     # Register generic handler for dynamic tools (skip built-in tools)
     for tool in standard_tools:

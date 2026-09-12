@@ -134,6 +134,10 @@ async def websocket_endpoint(
     # Stamps every log line and latency sample this session produces, so
     # concurrent demoers do not blend their metrics together.
     session_id: Optional[str] = None,
+    # Selects the persona's execution architecture server-side. This is the only
+    # signal that decides which persona tooling loads; the system instruction is
+    # never inspected for routing. See server/persona_registry.py.
+    persona_id: Optional[str] = None,
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -158,6 +162,7 @@ async def websocket_endpoint(
                 thinking=thinking,
                 thinking_level=thinking_level,
                 custom_voice_key=custom_voice_key,
+                persona_id=persona_id,
             )
         elif bot_type == "tts-llm-stt":
             await run_agent(
@@ -174,6 +179,47 @@ async def websocket_endpoint(
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")
+
+
+@app.get("/persona-prompt/{persona_id}")
+async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[str, Any]:
+    """Return the system prompt the backend will actually run for a persona.
+
+    Personas whose architecture owns their prompt discard whatever the client
+    sends. Without this endpoint the studio could only preview its own local
+    copy, which would silently disagree with the running session.
+
+    If `phase` is specified (e.g. SOP_02_PRODUCT_DISCOVERY), returns the JIT
+    card formatted prompt for live phase inspection.
+    """
+    from persona_registry import (
+        get_persona_architecture,
+        is_persona_ui_editable,
+        resolve_persona_architecture,
+    )
+
+    editable = is_persona_ui_editable(persona_id)
+    architecture = resolve_persona_architecture(persona_id)
+    # Only architecture-owned prompts are server-authoritative; for everyone
+    # else the client's copy is the truth and echoing something here would
+    # imply an authority the backend does not have.
+    composed = None
+    if not editable:
+        if phase and persona_id == "wealth-manager":
+            from supercar_cards import get_pragya_phase_card, format_supercar_prompt_card
+            card = get_pragya_phase_card(phase)
+            if card:
+                composed = format_supercar_prompt_card(card)
+        if not composed:
+            composed = get_persona_architecture(persona_id).compose_system_prompt(None)
+
+    return {
+        "persona_id": persona_id,
+        "architecture": architecture.value,
+        "editable": editable,
+        "prompt": composed or "",
+        "phase": phase,
+    }
 
 
 @app.post("/connect")

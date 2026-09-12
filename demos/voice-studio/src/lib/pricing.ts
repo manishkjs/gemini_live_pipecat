@@ -201,6 +201,7 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
 export function formatCost(usd: number): string {
   if (!usd || usd <= 0) return "$0.0000";
   if (usd < 0.0001) return "<$0.0001";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1.0) return `$${usd.toFixed(4)}`;
   return `$${usd.toFixed(2)}`;
 }
@@ -212,4 +213,86 @@ export function formatCost(usd: number): string {
 export function estimateTokens(text: string): number {
   if (!text || !text.trim()) return 0;
   return Math.max(1, Math.round(text.trim().length / 3.8));
+}
+
+/* ==========================================================================
+   SESSION TOKEN SPLIT
+   --------------------------------------------------------------------------
+   A single "Tokens: 16,562" figure is close to meaningless for a duplex voice
+   call, because the four buckets it merges are priced 24x apart end to end
+   ($0.50/M text-in vs $12.00/M audio-out). A session that is 80% audio costs
+   roughly six times one of the same token count that is 80% text.
+
+   These helpers keep the split honest in two ways the flat counter cannot:
+     - `residualIn` carries prompt tokens that `prompt_token_count` bills but
+       `prompt_tokens_details` never attributes (b/560037988). They are real
+       money and must not silently vanish into the text bucket.
+     - Accumulation is pure, so it can only ever be driven by the discrete
+       per-turn `usage` event, never by a streaming chunk callback.
+   ========================================================================== */
+
+export interface TokenSplit {
+  textIn: number;
+  audioIn: number;
+  /** Billed on input but unattributed to any modality by the server. */
+  residualIn: number;
+  textOut: number;
+  audioOut: number;
+  /** Output tokens the server billed but left unattributed. */
+  residualOut: number;
+}
+
+export const EMPTY_TOKEN_SPLIT: TokenSplit = {
+  textIn: 0,
+  audioIn: 0,
+  residualIn: 0,
+  textOut: 0,
+  audioOut: 0,
+  residualOut: 0,
+};
+
+export function totalIn(s: TokenSplit): number {
+  return s.textIn + s.audioIn + s.residualIn;
+}
+
+export function totalOut(s: TokenSplit): number {
+  return s.textOut + s.audioOut + s.residualOut;
+}
+
+/**
+ * Folds one turn's `usage` payload into the running session split.
+ *
+ * Pure and total: an absent or malformed payload returns the accumulator
+ * untouched rather than poisoning the session counters with NaN.
+ */
+export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null): TokenSplit {
+  if (!usage) return acc;
+
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+  const pd = (usage.prompt_details || {}) as Record<string, number>;
+  const rd = (usage.response_details || {}) as Record<string, number>;
+
+  const textIn = num(pd.text);
+  const audioIn = num(pd.audio);
+  const textOut = num(rd.text);
+  const audioOut = num(rd.audio);
+
+  const promptTotal = num(usage.prompt_token_count);
+  const responseTotal = num(usage.response_token_count);
+
+  return {
+    textIn: acc.textIn + textIn,
+    audioIn: acc.audioIn + audioIn,
+    residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn),
+    textOut: acc.textOut + textOut,
+    audioOut: acc.audioOut + audioOut,
+    residualOut: acc.residualOut + Math.max(0, responseTotal - textOut - audioOut),
+  };
+}
+
+/** Compact token count for dense UI: 847, 1.2k, 16.6k. */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
 }

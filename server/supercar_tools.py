@@ -68,31 +68,41 @@ def get_exp_center(city_or_pincode: str) -> Dict[str, Any]:
 
 
 def create_appointment_booking(
-    center_id: str,
-    date: str,
-    time: str,
+    pincode: str = "",
+    date: str = "Tomorrow",
+    time: str = "11:00 AM",
     customer_phone: str = "",
-    vehicle_variant: str = "Lamborghini Aventador",
+    customer_name_or_phone: str = "",
+    vehicle_variant: str = "Lamborghini Revuelto",
+    center_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a confirmed 15-minute VIP Lounge appointment and return confirmation details."""
-    center = LAMBORGHINI_CENTERS.get(center_id)
-    if not center:
-        center = LAMBORGHINI_CENTERS["LAMBO_MUM_BKC"]
+    center = None
+    if center_id and center_id in LAMBORGHINI_CENTERS:
+        center = LAMBORGHINI_CENTERS[center_id]
+    else:
+        lookup_query = pincode or "Delhi"
+        resolved = get_exp_center(lookup_query)
+        centers = resolved.get("centers", [])
+        center = centers[0] if centers else LAMBORGHINI_CENTERS["LAMBO_DEL_AERO"]
 
     booking_id = f"LAMBO-{uuid.uuid4().hex[:6].upper()}"
+    cust = customer_name_or_phone or customer_phone or "Verified Caller"
     return {
         "status": "confirmed",
         "booking_id": booking_id,
         "center_id": center["center_id"],
         "center_name": center["name"],
+        "city": center["city"],
         "address": center["address"],
         "date": date,
         "time": time,
-        "vehicle_variant": vehicle_variant or "Lamborghini Aventador",
-        "customer_phone": customer_phone or "Verified Caller",
+        "vehicle_variant": vehicle_variant or "Lamborghini Revuelto",
+        "customer_phone": cust,
         "confirmation_message": (
             f"VIP Lounge Viewing successfully confirmed! Booking ID: {booking_id}. "
-            f"Showroom: {center['name']}. Schedule: {date} at {time}. Vehicle: {vehicle_variant}."
+            f"Showroom: {center['name']} ({center['city']}). "
+            f"Address: {center['address']}. Schedule: {date} at {time}. Vehicle: {vehicle_variant}."
         ),
     }
 
@@ -101,50 +111,13 @@ def create_appointment_booking(
 # Tool Schemas for Gemini Live / Pipecat
 # ---------------------------------------------------------------------------
 
-get_phase_card_schema = FunctionSchema(
-    name="get_phase_card",
-    description=(
-        "Retrieve active SOP conversational instructions and boundaries for a specific phase "
-        "(e.g., 'discovery', 'pricing', 'booking', 'service_override', 'objections'). "
-        "Allows non-linear jumping between phases at any turn based on customer response."
-    ),
-    properties={
-        "phase": {
-            "type": "string",
-            "description": (
-                "The target phase name to load: 'discovery' (SOP 02: Gallardo/Aventador/Urus models), "
-                "'pricing' (SOP 03: costs/Ad Personam), 'booking' (SOP 04: VIP Atelier visit/test drive), "
-                "'service_override' (SOP 05: breakdown/complaints/repairs - HIGHEST PRIORITY), "
-                "or 'objections' (SOP 06: speed breakers/front-lift/busy/exit)."
-            ),
-        },
-        "reason": {
-            "type": "string",
-            "description": "Brief conversational reason for loading this phase card (e.g. 'caller asked about Aventador V12 price').",
-        },
-    },
-    required=["phase"],
-)
-
-get_exp_center_schema = FunctionSchema(
-    name="get_exp_center",
-    description="Look up nearest Lamborghini Experience Lounges by city name or 6-digit Indian pincode.",
-    properties={
-        "city_or_pincode": {
-            "type": "string",
-            "description": "The customer's city name (e.g. 'Mumbai', 'Delhi', 'Bengaluru') or 6-digit pincode.",
-        },
-    },
-    required=["city_or_pincode"],
-)
-
 create_appointment_booking_schema = FunctionSchema(
     name="create_appointment_booking",
-    description="Silently book an exclusive 15-minute VIP Lounge private viewing or test drive appointment.",
+    description="Book an exclusive VIP Lounge private viewing or test drive appointment based on the client's 6-digit PIN code or city.",
     properties={
-        "center_id": {
+        "pincode": {
             "type": "string",
-            "description": "The unique center ID (e.g. 'LAMBO_MUM_BKC', 'LAMBO_DEL_AERO', 'LAMBO_BLR_LAV').",
+            "description": "The customer's 6-digit postal PIN code (e.g. '110037', '400051', '560001') or city ('Delhi', 'Mumbai', 'Bengaluru').",
         },
         "date": {
             "type": "string",
@@ -156,18 +129,40 @@ create_appointment_booking_schema = FunctionSchema(
         },
         "vehicle_variant": {
             "type": "string",
-            "description": "The Lamborghini model chosen (e.g. 'Lamborghini Aventador', 'Lamborghini Gallardo', 'Lamborghini Urus').",
+            "description": "The Lamborghini model chosen (e.g. 'Revuelto', 'Urus SE', 'Temerario').",
         },
-        "customer_phone": {
+        "customer_name_or_phone": {
             "type": "string",
-            "description": "Customer contact number if provided.",
+            "description": "Customer contact number or name if provided.",
         },
     },
-    required=["center_id", "date", "time"],
+    required=["pincode", "date", "time"],
+)
+
+get_phase_card_schema = FunctionSchema(
+    name="get_phase_card",
+    description="Retrieve active SOP conversational instructions and boundaries for a specific phase.",
+    properties={
+        "phase": {
+            "type": "string",
+            "description": "Target phase name.",
+        },
+    },
+    required=["phase"],
+)
+
+get_exp_center_schema = FunctionSchema(
+    name="get_exp_center",
+    description="Look up nearest Lamborghini Experience Lounges by city name or 6-digit Indian pincode.",
+    properties={
+        "city_or_pincode": {
+            "type": "string",
+            "description": "City or 6-digit pincode.",
+        },
+    },
+    required=["city_or_pincode"],
 )
 
 SUPERCAR_TOOL_SCHEMAS: List[FunctionSchema] = [
-    get_phase_card_schema,
-    get_exp_center_schema,
     create_appointment_booking_schema,
 ]

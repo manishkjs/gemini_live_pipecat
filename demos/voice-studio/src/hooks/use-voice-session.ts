@@ -9,7 +9,7 @@ import {
 } from "@/lib/voice-session";
 import { getPersona, type PersonaId } from "@/lib/personas";
 import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
-import { calculateTurnCost } from "@/lib/pricing";
+import { accumulateSplit, calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /**
@@ -25,14 +25,13 @@ export function useVoiceSession() {
     sessionId: newSessionId(),
   });
   const [phase, setPhase] = useState<Phase>("idle");
-  const [source, setSource] = useState<"preview" | "backend" | null>(null);
+  const [source, setSource] = useState<"backend" | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [sound, setSound] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [complete, setComplete] = useState(false);
   const [latency, setLatency] = useState<number | null>(null);
   const [track, setTrack] = useState<MediaStreamTrack | null>(null);
   const [partialUser, setPartialUser] = useState("");
@@ -44,8 +43,28 @@ export function useVoiceSession() {
   const [lastTTFB, setLastTTFB] = useState<number | null>(null);
   const [lastTTS, setLastTTS] = useState<number | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
+  // Billed tokens split by direction and modality. The flat total hides the
+  // only number that matters for cost: audio is 6x text on input and 6x on
+  // output, so 16k "tokens" can mean very different bills.
+  const [tokenSplit, setTokenSplit] = useState<TokenSplit>(EMPTY_TOKEN_SPLIT);
   const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
   const [interruptCount, setInterruptCount] = useState(0);
+
+  // Persona Phase Tracking (e.g. Pragya JIT Phase Cards)
+  const [currentPhase, setCurrentPhase] = useState<string>(
+    settings.personaId === "wealth-manager" ? "SOP_01_OPENING" : ""
+  );
+  const [visitedPhases, setVisitedPhases] = useState<string[]>(
+    settings.personaId === "wealth-manager" ? ["SOP_01_OPENING"] : []
+  );
+  const [phaseDirective, setPhaseDirective] = useState<string | null>(null);
+  const [confirmedBooking, setConfirmedBooking] = useState<{
+    booking_id?: string;
+    center_name?: string;
+    date?: string;
+    time?: string;
+    vehicle_variant?: string;
+  } | null>(null);
 
   // Context Compression toast event state
   const [compressionEvent, setCompressionEvent] = useState<{
@@ -81,7 +100,6 @@ export function useVoiceSession() {
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const session = useRef<LiveSession | null>(null);
   const run = useRef(0);
-  const soundRef = useRef(sound);
   const audio = useRef<HTMLAudioElement | null>(null);
   const transcript = useRef<HTMLDivElement | null>(null);
   const followTranscript = useRef(true);
@@ -90,7 +108,6 @@ export function useVoiceSession() {
   const persona = getPersona(settings.personaId);
   const custom = persona.id === "custom";
   const engineName = settings.engine === "live" ? "Gemini Live" : "Cascade";
-  soundRef.current = sound;
 
   useEffect(() => {
     // Tear the session down if the tab navigates away mid-call; a dangling
@@ -98,7 +115,6 @@ export function useVoiceSession() {
     return () => {
       run.current++;
       timers.current.forEach(clearTimeout);
-      window.speechSynthesis?.cancel();
       void session.current?.disconnect();
     };
   }, []);
@@ -134,16 +150,17 @@ export function useVoiceSession() {
         role,
         text,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        createdAt: Date.now(),
         metrics,
       },
     ]);
   }, []);
 
+
   const endSession = useCallback(async () => {
     run.current++;
     timers.current.forEach(clearTimeout);
     timers.current = [];
-    window.speechSynthesis?.cancel();
     const current = session.current;
     session.current = null;
     setPhase("idle");
@@ -158,7 +175,6 @@ export function useVoiceSession() {
     setError("");
     setMessages([]);
     setElapsed(0);
-    setComplete(false);
     setLatency(null);
     setSource(null);
     setCopied(false);
@@ -167,8 +183,13 @@ export function useVoiceSession() {
     setLastTTFB(null);
     setLastTTS(null);
     setTokenCount(0);
+    setTokenSplit(EMPTY_TOKEN_SPLIT);
     setSessionCostUSD(0);
     setInterruptCount(0);
+    setCurrentPhase(settings.personaId === "wealth-manager" ? "SOP_01_OPENING" : "");
+    setVisitedPhases(settings.personaId === "wealth-manager" ? ["SOP_01_OPENING"] : []);
+    setPhaseDirective(null);
+    setConfirmedBooking(null);
     compressionFired.current = false;
     prevPromptTokens.current = 0;
     if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
@@ -187,6 +208,10 @@ export function useVoiceSession() {
       voice: p.defaultVoice || current.voice,
       instructions: value === "custom" ? customInstructions.current : "",
     }));
+    setCurrentPhase(value === "wealth-manager" ? "SOP_01_OPENING" : "");
+    setVisitedPhases(value === "wealth-manager" ? ["SOP_01_OPENING"] : []);
+    setPhaseDirective(null);
+    setConfirmedBooking(null);
     resetConversation();
   };
 
@@ -194,51 +219,6 @@ export function useVoiceSession() {
     if (active) return;
     setSettings((current) => ({ ...current, engine: value as Engine }));
     resetConversation();
-  };
-
-  const startPreview = () => {
-    resetConversation();
-    setSource("preview");
-    setPhase("thinking");
-    const current = ++run.current;
-    const playTurn = (index: number) => {
-      if (run.current !== current) return;
-      const item = persona.sample[index];
-      if (!item) {
-        setPhase("idle");
-        setComplete(true);
-        return;
-      }
-      setPhase(item.role === "user" ? "listening" : "speaking");
-      addMessage(item.role, item.text);
-      let finished = false;
-      let fallback: ReturnType<typeof setTimeout>;
-      const next = () => {
-        if (finished || run.current !== current) return;
-        finished = true;
-        clearTimeout(fallback);
-        setPhase("thinking");
-        timers.current.push(setTimeout(() => playTurn(index + 1), 500));
-      };
-      if (soundRef.current && "speechSynthesis" in window) {
-        const speech = new SpeechSynthesisUtterance(item.text);
-        speech.lang = settings.language || "hi-IN";
-        speech.rate = 1.04;
-        speech.pitch = item.role === "user" ? 0.9 : 1.05;
-        speech.onend = next;
-        speech.onerror = next;
-        fallback = setTimeout(() => {
-          window.speechSynthesis.cancel();
-          next();
-        }, item.duration + 8000);
-        timers.current.push(fallback);
-        window.speechSynthesis.speak(speech);
-      } else {
-        fallback = setTimeout(next, item.duration);
-        timers.current.push(fallback);
-      }
-    };
-    playTurn(0);
   };
 
   const startBackend = async (engineOverride?: Engine) => {
@@ -301,6 +281,7 @@ export function useVoiceSession() {
                   role,
                   text,
                   time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                  createdAt: Date.now(),
                   metrics,
                 },
               ];
@@ -321,7 +302,18 @@ export function useVoiceSession() {
         },
         onMetricUpdate: (type, val) => {
           if (run.current !== current) return;
-          if (type === "context_compression") {
+          if (type === "phase_transition") {
+            const phaseId = val?.phase_id || val?.phase || "";
+            if (phaseId) {
+              setCurrentPhase(phaseId);
+              setVisitedPhases((prev) => (prev.includes(phaseId) ? prev : [...prev, phaseId]));
+            }
+            if (val?.directive || val?.title) {
+              setPhaseDirective(val.directive || val.title);
+            }
+          } else if (type === "booking_confirmed") {
+            setConfirmedBooking(val);
+          } else if (type === "context_compression") {
             triggerCompressionToast(val);
           } else if (type === "turn_complete") {
             setTurnCount((c) => c + 1);
@@ -378,6 +370,7 @@ export function useVoiceSession() {
           } else if (type === "usage") {
             if (val?.total_token_count) {
               setTokenCount((c) => c + val.total_token_count);
+              setTokenSplit((c) => accumulateSplit(c, val));
               if (activeSettings.contextCompression && !compressionFired.current) {
                 const threshold = Math.max(5000, activeSettings.contextCompressionTokens || 5000);
                 const promptTokens = val.prompt_token_count ?? 0;
@@ -479,9 +472,9 @@ export function useVoiceSession() {
   };
 
   const phaseLabel = {
-    idle: complete ? "Preview complete" : messages.length ? "Session ended" : "Ready to start",
+    idle: messages.length ? "Session ended" : "Ready to start",
     connecting: "Connecting…",
-    listening: source === "preview" ? "You are speaking" : muted ? "Microphone muted" : "Listening",
+    listening: muted ? "Microphone muted" : "Listening",
     thinking: "Thinking",
     speaking: `${persona.agentName} is speaking`,
   }[phase];
@@ -490,10 +483,12 @@ export function useVoiceSession() {
 
   return {
     // state
-    settings, phase, source, messages, elapsed, muted, sound, error, copied, complete,
+    settings, phase, source, messages, elapsed, muted, sound, error, copied,
     latency, track, partialUser, settingsOpen, showInlineEditor,
-    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, sessionCostUSD, interruptCount,
+    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
+    // phase tracking & booking
+    currentPhase, visitedPhases, phaseDirective, confirmedBooking,
     // setters the views drive directly
     setMuted, setError, setSettingsOpen, setShowInlineEditor,
     // refs
@@ -503,10 +498,6 @@ export function useVoiceSession() {
     // actions
     endSession, choosePersona, chooseEngine, startBackend, toggleSound,
     update, updateBool, updateNumber, copyTranscript,
-    // Scripted persona playback. No control currently starts it -- the entry
-    // point was dropped in a UI pass -- but the transcript still renders the
-    // `source === "preview"` states, so the path is kept intact.
-    startPreview,
   };
 }
 

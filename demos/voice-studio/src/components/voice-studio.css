@@ -11,6 +11,30 @@
   color: #edf0e9;
   --muted: #9ca39f;
   --persona-color: #d5f580;
+
+  /* The persona accent is overwritten inline per agent (see voice-studio.tsx),
+     so the primary action needs its own stable brand hue. Binding the CTA to
+     --persona-color makes "Start" change colour when you switch agents. */
+  --cta-color: #d5f580;
+
+  /* ---- Glass control material -------------------------------------------
+     One definition of "glass" shared by every interactive surface, so the
+     header, the segmented control, the CTA and the pills all read as the same
+     physical material lit from the same angle. Tweak here, not per-button. */
+  --glass-blur: blur(18px) saturate(165%);
+  --glass-tint: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.022));
+  --glass-tint-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.125), rgba(255, 255, 255, 0.045));
+  --glass-hairline: rgba(255, 255, 255, 0.105);
+  --glass-hairline-hover: rgba(255, 255, 255, 0.2);
+
+  /* Top inset = specular highlight, bottom inset = the glass's own thickness. */
+  --glass-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+  --glass-lift: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 18px -8px rgba(0, 0, 0, 0.6);
+  --glass-lift-hover: 0 2px 4px rgba(0, 0, 0, 0.38), 0 14px 30px -10px rgba(0, 0, 0, 0.72);
+
+  /* Decelerating spring. Motion should arrive, not slide to a stop. */
+  --ease-fluid: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-press: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .studio-header,
@@ -164,6 +188,13 @@
   margin: 0;
 }
 
+.persona-picker-group {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .persona-scroll-pane {
   flex: 1;
   min-height: 0;
@@ -194,6 +225,13 @@
   flex-direction: column;
   gap: 8px;
 }
+.persona-pinned-slot {
+  flex-shrink: 0;
+  padding: 10px;
+  border-top: 1px solid #252d31;
+  background: #111416;
+}
+
 
 .persona-sidebar-card {
   display: flex;
@@ -1046,8 +1084,12 @@
     height: auto;
     max-height: 280px;
   }
+  /* Deliberately no fixed height: the tile flexes and the transcript owns the
+     remaining space. A hard height here fought the shell's 100dvh and produced
+     either a double scrollbar or a clipped transcript depending on viewport. */
   .gemini-live-tile {
-    height: 720px;
+    height: auto;
+    min-height: 60vh;
   }
 }
 
@@ -1277,24 +1319,6 @@
   }
 }
 
-.preview-complete {
-  align-self: center;
-  margin: 12px auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-radius: 9999px;
-  background: #192518;
-  border: 1px solid #334a30;
-  color: #b8cba9;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.preview-complete svg {
-  flex-shrink: 0;
-}
 
 .transcript-footer {
   min-height: 44px;
@@ -1393,6 +1417,40 @@
   font-size: 14px;
   line-height: 1.6;
   color: #a7b4a4;
+}
+
+.settings-active-call-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fbbf24;
+  margin-bottom: 14px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--studio-muted, #aeb8c4);
+  margin: 16px 0 6px 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-group:first-of-type .settings-section-title {
+  margin-top: 0;
 }
 
 .dialog-fields {
@@ -1698,8 +1756,11 @@
   .studio-shell {
     padding: 0 16px 4px;
   }
+  /* NOTE: no grid-template-columns here. This block used to restore the
+     two-column desktop grid, overriding the single-column collapse declared at
+     max-width:1180px above -- so every viewport at or below 1080px got the
+     desktop layout back. The collapse now stands. */
   .studio-workspace {
-    grid-template-columns: minmax(260px, 32%) 1fr;
     gap: 12px;
   }
 }
@@ -1722,7 +1783,8 @@
     flex-shrink: 0;
   }
   .gemini-live-tile {
-    height: 640px;
+    height: auto;
+    min-height: 70vh;
     flex-shrink: 0;
   }
   .conversation-stage {
@@ -1788,13 +1850,13 @@
 @media(max-width:760px){.header-actions{gap:7px}.header-tool{width:35px;height:35px;padding:0!important}.header-tool>span{display:none}.studio-header{gap:10px}}
 @media(max-width:390px){.studio-brand{font-size:18px}.demo-tag{display:none}.header-actions{gap:5px}}
 
-/* Dedicated engine action buttons for instant Live and Cascade launch */
+/* Dedicated engine action buttons for instant Live and Cascade launch.
+   Colour/material now comes from the shared glass layer at the end of this
+   file; these rules only own geometry. */
 .engine-action-buttons{display:flex;flex-direction:column;gap:8px;width:100%}
-.engine-action-buttons button{width:100%;font-size:13.5px;justify-content:center;gap:8px;min-height:42px;border-radius:9px}
-.engine-action-buttons .primary-call{background:var(--persona-color)!important;color:#182315!important;font-weight:600;border:1px solid transparent}
-.engine-action-buttons .primary-call:hover{filter:brightness(1.08)}
-.engine-action-buttons .secondary-call{background:#1d2325!important;border:1px solid #374144!important;color:#d5e2d6!important;font-weight:550}
-.engine-action-buttons .secondary-call:hover{background:#252d30!important;border-color:#4e5a5e!important;color:#fff!important}
+.engine-action-buttons button{width:100%;font-size:13.5px;justify-content:center;gap:8px;min-height:42px;border-radius:11px}
+.engine-action-buttons .primary-call{font-weight:600}
+.engine-action-buttons .secondary-call{font-weight:550}
 .card-quick-actions{margin-top:4px;display:flex;align-items:center}
 .card-active-pill{font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;color:var(--card-color);background:color-mix(in srgb,var(--card-color) 14%,transparent);border:1px solid color-mix(in srgb,var(--card-color) 45%,transparent);padding:2px 7px;border-radius:9999px}
 .advanced-url-toggle{margin-top:6px;font-size:12px;color:var(--muted);border-top:1px solid #333e34;padding-top:10px}
@@ -1820,7 +1882,13 @@
 }
 
 .obs-drawer {
-  width: min(880px, 100vw);
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 151;
+  width: min(640px, 100vw);
+  max-width: 640px;
   height: 100vh;
   background: #090e13;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
@@ -2803,4 +2871,384 @@
   background: linear-gradient(90deg, #10b981, #34d399);
   border-radius: 0 2px 2px 0;
   transition: width 60ms linear;
+}
+
+
+/* ---------------------------------------------------------------------------
+   Architecture-managed prompts and scripted playback
+   ------------------------------------------------------------------------ */
+
+/* Shown instead of the edit control when the backend owns a persona's prompt.
+   Reads as a status, not a disabled button, because there is nothing to enable. */
+.architecture-lock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: #f5c97a;
+  background: rgba(245, 201, 122, 0.1);
+  border: 1px solid rgba(245, 201, 122, 0.24);
+  white-space: nowrap;
+}
+
+.architecture-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #8fe3b0;
+  background: rgba(143, 227, 176, 0.08);
+  border: 1px solid rgba(143, 227, 176, 0.18);
+}
+
+.architecture-note svg {
+  flex: 0 0 auto;
+}
+
+
+/* The live SOP indicator. Stays mounted during a call so the phase engine is
+   visible while it runs, which is the entire point of the demo. */
+.phase-track {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.phase-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--studio-muted, #aeb8c4);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.phase-step.is-visited {
+  color: #cfe8d6;
+  border-color: rgba(143, 227, 176, 0.22);
+}
+
+.phase-step.is-active {
+  color: #0f1512;
+  background: var(--persona-color, #d5f580);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phase-step {
+    transition: none;
+  }
+}
+
+/* ==========================================================================
+   GLASS CONTROL SURFACE
+   --------------------------------------------------------------------------
+   Every interactive control in the studio is cut from the same material:
+   a translucent pane that refracts what's behind it, bevelled by a 1px
+   specular highlight on top and a shadow on the underside.
+
+   Three rules keep it coherent:
+     1. Nothing is opaque. A flat hex fill cannot refract, and `backdrop-filter`
+        is inert behind one — that is exactly why the old buttons read as
+        cardboard rather than glass.
+     2. Motion decelerates (--ease-fluid) and is carried by `transform`, never
+        by layout properties, so it stays on the compositor at 60fps.
+     3. Light comes from above. Highlights sit on top edges, shadows below.
+   ========================================================================== */
+
+/* ---- The shared substrate ------------------------------------------------
+   Anything that is not the single primary CTA wears this. */
+.studio-shell .header-actions button,
+.studio-shell .header-tool,
+.studio-shell .secondary-call,
+.studio-shell .language-select-trigger,
+.studio-shell .trace-btn,
+.studio-shell .clear-btn,
+.studio-shell .edit-prompt-btn-pill,
+.studio-shell .reset-prompt-btn-pill,
+.studio-shell .edit-instructions-btn,
+.studio-shell .restore-preset-btn,
+.studio-shell .toast-close-btn,
+.studio-shell .audio-controls button {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-tint);
+  background-color: rgba(20, 26, 29, 0.55);
+  border: 1px solid var(--glass-hairline);
+  color: #dae4dc;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-bevel), var(--glass-lift);
+  transition:
+    transform 320ms var(--ease-fluid),
+    background-color 320ms var(--ease-fluid),
+    border-color 320ms var(--ease-fluid),
+    box-shadow 320ms var(--ease-fluid),
+    color 200ms linear;
+  will-change: transform;
+}
+
+.studio-shell .header-actions button:hover,
+.studio-shell .header-tool:hover,
+.studio-shell .secondary-call:hover,
+.studio-shell .language-select-trigger:hover,
+.studio-shell .trace-btn:hover,
+.studio-shell .clear-btn:hover,
+.studio-shell .edit-prompt-btn-pill:hover,
+.studio-shell .reset-prompt-btn-pill:hover,
+.studio-shell .edit-instructions-btn:hover,
+.studio-shell .restore-preset-btn:hover,
+.studio-shell .toast-close-btn:hover,
+.studio-shell .audio-controls button:hover {
+  background: var(--glass-tint-hover);
+  background-color: rgba(32, 41, 44, 0.68);
+  border-color: var(--glass-hairline-hover);
+  color: #f2f7f0;
+  transform: translateY(-1px);
+  box-shadow: var(--glass-bevel), var(--glass-lift-hover);
+}
+
+/* Press collapses the lift rather than adding a new effect, so the control
+   feels like it is being pushed back into the pane it floats above. */
+.studio-shell .header-actions button:active,
+.studio-shell .header-tool:active,
+.studio-shell .secondary-call:active,
+.studio-shell .language-select-trigger:active,
+.studio-shell .trace-btn:active,
+.studio-shell .clear-btn:active,
+.studio-shell .edit-prompt-btn-pill:active,
+.studio-shell .reset-prompt-btn-pill:active,
+.studio-shell .edit-instructions-btn:active,
+.studio-shell .restore-preset-btn:active,
+.studio-shell .toast-close-btn:active,
+.studio-shell .audio-controls button:active {
+  transform: translateY(0) scale(0.975);
+  transition-duration: 90ms;
+  box-shadow: var(--glass-bevel), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- The primary CTA -----------------------------------------------------
+   One button in the viewport is allowed to emit light. A specular sweep rides
+   across it on hover as a third background layer, which keeps it behind the
+   label for free — no overlay pseudo-element to fight with z-index. */
+.studio-shell .primary-call,
+.studio-shell .engine-action-buttons .primary-call,
+.studio-shell .stage-right .primary-call {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--cta-color) 55%, transparent);
+  color: #16210f;
+  font-weight: 650;
+  letter-spacing: -0.1px;
+  background-image:
+    linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.55) 50%, transparent 60%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--cta-color) 96%, #ffffff),
+      color-mix(in srgb, var(--cta-color) 80%, #4a6b16)
+    );
+  background-size: 230% 100%, 100% 100%;
+  background-position: 180% 0, 0 0;
+  background-repeat: no-repeat;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18),
+    0 2px 6px -1px rgba(0, 0, 0, 0.45),
+    0 10px 28px -12px color-mix(in srgb, var(--cta-color) 70%, transparent);
+  transition:
+    transform 320ms var(--ease-fluid),
+    box-shadow 320ms var(--ease-fluid),
+    filter 320ms var(--ease-fluid),
+    background-position 780ms var(--ease-fluid);
+  will-change: transform;
+}
+
+.studio-shell .primary-call:hover {
+  transform: translateY(-1.5px);
+  filter: brightness(1.05);
+  /* Drives the sweep from off-right to off-left in one pass. */
+  background-position: -80% 0, 0 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18),
+    0 4px 10px -2px rgba(0, 0, 0, 0.5),
+    0 18px 42px -14px color-mix(in srgb, var(--cta-color) 85%, transparent);
+}
+
+.studio-shell .primary-call:active {
+  transform: translateY(0) scale(0.975);
+  transition-duration: 90ms, 90ms, 90ms, 780ms;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+/* Hanging up is destructive, so it inverts to red glass instead of light. */
+.studio-shell .primary-call.end-call {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #ffe9e9;
+  background-image:
+    linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.28) 50%, transparent 60%),
+    linear-gradient(180deg, rgba(220, 62, 62, 0.92), rgba(150, 32, 32, 0.92));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 2px 6px -1px rgba(0, 0, 0, 0.45),
+    0 10px 28px -12px rgba(220, 62, 62, 0.55);
+}
+
+.studio-shell .primary-call.end-call:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    0 4px 10px -2px rgba(0, 0, 0, 0.5),
+    0 18px 42px -14px rgba(220, 62, 62, 0.7);
+}
+
+/* ---- Segmented control (Gemini Live / Cascade) ---------------------------
+   The track is a recessed groove; the active tab is a raised pane inside it.
+   Same material, opposite bevel. */
+.studio-shell .engine-tabs {
+  background: rgba(12, 16, 18, 0.55);
+  border: 1px solid var(--glass-hairline);
+  border-radius: 10px;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.studio-shell .engine-tabs [data-slot="tabs-trigger"] {
+  border-radius: 7px;
+  transition:
+    color 200ms linear,
+    background-color 320ms var(--ease-fluid),
+    box-shadow 320ms var(--ease-fluid),
+    transform 320ms var(--ease-fluid);
+}
+
+.studio-shell .engine-tabs [data-slot="tabs-trigger"]:hover {
+  color: #dce7d6;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.studio-shell .engine-tabs [data-slot="tabs-trigger"]:active {
+  transform: scale(0.97);
+  transition-duration: 90ms;
+}
+
+.studio-shell .engine-tabs [data-slot="tabs-trigger"][data-state="active"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.035)),
+    color-mix(in srgb, var(--cta-color) 9%, rgba(34, 44, 38, 0.9)) !important;
+  color: #eef6e4 !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 4px 12px -6px rgba(0, 0, 0, 0.6);
+}
+
+/* ---- Status pills --------------------------------------------------------
+   Read-only, so they get the material but none of the press affordances. */
+.studio-shell .phase-step,
+.studio-shell .stage-pill,
+.studio-shell .lvl-pill {
+  background: var(--glass-tint);
+  background-color: rgba(20, 26, 29, 0.4);
+  border: 1px solid var(--glass-hairline);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition:
+    color 200ms linear,
+    background-color 380ms var(--ease-fluid),
+    border-color 380ms var(--ease-fluid),
+    box-shadow 380ms var(--ease-fluid),
+    transform 380ms var(--ease-fluid);
+}
+
+.studio-shell .stage-pill:hover,
+.studio-shell .lvl-pill:hover {
+  transform: translateY(-1px);
+  border-color: var(--glass-hairline-hover);
+}
+
+/* The active phase is the one piece of state worth lighting up, and it moves
+   on its own as the call progresses — so the transition does real work. */
+.studio-shell .phase-step.is-active {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--persona-color) 100%, #ffffff), var(--persona-color));
+  color: #16210f;
+  border-color: color-mix(in srgb, var(--persona-color) 60%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 4px 16px -6px color-mix(in srgb, var(--persona-color) 75%, transparent);
+}
+
+.studio-shell .phase-step.is-visited {
+  background-color: color-mix(in srgb, var(--persona-color) 7%, rgba(20, 26, 29, 0.4));
+  border-color: color-mix(in srgb, var(--persona-color) 24%, transparent);
+}
+
+/* ---- Focus ---------------------------------------------------------------
+   Keyboard focus reuses the CTA's glow rather than a foreign blue ring. */
+.studio-shell button:focus-visible,
+.studio-shell [data-slot="select-trigger"]:focus-visible,
+.studio-shell [data-slot="tabs-trigger"]:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(10, 14, 16, 0.9),
+    0 0 0 4px color-mix(in srgb, var(--cta-color) 62%, transparent),
+    var(--glass-lift-hover);
+}
+
+/* ---- Reduced motion ------------------------------------------------------
+   Keep the material, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .studio-shell button,
+  .studio-shell .phase-step,
+  .studio-shell .stage-pill,
+  .studio-shell .lvl-pill,
+  .studio-shell [data-slot="select-trigger"],
+  .studio-shell [data-slot="tabs-trigger"] {
+    transition-duration: 1ms !important;
+  }
+
+  .studio-shell button:hover,
+  .studio-shell button:active,
+  .studio-shell .stage-pill:hover,
+  .studio-shell .lvl-pill:hover {
+    transform: none !important;
+  }
+
+  .studio-shell .primary-call:hover {
+    background-position: 180% 0, 0 0;
+  }
+}
+
+/* Token decomposition in the session footer. The flat total stays primary; the
+   bracketed split recedes one step, and the modality figures recede one more,
+   so the row reads as "16,562, of which..." rather than as six equal numbers. */
+.token-split {
+  color: #7f8d84;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-split .tok-dir {
+  color: #a9bcae;
+}
+
+.token-split .tok-modality {
+  color: #6f7d75;
 }

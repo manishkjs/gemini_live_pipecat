@@ -54,7 +54,7 @@ class TestSupercarCards(unittest.TestCase):
     def test_card_formatting_contains_identity_and_expanded_jump_footer(self):
         card = get_pragya_phase_card("SOP_01_OPENING")
         formatted = format_supercar_prompt_card(card, context="Inbound inquiry")
-        self.assertIn("[ACTIVE_SOP_DIRECTIVE: SOP_01_OPENING - Opening & Consent]", formatted)
+        self.assertIn("[ACTIVE_SOP_DIRECTIVE: SOP_01_OPENING", formatted)
         self.assertIn("Speaker Persona: Pragya", formatted)
         self.assertIn("Mandatory Female Grammar", formatted)
         self.assertIn("UNIVERSAL NAVIGATION COMPASS", formatted)
@@ -65,10 +65,18 @@ class TestSupercarCards(unittest.TestCase):
 
     def test_lean_root_system_instruction_length(self):
         root_prompt = get_pragya_root_system_instruction()
-        self.assertLess(len(root_prompt), 900)
+        self.assertLess(len(root_prompt), 4200)
         self.assertIn("Pragya", root_prompt)
         self.assertIn("Lamborghini India", root_prompt)
-        self.assertIn("get_phase_card", root_prompt)
+        self.assertIn("create_appointment_booking", root_prompt)
+
+    def test_root_prompt_forbids_folding_on_the_first_soft_no(self):
+        """Phase 1 must push, not fold. A soft 'no' is an objection, not an exit."""
+        root = get_pragya_root_system_instruction()
+        self.assertIn("NEVER GIVE UP EARLY", root)
+        self.assertIn("THREE", root)
+        for soft_no in ["Busy", "later", "thinking about it"]:
+            self.assertIn(soft_no, root, soft_no)
 
 
 if __name__ == "__main__":

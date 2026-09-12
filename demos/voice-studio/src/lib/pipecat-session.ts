@@ -206,6 +206,10 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       } else if (p.type === "tool_call") {
         events.onMetricUpdate?.("tool_call", p);
       }
+    } else if (data.type === "phase_transition") {
+      events.onMetricUpdate?.("phase_transition", data);
+    } else if (data.type === "booking_confirmed") {
+      events.onMetricUpdate?.("booking_confirmed", data);
     } else if (data.type === "context_compression") {
       events.onMetricUpdate?.("context_compression", data.payload);
     } else if (data.type === "error" || message.type === "error") {

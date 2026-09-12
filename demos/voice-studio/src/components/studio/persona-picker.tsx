@@ -13,6 +13,43 @@ export default function PersonaPicker({
   active: boolean;
   onChoose: (value: string) => void;
 }) {
+  const preparedPersonas = PERSONAS.filter((p) => p.id !== "custom");
+  const customPersona = PERSONAS.find((p) => p.id === "custom");
+
+  const renderCard = (item: (typeof PERSONAS)[number]) => {
+    const isSelected = selected === item.id;
+    return (
+      <label
+        key={item.id}
+        htmlFor={item.id}
+        className={`persona-card persona-sidebar-card ${item.id === "custom" ? "custom-card" : ""} ${
+          isSelected ? "selected" : ""
+        } ${active ? "locked" : ""}`}
+        style={{ "--card-color": item.color } as CSSProperties}
+      >
+        <div className="persona-card-row">
+          <div className="persona-avatar-wrap">
+            <PersonaAvatar key={item.id} persona={item} className="card-portrait" />
+          </div>
+          <div className="persona-info-wrap">
+            <div className="persona-name-row">
+              <strong className="agent-display-name">
+                {item.id === "custom" ? item.name : item.agentName}
+              </strong>
+              <RadioGroupItem
+                id={item.id}
+                value={item.id}
+                aria-label={item.id === "custom" ? item.name : `${item.agentName}, ${item.name}`}
+              />
+            </div>
+            {item.id !== "custom" && <span className="persona-role persona-role-chip">{item.name}</span>}
+            <p className="persona-description">{item.description}</p>
+          </div>
+        </div>
+      </label>
+    );
+  };
+
   return (
     <div className="persona-sidebar-container" aria-labelledby="persona-heading">
       <div className="sidebar-header">
@@ -24,55 +61,25 @@ export default function PersonaPicker({
         <p className="sidebar-subtitle">Select an Indian persona to converse natively.</p>
       </div>
 
-      <div className="persona-scroll-pane">
-        <RadioGroup
-          aria-labelledby="persona-heading"
-          value={selected}
-          onValueChange={onChoose}
-          className="persona-list"
-          disabled={active}
-        >
-          {PERSONAS.map((item) => {
-            const isSelected = selected === item.id;
-            return (
-              <label
-                key={item.id}
-                htmlFor={item.id}
-                className={`persona-card persona-sidebar-card ${item.id === "custom" ? "custom-card" : ""} ${
-                  isSelected ? "selected" : ""
-                } ${active ? "locked" : ""}`}
-                style={{ "--card-color": item.color } as CSSProperties}
-              >
-                <div className="persona-card-row">
-                  <div className="persona-avatar-wrap">
-                    <PersonaAvatar key={item.id} persona={item} className="card-portrait" />
-                    {isSelected && <span className="avatar-active-dot" />}
-                  </div>
-                  <div className="persona-info-wrap">
-                    <div className="persona-name-row">
-                      <strong className="agent-display-name">
-                        {item.id === "custom" ? item.name : item.agentName}
-                      </strong>
-                      <RadioGroupItem
-                        id={item.id}
-                        value={item.id}
-                        aria-label={item.id === "custom" ? item.name : `${item.agentName}, ${item.name}`}
-                      />
-                    </div>
-                    {item.id !== "custom" && <span className="persona-role persona-role-chip">{item.name}</span>}
-                    <p className="persona-description">{item.description}</p>
-                    {isSelected && !active && (
-                      <div className="card-quick-actions">
-                        <span className="card-active-pill">Selected</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </label>
-            );
-          })}
-        </RadioGroup>
-      </div>
+      <RadioGroup
+        aria-labelledby="persona-heading"
+        value={selected}
+        onValueChange={onChoose}
+        className="persona-picker-group"
+        disabled={active}
+      >
+        <div className="persona-scroll-pane">
+          <div className="persona-list">
+            {preparedPersonas.map(renderCard)}
+          </div>
+        </div>
+
+        {customPersona && (
+          <div className="persona-pinned-slot">
+            {renderCard(customPersona)}
+          </div>
+        )}
+      </RadioGroup>
     </div>
   );
 }

@@ -19,6 +19,15 @@ export default function ConversationStage({
     toggleSound, track,
   } = studio;
 
+  // Derived from real state rather than a bare `active` flag, so the stage never
+  // claims to be connected while it is still dialling.
+  const sessionHint =
+    phase === "connecting"
+      ? "Connecting to your voice backend\u2026"
+      : active
+        ? `Connected via ${engineName} with ${persona.agentName}. Speak naturally \u2014 you can interrupt anytime.`
+        : `Click Start ${engineName} to talk.`;
+
   return (
     <div className={`conversation-stage phase-${phase}`} aria-labelledby="agent-heading">
       <div className="stage-left">
@@ -26,7 +35,7 @@ export default function ConversationStage({
           {Wave ? (
             <Wave
               audioTrack={source === "backend" ? track : null}
-              isThinking={!reduced && active && (source === "preview" || phase === "thinking" || phase === "connecting")}
+              isThinking={!reduced && active && (phase === "thinking" || phase === "connecting")}
               color1={persona.color}
               color2="#82b7a6"
               backgroundColor="transparent"
@@ -52,11 +61,7 @@ export default function ConversationStage({
           <span className="eyebrow">{custom ? "CUSTOM SESSION" : "YOUR ROLE"}</span>
           <p>{persona.userRole}</p>
         </div>
-        <p className="preview-note">
-          {active
-            ? `Connected via ${engineName} with ${persona.agentName}. Speak into your microphone.`
-            : `Click Start ${engineName} to talk.`}
-        </p>
+        <p className="preview-note">{sessionHint}</p>
       </div>
 
       <div className="stage-right">
@@ -90,7 +95,11 @@ export default function ConversationStage({
               {muted ? <MicOff size={17} /> : <Mic size={17} />}
             </Button>
             <span className="mic-hint-text">
-              {active ? (muted ? "Muted" : "Interrupt anytime") : "Mic ready"}
+              {active
+                ? muted
+                  ? "Muted"
+                  : "Interrupt anytime"
+                : "Mic requested on start"}
             </span>
             <Button
               variant="outline"

@@ -74,7 +74,6 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           className="header-tool"
           variant="outline"
           onClick={() => setSettingsOpen(true)}
-          disabled={active}
           aria-label="Session settings"
         >
           <Settings2 size={16} />
@@ -91,10 +90,11 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
         </aside>
 
         {/* Right Pane: Gemini Live Tile (~70% of screen) */}
-        <section className="gemini-live-tile" aria-label="Gemini Live Studio Tile">
+        <section className="gemini-live-tile" aria-label="Voice session">
           <div className="tile-top-bar">
             <div className="tile-identity">
-              <span className="gemini-live-badge">GEMINI LIVE TILE</span>
+              {/* Engine-agnostic: this tile hosts Cascade sessions too. */}
+              <span className="gemini-live-badge">Voice session</span>
               <span className={`connection-state ${active ? "is-active" : ""}`}>
                 <span className="status-dot" />
                 {phaseLabel}
