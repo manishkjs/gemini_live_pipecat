@@ -40,7 +40,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     SOP_04_BOOKED: 3,
   };
 
-  const activeSopIndex = persona.id === "wealth-manager" && currentPhase
+  const activeSopIndex = persona.id === "lamborghini-concierge" && currentPhase
     ? (SOP_MAP[currentPhase] ?? 0)
     : 0;
 

@@ -193,6 +193,7 @@ async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[s
     card formatted prompt for live phase inspection.
     """
     from persona_registry import (
+        ArchitecturePattern,
         get_persona_architecture,
         is_persona_ui_editable,
         resolve_persona_architecture,
@@ -205,7 +206,10 @@ async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[s
     # imply an authority the backend does not have.
     composed = None
     if not editable:
-        if phase and persona_id == "wealth-manager":
+        # Keyed off the architecture, not a persona id: the id has been renamed
+        # once already, and a string comparison here fails silently by falling
+        # through to the root prompt.
+        if phase and architecture == ArchitecturePattern.JIT_PHASE_CARDS:
             from supercar_cards import get_pragya_phase_card, format_supercar_prompt_card
             card = get_pragya_phase_card(phase)
             if card:

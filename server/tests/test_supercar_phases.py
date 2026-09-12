@@ -48,8 +48,21 @@ class TestPhaseDetection(unittest.TestCase):
         self.assertEqual(detect_phase("mera pin code bataun kya?"), SOP_03_PINCODE)
 
     def test_model_talk_reaches_phase_two(self):
-        for cue in ["Revuelto", "Urus SE", "Temerario", "kitne ka hai", "test drive"]:
+        for cue in ["Revuelto", "Urus SE", "Temerario", "kitne ka hai"]:
             self.assertEqual(detect_phase(f"mujhe {cue} ke baare mein batao"), SOP_02_DISCOVERY, cue)
+
+    def test_asking_to_book_reaches_phase_three_directly(self):
+        """Stage 3 is where prerequisites get collected, not a reward for
+        having sat through the pitch. Someone who opens with "book me a visit"
+        should land there without being walked through discovery first.
+        """
+        for cue in [
+            "can I book a visit",
+            "mujhe test drive karni hai",
+            "schedule an appointment please",
+            "मुझे अपॉइंटमेंट चाहिए",
+        ]:
+            self.assertEqual(detect_phase(cue), SOP_03_PINCODE, cue)
 
     def test_pincode_outranks_model_talk_in_the_same_sentence(self):
         """The furthest signal wins; a PIN code is a stronger buying signal."""

@@ -51,6 +51,15 @@ class PersonaConfig(NamedTuple):
 PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
     # Pragya - Lamborghini VIP outbound concierge. Prompt is locked in the UI
     # because the JIT phase engine depends on its exact contract.
+    "lamborghini-concierge": PersonaConfig(
+        persona_id="lamborghini-concierge",
+        architecture=ArchitecturePattern.JIT_PHASE_CARDS,
+        is_ui_editable=False,
+    ),
+    # Deprecated id, kept only so a browser holding the old value in
+    # localStorage still reaches the phase-card architecture. Dropping it
+    # outright would degrade those sessions to a plain prompt with no cards and
+    # no tools, which is a failure that looks like a model regression.
     "wealth-manager": PersonaConfig(
         persona_id="wealth-manager",
         architecture=ArchitecturePattern.JIT_PHASE_CARDS,
@@ -257,6 +266,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     def __init__(self) -> None:
         self._tracker = None
+        self._slots = None
         self._llm = None
 
     @property
@@ -267,6 +277,20 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
             self._tracker = PragyaPhaseTracker()
         return self._tracker
+
+    @property
+    def slots(self):
+        """What the caller has actually told us, as opposed to what was said.
+
+        Conversation history alone is too fragile to carry the prerequisites of
+        a booking: a model reading back over a long call will happily fill a
+        gap with something plausible. This is the one place a fact counts.
+        """
+        if self._slots is None:
+            from supercar_phases import CallSlots
+
+            self._slots = CallSlots()
+        return self._slots
 
     def has_exclusive_tools(self) -> bool:
         return True
@@ -317,19 +341,29 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
             return False
 
         delivered = await inject(
-            format_supercar_prompt_card(card, context=reason),
+            format_supercar_prompt_card(
+                card, context=reason, state=self.slots.as_dict()
+            ),
             tag=f"Pragya/Card {phase_id}",
             speak_now=False,
         )
         return bool(delivered)
 
     async def on_user_transcript(self, text: str, broadcast=None) -> None:
-        """Advance the funnel from caller speech and announce real moves only."""
+        """Capture what they said, then advance the funnel on real moves only."""
         from loguru import logger
+
+        # Slots first: a card pushed by this same utterance should already know
+        # the PIN code the caller just read out, rather than asking for it back.
+        captured = self.slots.observe_user_text(text)
 
         tracker = self.tracker
         moved = tracker.observe_user_text(text)
         if not moved:
+            if captured and broadcast:
+                await broadcast(
+                    {"type": "call_state", "slots": self.slots.as_dict()}
+                )
             return
 
         card_pushed = await self._push_phase_card(moved, reason=text[:120])
@@ -345,6 +379,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                     "title": tracker.title_of(moved),
                     "reason": text[:120],
                     "card_pushed": card_pushed,
+                    "slots": self.slots.as_dict(),
                 }
             )
 
@@ -358,25 +393,72 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
         async def handle_create_appointment_booking(params):
             args = params.arguments or {}
-            pincode = (
-                args.get("pincode")
+
+            # The model proposes what it heard; the store keeps only what it
+            # can verify. A blank never erases something already captured, so a
+            # second fuller call completes the first rather than resetting it.
+            self.slots.propose(
+                pincode=args.get("pincode")
                 or args.get("city_or_pincode")
-                or args.get("city")
-                or args.get("center_id", "")
+                or args.get("city"),
+                visit_date=args.get("date"),
+                visit_time=args.get("time"),
+                car_choice=args.get("vehicle_variant"),
             )
+
+            missing = self.slots.missing_for_booking()
+            if missing:
+                # Reaching for this tool *is* stage three. Rather than letting
+                # the gaps be invented -- observed live: date='Next week',
+                # time='' -- hand her the stage-three card, rendered with what
+                # is already known, and let the conversation fill them in.
+                target = self.tracker.observe_booking_request() or "SOP_03_PINCODE"
+                card_pushed = await self._push_phase_card(
+                    target, reason="booking attempted before it was ready"
+                )
+                logger.info(
+                    f"[Pragya/Booking] held back, missing={missing} "
+                    f"card_pushed={card_pushed}"
+                )
+                if broadcast:
+                    await broadcast(
+                        {
+                            "type": "phase_transition",
+                            "phase_id": target,
+                            "title": self.tracker.title_of(target),
+                            "reason": "collecting " + ", ".join(missing),
+                            "card_pushed": card_pushed,
+                            "slots": self.slots.as_dict(),
+                        }
+                    )
+                await params.result_callback(
+                    {"status": "needs_info", "missing": missing}
+                )
+                return
+
             res = create_appointment_booking(
-                pincode=pincode,
-                date=args.get("date", "Tomorrow"),
-                time=args.get("time", "11:00 AM"),
-                customer_name_or_phone=args.get("customer_name_or_phone") or args.get("customer_phone", ""),
-                vehicle_variant=args.get("vehicle_variant", "Lamborghini Revuelto"),
+                pincode=self.slots.get("pincode", ""),
+                date=self.slots.get("visit_date", ""),
+                time=self.slots.get("visit_time", ""),
+                customer_name_or_phone=args.get("customer_name_or_phone")
+                or args.get("customer_phone", ""),
+                vehicle_variant=self.slots.get("car_choice")
+                or "the car chosen at the Lounge",
                 center_id=args.get("center_id"),
             )
             logger.info(f"[Pragya/Booking] booking -> {res.get('booking_id')} ({res.get('center_name')})")
 
             if res.get("status") == "confirmed":
-                # An executed booking is the only evidence that closes the
-                # funnel -- the caller merely agreeing is not.
+                # Only the tool may declare this. The caller agreeing is not a
+                # booking, and neither is the model saying so.
+                self.slots.set_tool(
+                    booking_status="confirmed",
+                    booking_ref=res.get("booking_id"),
+                )
+                self.slots.set_server(
+                    lounge_id=res.get("center_id"),
+                    lounge_name=res.get("center_name"),
+                )
                 moved = self.tracker.observe_booking_confirmed()
                 if moved:
                     # Lands just ahead of the tool result, so the confirmation
@@ -396,6 +478,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                                 "title": self.tracker.title_of(moved),
                                 "reason": "appointment confirmed",
                                 "card_pushed": card_pushed,
+                                "slots": self.slots.as_dict(),
                             }
                         )
                 if broadcast:

@@ -8,9 +8,9 @@ from persona_registry import (
 
 class TestPersonaRegistry(unittest.TestCase):
     def test_pragya_routing(self):
-        arch = resolve_persona_architecture("wealth-manager")
+        arch = resolve_persona_architecture("lamborghini-concierge")
         self.assertEqual(arch, ArchitecturePattern.JIT_PHASE_CARDS)
-        self.assertFalse(is_persona_ui_editable("wealth-manager"))
+        self.assertFalse(is_persona_ui_editable("lamborghini-concierge"))
 
     def test_ranvir_routing(self):
         arch = resolve_persona_architecture("car-negotiator")

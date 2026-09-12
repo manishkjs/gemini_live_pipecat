@@ -9,7 +9,7 @@ const icons = {
   "ai-companion": Heart,
   "car-negotiator": Car,
   "groww-advisor": TrendingUp,
-  "wealth-manager": Landmark,
+  "lamborghini-concierge": Landmark,
   custom: SlidersHorizontal,
 };
 

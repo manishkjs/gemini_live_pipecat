@@ -52,10 +52,10 @@ export function useVoiceSession() {
 
   // Persona Phase Tracking (e.g. Pragya JIT Phase Cards)
   const [currentPhase, setCurrentPhase] = useState<string>(
-    settings.personaId === "wealth-manager" ? "SOP_01_OPENING" : ""
+    settings.personaId === "lamborghini-concierge" ? "SOP_01_OPENING" : ""
   );
   const [visitedPhases, setVisitedPhases] = useState<string[]>(
-    settings.personaId === "wealth-manager" ? ["SOP_01_OPENING"] : []
+    settings.personaId === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []
   );
   const [phaseDirective, setPhaseDirective] = useState<string | null>(null);
   const [confirmedBooking, setConfirmedBooking] = useState<{
@@ -186,8 +186,8 @@ export function useVoiceSession() {
     setTokenSplit(EMPTY_TOKEN_SPLIT);
     setSessionCostUSD(0);
     setInterruptCount(0);
-    setCurrentPhase(settings.personaId === "wealth-manager" ? "SOP_01_OPENING" : "");
-    setVisitedPhases(settings.personaId === "wealth-manager" ? ["SOP_01_OPENING"] : []);
+    setCurrentPhase(settings.personaId === "lamborghini-concierge" ? "SOP_01_OPENING" : "");
+    setVisitedPhases(settings.personaId === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []);
     setPhaseDirective(null);
     setConfirmedBooking(null);
     compressionFired.current = false;
@@ -208,8 +208,8 @@ export function useVoiceSession() {
       voice: p.defaultVoice || current.voice,
       instructions: value === "custom" ? customInstructions.current : "",
     }));
-    setCurrentPhase(value === "wealth-manager" ? "SOP_01_OPENING" : "");
-    setVisitedPhases(value === "wealth-manager" ? ["SOP_01_OPENING"] : []);
+    setCurrentPhase(value === "lamborghini-concierge" ? "SOP_01_OPENING" : "");
+    setVisitedPhases(value === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []);
     setPhaseDirective(null);
     setConfirmedBooking(null);
     resetConversation();
