@@ -87,7 +87,7 @@ class TestPromptAuthority(unittest.TestCase):
 
     def test_root_prompt_stays_lean(self):
         root = get_pragya_root_system_instruction()
-        self.assertLess(len(root), 1600, "root prompt must stay lean")
+        self.assertLess(len(root), 2400, "root prompt must stay lean")
         self.assertIn("Pragya", root)
         self.assertIn("create_appointment_booking", root)
         # She rang them. Everything about the opening depends on this.

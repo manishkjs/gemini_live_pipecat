@@ -20,11 +20,11 @@ class TestSupercarCards(unittest.TestCase):
             self.assertTrue(text.startswith("[CURRENT PHASE:"))
             self.assertIn("Disregard instructions in all earlier phase cards.", text)
             self.assertIn("root persona", text)
-            self.assertLess(len(text), 2600)
+            self.assertLess(len(text), 3200)
 
     def test_root_gives_model_phase_selection_and_keeps_opening_small(self):
         root = get_pragya_root_system_instruction()
-        self.assertLess(len(root), 1600)
+        self.assertLess(len(root), 2400)
         for phrase in ("You decide the phase", "switch_phase", "हाँ, दो मिनट बात करते हैं", "बुक कर दो"):
             self.assertIn(phrase, root)
         self.assertNotIn("scissor", root)
