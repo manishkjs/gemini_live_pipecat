@@ -80,6 +80,25 @@ from google.genai.types import (
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
+
+def estimate_tokens(text: str) -> int:
+    """Approximate the token cost of a string.
+
+    Everything this system reports about prompt size is in tokens, because
+    tokens are what gets billed and what fills the context window. Characters
+    are an implementation detail of the encoding and mean nothing to the model.
+
+    The estimate is script-aware on purpose. Latin text runs about 3.8
+    characters per token, but Devanagari runs closer to 1.8 — a single divisor
+    would understate Pragya's Hindi cards by roughly half and make the injected
+    payloads look free when they are not.
+    """
+    if not text:
+        return 0
+    devanagari = sum(1 for ch in text if "\u0900" <= ch <= "\u097f")
+    return round(devanagari / 1.8 + (len(text) - devanagari) / 3.8)
+
+
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
@@ -439,7 +458,7 @@ class GeminiSessionLoggerMixin:
             return False
         try:
             await self._create_single_response([{"role": "user", "content": text}])
-            logger.info(f"[{tag}] Delivered to model ({len(text)} chars).")
+            logger.info(f"[{tag}] Delivered to model (~{estimate_tokens(text)} tok).")
             return True
         except Exception as e:
             logger.error(f"[{tag}] Injection failed: {e}")
@@ -606,8 +625,10 @@ class GeminiSessionLoggerMixin:
             f"• DO NOT repeat greetings, do NOT re-introduce yourself, and do NOT verbally acknowledge this transcript update."
         )
 
+        injected_tokens = estimate_tokens(injected_transcript)
+
         logger.info(
-            f"🗜️ [FactStore Injection] Compression compaction triggered! Session turns: {len(history)}, Injecting: last {len(capped_history)} turns ({len(injected_transcript)} chars).\n"
+            f"🗜️ [FactStore Injection] Compression compaction triggered! Session turns: {len(history)}, Injecting: last {len(capped_history)} turns (~{injected_tokens} tok).\n"
             f"==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
             f"{total_transcript}\n"
             f"============================================================================================\n"
@@ -627,11 +648,11 @@ class GeminiSessionLoggerMixin:
             )
             logger.info(
                 f"🗜️ [FactStore Injection] Successfully injected last {len(capped_history)} dialogue turns "
-                f"({len(injected_transcript)} chars) into model context via send_client_content(turn_complete=False)."
+                f"(~{injected_tokens} tok) into model context via send_client_content(turn_complete=False)."
             )
             append_diagnostic_log(
                 "🗜️ FactStore Injected",
-                f"Restored last {len(capped_history)} turns ({len(injected_transcript)} chars) of verbatim transcript into context."
+                f"Restored last {len(capped_history)} turns (~{injected_tokens} tok) of verbatim transcript into context."
             )
         except Exception as e:
             logger.error(f"❌ [FactStore Injection] Error sending client_content: {e}")

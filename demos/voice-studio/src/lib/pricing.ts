@@ -208,11 +208,22 @@ export function formatCost(usd: number): string {
 
 /**
  * Estimates LLM token count for a text string.
- * Standard heuristic (~3.8 characters per token for multi-turn prompts).
+ *
+ * Script-aware, and mirrors `estimate_tokens()` in `server/agent_live.py` so
+ * the two halves of the app never disagree about the size of a prompt. Latin
+ * text runs ~3.8 characters per token; Devanagari runs closer to ~1.8, so a
+ * single divisor would let a Hindi instruction blow the budget while the
+ * counter still read comfortably under it.
  */
 export function estimateTokens(text: string): number {
-  if (!text || !text.trim()) return 0;
-  return Math.max(1, Math.round(text.trim().length / 3.8));
+  const t = text?.trim();
+  if (!t) return 0;
+  let devanagari = 0;
+  for (const ch of t) {
+    const c = ch.codePointAt(0)!;
+    if (c >= 0x0900 && c <= 0x097f) devanagari++;
+  }
+  return Math.max(1, Math.round(devanagari / 1.8 + (t.length - devanagari) / 3.8));
 }
 
 /* ==========================================================================

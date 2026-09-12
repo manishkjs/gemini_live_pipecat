@@ -15,7 +15,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     active, copied, copyTranscript, custom, duration, engineName, followTranscript,
     latency, messages, partialUser, persona, phase, reduced, sessionCostUSD,
     settings, setShowInlineEditor, showInlineEditor, tokenCount, tokenSplit, transcript,
-    update, currentPhase, visitedPhases, phaseDirective, confirmedBooking,
+    update, currentPhase, visitedPhases,
   } = studio;
 
   // Resolve against the selected tone. Reading `persona.prompt` directly showed
@@ -96,18 +96,6 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
         <div className="transcript-sop-bar" aria-label="SOP journey tracker">
           <div className="sop-bar-header">
             <span className="eyebrow">{promptLocked ? "LIVE SOP PHASE ENGINE" : "DEMO FOCUS"}</span>
-            {phaseDirective && (
-              <span className="sop-directive-pill" title={phaseDirective}>
-                <Zap size={11} />
-                <span>{phaseDirective}</span>
-              </span>
-            )}
-            {confirmedBooking && (
-              <span className="sop-confirmed-pill">
-                <Check size={11} />
-                <span>Booked: {confirmedBooking.center_name || "Lounge"} ({confirmedBooking.booking_id})</span>
-              </span>
-            )}
           </div>
           <ol className="phase-track">
             {persona.journey.map((step, i) => {
