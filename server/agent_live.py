@@ -442,12 +442,20 @@ class GeminiSessionLoggerMixin:
             }
         }))
 
-    async def inject_directive(self, text: str, tag: str = "Directive") -> bool:
+    async def inject_directive(
+        self, text: str, tag: str = "Directive", speak_now: bool = True
+    ) -> bool:
         """Hand the live model an out-of-band, user-role instruction mid-call.
 
         This is the one supported way to steer a session that is already open
         (mid-call SOP cards, repeat-after-filler prompts, and anything else that
         must reach the model without the caller having said it).
+
+        ``speak_now=True`` commits the turn, so the model answers the directive
+        immediately — right for "say this now", wrong for anything else. With
+        ``speak_now=False`` the text is appended to context without closing the
+        turn, so it silently shapes the model's *next* reply to the caller
+        instead of racing it.
 
         Returns ``True`` only when the turn actually reached the model. Callers
         report *delivery*, not intent — a phase light that claims a new prompt
@@ -457,8 +465,15 @@ class GeminiSessionLoggerMixin:
             logger.warning(f"[{tag}] Not delivered — session is not live.")
             return False
         try:
-            await self._create_single_response([{"role": "user", "content": text}])
-            logger.info(f"[{tag}] Delivered to model (~{estimate_tokens(text)} tok).")
+            if speak_now:
+                await self._create_single_response([{"role": "user", "content": text}])
+            else:
+                await self._session.send_client_content(
+                    turns=[Content(role="user", parts=[Part(text=text)])],
+                    turn_complete=False,
+                )
+            mode = "speaks now" if speak_now else "silent"
+            logger.info(f"[{tag}] Delivered to model (~{estimate_tokens(text)} tok, {mode}).")
             return True
         except Exception as e:
             logger.error(f"[{tag}] Injection failed: {e}")

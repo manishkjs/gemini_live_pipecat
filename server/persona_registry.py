@@ -246,26 +246,14 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.JIT_PHASE_CARDS
 
-    #: Which authored SOP card to hand the model when the funnel advances.
+    #: The one phase that is deliberately not delivered as a card.
     #:
-    #: The tracker models the *call's* four observable states; the card deck was
-    #: authored around six *topics*, several of which (pricing, service
-    #: override, objections) are things a caller can raise at any point rather
-    #: than places the funnel gets to. They are reached by the model's own
-    #: judgement via the navigation footer, not by this map.
-    #:
-    #: Two deliberate omissions:
-    #: * ``SOP_01_OPENING`` — the opening is already the root system
-    #:   instruction; the tracker starts there and never "moves" into it.
-    #: * ``SOP_04_BOOKED`` — by then the booking tool result is already coming
-    #:   back with the confirmation to read out. Pushing the booking card there
-    #:   would tell Pragya to start asking for a city she has just booked.
-    PHASE_CARD_FOR: Dict[str, str] = {
-        "SOP_02_DISCOVERY": "SOP_02_PRODUCT_DISCOVERY",
-        # The caller has just given a city or PIN code. That is the booking
-        # card's own trigger, so hand her the booking play immediately.
-        "SOP_03_PINCODE": "SOP_04_STORE_BOOKING",
-    }
+    #: The deck is keyed by the tracker's own phase IDs, so every other advance
+    #: looks its card up directly — there is no translation table to drift.
+    #: ``SOP_01_OPENING`` is excluded because the opening already *is* the root
+    #: system instruction: the tracker starts there and never "moves" into it,
+    #: so pushing that card would re-brief her on a call she has already begun.
+    CARDLESS_PHASES = frozenset({"SOP_01_OPENING"})
 
     def __init__(self) -> None:
         self._tracker = None
@@ -299,16 +287,20 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return list(SUPERCAR_TOOL_SCHEMAS)
 
     async def _push_phase_card(self, phase_id: str, reason: str = "") -> bool:
-        """Deliver the SOP card for ``phase_id`` into the live session.
+        """Deliver the card for ``phase_id`` into the live session, silently.
 
         Returns whether the model actually received it. The phase light is only
         honest if it reports delivery — otherwise the UI says "new prompt is in"
         while Pragya is still working off the old one.
+
+        The card is injected with ``speak_now=False``: it is a brief for her
+        *next* reply to the caller, not something to answer out loud. Committing
+        the turn here made her respond to the card and collide with the reply
+        she was already forming.
         """
         from loguru import logger
 
-        card_key = self.PHASE_CARD_FOR.get(phase_id)
-        if not card_key:
+        if phase_id in self.CARDLESS_PHASES:
             return False
 
         inject = getattr(self._llm, "inject_directive", None)
@@ -317,25 +309,18 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
             # The phase still advances; it just cannot claim a card went in.
             return False
 
-        from supercar_cards import (
-            PRAGYA_SUPERCAR_CARDS,
-            format_supercar_prompt_card,
-            get_immediate_directive,
-        )
+        from supercar_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
 
-        card = PRAGYA_SUPERCAR_CARDS.get(card_key)
+        card = PRAGYA_SUPERCAR_CARDS.get(phase_id)
         if card is None:
-            logger.warning(f"[Pragya/Card] No card authored for {card_key}.")
+            logger.warning(f"[Pragya/Card] No card authored for {phase_id}.")
             return False
 
-        # The immediate directive leads, because the card lands mid-call and the
-        # first thing the model needs is a sentence to say, not a document to
-        # read. The full card then governs the rest of the phase.
-        payload = (
-            f"DO THIS NOW: {get_immediate_directive(card)}\n\n"
-            f"{format_supercar_prompt_card(card, context=reason)}"
+        delivered = await inject(
+            format_supercar_prompt_card(card, context=reason),
+            tag=f"Pragya/Card {phase_id}",
+            speak_now=False,
         )
-        delivered = await inject(payload, tag=f"Pragya/Card {card_key}")
         return bool(delivered)
 
     async def on_user_transcript(self, text: str, broadcast=None) -> None:
@@ -393,18 +378,26 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                 # An executed booking is the only evidence that closes the
                 # funnel -- the caller merely agreeing is not.
                 moved = self.tracker.observe_booking_confirmed()
-                if broadcast and moved:
-                    await broadcast(
-                        {
-                            "type": "phase_transition",
-                            "phase_id": moved,
-                            "title": self.tracker.title_of(moved),
-                            "reason": "appointment confirmed",
-                            # No card here on purpose: the tool result itself is
-                            # the new instruction, and it is already in flight.
-                            "card_pushed": False,
-                        }
+                if moved:
+                    # Lands just ahead of the tool result, so the confirmation
+                    # she reads out is already governed by the aftercare card.
+                    card_pushed = await self._push_phase_card(
+                        moved, reason="appointment confirmed"
                     )
+                    logger.info(
+                        f"[Pragya/Phase] -> {moved} ({self.tracker.title_of(moved)}) "
+                        f"card_pushed={card_pushed}"
+                    )
+                    if broadcast:
+                        await broadcast(
+                            {
+                                "type": "phase_transition",
+                                "phase_id": moved,
+                                "title": self.tracker.title_of(moved),
+                                "reason": "appointment confirmed",
+                                "card_pushed": card_pushed,
+                            }
+                        )
                 if broadcast:
                     await broadcast(
                         {

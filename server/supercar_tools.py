@@ -22,7 +22,7 @@ LAMBORGHINI_CENTERS: Dict[str, Dict[str, Any]] = {
         "city": "Mumbai",
         "address": "Maker Maxity, 3 North Avenue, Bandra Kurla Complex (BKC), Mumbai 400051",
         "phone": "+91 22 6789 0000",
-        "models_available": ["Lamborghini Gallardo", "Lamborghini Aventador", "Lamborghini Urus"],
+        "models_available": ["Lamborghini Revuelto", "Lamborghini Urus SE", "Lamborghini Temerario"],
     },
     "LAMBO_DEL_AERO": {
         "center_id": "LAMBO_DEL_AERO",
@@ -30,7 +30,7 @@ LAMBORGHINI_CENTERS: Dict[str, Dict[str, Any]] = {
         "city": "New Delhi",
         "address": "Asset 5A, Worldmark 2, Delhi Aerocity, New Delhi 110037",
         "phone": "+91 11 4567 0000",
-        "models_available": ["Lamborghini Gallardo", "Lamborghini Aventador", "Lamborghini Urus"],
+        "models_available": ["Lamborghini Revuelto", "Lamborghini Urus SE", "Lamborghini Temerario"],
     },
     "LAMBO_BLR_LAV": {
         "center_id": "LAMBO_BLR_LAV",
@@ -38,7 +38,7 @@ LAMBORGHINI_CENTERS: Dict[str, Dict[str, Any]] = {
         "city": "Bengaluru",
         "address": "10/1, Ground Floor, Lavelle Heights, Lavelle Road, Bengaluru 560001",
         "phone": "+91 80 4321 0000",
-        "models_available": ["Lamborghini Gallardo", "Lamborghini Aventador", "Lamborghini Urus"],
+        "models_available": ["Lamborghini Revuelto", "Lamborghini Urus SE", "Lamborghini Temerario"],
     },
 }
 

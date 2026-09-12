@@ -16,7 +16,7 @@ from persona_registry import (
     get_persona_architecture,
 )
 from supercar_cards import (
-    build_phase_card_payload,
+    PRAGYA_SUPERCAR_CARDS,
     format_supercar_prompt_card,
     get_pragya_phase_card,
     get_pragya_root_system_instruction,
@@ -98,39 +98,54 @@ class TestPromptAuthority(unittest.TestCase):
         self.assertEqual(arch.compose_system_prompt("You are Meera."), "You are Meera.")
 
 
-class TestPhaseCardPayload(unittest.IsolatedAsyncioTestCase):
-    async def test_discovery_card_payload(self):
-        card = get_pragya_phase_card("discovery")
-        payload = build_phase_card_payload(card, reason="caller asked about the V10")
-
-        self.assertEqual(payload["status"], "success")
-        self.assertEqual(payload["active_phase"], "SOP_02_PRODUCT_DISCOVERY")
-        # A sentence to say immediately, so the tool round-trip is not audible.
-        self.assertTrue(payload["immediate_directive"])
-
-        content = payload["card_content"]
-        for model in ("Gallardo", "Aventador", "Urus"):
-            self.assertIn(model, content)
-        self.assertIn("UNIVERSAL NAVIGATION COMPASS", content)
-
-    async def test_every_card_carries_the_full_compass(self):
-        """Non-linear jumping depends on every card advertising every target."""
-        for key in ["opening", "discovery", "pricing", "booking",
-                    "service_override", "objections"]:
-            content = format_supercar_prompt_card(get_pragya_phase_card(key))
-            self.assertIn("UNIVERSAL NAVIGATION COMPASS", content, key)
-            for target in ["opening", "discovery", "pricing", "booking",
-                           "service_override", "objections"]:
-                self.assertIn(f"phase='{target}'", content, f"{key} -> {target}")
-
-    async def test_service_override_halts_selling(self):
-        payload = build_phase_card_payload(
-            get_pragya_phase_card("service_override"), reason="gearbox failure"
+class TestPhaseCards(unittest.IsolatedAsyncioTestCase):
+    async def test_deck_is_keyed_by_tracker_phase_ids(self):
+        """One card per call state, so there is no mapping table to drift."""
+        self.assertEqual(
+            set(PRAGYA_SUPERCAR_CARDS),
+            {"SOP_01_OPENING", "SOP_02_DISCOVERY", "SOP_03_PINCODE", "SOP_04_BOOKED"},
         )
-        content = payload["card_content"]
-        self.assertIn("STRICT OVERRIDE", content)
-        self.assertIn("Lamborghini Official Service Concierge", content)
-        self.assertIn("STOP SELLING NOW", payload["immediate_directive"])
+
+    async def test_discovery_card_names_only_the_current_lineup(self):
+        content = format_supercar_prompt_card(
+            get_pragya_phase_card("discovery"), context="caller asked about the V12"
+        )
+        for model in ("Revuelto", "Urus SE", "Temerario"):
+            self.assertIn(model, content)
+        self.assertIn("caller asked about the V12", content)
+
+    async def test_every_card_carries_the_always_block(self):
+        for key in PRAGYA_SUPERCAR_CARDS:
+            content = format_supercar_prompt_card(get_pragya_phase_card(key))
+            self.assertIn("— ALWAYS —", content, key)
+            self.assertIn("create_appointment_booking", content, key)
+            # The owner-in-trouble override is no longer a phase; it is a
+            # standing rule, so it must ride on every single card.
+            self.assertIn("trouble with a car they already own", content, key)
+
+    async def test_no_card_sends_her_after_a_tool_that_does_not_exist(self):
+        """A card naming an undeclared tool makes her narrate a dead step."""
+        for key in PRAGYA_SUPERCAR_CARDS:
+            content = format_supercar_prompt_card(get_pragya_phase_card(key))
+            for ghost in ["get_phase_card", "get_exp_center", "service_override("]:
+                self.assertNotIn(ghost, content, f"{key} -> {ghost}")
+
+    async def test_each_stage_hands_off_with_the_callers_consent(self):
+        """A stage ends by asking to move on, so the funnel never lurches."""
+        for key in ["SOP_01_OPENING", "SOP_02_DISCOVERY", "SOP_03_PINCODE"]:
+            self.assertIn("EXIT", PRAGYA_SUPERCAR_CARDS[key].directive, key)
+
+    async def test_the_stage_vocabulary_stays_internal(self):
+        """The caller hears "shall we look at your nearest Lounge?", not "phase 3"."""
+        for key in PRAGYA_SUPERCAR_CARDS:
+            content = format_supercar_prompt_card(get_pragya_phase_card(key))
+            self.assertIn('"phase", "stage" or "SOP" aloud', content, key)
+
+    async def test_opening_stage_sells_nothing(self):
+        """Availability first. A price quoted in stage 1 is how a call dies."""
+        directive = PRAGYA_SUPERCAR_CARDS["SOP_01_OPENING"].directive
+        self.assertIn("callback", directive.lower())
+        self.assertNotIn("crore", directive)
 
     async def test_booking_returns_reference_and_broadcasts(self):
         arch = JITPhaseCardsArchitecture()
@@ -253,21 +268,23 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
         await arch.on_user_transcript("Revuelto ke baare mein batao", broadcast)
 
         self.assertEqual(len(llm.injected), 1)
-        text, tag = llm.injected[0]
-        self.assertIn("SOP_02_PRODUCT_DISCOVERY", tag)
-        self.assertIn("DO THIS NOW:", text)
-        self.assertIn("[ACTIVE_SOP_DIRECTIVE: SOP_02_PRODUCT_DISCOVERY", text)
+        text, tag, speak_now = llm.injected[0]
+        self.assertIn("SOP_02_DISCOVERY", tag)
+        self.assertIn("[STAGE 2 OF 4", text)
+        # Silent: the card briefs her next reply, it is not a turn to answer.
+        self.assertFalse(speak_now)
         self.assertTrue(events[0]["card_pushed"])
 
-    async def test_a_pincode_pushes_the_booking_card(self):
-        """Giving a city or PIN is the booking card's own trigger."""
+    async def test_a_pincode_pushes_the_lounge_matching_card(self):
+        """Giving a city or PIN is what stage 3 exists to handle."""
         llm = _RecordingLLM()
         arch = self._arch_with(llm)
         broadcast, events = self._recorder()
 
         await arch.on_user_transcript("mera pincode 110037 hai", broadcast)
 
-        self.assertIn("SOP_04_STORE_BOOKING", llm.injected[0][1])
+        self.assertIn("SOP_03_PINCODE", llm.injected[0][1])
+        self.assertIn("[STAGE 3 OF 4", llm.injected[0][0])
         self.assertEqual(events[0]["phase_id"], "SOP_03_PINCODE")
         self.assertTrue(events[0]["card_pushed"])
 
@@ -278,13 +295,28 @@ class TestPhaseAdvanceDeliversItsCard(unittest.IsolatedAsyncioTestCase):
         await arch.on_user_transcript("haan ji theek hai", broadcast)
         self.assertEqual(llm.injected, [])
 
+    async def test_a_confirmed_booking_pushes_the_aftercare_card(self):
+        """Stage 4 used to be a dead end; she now gets a brief for the close."""
+        llm = _RecordingLLM()
+        arch = self._arch_with(llm)
+
+        await llm.handlers["create_appointment_booking"](
+            _Params({"pincode": "400051", "date": "Saturday", "time": "4:00 PM"})
+        )
+
+        self.assertEqual(len(llm.injected), 1)
+        text, tag, speak_now = llm.injected[0]
+        self.assertIn("SOP_04_BOOKED", tag)
+        self.assertIn("[STAGE 4 OF 4", text)
+        self.assertFalse(speak_now)
+
     async def test_each_card_is_pushed_at_most_once(self):
         """The tracker is monotonic, so a phase's card must not be re-sent."""
         llm = _RecordingLLM()
         arch = self._arch_with(llm)
         broadcast, _ = self._recorder()
 
-        for text in ["Urus dikhao", "Aventador bhi batao", "Revuelto ke baare mein"]:
+        for text in ["Urus dikhao", "Temerario bhi batao", "Revuelto ke baare mein"]:
             await arch.on_user_transcript(text, broadcast)
 
         self.assertEqual(len(llm.injected), 1)
@@ -340,8 +372,8 @@ class _RecordingLLM:
     def register_function(self, name, handler):
         self.handlers[name] = handler
 
-    async def inject_directive(self, text, tag="Directive"):
-        self.injected.append((text, tag))
+    async def inject_directive(self, text, tag="Directive", speak_now=True):
+        self.injected.append((text, tag, speak_now))
         return self._delivers
 
 
