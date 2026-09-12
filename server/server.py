@@ -125,7 +125,7 @@ async def websocket_endpoint(
     skip_stt: bool = False,
     vad: bool = True,
     context_compression: bool = True,
-    context_compression_trigger_tokens: Optional[int] = 2500,
+    context_compression_trigger_tokens: Optional[int] = 5000,
     thinking: bool = False,
     thinking_level: Optional[str] = None,
     # Opaque, single-use handle minted by /connect. Raw cloning keys are
@@ -158,7 +158,7 @@ async def websocket_endpoint(
                 tools=tools,
                 vad=vad,
                 context_compression=context_compression,
-                context_compression_trigger_tokens=max(2000, context_compression_trigger_tokens) if context_compression_trigger_tokens is not None else 2500,
+                context_compression_trigger_tokens=max(5000, context_compression_trigger_tokens) if context_compression_trigger_tokens is not None else 5000,
                 thinking=thinking,
                 thinking_level=thinking_level,
                 custom_voice_key=custom_voice_key,
@@ -265,10 +265,10 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             if "context_compression_trigger_tokens" in body:
                 try:
                     raw_val = int(body["context_compression_trigger_tokens"])
-                    # Allow down to 2,000 tokens (tested trigger threshold)
-                    params_dict["context_compression_trigger_tokens"] = str(max(2000, raw_val))
+                    # Strictly enforce minimum 5,000 tokens (upstream Vertex Live protocol limit)
+                    params_dict["context_compression_trigger_tokens"] = str(max(5000, raw_val))
                 except (ValueError, TypeError):
-                    params_dict["context_compression_trigger_tokens"] = "2500"
+                    params_dict["context_compression_trigger_tokens"] = "5000"
 
             if "thinking" in body:
                 params_dict["thinking"] = "true" if body["thinking"] else "false"

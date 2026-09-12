@@ -91,7 +91,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   skipStt: false,
   vad: true,
   contextCompression: false,
-  contextCompressionTokens: 2500,
+  contextCompressionTokens: 5000,
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
@@ -349,8 +349,8 @@ export function buildConnectRequest(settings: SessionSettings) {
     }
   }
   if (settings.contextCompression) {
-    const rawTokens = settings.contextCompressionTokens ?? 2500;
-    body.context_compression_trigger_tokens = Math.max(2000, isNaN(rawTokens) ? 2500 : rawTokens);
+    const rawTokens = settings.contextCompressionTokens ?? 5000;
+    body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
   }
   // A voice cloning key is a credential. It travels in the POST body only, and
   // the server exchanges it for an opaque, short-lived voice_profile_id before
