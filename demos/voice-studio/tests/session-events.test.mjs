@@ -59,6 +59,27 @@ async function harness() {
   return { render, send, connections };
 }
 
+test('Cascade cost passes through the actual event decoder and resets per call', async () => {
+  const h = await harness();
+  await h.render().startBackend('cascade');
+  const session_id = h.connections[0].sessionId;
+  const payload = {type:'cascade_cost', session_id, revision:2, currency:'USD', basis:'public-list-price',
+    reviewed_at:'2026-09-13', known_usd:'0.01', complete:false,
+    stages:['stt','llm','tts'].map(stage => ({stage, known_usd:stage==='llm'?'0.01':'0', complete:stage==='llm',
+      disabled:false, requests:1, issues:stage==='llm'?[]:['Awaiting usage'], rates:[]}))};
+  h.send({type:'metrics', payload});
+  assert.equal(h.render().cascadeCost.known_usd, '0.01');
+  h.send({type:'metrics', payload:{...payload, revision:1, known_usd:'99'}});
+  assert.equal(h.render().cascadeCost.revision, 2);
+  assert.equal(h.render().tokenCount, 0); // Costs never masquerade as LLM token events.
+  await h.render().endSession();
+  await h.render().startBackend('cascade');
+  assert.equal(h.render().cascadeCost, null);
+  h.send({type:'metrics', payload});
+  assert.equal(h.render().cascadeCost, null);
+  await h.render().endSession();
+});
+
 test('late metrics update their response, including when another reply already exists', async () => {
   const h = await harness();
   await h.render().startBackend();

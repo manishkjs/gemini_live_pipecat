@@ -136,6 +136,24 @@ def is_persona_ui_editable(persona_id: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def standard_function_schemas(declarations):
+    """Keep the architecture contract provider-neutral for both Live and Cascade."""
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    result = []
+    for declaration in declarations:
+        if isinstance(declaration, FunctionSchema):
+            result.append(declaration)
+            continue
+        parameters = declaration.parameters.model_dump(mode="json", exclude_none=True) if declaration.parameters else {}
+        result.append(FunctionSchema(
+            name=declaration.name,
+            description=declaration.description or "",
+            properties=parameters.get("properties", {}),
+            required=parameters.get("required", []),
+        ))
+    return result
+
+
 class BasePersonaArchitecture(ABC):
     """One persona execution strategy: its tools, its handlers, its state.
 
@@ -502,7 +520,7 @@ class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
         tools = [get_portfolio_summary_schema, get_fund_nav_details_schema, manage_sip_order_schema]
         if engine != "cascade":
             tools.append(switch_phase_schema)
-        return tools
+        return standard_function_schemas(tools)
 
     async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
         from loguru import logger
@@ -630,8 +648,8 @@ class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         from glass_buddy_tools import ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema
         if engine == "cascade":
-            return list(ALL_GLASS_BUDDY_TOOL_SCHEMAS)
-        return [*ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema]
+            return standard_function_schemas(ALL_GLASS_BUDDY_TOOL_SCHEMAS)
+        return standard_function_schemas([*ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema])
 
     async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
         from loguru import logger

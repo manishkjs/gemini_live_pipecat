@@ -11,6 +11,7 @@ import { getPersona, type PersonaId } from "@/lib/personas";
 import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
+import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /**
@@ -51,6 +52,8 @@ export function useVoiceSession() {
   const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
   const [sessionCostBounds, setSessionCostBounds] = useState({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
   const ledger = useRef(new UsageLedger());
+  const [cascadeCost, setCascadeCost] = useState<CascadeCost | null>(null);
+  const cascadeCostRevision = useRef(-1);
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const seenEvents = useRef(new Set<string>());
   const starting = useRef(false);
@@ -191,6 +194,8 @@ export function useVoiceSession() {
     setTokenCount(0);
     setTokenSplit(EMPTY_TOKEN_SPLIT);
     setSessionCostUSD(0);
+    setCascadeCost(null);
+    cascadeCostRevision.current = -1;
     setInterruptCount(0);
     setCurrentPhase(personaId === "lamborghini-concierge" ? "SOP_01_OPENING" : "");
     setVisitedPhases(personaId === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []);
@@ -329,7 +334,14 @@ export function useVoiceSession() {
         },
         onMetricUpdate: (type, val) => {
           if (run.current !== current) return;
-          if (type === "phase_transition") {
+          if (type === "cascade_cost") {
+            if (targetEngine !== "cascade") return;
+            const cost = readCascadeCost(val, activeSettings.sessionId!, cascadeCostRevision.current);
+            if (cost) {
+              cascadeCostRevision.current = cost.revision;
+              setCascadeCost(cost);
+            }
+          } else if (type === "phase_transition") {
             if (Number.isSafeInteger(val?.revision)) {
               if (val.revision <= phaseRevision.current) return;
               phaseRevision.current = val.revision;
@@ -465,7 +477,7 @@ export function useVoiceSession() {
     // state
     settings, phase, source, messages, elapsed, muted, sound, error, copied,
     latency, track, partialUser, settingsOpen, showInlineEditor,
-    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, interruptCount,
+    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     // phase tracking & booking
     currentPhase, visitedPhases, phaseDirective, phaseDelivery, confirmedBooking,

@@ -38,6 +38,8 @@ from google.genai import types
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 import voice_profiles
+from cascade_pricing import CascadeCostLedger
+from cascade_metering import publish_cost, observe_tokens, billed_duration
 
 
 VALID_STT_MODELS = {
@@ -187,6 +189,12 @@ class CustomGeminiTranscribeLiveService(STTService):
             try:
                 async with self._client.aio.live.connect(model=self.model_name, config=config) as session:
                     logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
+                    meter = getattr(self, "_cascade_meter", None)
+                    cost_key = meter.begin(
+                        "stt", self.model_name, "gemini" if self.is_ai_studio else "vertex", self.location,
+                        issue="Transcribe Live usage scope needs runtime verification",
+                    ) if meter else None
+                    await publish_cost(self)
 
                     async def send_audio():
                         while True:
@@ -202,6 +210,9 @@ class CustomGeminiTranscribeLiveService(STTService):
 
                     async def receive_transcripts():
                         async for response in session.receive():
+                            if meter and getattr(response, "usage_metadata", None):
+                                observe_tokens(meter, cost_key, response.usage_metadata)
+                                await publish_cost(self)
                             server_content = getattr(response, "server_content", None)
                             if not server_content:
                                 continue
@@ -306,8 +317,18 @@ class CustomGoogleSTTService(GoogleSTTService):
             yield req
 
     async def _process_responses(self, streaming_recognize):
+        meter = getattr(self, "_cascade_meter", None)
+        cost_key = meter.begin("stt", self._settings.model, "cloud-speech-v2", self._location, in_flight=True) if meter else None
+        drained = False
+        await publish_cost(self)
         try:
             async for response in streaming_recognize:
+                if meter:
+                    seconds = billed_duration(getattr(response, "metadata", None))
+                    if seconds is not None:
+                        # Each stream has a separate key; repeated request totals replace.
+                        meter.update(cost_key, usage={"billed_seconds": seconds}, complete=True)
+                        await publish_cost(self)
                 if (int(time.time() * 1000) - self._stream_start_time) > self.STREAMING_LIMIT:
                     logger.debug("Stream timeout reached in response processing")
                     break
@@ -396,9 +417,15 @@ class CustomGoogleSTTService(GoogleSTTService):
                                 result=result,
                             )
                         )
+            else:
+                drained = True
         except Exception as e:
             logger.debug(f"CustomGoogleSTTService response note: {e}")
             raise
+        finally:
+            if meter:
+                meter.update(cost_key, in_flight=False, pending_reason=None if drained else "Recognition ended before final billing was confirmed")
+                await publish_cost(self)
 
 
 class CustomVertexGeminiTTSService(GeminiTTSService):
@@ -414,6 +441,7 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
         self._client = genai.Client(vertexai=True, project=project_id, location=location)
         self._voice_prompt = voice_prompt
         self._language_code = language_code
+        self._cost_region = location
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
@@ -438,6 +466,10 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
 
     async def run_tts(self, text: str, context_id: str):
         logger.debug(f"{self}: Generating TTS [{text}]")
+        meter = getattr(self, "_cascade_meter", None)
+        cost_key = meter.begin("tts", self._settings.model, "vertex", self._cost_region) if meter else None
+        completed = False
+        await publish_cost(self)
         try:
             await self.start_ttfb_metrics()
 
@@ -478,6 +510,9 @@ Pace: Conversational.
             async for chunk in await self._client.aio.models.generate_content_stream(
                 model=self._settings.model, contents=structured_prompt, config=generate_content_config,
             ):
+                # A final usage-only chunk can have no candidates or audio.
+                if meter and getattr(chunk, "usage_metadata", None):
+                    observe_tokens(meter, cost_key, chunk.usage_metadata)
                 if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
                     continue
                 part = chunk.candidates[0].content.parts[0]
@@ -490,13 +525,39 @@ Pace: Conversational.
                         if not chunk_bytes: break
                         yield TTSAudioRawFrame(chunk_bytes, self.sample_rate or 24000, 1)
 
+            completed = True
             yield TTSStoppedFrame()
         except Exception as e:
             logger.exception(f"{self} error generating TTS: {e}")
             yield ErrorFrame(error=f"Gemini TTS generation error: {str(e)}")
+        finally:
+            if meter:
+                meter.update(cost_key, complete=completed,
+                             issue=None if completed else "TTS ended before final usage was confirmed")
+                await publish_cost(self)
 
 
 class CustomGoogleTTSService(GoogleTTSService):
+    async def _stream_tts(self, streaming_config, text, context_id, prompt=None):
+        meter = getattr(self, "_cascade_meter", None)
+        voice = getattr(self._settings, "voice", "")
+        model = "chirp3-instant-custom-voice" if self._voice_cloning_key else (
+            "chirp3-hd" if "-Chirp3-HD-" in voice else voice or "unknown-cloud-voice"
+        )
+        cost_key = meter.begin("tts", model, "cloud-tts") if meter else None
+        completed = False
+        await publish_cost(self)
+        try:
+            async for frame in super()._stream_tts(streaming_config, text, context_id, prompt):
+                yield frame
+            completed = True
+        finally:
+            if meter:
+                # Count the exact post-filter synthesis text, including whitespace.
+                meter.update(cost_key, usage={"characters": len(text)}, complete=completed,
+                             issue=None if completed else "Synthesis interrupted; billed characters unconfirmed")
+                await publish_cost(self)
+
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.time()
@@ -519,6 +580,34 @@ class CustomGoogleTTSService(GoogleTTSService):
                 }))
 
 class CustomGoogleVertexLLMService(GoogleVertexLLMService):
+    async def _stream_content(self, context):
+        meter = getattr(self, "_cascade_meter", None)
+        if meter is None:
+            return await super()._stream_content(context)
+        key = meter.begin("llm", self._settings.model, "vertex", self._location,
+                          input_mode=getattr(self, "_cost_input_mode", "unknown"))
+        await publish_cost(self)
+        try:
+            stream = await super()._stream_content(context)
+        except BaseException:
+            meter.update(key, issue="LLM request failed before final usage")
+            await publish_cost(self)
+            raise
+
+        async def metered_stream():
+            completed = False
+            try:
+                async for chunk in stream:
+                    if getattr(chunk, "usage_metadata", None):
+                        observe_tokens(meter, key, chunk.usage_metadata)
+                    yield chunk
+                completed = True
+            finally:
+                meter.update(key, complete=completed,
+                             issue=None if completed else "LLM stream interrupted; final usage unconfirmed")
+                await publish_cost(self)
+        return metered_stream()
+
     @property
     def response_identity(self):
         if not hasattr(self, "_response_identity"):
@@ -812,7 +901,9 @@ async def run_agent(
         ),
     }
     if cascade_tools:
-        llm_kwargs["tools"] = cascade_tools
+        llm_kwargs["tools"] = [{
+            "function_declarations": [schema.to_default_dict() for schema in cascade_tools],
+        }]
 
     llm = CustomGoogleVertexLLMService(**llm_kwargs)
 
@@ -829,26 +920,6 @@ async def run_agent(
             llm, broadcast=broadcast_persona_event, engine="cascade"
         )
 
-    if clean_tts_model.startswith("gemini"):
-        # Use Gemini TTS (Vertex AI) requires 24kHz
-        tts_location = "global" if "gemini-3" in clean_tts_model else location
-        
-        tts_lang = "hi-IN"
-        if stt_language:
-            langs = [l.strip() for l in stt_language.split(",")]
-            hi_lang = next((l for l in langs if "hi" in l.lower()), None)
-            tts_lang = hi_lang if hi_lang else langs[0]
-
-        tts = CustomVertexGeminiTTSService(
-            project_id=project_id,
-            location=tts_location,
-            voice_id=tts_voice,
-            model=clean_tts_model, # Use the sanitized model
-            sample_rate=24000, 
-            voice_prompt=tts_voice_prompt,
-            language_code=tts_lang,
-            text_filters=[MarkdownTextFilter()]
-        )
     is_clone = voice_profiles.is_custom_clone_voice(tts_voice) or bool(custom_voice_key)
 
     if is_clone:
@@ -881,13 +952,9 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()],
         )
     elif clean_tts_model.startswith("gemini"):
-        # For Gemini TTS, we can use the same language as STT or fallback
-        # If Hindi is in languages, prefer Hindi for TTS voice prompt
-        tts_lang = "en-US"
-        if stt_languages:
-            langs = [l.code for l in stt_languages]
-            hi_lang = next((l for l in langs if "hi" in l.lower()), None)
-            tts_lang = hi_lang if hi_lang else langs[0]
+        tts_location = "global" if "gemini-3" in clean_tts_model else location
+        langs = [lang.strip() for lang in (stt_language or "en-US").split(",") if lang.strip()]
+        tts_lang = next((lang for lang in langs if lang.lower().startswith("hi")), None) or (langs or ["en-US"])[0]
 
         tts = CustomVertexGeminiTTSService(
             project_id=project_id,
@@ -910,6 +977,15 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()],
         )
 
+    # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
+    # still calls Cloud Speech for the displayed transcript. It is billable.
+    cost_meter = CascadeCostLedger(current_session_id())
+    llm._cascade_meter = cost_meter
+    llm._cost_input_mode = "audio" if skip_stt else "text"
+    tts._cascade_meter = cost_meter
+    if stt is not None:
+        stt._cascade_meter = cost_meter
+
     is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
     initial_greeting = "नमस्ते!" if is_hindi else "Hello!"
 
@@ -926,6 +1002,7 @@ async def run_agent(
             context,
             project_id=project_id,
             stt_languages=stt_languages,
+            cost_meter=cost_meter,
         )
         context_aggregator = LLMContextAggregatorPair(context)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)

@@ -195,6 +195,8 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       } else if (p.type === "tts_latency") {
         pendingTTSLatency = p.value ?? null;
         events.onMetricUpdate?.("tts_latency", p);
+      } else if (p.type === "cascade_cost") {
+        events.onMetricUpdate?.("cascade_cost", p);
       } else if (p.type === "usage") {
         const turnCost = settings.engine === "live" ? calculateTurnCost(settings.model, p.usage) : null;
         events.onMetricUpdate?.("usage", {

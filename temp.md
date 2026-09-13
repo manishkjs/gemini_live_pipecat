@@ -1,3 +1,7 @@
+# Latest implementation update — 2026-09-13 08:57:47 UTC: Cascade pricing and review (section 19)
+
+The owner has requested continued Cascade pricing and implementation of the fleet recommendations. Section 19 records implemented changes and verification gates. The verbatim discussion below is preserved.
+
 # ⚡ LATEST (13 Sep 2026): [agentchattr transcription](#agentchattr-transcription) & [Section 17 Blueprint](#17-multi-agent-fleet-review-dialectical-debate--implementation-blueprint-ui-changes-sep--13-september-2026)
 
 > [!IMPORTANT]
@@ -2588,3 +2592,49 @@ On @codex's acceptance-criteria table — measured / estimated / unavailable —
 PR #1 still awaits @Manish's green light. I've changed nothing. 🫡
 
 ---
+
+
+---
+
+## 19. Cascade pricing implementation and review of latest pushes — 2026-09-13 08:57:47 UTC
+
+**Reviewed executable baseline:** `080ff5b`; rebased onto documentation push `72e9c0b05696e83a14896810697e68fda4a65e96`; executable persona changes are in `080ff5b`. Sections 16–17 and the permanent telemetry post-mortem were pulled and read. The owner subsequently requested implementation of those recommendations; follow-up commits will record completed work with new UTC timestamps.
+
+### Implemented in this pricing change
+
+- Added server-owned per-call STT / LLM / TTS accounting and a compact expandable Voice Studio cost panel. Each provider request has a stable key; repeated streaming metadata replaces that request's usage. Session/revision checks reject stale or cross-call browser events.
+- Researched current Google prices for every configured Cascade LLM and Gemini TTS model, Transcribe Live, Cloud Speech v2 and named/cloned Chirp voices. Sources, units, formulas and local verification steps are in [`docs/cascade-pricing.md`](docs/cascade-pricing.md). Cloned voices have a different SKU from named Chirp voices.
+- Captured final usage-only chunks, cache and thinking counters, billed recognition duration, and actual synthesis text. Missing or interrupted usage is visibly partial, never silently free. The basis follows the existing public USD estimate convention; account-specific discounts were not supplied.
+- Found hidden billable work: **Skip STT still runs a background `latest_long` Cloud Speech request for display transcription.** Added that to the STT ledger, including empty results and cancellation. LLM audio input is billed separately.
+- Fixed Cascade Gemini TTS construction: removed the duplicate instance and the `Language.code` / uninitialized `stt_languages` failures. Verified both Skip STT settings.
+- Fixed tool schema compatibility: Cascade now passes actual Google `function_declarations`; Ananya/Kavya declarations are normalized to the architecture's standard schema contract for both engines. The actual Google SDK previously converted the raw schema list into empty tool entries. Tests now verify declaration names survive SDK conversion.
+- Existing Live pricing, observability controls, persona selection, custom instructions and model-driven phases are retained. The Cascade token label now explicitly identifies **LLM tokens**; separate speech units are not added into that token number.
+
+### Production gate that remains unresolved
+
+**Gemini 3.5 Transcribe Live pricing rates are known, but emitted usage scope is not verified.** The available guide does not establish whether updates are connection totals or per-segment deltas. The adapter captures usage and displays its rate but leaves STT unpriced with a clear reason. Consequently these calls show a partial subtotal. Do not remove this safeguard or substitute the published blended minute estimate.
+
+The local tester should provide one short trace containing timestamped numeric `usage_metadata`, connection boundaries and final-transcript markers across two utterances, silence and a reconnect, for the exact provider/model. No keys, audio or transcript text. Establish scope, write a trace fixture, and reconcile a test window with Cloud Billing before claiming a complete production cost. No paid provider call or invoice reconciliation was performed here.
+
+### Corrections to the fleet proposals before implementation
+
+1. **Section 16's card shims are not dead.** `persona_registry.py` and two test modules still import `supercar_cards`. Update all callers before removing any shim. `supercar_phases.py` is now a model-selected phase tracker and structured-field validator; it is not the described transcript-regex router.
+2. **Preserve the owner's no-regex speech routing decision.** The proposed booking revision checks can validate model-supplied structured fields and confirmation evidence. They do not authorize reintroducing transcript parsing or inventing proof of what the caller said. Any stronger confirmation UX needs an explicit contract.
+3. **A Cascade monolithic prompt is a current design choice.** Cascade can update context at subsequent request/tool boundaries; it cannot use a Live-only injection method mid-generation. Avoid documenting a universal platform prohibition.
+4. **Prompt cards do not delete old history.** Deferring unused cards can save input in early-ending calls; appending many cards can increase later retained context. Neither guaranteed savings nor “cards never save money” follows without matched call measurements. The reported zero-cache samples describe those observations, not every future provider/model configuration. Earlier section 13's per-audio-packet full-history claim and “virtually free / 100% reliable” Cascade claims must not be used as product facts.
+5. **Latency and cost need different identities.** A conversational turn ID can correlate latency; each LLM generation and each TTS request still needs distinct billing identity. Do not sum stage TTFBs as perceived turnaround, nor drop valid multi-sentence requests through a timer debounce. A single emitter alone does not guarantee duplicate delivery is impossible.
+
+### Confirmed follow-up defects
+
+- Ananya/Kavya `_switch_phase` returns `status=success` and broadcasts the requested `phase_id` even when card delivery fails. The hook advances on that event. Preserve the previously delivered phase on failure and commit UI state only on successful delivery; add revision/session evidence like Pragya.
+- `transcript-panel.tsx` still hardcodes Pragya's phase map. Ananya/Kavya phase events therefore cannot drive the correct active journey tile. Use explicit phase IDs in persona journey metadata, including the correct initial phase.
+- Static central persona prompt files are not yet the runtime source for `MonolithicArchitecture`. Centralization alone does not make client/server copies agree.
+- Clone selection still has separate correctness gaps: Live silently falls back when a selected key is absent; stale custom-key state can override a visible named voice; empty CustomKey can select the male default. These need explicit configuration validation and voice-control regression checks.
+- Booking prompt text can claim SMS/valet/vehicle availability without a matching tool result. Preserve mock tools but make their demonstrated effects truthful.
+- The telemetry parser, index-based stage sums, time debounce and process-wide log access described in section 17 are valid targets. Implement structured records and session isolation before relying on those graphs in demos.
+
+### Verification at this checkpoint
+
+- Focused backend suite: **127 passed, 2 subtests passed**; covers persona engines, booking, cards, response accounting, actual SDK schema conversion and provider-boundary pricing wrappers.
+- Voice Studio: **97 tests passed**; production build passed, with existing large-bundle warnings.
+- Python compilation and whitespace checks passed. Full media/provider dependency startup, real microphone sessions and billing reconciliation remain local verification gates. New pricing tests use pytest; `unittest discover` alone does not execute those function tests.

@@ -8,6 +8,7 @@ import { getPersonaPrompt } from "@/lib/personas";
 import { buildPersonaPromptUrl } from "@/lib/voice-session";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 import PersonaAvatar from "./persona-avatar";
+import CascadeCostPanel from "./cascade-cost-panel";
 
 /** Live transcript, per-turn telemetry badges and the empty-state briefing. */
 export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
@@ -402,6 +403,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
         </AnimatePresence>
       </div>
 
+      {settings.engine === "cascade" && <CascadeCostPanel cost={studio.cascadeCost} />}
       <div className="transcript-footer">
         <span>
           {active && <span className="status-dot is-active" />}
@@ -419,7 +421,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               (tokenSplit.residualOut ? ` + ${tokenSplit.residualOut.toLocaleString()} unattributed` : "")
             }
           >
-            Call tokens: {tokenCount.toLocaleString()}
+            {settings.engine === "cascade" ? "LLM tokens" : "Call tokens"}: {tokenCount.toLocaleString()}
             {tokenCount > 0 && (
               <span className="token-split">
                 {" ("}
