@@ -38,6 +38,8 @@ from google.genai import types
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 import voice_profiles
+from turn_telemetry import TurnTracker
+from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
 from cascade_pricing import CascadeCostLedger
 from cascade_metering import publish_cost, observe_tokens, billed_duration
 
@@ -97,7 +99,7 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         return await super().serialize(frame)
 
 
-class CustomGeminiTranscribeLiveService(STTService):
+class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
     """Speech-to-Text streaming service using Gemini 3.5 Transcribe Live.
     
     Supports both Vertex AI (Enterprise ADC) and Google AI Studio endpoints over WebSockets.
@@ -246,18 +248,16 @@ class CustomGeminiTranscribeLiveService(STTService):
                                         if 0.03 <= elapsed <= 10.0:
                                             stt_latency = elapsed
                                     
-                                    if stt_latency is None:
-                                        stt_latency = 0.12
-
-                                    logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
-                                    await self.push_frame(OutputTransportMessageFrame(message={
-                                        "label": "rtvi-ai",
-                                        "type": "server-message",
-                                        "data": {
-                                            'type': 'metrics',
-                                            'payload': {'type': 'stt_latency', 'value': stt_latency}
-                                        }
-                                    }))
+                                    if stt_latency is not None:
+                                        logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
+                                        await self.push_frame(OutputTransportMessageFrame(message={
+                                            "label": "rtvi-ai",
+                                            "type": "server-message",
+                                            "data": {
+                                                'type': 'metrics',
+                                                'payload': {'type': 'stt_latency', 'value': stt_latency}
+                                            }
+                                        }))
 
                                     primary_lang = self.languages[0].value if self.languages else "en-US"
                                     await self.push_frame(TranscriptionFrame(
@@ -296,7 +296,7 @@ class CustomGeminiTranscribeLiveService(STTService):
 
 
 
-class CustomGoogleSTTService(GoogleSTTService):
+class CustomGoogleSTTService(TurnOriginMixin, GoogleSTTService):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._stream_start_wall_time = None
@@ -374,8 +374,6 @@ class CustomGoogleSTTService(GoogleSTTService):
                                     elapsed = now - self._last_audio_sent_time
                                     if 0.03 <= elapsed <= 10.0:
                                         stt_latency = elapsed
-                                else:
-                                    stt_latency = 0.18
                         except Exception as calc_err:
                             logger.warning(f"STT Latency calculation warning: {calc_err}")
 
@@ -428,7 +426,7 @@ class CustomGoogleSTTService(GoogleSTTService):
                 await publish_cost(self)
 
 
-class CustomVertexGeminiTTSService(GeminiTTSService):
+class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
     def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-2.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
         # Pass a dummy API key since we're using Vertex.
         settings = GeminiTTSService.Settings(
@@ -445,24 +443,23 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"TTS Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'tts_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"TTS Latency: {latency:.3f}s")
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'tts_latency', 'value': latency}
+                }
+            }))
 
     async def run_tts(self, text: str, context_id: str):
         logger.debug(f"{self}: Generating TTS [{text}]")
@@ -537,7 +534,7 @@ Pace: Conversational.
                 await publish_cost(self)
 
 
-class CustomGoogleTTSService(GoogleTTSService):
+class CustomGoogleTTSService(TurnOriginMixin, GoogleTTSService):
     async def _stream_tts(self, streaming_config, text, context_id, prompt=None):
         meter = getattr(self, "_cascade_meter", None)
         voice = getattr(self._settings, "voice", "")
@@ -560,26 +557,25 @@ class CustomGoogleTTSService(GoogleTTSService):
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"TTS Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'tts_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"TTS Latency: {latency:.3f}s")
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'tts_latency', 'value': latency}
+                }
+            }))
 
-class CustomGoogleVertexLLMService(GoogleVertexLLMService):
+class CustomGoogleVertexLLMService(TurnOriginMixin, GoogleVertexLLMService):
     async def _stream_content(self, context):
         meter = getattr(self, "_cascade_meter", None)
         if meter is None:
@@ -652,24 +648,23 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"LLM Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'llm_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"LLM Latency: {latency:.3f}s")
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'llm_latency', 'value': latency}
+                }
+            }))
 
     async def start_llm_usage_metrics(self, metrics):
         await super().start_llm_usage_metrics(metrics)
@@ -920,29 +915,12 @@ async def run_agent(
             llm, broadcast=broadcast_persona_event, engine="cascade"
         )
 
-    is_clone = voice_profiles.is_custom_clone_voice(tts_voice) or bool(custom_voice_key)
-
+    is_clone = voice_profiles.is_custom_clone_voice(tts_voice)
+    if is_clone and clean_tts_model != "google-tts":
+        raise ValueError("Cloned voices require Google TTS (Chirp 3 HD). Select it before starting Cascade.")
+    cloned_key_content = voice_profiles.resolve_clone_key(tts_voice, custom_voice_key)
     if is_clone:
-        # Determine language code: voice cloning key in server/ is trained for hi-IN/en-IN
         tts_language = "hi-IN" if (stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"])) else "en-US"
-        cloned_key_content = None
-        if custom_voice_key:
-            if os.path.isfile(custom_voice_key):
-                with open(custom_voice_key, "r") as f:
-                    cloned_key_content = f.read().strip()
-            else:
-                cloned_key_content = custom_voice_key.strip()
-        elif voice_profiles.is_male_clone_voice(tts_voice):
-            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
-            if not cloned_key_content:
-                raise ValueError("CLONE_TTS_VOICE_KEY_MALE not set and voice_cloning_key_m.txt not found")
-        elif voice_profiles.is_female_clone_voice(tts_voice):
-            cloned_key_content = voice_profiles.load_voice_cloning_key("female")
-            if not cloned_key_content:
-                raise ValueError("CLONE_TTS_VOICE_KEY_FEMALE not set and voice_cloning_key_f.txt not found")
-        else:
-            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
-
         tts = CustomGoogleTTSService(
             voice_cloning_key=cloned_key_content,
             params=GoogleTTSService.InputParams(
@@ -979,6 +957,10 @@ async def run_agent(
 
     # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
     # still calls Cloud Speech for the displayed transcript. It is billable.
+    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
+    for service in (llm, tts, stt):
+        if service is not None:
+            service._turn_tracker = turn_tracker
     cost_meter = CascadeCostLedger(current_session_id())
     llm._cascade_meter = cost_meter
     llm._cost_input_mode = "audio" if skip_stt else "text"
@@ -1010,11 +992,14 @@ async def run_agent(
         pipeline_elements = [
             transport.input(),
             start_trigger,
+            *([vad_processor] if vad_processor else []),
+            TurnBoundaryProcessor(turn_tracker),
             accumulator,
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
             context_aggregator.assistant(),
+            ServerAudioTimingProcessor(),
             transport.output()
         ]
     else:
@@ -1023,7 +1008,9 @@ async def run_agent(
             {"role": "user", "content": initial_greeting}
         ])
         user_params = LLMUserAggregatorParams(
-            vad_analyzer=vad_analyzer,
+            # VADProcessor above owns audio analysis and broadcasts VAD frames.
+            # Feeding the same analyzer here again would process each PCM twice.
+            vad_analyzer=None,
         )
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
@@ -1032,6 +1019,7 @@ async def run_agent(
             transport.input(),
             start_trigger,
             *([vad_processor] if vad_processor else []),
+            TurnBoundaryProcessor(turn_tracker),
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
@@ -1039,6 +1027,7 @@ async def run_agent(
             TranscriptionBroadcaster(participant="Bot"),
             tts,
             context_aggregator.assistant(),
+            ServerAudioTimingProcessor(),
             transport.output()
         ]
 
@@ -1060,4 +1049,7 @@ async def run_agent(
         # Defer greeting until start_trigger message is received when user clicks Start Listening
 
     runner = PipelineRunner(handle_sigint=False)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        turn_tracker.close()

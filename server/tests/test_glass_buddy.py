@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from glass_buddy_tools import (
+from persona_tools.glass_buddy import (
     ALL_GLASS_BUDDY_TOOL_SCHEMAS,
     GlassBuddyExecutionEngine,
     switch_phase_schema,

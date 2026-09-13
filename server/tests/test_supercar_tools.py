@@ -2,7 +2,7 @@
 
 import unittest
 
-from supercar_tools import (
+from persona_tools.supercar import (
     get_exp_center,
     create_appointment_booking,
     SUPERCAR_TOOL_SCHEMAS,

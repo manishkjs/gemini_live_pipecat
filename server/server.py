@@ -1,14 +1,14 @@
 import asyncio
 import os
 import argparse
-import websockets
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 from urllib.parse import quote
+from uuid import uuid4
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, Query, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,60 +17,20 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv(override=True)
 import diagnostic_buffer
 import voice_profiles
+import session_access
 
-_session_instructions: Dict[str, str] = {}
 
-# Obsolete in pipecat-ai 1.x (which natively uses google-genai)
-# import pipecat.services.gemini_multimodal_live.gemini
-# pipecat.services.gemini_multimodal_live.gemini.websockets = websockets
+def load_pipeline(bot_type):
+    """Load only the requested media pipeline after a connection is accepted."""
+    from runtime_compat import install_runtime_patches
+    install_runtime_patches()
+    if bot_type == "gemini-live":
+        from agent_live import run_agent_live
+        return run_agent_live
+    from agent import run_agent
+    return run_agent
 
-# Monkey-patch for google-genai BaseApiClient to fix AttributeError in aclose
-from google.genai._api_client import BaseApiClient
 
-async def patched_aclose(self):
-    if hasattr(self, '_async_httpx_client') and self._async_httpx_client:
-        try:
-            await self._async_httpx_client.aclose()
-        except Exception:
-            pass
-    if hasattr(self, '_aiohttp_session') and self._aiohttp_session:
-        try:
-            await self._aiohttp_session.close()
-        except Exception:
-            pass
-
-BaseApiClient.aclose = patched_aclose
-
-# Monkey-patch for Pipecat FrameProcessor to fix bug when frames arrive before StartFrame
-from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.frames.frames import SystemFrame
-
-# Fix for missing attribute fallback
-FrameProcessor._FrameProcessor__process_queue = None
-
-async def patched_input_frame_task_handler(self):
-    while True:
-        (frame, direction, callback) = await self._FrameProcessor__input_queue.get()
-
-        if self._FrameProcessor__should_block_system_frames and self._FrameProcessor__input_event:
-            await self._FrameProcessor__input_event.wait()
-            self._FrameProcessor__input_event.clear()
-            self._FrameProcessor__should_block_system_frames = False
-
-        if isinstance(frame, SystemFrame):
-            await self._FrameProcessor__process_frame(frame, direction, callback)
-        elif hasattr(self, '_FrameProcessor__process_queue') and self._FrameProcessor__process_queue:
-            await self._FrameProcessor__process_queue.put((frame, direction, callback))
-        else:
-            # Ignore frames before start instead of crashing
-            pass
-
-        self._FrameProcessor__input_queue.task_done()
-
-FrameProcessor._FrameProcessor__input_frame_task_handler = patched_input_frame_task_handler
-
-from agent_live import run_agent_live
-from agent import run_agent
 from system_prompt import SYSTEM_PROMPT, tts_prompt
 
 @asynccontextmanager
@@ -134,6 +94,7 @@ async def websocket_endpoint(
     # Stamps every log line and latency sample this session produces, so
     # concurrent demoers do not blend their metrics together.
     session_id: Optional[str] = None,
+    connection_id: Optional[str] = None,
     # Selects the persona's execution architecture server-side. This is the only
     # signal that decides which persona tooling loads; the system instruction is
     # never inspected for routing. See server/persona_registry.py.
@@ -141,12 +102,24 @@ async def websocket_endpoint(
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
-    diagnostic_buffer.bind_session(session_id)
-    if not system_instruction and session_id and session_id in _session_instructions:
-        system_instruction = _session_instructions.pop(session_id)
+    if connection_id:
+        if not session_access.consume_join(session_id, connection_id):
+            await websocket.close(code=1008, reason="Invalid or expired connection")
+            return
+    else:
+        # Raw websocket clients get an isolated anonymous scope; a supplied ID
+        # cannot impersonate a session created through /connect.
+        session_id = str(uuid4())
+    if bot_type not in diagnostic_buffer.BOT_TYPES:
+        await websocket.close(code=1008, reason="Unknown bot_type")
+        return
+    diagnostic_buffer.bind_session(session_id, bot_type)
+    stored_instruction = session_access.take_instructions(session_id)
+    system_instruction = stored_instruction or system_instruction
     custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
+            run_agent_live = await asyncio.to_thread(load_pipeline, bot_type)
             await run_agent_live(
                 websocket,
                 model=model,
@@ -165,6 +138,7 @@ async def websocket_endpoint(
                 persona_id=persona_id,
             )
         elif bot_type == "tts-llm-stt":
+            run_agent = await asyncio.to_thread(load_pipeline, bot_type)
             await run_agent(
                 websocket,
                 tts_voice=tts_voice,
@@ -180,6 +154,7 @@ async def websocket_endpoint(
                 persona_id=persona_id,
             )
     except Exception as e:
+        diagnostic_buffer.append_raw_log_entry(f"Session failed: {type(e).__name__}: {e}", "ERROR")
         print(f"Exception in run_bot: {e}")
 
 
@@ -188,6 +163,8 @@ async def persona_prompt(
     persona_id: str,
     phase: Optional[str] = None,
     engine: Optional[str] = "live",
+    tone: str = "professional",
+    language: str = "en-US",
 ) -> Dict[str, Any]:
     """Return the system prompt the backend will actually run for a persona.
 
@@ -208,21 +185,15 @@ async def persona_prompt(
 
     editable = is_persona_ui_editable(persona_id)
     architecture = resolve_persona_architecture(persona_id)
-    # Only architecture-owned prompts are server-authoritative; for everyone
-    # else the client's copy is the truth and echoing something here would
-    # imply an authority the backend does not have.
-    composed = None
-    if not editable:
-        # Keyed off the architecture, not a persona id: the id has been renamed
-        # once already, and a string comparison here fails silently by falling
-        # through to the root prompt.
-        if phase and engine != "cascade":
-            from persona_prompt_cards import get_persona_card, format_persona_prompt_card
-            card = get_persona_card(persona_id, phase)
-            if card:
-                composed = format_persona_prompt_card(persona_id, card)
-        if not composed:
-            composed = get_persona_architecture(persona_id).compose_system_prompt(None, engine=engine or "live")
+    from persona_prompt_cards import get_session_preset, get_persona_card, format_persona_prompt_card
+    try:
+        composed = get_session_preset(persona_id, engine=engine or "live", tone=tone, language=language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not editable and phase and engine != "cascade":
+        card = get_persona_card(persona_id, phase)
+        if card:
+            composed = format_persona_prompt_card(persona_id, card)
 
     return {
         "persona_id": persona_id,
@@ -243,19 +214,36 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         k: v[-1] for k, v in parse_qs(query_params_raw, keep_blank_values=True).items()
     }
 
+    try:
+        session_id, viewer_token, connection_id = session_access.issue(
+            params_dict.get("session_id"), request.headers.get("x-session-token"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    params_dict["session_id"] = session_id
+    params_dict["connection_id"] = connection_id
+
     # Try to get parameters from the JSON body
     try:
-        body = await request.json()
+        body = await request.json() if await request.body() else {}
         if isinstance(body, dict):
+            if body.get("prompt_source") == "preset" and params_dict.get("persona_id") != "custom":
+                from persona_prompt_cards import get_session_preset
+                preset = get_session_preset(params_dict.get("persona_id", ""),
+                    engine="cascade" if params_dict.get("bot_type") == "tts-llm-stt" else "live",
+                    tone=body.get("persona_tone", "professional"),
+                    language=params_dict.get("language") or params_dict.get("stt_language", "en-US"))
+                if preset:
+                    body["system_instruction"] = preset
             # Store system_instruction and URL-encode if within URL limits
             if "system_instruction" in body:
                 custom_prompt = body["system_instruction"].strip()
                 if custom_prompt and custom_prompt != SYSTEM_PROMPT.strip():
                     session_id = params_dict.get("session_id")
                     if session_id:
-                        _session_instructions[session_id] = custom_prompt
-                    if len(custom_prompt) < 4500:
-                        params_dict["system_instruction"] = custom_prompt
+                        session_access.set_instructions(session_id, custom_prompt)
+                    params_dict.pop("system_instruction", None)
             
             # URL-encode the tools from the body
             if "tools" in body:
@@ -296,8 +284,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                     params_dict["voice_profile_id"] = profile_id
 
     except Exception:
-        # Body is not JSON or is empty, so we just ignore it
-        pass
+        raise HTTPException(status_code=400, detail="Invalid session configuration")
     
     query_params = urlencode(params_dict)
     
@@ -307,21 +294,26 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     host = request.headers.get("x-forwarded-host", request.url.netloc)
     
     ws_url = f"{ws_scheme}://{host}/ws?{query_params}"
-    print(f"Generated WS URL for client: {ws_url}") # Helpful for debugging
+    print(f"Issued websocket connection for session {session_id}")
     
-    return {"ws_url": ws_url}
+    return {"ws_url": ws_url, "session_id": session_id, "diagnostic_token": viewer_token}
 
 
 @app.get("/connect/system-prompt")
 async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
+def diagnostic_session(request: Request, session_id: str = Query(min_length=1, max_length=128)):
+    if not session_access.authorized(session_id, request.headers.get("x-session-token")):
+        raise HTTPException(status_code=403, detail="Session access denied")
+    return session_id
+
+
 @app.get("/api/logs")
-async def get_diagnostic_logs(limit: int = 500, session_id: Optional[str] = None):
+async def get_diagnostic_logs(session_id: str = Depends(diagnostic_session), limit: int = Query(default=500, ge=1, le=1500)):
     """Recent logs and latency percentiles.
 
-    Pass `session_id` to see only your own session. Omitting it returns
-    everything in the process, which is only meaningful on a single-user box.
+    A session identifier is mandatory; unscoped process logs are excluded.
     """
     from diagnostic_buffer import get_recent_diagnostic_logs, get_latency_summary
     return {
@@ -331,20 +323,19 @@ async def get_diagnostic_logs(limit: int = 500, session_id: Optional[str] = None
     }
 
 @app.get("/api/metrics/latency")
-async def get_latency_metrics_endpoint(session_id: Optional[str] = None):
+async def get_latency_metrics_endpoint(session_id: str = Depends(diagnostic_session)):
     from diagnostic_buffer import get_latency_summary
     return get_latency_summary(session_id=session_id)
 
 @app.post("/api/logs/clear")
-async def clear_diagnostic_logs_endpoint(session_id: Optional[str] = None):
-    """Clear diagnostics. Scoped to one session unless asked otherwise, so one
-    demoer clicking Clear cannot wipe another's history."""
+async def clear_diagnostic_logs_endpoint(session_id: str = Depends(diagnostic_session)):
+    """Clear this session only."""
     from diagnostic_buffer import clear_diagnostic_logs
     clear_diagnostic_logs(session_id=session_id)
     return {"status": "cleared", "session_id": session_id}
 
 @app.get("/api/trace/current")
-async def get_current_trace_endpoint(session_id: Optional[str] = None):
+async def get_current_trace_endpoint(session_id: str = Depends(diagnostic_session)):
     from tracing import GLOBAL_LANGSMITH_TRACER
     return {"trace_url": GLOBAL_LANGSMITH_TRACER.get_current_trace_url(session_id)}
 

@@ -1,6 +1,6 @@
 """Explicit model phase selection and structured booking argument validation."""
 import unittest
-from supercar_phases import (
+from persona_tools.supercar_phases import (
     CallSlots, PragyaPhaseTracker, SOP_01_OPENING, SOP_02_DISCOVERY,
     SOP_03_PINCODE, SOP_04_BOOKED, resolves_to_a_day, resolves_to_a_time,
 )

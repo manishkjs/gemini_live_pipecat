@@ -83,6 +83,10 @@ def create_appointment_booking(
     cust = customer_name_or_phone or customer_phone or "Verified Caller"
     return {
         "status": "confirmed",
+        "booking_mode": "demo",
+        "sms_sent": False,
+        "valet_reserved": False,
+        "vehicle_availability": "not_checked",
         "booking_id": booking_id,
         "center_id": center["center_id"],
         "center_name": center["name"],

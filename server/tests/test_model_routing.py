@@ -45,21 +45,17 @@ class TestModelRouting(unittest.TestCase):
 
 class TestVoiceCloningRouting(unittest.TestCase):
     def test_voice_cloning_key_loading(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
         import voice_profiles
-
-        male_file = voice_profiles.get_voice_cloning_key_file("male")
-        female_file = voice_profiles.get_voice_cloning_key_file("female")
-        self.assertIsNotNone(male_file, "Male clone key file should be resolved")
-        self.assertIsNotNone(female_file, "Female clone key file should be resolved")
-        self.assertTrue(os.path.isfile(male_file))
-        self.assertTrue(os.path.isfile(female_file))
-
-        male_key = voice_profiles.load_voice_cloning_key("male")
-        female_key = voice_profiles.load_voice_cloning_key("female")
-        self.assertIsNotNone(male_key)
-        self.assertIsNotNone(female_key)
-        self.assertGreater(len(male_key), 100)
-        self.assertGreater(len(female_key), 100)
+        with tempfile.TemporaryDirectory() as folder:
+            for gender, env in (("male", "CLONE_TTS_VOICE_KEY_MALE"), ("female", "CLONE_TTS_VOICE_KEY_FEMALE")):
+                path = Path(folder) / f"{gender}.txt"
+                path.write_text(f"dummy-{gender}-credential\n")
+                with patch.dict(os.environ, {env: str(path)}):
+                    self.assertEqual(voice_profiles.get_voice_cloning_key_file(gender), str(path))
+                    self.assertEqual(voice_profiles.load_voice_cloning_key(gender), f"dummy-{gender}-credential")
 
     def test_clone_voice_matchers(self):
         import voice_profiles

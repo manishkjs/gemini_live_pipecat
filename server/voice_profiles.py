@@ -94,6 +94,26 @@ def is_custom_clone_voice(voice: Optional[str]) -> bool:
 
 
 
+def resolve_clone_key(voice: Optional[str], supplied_key: Optional[str] = None) -> Optional[str]:
+    """Only an explicitly selected clone can use a credential.
+
+    Browser input is credential text, never a server filesystem path. Named
+    voices ignore stale keys. Server-managed clones use the configured files.
+    """
+    if not is_custom_clone_voice(voice):
+        return None
+    if voice == "Custom-Key":
+        key = (supplied_key or "").strip()
+        if not key:
+            raise ValueError("Custom-Key requires a voice cloning key. Enter it or select a named voice.")
+    else:
+        gender = "female" if is_female_clone_voice(voice) else "male"
+        key = load_voice_cloning_key(gender)
+        if not key:
+            raise ValueError(f"The selected {gender} clone has no configured voice cloning key.")
+    return key
+
+
 class _Profile(NamedTuple):
     key: str
     expires_at: float

@@ -205,7 +205,10 @@ class BasePersonaArchitecture(ABC):
         prompt locked: the UI hides the editor, but this discards edits even if
         the client sends them anyway.
         """
-        return system_instruction
+        if system_instruction:
+            return system_instruction
+        from persona_prompt_cards import get_persona_system_instruction
+        return get_persona_system_instruction(getattr(self, "persona_id", None), engine=engine)
 
 
 
@@ -233,13 +236,13 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
     def deal(self):
         """Lazily built so importing this module never pulls in negotiation."""
         if self._deal is None:
-            import negotiation
+            import persona_tools.negotiation as negotiation
 
             self._deal = negotiation.Deal(strict_ladder=True)
         return self._deal
 
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
-        import negotiation
+        import persona_tools.negotiation as negotiation
         from pipecat.adapters.schemas.function_schema import FunctionSchema
 
         return [
@@ -305,14 +308,14 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
     @property
     def tracker(self):
         if self._tracker is None:
-            from supercar_phases import PragyaPhaseTracker
+            from persona_tools.supercar_phases import PragyaPhaseTracker
             self._tracker = PragyaPhaseTracker()
         return self._tracker
 
     @property
     def slots(self):
         if self._slots is None:
-            from supercar_phases import CallSlots
+            from persona_tools.supercar_phases import CallSlots
             self._slots = CallSlots()
         return self._slots
 
@@ -321,13 +324,13 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
         if engine == "cascade":
-            from supercar_cards import get_pragya_monolithic_system_instruction
+            from persona_prompt_cards.pragya_cards import get_pragya_monolithic_system_instruction
             return get_pragya_monolithic_system_instruction()
-        from supercar_cards import get_pragya_root_system_instruction
+        from persona_prompt_cards.pragya_cards import get_pragya_root_system_instruction
         return get_pragya_root_system_instruction()
 
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
-        from supercar_tools import SUPERCAR_TOOL_SCHEMAS, create_appointment_booking_schema
+        from persona_tools.supercar import SUPERCAR_TOOL_SCHEMAS, create_appointment_booking_schema
         if engine == "cascade":
             return [create_appointment_booking_schema]
         return list(SUPERCAR_TOOL_SCHEMAS)
@@ -342,9 +345,11 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
                 logger.warning(f"[Pragya] UI event failed: {exc}")
 
     async def _broadcast_phase(self, card_pushed: bool) -> None:
+        from diagnostic_buffer import current_session_id
         self._phase_event_revision += 1
         await self._emit({
             "type": "phase_transition",
+            "session_id": current_session_id(),
             "phase_id": self.tracker.current_phase,
             "title": self.tracker.title_of(self.tracker.current_phase),
             "reason": "model selected phase" if card_pushed else "card delivery failed; phase unchanged",
@@ -365,7 +370,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
         from loguru import logger
-        from supercar_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
+        from persona_prompt_cards.pragya_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
 
         phase_id = args.get("phase_id")
         try:
@@ -410,7 +415,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return {"status": "success", "phase_id": phase_id, "delivery_status": "sent"}
 
     async def _book_appointment(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        from supercar_tools import create_appointment_booking
+        from persona_tools.supercar import create_appointment_booking
 
         invalid = self._collect_fields(args)
         await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
@@ -475,6 +480,40 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return registered
 
 
+async def _deliver_phase_card(architecture, card, formatter, label):
+    """Commit the active phase only after the provider accepts its context card."""
+    from diagnostic_buffer import current_session_id
+    from loguru import logger
+    if architecture._last_card_key == card.phase_id:
+        return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
+    delivered = False
+    if architecture._llm:
+        try:
+            delivered = bool(await architecture._llm.inject_directive(
+                formatter(card), tag=f"{label}/Card {card.phase_id}",
+                speak_now=False, at_tool_boundary=True))
+        except Exception as exc:
+            logger.warning(f"[{label}/Card] Send failed: {exc}")
+    if delivered:
+        architecture._last_card_key = card.phase_id
+        architecture.engine.active_phase = card.phase_id
+    architecture._phase_event_revision = getattr(architecture, "_phase_event_revision", 0) + 1
+    phase_id = architecture.engine.active_phase
+    if architecture._broadcast:
+        try:
+            await architecture._broadcast({
+                "type": "phase_transition", "phase_id": phase_id,
+                "requested_phase_id": card.phase_id, "title": card.title if delivered else "Card delivery failed",
+                "session_id": current_session_id(), "revision": architecture._phase_event_revision,
+                "card_pushed": delivered, "delivery_status": "sent" if delivered else "failed",
+                "reason": "model selected phase" if delivered else "card delivery failed; phase unchanged",
+            })
+        except Exception as exc:
+            logger.warning(f"[{label}] UI event failed: {exc}")
+    return {"status": "success" if delivered else "delivery_failed", "phase_id": phase_id,
+            "delivery_status": "sent" if delivered else "failed"}
+
+
 class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
     """Ananya: Cymbal Mutual Fund & Wealth Advisor.
 
@@ -494,7 +533,7 @@ class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
     @property
     def engine(self):
         if self._engine is None:
-            from mf_advisor_tools import AnanyaMFExecutionEngine
+            from persona_tools.mf_advisor import AnanyaMFExecutionEngine
             self._engine = AnanyaMFExecutionEngine(broadcast=self._broadcast)
         return self._engine
 
@@ -511,7 +550,7 @@ class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
         return get_ananya_root_system_instruction()
 
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
-        from mf_advisor_tools import (
+        from persona_tools.mf_advisor import (
             get_portfolio_summary_schema,
             get_fund_nav_details_schema,
             manage_sip_order_schema,
@@ -534,43 +573,7 @@ class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
         if not card:
             return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
 
-        if self._last_card_key == card.phase_id:
-            return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
-
-        delivered = False
-        if self._llm:
-            try:
-                directive = format_ananya_prompt_card(card)
-                delivered = await self._llm.inject_directive(
-                    directive,
-                    tag=f"Ananya/Card {card.phase_id}",
-                    speak_now=False,
-                    at_tool_boundary=True,
-                )
-            except Exception as exc:
-                logger.warning(f"[Ananya/Card] Send failed: {exc}")
-
-        if delivered:
-            self._last_card_key = card.phase_id
-            self.engine.active_phase = card.phase_id
-
-        if self._broadcast:
-            try:
-                await self._broadcast({
-                    "type": "phase_transition",
-                    "phase_id": card.phase_id,
-                    "title": card.title,
-                    "card_pushed": bool(delivered),
-                    "reason": "model selected phase",
-                })
-            except Exception:
-                pass
-
-        return {
-            "status": "success",
-            "phase_id": card.phase_id,
-            "delivery_status": "sent" if delivered else "delivery_failed",
-        }
+        return await _deliver_phase_card(self, card, format_ananya_prompt_card, "Ananya")
 
     def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
         self._llm = llm
@@ -629,7 +632,7 @@ class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
     @property
     def engine(self):
         if self._engine is None:
-            from glass_buddy_tools import GlassBuddyExecutionEngine
+            from persona_tools.glass_buddy import GlassBuddyExecutionEngine
             self._engine = GlassBuddyExecutionEngine(broadcast=self._broadcast)
         return self._engine
 
@@ -646,7 +649,7 @@ class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
         return get_kavya_root_system_instruction()
 
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
-        from glass_buddy_tools import ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema
+        from persona_tools.glass_buddy import ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema
         if engine == "cascade":
             return standard_function_schemas(ALL_GLASS_BUDDY_TOOL_SCHEMAS)
         return standard_function_schemas([*ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema])
@@ -663,43 +666,7 @@ class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
         if not card:
             return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
 
-        if self._last_card_key == card.phase_id:
-            return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
-
-        delivered = False
-        if self._llm:
-            try:
-                directive = format_kavya_prompt_card(card)
-                delivered = await self._llm.inject_directive(
-                    directive,
-                    tag=f"Kavya/Card {card.phase_id}",
-                    speak_now=False,
-                    at_tool_boundary=True,
-                )
-            except Exception as exc:
-                logger.warning(f"[Kavya/Card] Send failed: {exc}")
-
-        if delivered:
-            self._last_card_key = card.phase_id
-            self.engine.active_phase = card.phase_id
-
-        if self._broadcast:
-            try:
-                await self._broadcast({
-                    "type": "phase_transition",
-                    "phase_id": card.phase_id,
-                    "title": card.title,
-                    "card_pushed": bool(delivered),
-                    "reason": "model selected phase",
-                })
-            except Exception:
-                pass
-
-        return {
-            "status": "success",
-            "phase_id": card.phase_id,
-            "delivery_status": "sent" if delivered else "delivery_failed",
-        }
+        return await _deliver_phase_card(self, card, format_kavya_prompt_card, "Kavya")
 
     def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
         self._llm = llm
@@ -764,4 +731,6 @@ def get_persona_architecture(persona_id: Optional[str]) -> BasePersonaArchitectu
     system instruction.
     """
     pattern = resolve_persona_architecture(persona_id)
-    return _ARCHITECTURE_IMPLEMENTATIONS[pattern]()
+    architecture = _ARCHITECTURE_IMPLEMENTATIONS[pattern]()
+    architecture.persona_id = persona_id
+    return architecture

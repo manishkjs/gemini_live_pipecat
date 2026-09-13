@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useMemo } from "react";
+import { diagnosticHeaders } from "@/lib/session-diagnostics";
 import { totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
 import {
   X,
@@ -37,7 +38,7 @@ type LatencySummary = {
   llm?: LatencyStat;
   stt?: LatencyStat;
   tts?: LatencyStat;
-  total_turnaround?: LatencyStat;
+  vad_stop_to_first_server_audio?: LatencyStat;
   turns?: any[];
 };
 
@@ -45,7 +46,7 @@ type DiagnosticLog = {
   timestamp: string;
   level: string;
   message: string;
-  ttfb_ms?: number | null;
+  event_type?: string;
 };
 
 type ObservabilityDrawerProps = {
@@ -97,7 +98,10 @@ export default function ObservabilityDrawer({
 
   // Poll diagnostic logs and trace info
   useEffect(() => {
-    if (!open) return;
+    if (!open || !sessionId) {
+      setLogs([]); setLatencySummary(null);
+      return;
+    }
 
     const base = backendUrl.replace(/\/$/, "");
     let mounted = true;
@@ -105,8 +109,8 @@ export default function ObservabilityDrawer({
     const fetchTelemetry = async () => {
       try {
         const [logsRes, traceRes] = await Promise.allSettled([
-          fetch(`${base}/api/logs?limit=500${scope}`),
-          fetch(`${base}/api/trace/current?${scope.replace(/^&/, "")}`),
+          fetch(`${base}/api/logs?limit=500${scope}`, { headers: diagnosticHeaders(sessionId) }),
+          fetch(`${base}/api/trace/current?${scope.replace(/^&/, "")}`, { headers: diagnosticHeaders(sessionId) }),
         ]);
 
         if (mounted && logsRes.status === "fulfilled" && logsRes.value.ok) {
@@ -118,7 +122,7 @@ export default function ObservabilityDrawer({
             setLatencySummary(data.latency_summary);
           }
           setTelemetryError(false);
-        } else if (mounted && logsRes.status === "rejected") {
+        } else if (mounted) {
           setTelemetryError(true);
         }
 
@@ -152,29 +156,12 @@ export default function ObservabilityDrawer({
 
   // Aggregate metrics from logs if summary is not yet available
   const aggregatedMetrics = useMemo(() => {
-    let turns = 0;
-    let interrupts = 0;
-    let tools = 0;
-    let totalTokens = 0;
-    let inTokens = 0;
-    let outTokens = 0;
+    const turns = latencySummary?.turns?.filter(r => r.stage === "turn" && r.turn_id > 0).length ?? 0;
+    const interrupts = latencySummary?.turns?.filter(r => r.stage === "turn" && r.status === "interrupted").length ?? 0;
+    const tools = logs.filter(log => log.event_type === "Tool Output").length;
+    const totalTokens = 0, inTokens = 0, outTokens = 0;
 
-    for (const log of logs) {
-      const msg = log.message || "";
-      if (msg.includes("User Speech") || msg.includes("Bot Response")) turns++;
-      if (msg.includes("Interrupted") || msg.includes("Interruption")) interrupts++;
-      if (msg.includes("Tool Output") || msg.includes("Function call")) tools++;
-      if (msg.includes("Turn Token Usage") || msg.includes("LLM Token Usage")) {
-        const totalMatch = msg.match(/Total:\s*(\d+)/);
-        const promptMatch = msg.match(/Prompt:\s*(\d+)/);
-        const respMatch = msg.match(/Response:\s*(\d+)/);
-        if (totalMatch) totalTokens += parseInt(totalMatch[1], 10);
-        if (promptMatch) inTokens += parseInt(promptMatch[1], 10);
-        if (respMatch) outTokens += parseInt(respMatch[1], 10);
-      }
-    }
-
-    const totalStat = latencySummary?.total_turnaround || { count: 0 };
+    const totalStat = latencySummary?.vad_stop_to_first_server_audio || { count: 0 };
     const llmStat = latencySummary?.llm || { count: 0 };
     const sttStat = latencySummary?.stt || { count: 0 };
     const ttsStat = latencySummary?.tts || { count: 0 };
@@ -185,7 +172,7 @@ export default function ObservabilityDrawer({
       sessionTurnCount !== undefined
         ? sessionTurnCount
         : turns > 0
-          ? Math.ceil(turns / 2)
+          ? turns
           : engine === "live"
             ? liveStat.count || 0
             : totalStat.count || 0;
@@ -196,10 +183,7 @@ export default function ObservabilityDrawer({
     const displayTokens =
       sessionTokens !== undefined ? sessionTokens : totalTokens;
 
-    // The log scrape below counts every turn the SERVER has seen since it
-    // booted, while `sessionTokens` resets with each call. Mixing the two put
-    // "TOKENS 11,120" directly above "In: 28,319". Prefer the session-scoped
-    // split so all three numbers describe the same window.
+    // Token totals come from provider usage, never formatted log text.
     const displayIn = sessionTokenSplit ? totalIn(sessionTokenSplit) : inTokens;
     const displayOut = sessionTokenSplit ? totalOut(sessionTokenSplit) : outTokens;
 
@@ -230,10 +214,12 @@ export default function ObservabilityDrawer({
   }, [telemetryError, aggregatedMetrics.turns, logs.length]);
 
   const clearLogs = async () => {
+    if (!sessionId) return;
     setIsClearing(true);
     try {
       const base = backendUrl.replace(/\/$/, "");
-      await fetch(`${base}/api/logs/clear?${scope.replace(/^&/, "")}`, { method: "POST" });
+      const response = await fetch(`${base}/api/logs/clear?${scope.replace(/^&/, "")}`, { method: "POST", headers: diagnosticHeaders(sessionId) });
+      if (!response.ok) throw new Error("Clear failed");
       setLogs([]);
       setLatencySummary(null);
     } catch (e) {
@@ -265,10 +251,7 @@ export default function ObservabilityDrawer({
     });
   }, [logs, activeFilter, searchQuery]);
 
-  const effectiveLiveStat =
-    (aggregatedMetrics.liveStat?.count || 0) > 0
-      ? aggregatedMetrics.liveStat
-      : aggregatedMetrics.llmStat;
+  const effectiveLiveStat = aggregatedMetrics.liveStat;
 
   useEffect(() => {
     if (engine === "live" && selectedStage !== "total" && selectedStage !== "live_ttfb") {
@@ -281,21 +264,21 @@ export default function ObservabilityDrawer({
   const activeStat = useMemo(() => {
     if (engine === "live") {
       if (selectedStage === "total") {
-        return { label: "Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
+        return { label: "VAD stop → first server audio", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
       }
-      return { label: "Gemini Live Native TTFB", stat: effectiveLiveStat, color: "#38bdf8" };
+      return { label: "Gemini Live first output", stat: effectiveLiveStat, color: "#38bdf8" };
     }
 
     switch (selectedStage) {
       case "llm":
         return { label: "LLM TTFB (Reasoning Stream)", stat: aggregatedMetrics.llmStat, color: "#c084fc" };
       case "stt":
-        return { label: "STT Chirp Latency", stat: aggregatedMetrics.sttStat, color: "#fbbf24" };
+        return { label: "STT response latency", stat: aggregatedMetrics.sttStat, color: "#fbbf24" };
       case "tts":
         return { label: "TTS Audio Synthesis", stat: aggregatedMetrics.ttsStat, color: "#4ade80" };
       case "total":
       default:
-        return { label: "Total Turnaround (End-to-End)", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
+        return { label: "VAD stop → first server audio", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
     }
   }, [engine, selectedStage, aggregatedMetrics, effectiveLiveStat]);
 
@@ -388,15 +371,17 @@ export default function ObservabilityDrawer({
                 </span>
               </div>
 
+              <p className="field-hint">Server measurements exclude network delivery and browser playback. Caller-perceived latency is unavailable. Unattributed provider timings have no turn interval. Continuous STT correlation is unavailable. Missing samples stay unavailable; retention is shared across sessions.</p>
+
               {/* Stage filter pills with Lucide icons */}
               <div className="obs-stage-pills">
                 {(engine === "live"
                   ? [
-                      { id: "total", label: "Total (E2E)", icon: Clock, count: aggregatedMetrics.totalStat.count },
+                      { id: "total", label: "Server response", icon: Clock, count: aggregatedMetrics.totalStat.count },
                       { id: "live_ttfb", label: "Live TTFB", icon: Zap, count: effectiveLiveStat.count },
                     ]
                   : [
-                      { id: "total", label: "Total (E2E)", icon: Clock, count: aggregatedMetrics.totalStat.count },
+                      { id: "total", label: "Server response", icon: Clock, count: aggregatedMetrics.totalStat.count },
                       { id: "llm", label: "LLM TTFB", icon: Cpu, count: aggregatedMetrics.llmStat.count },
                       { id: "stt", label: "STT", icon: Mic, count: aggregatedMetrics.sttStat.count },
                       { id: "tts", label: "TTS", icon: Volume2, count: aggregatedMetrics.ttsStat.count },
@@ -472,7 +457,7 @@ export default function ObservabilityDrawer({
                       ? [
                           {
                             id: "live_ttfb",
-                            name: "Gemini Live TTFB (Native Audio)",
+                            name: "Gemini Live first output",
                             icon: Zap,
                             stat: effectiveLiveStat,
                             color: "#38bdf8",
@@ -481,7 +466,7 @@ export default function ObservabilityDrawer({
                             ? [
                                 {
                                   id: "total",
-                                  name: "Total Turnaround (End-to-End)",
+                                  name: "VAD stop → first server audio",
                                   icon: Clock,
                                   stat: aggregatedMetrics.totalStat,
                                   color: "#f472b6",
@@ -492,7 +477,7 @@ export default function ObservabilityDrawer({
                       : [
                           {
                             id: "total",
-                            name: "Total Turnaround (End-to-End)",
+                            name: "VAD stop → first server audio",
                             icon: Clock,
                             stat: aggregatedMetrics.totalStat,
                             color: "#f472b6",

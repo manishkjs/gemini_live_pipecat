@@ -16,7 +16,7 @@ from persona_registry import (
     NegotiatorLadderArchitecture,
     get_persona_architecture,
 )
-from supercar_cards import (
+from persona_prompt_cards.pragya_cards import (
     PRAGYA_SUPERCAR_CARDS,
     format_supercar_prompt_card,
     get_pragya_phase_card,
@@ -252,9 +252,9 @@ class TestModelSelectedCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.arch.slots.get("booking_ref"), result["booking_id"])
 
     async def test_concurrent_duplicate_bookings_execute_once_and_both_respond(self):
-        from supercar_tools import create_appointment_booking
+        from persona_tools.supercar import create_appointment_booking
         args = dict(pincode="560048", date="Saturday", time="3 PM", vehicle_variant="Urus SE")
-        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+        with patch("persona_tools.supercar.create_appointment_booking", wraps=create_appointment_booking) as book:
             first, duplicate = await asyncio.gather(
                 self.call("create_appointment_booking", **args),
                 self.call("create_appointment_booking", **args),
@@ -266,17 +266,17 @@ class TestModelSelectedCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
 
     async def test_booking_retry_uses_collected_fields_and_ignores_case_and_outer_spaces(self):
-        from supercar_tools import create_appointment_booking
-        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+        from persona_tools.supercar import create_appointment_booking
+        with patch("persona_tools.supercar.create_appointment_booking", wraps=create_appointment_booking) as book:
             first = await self.call("create_appointment_booking", pincode="560048", date="Saturday", time="3 PM")
             duplicate = await self.call("create_appointment_booking", date=" saturday ", time="3 pm")
         book.assert_called_once()
         self.assertEqual(first["booking_id"], duplicate["booking_id"])
 
     async def test_changed_booking_is_new_and_retrying_original_reuses_its_result(self):
-        from supercar_tools import create_appointment_booking
+        from persona_tools.supercar import create_appointment_booking
         args = dict(pincode="560048", date="Saturday", time="3 PM")
-        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+        with patch("persona_tools.supercar.create_appointment_booking", wraps=create_appointment_booking) as book:
             first = await self.call("create_appointment_booking", **args)
             changed = await self.call("create_appointment_booking", **{**args, "date": "Sunday"})
             original_retry = await self.call("create_appointment_booking", **args)
@@ -287,9 +287,9 @@ class TestModelSelectedCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[-1]["booking_id"], first["booking_id"])
 
     async def test_failed_booking_is_not_cached_and_can_be_retried(self):
-        from supercar_tools import create_appointment_booking
+        from persona_tools.supercar import create_appointment_booking
         args = dict(pincode="560048", date="Saturday", time="3 PM")
-        with patch("supercar_tools.create_appointment_booking", side_effect=[
+        with patch("persona_tools.supercar.create_appointment_booking", side_effect=[
             {"status": "error", "message": "Temporary failure"},
             create_appointment_booking(**args),
         ]) as book:

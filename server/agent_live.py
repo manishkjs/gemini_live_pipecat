@@ -12,6 +12,8 @@ import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
 from diagnostic_buffer import append_diagnostic_log, current_session_id
+from turn_telemetry import TurnTracker
+from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
 from response_identity import ResponseIdentity
 from tracing import GLOBAL_LANGSMITH_TRACER
 
@@ -120,8 +122,10 @@ async def get_current_time(params: FunctionCallParams):
     )
 
 
-class GeminiSessionLoggerMixin:
+class GeminiSessionLoggerMixin(TurnOriginMixin):
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
+
+    _live_telemetry = True
 
     @property
     def response_identity(self):
@@ -129,7 +133,18 @@ class GeminiSessionLoggerMixin:
             self._response_identity = ResponseIdentity(current_session_id())
         return self._response_identity
 
+    async def broadcast_interruption(self, *args, **kwargs):
+        origin = getattr(self, "_live_output_turn", None)
+        if origin is not None:
+            origin.finish("interrupted")
+        try:
+            await super().broadcast_interruption(*args, **kwargs)
+        finally:
+            self._live_output_turn = None
+
     async def _handle_msg_model_turn(self, message):
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
         self.response_identity.begin()
         await super()._handle_msg_model_turn(message)
 
@@ -150,13 +165,13 @@ class GeminiSessionLoggerMixin:
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-            self._current_turn_ttft = time.time() - self._my_ttfb_start
+            self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
             logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
             ttfb_ms = self._current_turn_ttft * 1000.0
             append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
@@ -285,7 +300,7 @@ class GeminiSessionLoggerMixin:
 
             elapsed_ms = None
             if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-                elapsed_ms = round((time.time() - self._my_ttfb_start) * 1000.0, 1)
+                elapsed_ms = round((time.monotonic() - self._my_ttfb_start) * 1000.0, 1)
                 append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
                 self._my_ttfb_start = None
 
@@ -407,6 +422,8 @@ class GeminiSessionLoggerMixin:
                     self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
         self.response_identity.begin()
         await super()._handle_msg_output_transcription(message)
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
@@ -419,7 +436,7 @@ class GeminiSessionLoggerMixin:
             
             # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
             if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
-                self._current_turn_ttft = time.time() - self._my_ttfb_start
+                self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
                 ttfb_ms = self._current_turn_ttft * 1000.0
                 append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
                 self._my_ttfb_start = None
@@ -482,6 +499,7 @@ class GeminiSessionLoggerMixin:
             }
         }))
         self.response_identity.finish()
+        self._live_output_turn = None
         architecture = getattr(self, "persona_architecture", None)
         flush = getattr(architecture, "flush_pending_card", None)
         if flush is not None:
@@ -1158,41 +1176,22 @@ async def run_agent_live(
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
-    is_male_clone = voice_profiles.is_male_clone_voice(voice)
-    is_female_clone = voice_profiles.is_female_clone_voice(voice)
-    is_custom_voice = is_male_clone or is_female_clone or (voice == "Custom-Key") or bool(custom_voice_key)
+    is_custom_voice = voice_profiles.is_custom_clone_voice(voice)
     use_external_tts = tts or is_custom_voice
     tts_service = None
-    
     if use_external_tts:
-        cloned_key_content = None
-        if custom_voice_key:
-            if os.path.isfile(custom_voice_key):
-                try:
-                    with open(custom_voice_key, "r") as f: cloned_key_content = f.read().strip()
-                except Exception as e:
-                    logger.error(f"Failed to read custom_voice_key file: {e}")
-            else:
-                cloned_key_content = custom_voice_key.strip()
-        elif is_male_clone:
-            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
-            if not cloned_key_content:
-                logger.error("Failed to load male voice cloning key from env or fallback file.")
-        elif is_female_clone:
-            cloned_key_content = voice_profiles.load_voice_cloning_key("female")
-            if not cloned_key_content:
-                logger.error("Failed to load female voice cloning key from env or fallback file.")
-        
+        from agent import CustomGoogleTTSService
+        cloned_key_content = voice_profiles.resolve_clone_key(voice, custom_voice_key)
         if cloned_key_content:
             clone_lang = Language.HI_IN if ("hi" in (language or "").lower()) else Language.EN_US
-            tts_service = GoogleTTSService(
+            tts_service = CustomGoogleTTSService(
                 voice_cloning_key=cloned_key_content,
                 params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
             )
         else:
             voice_id = voice if voice and not voice.startswith("Custom") and "clone" not in voice.lower() else "Aoede"
-            tts_service = GoogleTTSService(
-                voice_id=f"{language}-Chirp3-HD-{voice_id}",
+            tts_service = CustomGoogleTTSService(
+                voice_id=voice_id if "-Chirp3-HD-" in voice_id else f"{language}-Chirp3-HD-{voice_id}",
                 params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
             )
 
@@ -1374,13 +1373,22 @@ async def run_agent_live(
     )
     llm.start_trigger = start_trigger
 
+    turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if vad else None)
+    llm._turn_tracker = turn_tracker
+    llm._last_input_turn = turn_tracker.current
+    llm._live_output_turn = turn_tracker.current
+    if tts_service is not None:
+        tts_service._turn_tracker = turn_tracker
+
     pipeline = Pipeline([
         transport.input(),
         start_trigger,
+        TurnBoundaryProcessor(turn_tracker),
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
+        ServerAudioTimingProcessor(),
         transport.output(),
         context_aggregator.assistant(),
     ])
@@ -1407,6 +1415,7 @@ async def run_agent_live(
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        turn_tracker.close()
         logger.info("Pipecat Client disconnected")
         history = getattr(llm, '_dialogue_history', [])
         if history:
@@ -1425,4 +1434,5 @@ async def run_agent_live(
     try:
         await PipelineRunner(handle_sigint=False).run(task)
     finally:
+        turn_tracker.close()
         GLOBAL_LANGSMITH_TRACER.end_session()

@@ -1,3 +1,4 @@
+import { createDiagnosticAccess, diagnosticHeaders } from "./session-diagnostics";
 import { buildConnectRequest, validateSocketUrl, type SessionSettings } from "./voice-session";
 import { calculateTurnCost, type UsageTokenData } from "./pricing";
 
@@ -40,6 +41,7 @@ export type LiveSession = {
  */
 export async function createLiveSession(settings: SessionSettings, events: SessionEvents): Promise<LiveSession> {
   const request = buildConnectRequest(settings);
+  if (settings.sessionId) createDiagnosticAccess(settings.sessionId);
   const endpoint = request.url;
   if (window.location.protocol === "https:" && endpoint.protocol !== "https:") {
     throw new Error("Use an HTTPS backend for this hosted demo. Run the demo locally to connect to localhost over HTTP.");
@@ -230,7 +232,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       try {
         response = await fetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...diagnosticHeaders(settings.sessionId) },
           credentials: "include",
           body: JSON.stringify(request.body),
           signal: controller.signal,

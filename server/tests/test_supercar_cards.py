@@ -1,10 +1,10 @@
 """Prompt contract: one opening, three overriding context cards, declared tools."""
 import unittest
-from supercar_cards import (
+from persona_prompt_cards.pragya_cards import (
     PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card, get_pragya_phase_card,
     get_pragya_root_system_instruction, render_state_line,
 )
-from supercar_tools import SUPERCAR_TOOL_SCHEMAS
+from persona_tools.supercar import SUPERCAR_TOOL_SCHEMAS
 
 
 class TestSupercarCards(unittest.TestCase):

@@ -1,6 +1,6 @@
-# Latest implementation update — 2026-09-13 08:57:47 UTC: Cascade pricing and review (section 19)
+# Latest implementation update — 2026-09-13 09:57:48 UTC: backend, persona delivery and diagnostics (section 20)
 
-The owner has requested continued Cascade pricing and implementation of the fleet recommendations. Section 19 records implemented changes and verification gates. The verbatim discussion below is preserved.
+The owner has requested continued Cascade pricing and implementation of the fleet recommendations. Sections 19–20 record implemented changes and verification gates. The verbatim discussion below is preserved.
 
 # ⚡ LATEST (13 Sep 2026): [agentchattr transcription](#agentchattr-transcription) & [Section 17 Blueprint](#17-multi-agent-fleet-review-dialectical-debate--implementation-blueprint-ui-changes-sep--13-september-2026)
 
@@ -2638,3 +2638,33 @@ The local tester should provide one short trace containing timestamped numeric `
 - Focused backend suite: **127 passed, 2 subtests passed**; covers persona engines, booking, cards, response accounting, actual SDK schema conversion and provider-boundary pricing wrappers.
 - Voice Studio: **97 tests passed**; production build passed, with existing large-bundle warnings.
 - Python compilation and whitespace checks passed. Full media/provider dependency startup, real microphone sessions and billing reconciliation remain local verification gates. New pricing tests use pytest; `unittest discover` alone does not execute those function tests.
+
+
+## 20. Fleet recommendations implemented: backend and diagnostics — 2026-09-13 09:57:48 UTC
+
+**Base:** published Cascade pricing commit `941002a`. Latest upstream checked and still at that commit. This section is an implementation record, not an endorsement of every assertion in the frozen AgentChattr transcript. Earlier raw discussion is preserved verbatim.
+
+### Completed in this backend checkpoint
+
+1. Removed regex/log-string metric extraction, guessed unit conversion, positional stage sums and time-window deduplication. Removed fabricated STT fallbacks and the 15-second LLM/TTS sample cap. Provider request timers use monotonic time.
+2. Added pipeline-owned turn objects, queued-audio origin propagation and explicit interrupted/abandoned lifecycle. Live reserves the old input before its first output so a new input cannot steal it before provider acknowledgement. Unattributed aggregator/tool callbacks never pick up the latest turn ID.
+3. Added the accurately named VAD-stop → first-server-audio interval where its origin is known; acoustic-end estimate is separately labelled. Perceived playback latency remains unavailable. Continuous STT correlation, and consequently most current Cascade conversational intervals, remain unavailable rather than guessed. Independent LLM/TTS request timing is retained without a fabricated turn ID.
+4. Bounded retention to one global 2,000-record latency deque and 1,500 diagnostic records. Scoped reads/clears now require a real session capability, not just a caller-supplied ID. Both interfaces use headers; the original full dashboard receives its scope through an exact-origin opener handshake. Token KPIs use retained numeric provider response snapshots instead of text parsing. The original raw log console and observability controls remain.
+5. Deferred heavy SDK/pipeline imports to the selected session factory; preserved existing runtime patches. Added the fresh-process `sys.modules` startup gate. Fixed duplicate Cascade VAD analysis and the missing VAD processor in Skip STT.
+6. Ananya/Kavya phase delivery now uses one shared delivery helper: failed sends return failure and keep the previous phase; only successful delivery commits state. Events carry revision/session evidence. Pragya retains its structured slots and successful-booking deduplication.
+7. Implemented Option A: execution engines moved into `server/persona_tools`; all runtime/test imports and mock targets migrated before removing the three legacy card shims. `persona_registry.py` stays the facade. Prompt dispatch now uses explicit maps and preserves existing aliases.
+8. Centralized connected-session presets in `persona_prompt_cards`. Static presets were seeded verbatim from the currently running UI's professional/signature registers, preserving existing styles. Explicit custom instructions still win for editable personas. The prompt preview and runtime share the same resolver; generated websocket URLs no longer contain prompt text.
+9. Clone selection is explicit: stale credentials cannot override named voices; missing male/female keys and empty Custom-Key fail clearly; Cascade clones require Chirp. Browser credential text is never interpreted as a server file path. No model is silently substituted by this change.
+10. Booking cards no longer promise SMS, valet or vehicle availability without tool evidence. The mock result identifies itself as demo and reports those effects as unperformed. Existing idempotent booking behavior remains.
+
+### Corrections and gates retained deliberately
+
+- **No transcript-regex phase routing or candidate extractor was added.** The proposed revision triad needs a defined, observable readback/confirmation event contract. A model's boolean cannot prove that the caller heard and confirmed a plan. Changing this UX/contract needs the owner's decision; existing model-selected phases and structured tool validation stay intact.
+- Raw Loguru capture is retained for the log UI, without metric/token parsing. Literal deletion of every raw log sink would remove an existing requested feature.
+- The original client is preserved. No global persona tone redesign, client deprecation, automatic history reset or claim of guaranteed card savings was introduced.
+- Gemini 3.5 Transcribe Live rate research is complete; billing usage scope is still unverified. Pricing stays visibly partial as documented in section 19. Need a timestamped numeric usage-only trace spanning two utterances, silence and reconnect, for the exact model/provider. No secrets/audio/transcript text.
+- Real microphone/provider ordering, browser playback and billing reconciliation were not exercised. See `docs/telemetry.md` for the exact local acceptance steps and deployment limits.
+
+### Verification
+
+Full `pytest server/tests`: **167 passed, 2 subtests passed** with the media imports installed (Pipecat 1.2.1 / Google GenAI 2.4.0). Existing clone-file tests now use temporary dummy files; Transcribe constructor tests mock the provider client, not the routing implementation. Official SDK schema-conversion and pricing wrapper tests still run. Frontend changes are the next checkpoint; the final handoff will record combined build/test results.

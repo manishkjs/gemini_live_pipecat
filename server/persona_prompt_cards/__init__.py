@@ -92,87 +92,72 @@ __all__ = [
 ]
 
 
+_ALIASES = {
+    **dict.fromkeys(("lamborghini-concierge", "pragya", "wealth-manager"), "pragya"),
+    **dict.fromkeys(("ananya-advisor", "groww-advisor", "ananya"), "ananya"),
+    **dict.fromkeys(("kavya-glass-buddy", "reservation-agent", "kavya", "glass-buddy"), "kavya"),
+    "car-negotiator": "ranvir", "debt-collector": "meera", "storyteller": "kabir", "ai-companion": "aisha",
+}
+_PHASED = {
+    "pragya": (PRAGYA_SUPERCAR_CARDS, get_pragya_phase_card, format_supercar_prompt_card,
+               get_pragya_root_system_instruction, get_pragya_monolithic_system_instruction),
+    "ananya": (ANANYA_MF_CARDS, get_ananya_phase_card, format_ananya_prompt_card,
+               get_ananya_root_system_instruction, get_ananya_monolithic_system_instruction),
+    "kavya": (KAVYA_GLASS_BUDDY_CARDS, get_kavya_phase_card, format_kavya_prompt_card,
+              get_kavya_root_system_instruction, get_kavya_monolithic_system_instruction),
+}
+_STATIC = {
+    "ranvir": (get_ranvir_system_instruction, get_ranvir_signature_instruction),
+    "meera": (get_meera_system_instruction, get_meera_signature_instruction),
+    "kabir": (get_kabir_system_instruction, get_kabir_signature_instruction),
+    "aisha": (get_aisha_system_instruction, get_aisha_signature_instruction),
+}
+
+
 def _normalize_persona(persona_id: Optional[str]) -> str:
-    if not persona_id:
-        return ""
-    p = persona_id.strip().lower()
-    if p in ("lamborghini-concierge", "pragya", "wealth-manager"):
-        return "pragya"
-    if p in ("ananya-advisor", "groww-advisor", "ananya"):
-        return "ananya"
-    if p in ("kavya-glass-buddy", "reservation-agent", "kavya", "glass-buddy"):
-        return "kavya"
-    if p in ("car-negotiator", "ranvir"):
-        return "ranvir"
-    if p in ("debt-collector", "meera"):
-        return "meera"
-    if p in ("storyteller", "kabir"):
-        return "kabir"
-    if p in ("ai-companion", "aisha"):
-        return "aisha"
-    return p
+    key = (persona_id or "").strip().lower()
+    return _ALIASES.get(key, key)
 
 
 def get_persona_card(persona_id: str, phase_id: str) -> Optional[PhaseCard]:
-    """Resolve a phase card for any persona by id or alias."""
-    norm = _normalize_persona(persona_id)
-    if norm == "pragya":
-        return get_pragya_phase_card(phase_id)
-    elif norm == "ananya":
-        return get_ananya_phase_card(phase_id)
-    elif norm == "kavya":
-        return get_kavya_phase_card(phase_id)
-    return None
+    entry = _PHASED.get(_normalize_persona(persona_id))
+    return entry[1](phase_id) if entry else None
 
 
 def get_persona_all_cards(persona_id: str) -> Dict[str, PhaseCard]:
-    """Retrieve all defined phase cards for a persona."""
-    norm = _normalize_persona(persona_id)
-    if norm == "pragya":
-        return dict(PRAGYA_SUPERCAR_CARDS)
-    elif norm == "ananya":
-        return dict(ANANYA_MF_CARDS)
-    elif norm == "kavya":
-        return dict(KAVYA_GLASS_BUDDY_CARDS)
-    return {}
+    entry = _PHASED.get(_normalize_persona(persona_id))
+    return dict(entry[0]) if entry else {}
 
 
-def format_persona_prompt_card(
-    persona_id: str,
-    card: Any,
-    state: Optional[Mapping[str, Any]] = None,
-    context: str = "",
-) -> str:
-    """Format a persona phase card into injection text."""
-    norm = _normalize_persona(persona_id)
-    if norm == "pragya":
-        return format_supercar_prompt_card(card, context=context, state=state)
-    elif norm == "ananya":
-        return format_ananya_prompt_card(card, context=context, state=state)
-    elif norm == "kavya":
-        return format_kavya_prompt_card(card, context=context, state=state)
-    return format_phase_card(card, context=context)
+def format_persona_prompt_card(persona_id: str, card: Any,
+                               state: Optional[Mapping[str, Any]] = None, context: str = "") -> str:
+    entry = _PHASED.get(_normalize_persona(persona_id))
+    return entry[2](card, context=context, state=state) if entry else format_phase_card(card, context=context)
 
 
-def get_persona_system_instruction(
-    persona_id: str,
-    engine: str = "live",
-    tone: str = "professional",
-) -> Optional[str]:
-    """Return the system prompt the backend runs for this persona and engine."""
-    norm = _normalize_persona(persona_id)
-    if norm == "pragya":
-        return get_pragya_monolithic_system_instruction() if engine == "cascade" else get_pragya_root_system_instruction()
-    elif norm == "ananya":
-        return get_ananya_monolithic_system_instruction() if engine == "cascade" else get_ananya_root_system_instruction()
-    elif norm == "kavya":
-        return get_kavya_monolithic_system_instruction() if engine == "cascade" else get_kavya_root_system_instruction()
-    elif norm == "ranvir":
-        return get_ranvir_signature_instruction() if tone == "signature" else get_ranvir_system_instruction()
-    elif norm == "meera":
-        return get_meera_signature_instruction() if tone == "signature" else get_meera_system_instruction()
-    elif norm == "kabir":
-        return get_kabir_signature_instruction() if tone == "signature" else get_kabir_system_instruction()
-    elif norm == "aisha":
-        return get_aisha_signature_instruction() if tone == "signature" else get_aisha_system_instruction()
-    return None
+def get_persona_system_instruction(persona_id: str, engine: str = "live", tone: str = "professional") -> Optional[str]:
+    key = _normalize_persona(persona_id)
+    phased = _PHASED.get(key)
+    if phased:
+        return phased[4 if engine == "cascade" else 3]()
+    static = _STATIC.get(key)
+    return static[1 if tone == "signature" else 0]() if static else None
+
+
+_LANGUAGE_NAMES = {
+    "hi-IN": "Hindi", "en-IN": "English", "en-US": "English", "bn-IN": "Bengali",
+    "te-IN": "Telugu", "mr-IN": "Marathi", "ta-IN": "Tamil", "gu-IN": "Gujarati",
+    "kn-IN": "Kannada", "ml-IN": "Malayalam", "pa-IN": "Punjabi", "ur-IN": "Urdu",
+    "es-ES": "Spanish", "fr-FR": "French", "de-DE": "German", "ja-JP": "Japanese",
+}
+
+
+def get_session_preset(persona_id: str, engine="live", tone="professional", language="en-US"):
+    """One runtime/preview source. Custom instructions bypass preset resolution."""
+    prompt = get_persona_system_instruction(persona_id, engine=engine, tone=tone)
+    if prompt and _normalize_persona(persona_id) in _STATIC:
+        name = _LANGUAGE_NAMES.get(language)
+        if not name:
+            raise ValueError("Unsupported preset language")
+        prompt += f" Speak in {name}, unless the user requests another language."
+    return prompt

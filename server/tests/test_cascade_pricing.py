@@ -216,7 +216,7 @@ def test_normal_cascade_tts_setup_works_with_and_without_stt():
     source = ast.parse((Path(__file__).parents[1] / "agent.py").read_text())
     fn = next(n for n in source.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_agent")
     start = next(i for i, n in enumerate(fn.body) if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "is_clone")
-    end = next(i for i, n in enumerate(fn.body) if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "cost_meter")
+    end = next(i for i, n in enumerate(fn.body) if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "turn_tracker")
     code = compile(ast.Module(body=fn.body[start:end], type_ignores=[]), "actual_tts_setup", "exec")
     for skip in (False, True):
         calls = []

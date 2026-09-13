@@ -6,7 +6,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from mf_advisor_tools import (
+from persona_tools.mf_advisor import (
     AnanyaMFExecutionEngine,
     get_portfolio_summary_schema,
     get_fund_nav_details_schema,
