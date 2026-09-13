@@ -2699,3 +2699,14 @@ Continues section 20 and the published Cascade pricing work in section 19. The o
 4. **Client playback measurement, original-client deprecation and global tone redesign** remain separate design choices. Server first-audio is not caller-perceived latency; prompt cards append to history and do not guarantee savings.
 
 The archived fleet transcript below/above remains verbatim historical context. This timestamped implementation record and the linked contracts describe the delivered behavior and its limits.
+
+
+## 22. Keep Live model cost visible — 2026-09-13 13:40:28 UTC
+
+The owner reported that Gemini Live cost had disappeared. At upstream `ed2ac204`, the Live accounting and footer were still present, but the entire footer cost field was gated by `isLivePricingEligible`. The default model, `gemini-3.5-flash-live-preview`, has no configured rate card, so selecting it hid the field altogether. The previous Cascade changes did not remove the Live calculation.
+
+- The Live footer now always shows Model cost. Unsupported models explicitly display **Rate unavailable**, with a tooltip identifying the selected model and explaining that tokens are still tracked. An unavailable rate does not mean a free call.
+- Existing 2.5/3.1 estimates, uncertainty ranges, per-response accounting and per-turn cost badges retain their behavior. The model estimate still excludes external TTS and other services. Cascade retains its separate provider-stage cost panel.
+- Corrected stale module comments about visibility and Cascade support. No numeric rates were added or changed, and no new pricing research is claimed for this visibility-only correction. Gemini 3.5 Live pricing remains unconfigured.
+
+**Verification:** all 100 Voice Studio tests passed; TypeScript and production build passed, with the existing bundle-size warning. No real provider call or browser visual validation was performed for this correction.

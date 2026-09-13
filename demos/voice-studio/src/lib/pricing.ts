@@ -4,8 +4,8 @@
  * - Gemini 2.5 Flash Native Audio: https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-native-audio
  * - Gemini 3.1 Flash Live Preview: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-live-preview
  *
- * NOTE: Pricing data is strictly enabled ONLY for Gemini 2.5 Native Audio and Gemini 3.1 Live Preview.
- * 3.5 models and Cascade engine have NO pricing data.
+ * This module contains rates for Gemini 2.5 Native Audio and Gemini 3.1 Live Preview.
+ * Unsupported Live models show an unavailable rate; Cascade uses cascade-cost.ts.
  */
 
 export type LivePricingTier = "gemini-2.5" | "gemini-3.1";
@@ -55,7 +55,7 @@ export function getLiveRateCard(model: string): LiveRateCard | null {
   if (!model) return null;
   const clean = model.toLowerCase().replace(/-aistudio$/, "");
 
-  // Explicitly reject 3.5 models per user requirement
+  // No verified 3.5 Live rate card is configured here.
   if (clean.includes("3.5")) {
     return null;
   }
@@ -74,9 +74,9 @@ export function getLiveRateCard(model: string): LiveRateCard | null {
 }
 
 /**
- * Strictly gates cost visibility.
- * Price is visible ONLY when engine is 'live' and model is Gemini 2.5 or 3.1 Live.
- * Returns false for Cascade engine, 3.5 models, or unsupported models.
+ * Whether a numeric Live cost can be calculated from a configured rate card.
+ * Unsupported Live models still display an unavailable-rate state in the UI.
+ * Cascade uses its own provider request ledger and cost display.
  */
 export function isLivePricingEligible(engine: string, model: string): boolean {
   if (engine !== "live") return false;

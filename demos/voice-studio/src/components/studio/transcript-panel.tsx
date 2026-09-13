@@ -19,6 +19,8 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     update, currentPhase, visitedPhases, phaseDelivery,
   } = studio;
 
+  const livePricingAvailable = isLivePricingEligible(settings.engine, settings.model);
+
   // Resolve against the selected tone. Reading `persona.prompt` directly showed
   // the professional register even when Signature was selected, so the preview
   // disagreed with what the session actually ran.
@@ -432,9 +434,11 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               </span>
             )}
           </span>
-          {isLivePricingEligible(settings.engine, settings.model) && (
-            <span title="List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported.">
-              Model cost: {!sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
+          {settings.engine === "live" && (
+            <span title={livePricingAvailable
+              ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported."
+              : `No verified rate card is configured for ${settings.model || "the selected model"}. Token usage is still tracked; an unavailable rate does not mean the call is free.`}>
+              Model cost: {!livePricingAvailable ? "Rate unavailable" : !sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
                 ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
                 : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
             </span>
