@@ -82,41 +82,55 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
           {/* GROUP 1: VOICE & SPEECH */}
           <div className="settings-group">
             <h3 className="settings-section-title">Voice & Speech</h3>
-            <div className="settings-pair">
-              <Picker
-                label="Voice"
-                value={settings.voice}
-                disabled={active}
-                onChange={(value) => update("voice", value)}
-                options={!isLive && settings.ttsModel === "google-tts" ? CHIRP_HD_VOICES : GEMINI_VOICES}
-              />
-              <Picker
-                label="Language"
-                value={settings.language}
-                disabled={active}
-                onChange={(value) => update("language", value)}
-                options={LANGUAGE_OPTIONS}
-              />
-            </div>
+            {isLive ? (
+              <>
+                <div className="settings-pair">
+                  <Picker
+                    label="Voice"
+                    value={settings.voice}
+                    disabled={active}
+                    onChange={(value) => update("voice", value)}
+                    options={GEMINI_VOICES}
+                  />
+                  <Picker
+                    label="Language"
+                    value={settings.language}
+                    disabled={active}
+                    onChange={(value) => update("language", value)}
+                    options={LANGUAGE_OPTIONS}
+                  />
+                </div>
 
-            {settings.voice === "Custom-Key" && (
-              <div className="field" style={{ marginTop: "4px" }}>
-                <label htmlFor="settings-custom-voice-key">Custom Voice Key / Replicated ID</label>
-                <Input
-                  id="settings-custom-voice-key"
-                  type="text"
-                  placeholder="e.g. projects/.../voices/my-voice or voice_key"
-                  value={settings.customVoiceKey ?? ""}
+                {settings.voice === "Custom-Key" && (
+                  <div className="field" style={{ marginTop: "4px" }}>
+                    <label htmlFor="settings-custom-voice-key">Custom Voice Key / Replicated ID</label>
+                    <Input
+                      id="settings-custom-voice-key"
+                      type="text"
+                      placeholder="e.g. projects/.../voices/my-voice or voice_key"
+                      value={settings.customVoiceKey ?? ""}
+                      disabled={active}
+                      onChange={(e) => update("customVoiceKey", e.target.value)}
+                    />
+                    <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
+                  </div>
+                )}
+
+                {settings.voice.startsWith("Custom") && (
+                  <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
+                    ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="field">
+                <Picker
+                  label="Language"
+                  value={settings.language}
                   disabled={active}
-                  onChange={(e) => update("customVoiceKey", e.target.value)}
+                  onChange={(value) => update("language", value)}
+                  options={LANGUAGE_OPTIONS}
                 />
-                <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
-              </div>
-            )}
-
-            {settings.voice.startsWith("Custom") && (
-              <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
-                ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
               </div>
             )}
 
@@ -328,14 +342,47 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   disabled={active}
                   onChange={(value) => {
                     update("ttsModel", value);
-                    if (value === "google-tts" && !settings.voice.includes("Chirp")) {
+                    if (value === "google-tts" && !settings.voice.includes("Chirp") && !settings.voice.startsWith("Custom")) {
                       update("voice", "hi-IN-Chirp3-HD-Sulafat");
-                    } else if (value !== "google-tts" && settings.voice.includes("Chirp")) {
+                    } else if (value !== "google-tts" && (settings.voice.includes("Chirp") || settings.voice.startsWith("Custom"))) {
                       update("voice", "Aoede");
                     }
                   }}
                   options={CASCADE_TTS_MODELS}
                 />
+
+                {settings.ttsModel === "google-tts" && (
+                  <>
+                    <Picker
+                      label="Chirp 3 HD Voice Options"
+                      value={settings.voice}
+                      disabled={active}
+                      onChange={(value) => update("voice", value)}
+                      options={CHIRP_HD_VOICES}
+                    />
+
+                    {settings.voice === "Custom-Key" && (
+                      <div className="field" style={{ marginTop: "4px" }}>
+                        <label htmlFor="settings-custom-voice-key-cascade">Custom Voice Key / Replicated ID</label>
+                        <Input
+                          id="settings-custom-voice-key-cascade"
+                          type="text"
+                          placeholder="e.g. projects/.../voices/my-voice or voice_key"
+                          value={settings.customVoiceKey ?? ""}
+                          disabled={active}
+                          onChange={(e) => update("customVoiceKey", e.target.value)}
+                        />
+                        <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
+                      </div>
+                    )}
+
+                    {settings.voice.startsWith("Custom") && (
+                      <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", margin: "8px 0" }}>
+                        ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
+                      </div>
+                    )}
+                  </>
+                )}
               </>
             )}
           </div>

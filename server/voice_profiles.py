@@ -20,6 +20,7 @@ session starts or the TTL lapses.
 
 from __future__ import annotations
 
+import os
 import secrets
 import threading
 import time
@@ -30,6 +31,67 @@ from typing import Dict, NamedTuple, Optional
 PROFILE_TTL_SECONDS = 300
 
 _PREFIX = "vp_"
+
+
+def get_voice_cloning_key_file(gender: str) -> Optional[str]:
+    """Resolve the voice cloning key file path with automatic fallbacks."""
+    env_var = "CLONE_TTS_VOICE_KEY_MALE" if gender == "male" else "CLONE_TTS_VOICE_KEY_FEMALE"
+    env_path = os.getenv(env_var)
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(base_dir, f"voice_cloning_key_{'m' if gender == 'male' else 'f'}.txt"),
+        os.path.join(os.getcwd(), "server", f"voice_cloning_key_{'m' if gender == 'male' else 'f'}.txt"),
+        os.path.join(os.getcwd(), f"voice_cloning_key_{'m' if gender == 'male' else 'f'}.txt"),
+        f"/app/voice_cloning_key_{'m' if gender == 'male' else 'f'}.txt",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def load_voice_cloning_key(gender: str) -> Optional[str]:
+    """Read the voice cloning key for male or female from env or local file."""
+    path = get_voice_cloning_key_file(gender)
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "r") as f:
+                content = f.read().strip()
+                if content:
+                    return content
+        except Exception:
+            pass
+    return None
+
+
+def is_male_clone_voice(voice: Optional[str]) -> bool:
+    if not voice:
+        return False
+    v = str(voice).strip()
+    v_lower = v.lower()
+    return v in ["Custom-Male", "Chirp3-HD-Clone-Male", "hi-IN-Chirp3-HD-Custom-Male"] or (
+        "clone" in v_lower and "male" in v_lower and "female" not in v_lower
+    )
+
+
+def is_female_clone_voice(voice: Optional[str]) -> bool:
+    if not voice:
+        return False
+    v = str(voice).strip()
+    v_lower = v.lower()
+    return v in ["Custom-Female", "Chirp3-HD-Clone-Female", "hi-IN-Chirp3-HD-Custom-Female"] or (
+        "clone" in v_lower and "female" in v_lower
+    )
+
+
+def is_custom_clone_voice(voice: Optional[str]) -> bool:
+    if not voice:
+        return False
+    return is_male_clone_voice(voice) or is_female_clone_voice(voice) or (str(voice).strip() == "Custom-Key")
+
 
 
 class _Profile(NamedTuple):

@@ -763,3 +763,43 @@ For the local demo, submit the same booking tool arguments twice within one call
 both responses, and one confirmation event. Then change the day or time: expect a
 new ID. Failed booking responses must still allow a successful retry. Model phase
 selection remains through `switch_phase`.
+
+---
+
+## 12. Chirp 3 HD Voice Clone & Cascade Voice Options Resolution — 2026-09-13 06:44:00 UTC
+
+**Scope:** The owner requested fixing the Chirp 3 HD voice clones (Male and Female) which were unavailable for both Gemini Live and Cascade flows, and ensuring that for Cascade flow, voice options are displayed conditionally when Chirp 3 HD is selected as TTS.
+
+**Root Causes Addressed:**
+1. **Missing Environment Variables & Keys on Disk:** `agent.py` and `agent_live.py` previously depended solely on `os.getenv("CLONE_TTS_VOICE_KEY_MALE")` and `os.getenv("CLONE_TTS_VOICE_KEY_FEMALE")`. When unset, `agent.py` raised a `ValueError` while `agent_live.py` silently fell back to Aoede. The keys exist directly in `server/voice_cloning_key_m.txt` and `server/voice_cloning_key_f.txt`.
+2. **Missing Cascade Key Forwarding:** `server.py` redeemed `custom_voice_key` from single-use `voice_profile_id` but never passed it into `run_agent()` for `bot_type == "tts-llm-stt"`.
+3. **UI Voice Selection Structure in Voice Studio:** Voice Studio's settings dialog displayed a voice selector only in Group 1 ("Voice & Speech"), leaving Group 3 ("Cascaded Pipeline Engine") without a voice options dropdown under `Voice Model (TTS)`.
+4. **Client UI Fallback Reset:** `client/src/app.ts` forcibly reset `geminiVoiceSelect.value = "Aoede"` whenever any custom clone voice was selected on any model other than `gemini-live-2.5-flash`.
+
+**Implemented Changes:**
+1. **Backend Key Resolution & Voice Profiling (`server/voice_profiles.py`):**
+   - Implemented `get_voice_cloning_key_file()` with automatic path resolution across candidate directories (`server/voice_cloning_key_m.txt`, `server/voice_cloning_key_f.txt`, cwd, and `/app/`).
+   - Added `load_voice_cloning_key(gender)` to load the key from env or disk seamlessly.
+   - Added robust voice matchers `is_male_clone_voice()`, `is_female_clone_voice()`, and `is_custom_clone_voice()` recognizing `Custom-Male`, `Custom-Female`, `Chirp3-HD-Clone-*`, and prefix variants.
+2. **Cascade Flow Voice Cloning (`server/agent.py` & `server/server.py`):**
+   - Added `custom_voice_key: Optional[str] = None` to `run_agent()`.
+   - Forwarded `custom_voice_key` from `websocket_endpoint` in `server.py` into `run_agent()`.
+   - When `clean_tts_model == "google-tts"` and a clone voice is chosen, loads the cloning key and initializes `CustomGoogleTTSService(voice_cloning_key=..., params=GoogleTTSService.InputParams(language=Language.HI_IN / EN_US, speaking_rate=tts_pace))`.
+3. **Live Flow Voice Cloning (`server/agent_live.py`):**
+   - Routed cloned voice detection through `voice_profiles.is_male_clone_voice()` and `is_female_clone_voice()`.
+   - Automatically initializes `GoogleTTSService(voice_cloning_key=..., params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace))` and routes Gemini Live to `GeminiModalities.TEXT` so all live models support voice cloning.
+4. **Voice Studio UI (`demos/voice-studio`):**
+   - `lib/voice-session.ts`: Updated `GEMINI_VOICES` and `CHIRP_HD_VOICES` to list `"Chirp 3 HD Voice Clone (Male)"` and `"Chirp 3 HD Voice Clone (Female)"` explicitly.
+   - `settings-dialog.tsx`:
+     - Group 1: Voice picker renders only when `isLive`. In Cascade flow, only Language is rendered in Group 1.
+     - Group 3 (Cascade flow): Conditionally renders the `"Chirp 3 HD Voice Options"` picker (`CHIRP_HD_VOICES`) under `Voice Model (TTS)` ONLY when `settings.ttsModel === "google-tts"`.
+     - Preserves `Custom-Male` or `Custom-Female` across model changes without inadvertent resets.
+5. **Legacy Client UI (`client/src/app.ts` & `client/index.html`):**
+   - Added `Custom-Male` and `Custom-Female` to `GEMINI_VOICES` and updated `GOOGLE_VOICES` labels.
+   - Removed the forced fallback to "Aoede" in `handleModelChange()` for custom clone voices.
+   - Dynamically displays `#tts-voice-setting` only when `tts-model-select` is `google-tts`, hiding it for non-Chirp models.
+
+**Verification Results:**
+- **Backend Tests:** 107 server unit tests passing (`PYTHONPATH=server venv/bin/python -m unittest discover -s server/tests -p "test_*.py"`), including 5 new tests in `server/tests/test_model_routing.py` validating key resolution, file loading, and voice matchers.
+- **Frontend Tests:** 93/93 unit & contract tests passing in `demos/voice-studio` (`npm test`).
+- **Build Verification:** Production builds succeeded cleanly for both `demos/voice-studio` and `client` (`tsc && vite build`).

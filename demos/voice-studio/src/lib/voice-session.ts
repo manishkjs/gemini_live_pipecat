@@ -201,12 +201,14 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Zubenelgenubi", "Zubenelgenubi (Male)"],
   ["Sadachbia", "Sadachbia (Male)"],
   ["Sadaltager", "Sadaltager (Male)"],
-  ["Custom-Male", "Custom Clone Voice (Male)"],
-  ["Custom-Female", "Custom Clone Voice (Female)"],
+  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
+  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
   ["Custom-Key", "Custom Voice Cloning Key"],
 ];
 
 export const CHIRP_HD_VOICES: [string, string][] = [
+  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
+  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
   ["hi-IN-Chirp3-HD-Sulafat", "hi-IN-Chirp3-HD-Sulafat (Hindi Female)"],
   ["hi-IN-Chirp3-HD-Achird", "hi-IN-Chirp3-HD-Achird (Hindi Male)"],
   ["hi-IN-Chirp3-HD-Vindemiatrix", "hi-IN-Chirp3-HD-Vindemiatrix (Hindi Female)"],
@@ -219,8 +221,6 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["en-US-Chirp3-HD-Gacrux", "en-US-Chirp3-HD-Gacrux (US Female)"],
   ["en-US-Chirp3-HD-Leda", "en-US-Chirp3-HD-Leda (US Female)"],
   ["en-US-Chirp3-HD-Puck", "en-US-Chirp3-HD-Puck (US Male)"],
-  ["Custom-Male", "Custom Clone Voice (Male)"],
-  ["Custom-Female", "Custom Clone Voice (Female)"],
 ];
 
 /** Cloned-voice selections are backed by a voice cloning key rather than a named Gemini voice. */

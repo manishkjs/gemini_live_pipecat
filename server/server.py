@@ -176,6 +176,7 @@ async def websocket_endpoint(
                 system_instruction=system_instruction,
                 skip_stt=skip_stt,
                 vad=vad,
+                custom_voice_key=custom_voice_key,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")

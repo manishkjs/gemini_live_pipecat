@@ -32,6 +32,8 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+import voice_profiles
+
 
 from collections import deque
 import numpy as np
@@ -1156,7 +1158,9 @@ async def run_agent_live(
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
-    is_custom_voice = (voice in ["Custom-Male", "Custom-Female", "Custom-Key"]) or bool(custom_voice_key)
+    is_male_clone = voice_profiles.is_male_clone_voice(voice)
+    is_female_clone = voice_profiles.is_female_clone_voice(voice)
+    is_custom_voice = is_male_clone or is_female_clone or (voice == "Custom-Key") or bool(custom_voice_key)
     use_external_tts = tts or is_custom_voice
     tts_service = None
     
@@ -1170,22 +1174,23 @@ async def run_agent_live(
                     logger.error(f"Failed to read custom_voice_key file: {e}")
             else:
                 cloned_key_content = custom_voice_key.strip()
-        elif voice in ["Custom-Male", "Custom-Female"]:
-            voice_env = "CLONE_TTS_VOICE_KEY_MALE" if voice == "Custom-Male" else "CLONE_TTS_VOICE_KEY_FEMALE"
-            voice_key_path = os.getenv(voice_env)
-            if voice_key_path and os.path.isfile(voice_key_path):
-                try:
-                    with open(voice_key_path, "r") as f: cloned_key_content = f.read().strip()
-                except Exception as e:
-                    logger.error(f"Failed to read {voice_env}: {e}")
+        elif is_male_clone:
+            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
+            if not cloned_key_content:
+                logger.error("Failed to load male voice cloning key from env or fallback file.")
+        elif is_female_clone:
+            cloned_key_content = voice_profiles.load_voice_cloning_key("female")
+            if not cloned_key_content:
+                logger.error("Failed to load female voice cloning key from env or fallback file.")
         
         if cloned_key_content:
+            clone_lang = Language.HI_IN if ("hi" in (language or "").lower()) else Language.EN_US
             tts_service = GoogleTTSService(
                 voice_cloning_key=cloned_key_content,
-                params=GoogleTTSService.InputParams(language=Language.EN_US, speaking_rate=tts_pace),
+                params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
             )
         else:
-            voice_id = voice if voice and not voice.startswith("Custom") else "Aoede"
+            voice_id = voice if voice and not voice.startswith("Custom") and "clone" not in voice.lower() else "Aoede"
             tts_service = GoogleTTSService(
                 voice_id=f"{language}-Chirp3-HD-{voice_id}",
                 params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),

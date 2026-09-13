@@ -37,6 +37,8 @@ from google import genai
 from google.genai import types
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
+import voice_profiles
+
 
 VALID_STT_MODELS = {
     "gemini-3.5-transcribe-live-preview",
@@ -683,6 +685,7 @@ async def run_agent(
     system_instruction: Optional[str] = None,
     skip_stt: bool = False,
     vad: bool = True,
+    custom_voice_key: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -810,38 +813,56 @@ async def run_agent(
             language_code=tts_lang,
             text_filters=[MarkdownTextFilter()]
         )
-    elif tts_voice in ["Custom-Male", "Custom-Female"]:
-        # For cloned voices, use en-US as the base language code
-        # The voice cloning will handle the accent/style
-        tts_language = "en-US"
-        if tts_voice == "Custom-Male":
-            voice_key_path = os.getenv("CLONE_TTS_VOICE_KEY_MALE")
-            if not voice_key_path:
-                raise ValueError("CLONE_TTS_VOICE_KEY_MALE environment variable not set")
-            with open(voice_key_path, "r") as f:
-                key = f.read()
-            tts = CustomGoogleTTSService(
-                voice_cloning_key=key,
-                params=GoogleTTSService.InputParams(
-                    language=Language(tts_language),
-                    speaking_rate=tts_pace
-                ),
-                text_filters=[MarkdownTextFilter()],
-            )
-        else:  # Custom-Female
-            voice_key_path = os.getenv("CLONE_TTS_VOICE_KEY_FEMALE")
-            if not voice_key_path:
-                raise ValueError("CLONE_TTS_VOICE_KEY_FEMALE environment variable not set")
-            with open(voice_key_path, "r") as f:
-                key = f.read()
-            tts = CustomGoogleTTSService(
-                voice_cloning_key=key,
-                params=GoogleTTSService.InputParams(
-                    language=Language(tts_language),
-                    speaking_rate=tts_pace
-                ),
-                text_filters=[MarkdownTextFilter()],
-            )
+    is_clone = voice_profiles.is_custom_clone_voice(tts_voice) or bool(custom_voice_key)
+
+    if is_clone:
+        # Determine language code: voice cloning key in server/ is trained for hi-IN/en-IN
+        tts_language = "hi-IN" if (stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"])) else "en-US"
+        cloned_key_content = None
+        if custom_voice_key:
+            if os.path.isfile(custom_voice_key):
+                with open(custom_voice_key, "r") as f:
+                    cloned_key_content = f.read().strip()
+            else:
+                cloned_key_content = custom_voice_key.strip()
+        elif voice_profiles.is_male_clone_voice(tts_voice):
+            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
+            if not cloned_key_content:
+                raise ValueError("CLONE_TTS_VOICE_KEY_MALE not set and voice_cloning_key_m.txt not found")
+        elif voice_profiles.is_female_clone_voice(tts_voice):
+            cloned_key_content = voice_profiles.load_voice_cloning_key("female")
+            if not cloned_key_content:
+                raise ValueError("CLONE_TTS_VOICE_KEY_FEMALE not set and voice_cloning_key_f.txt not found")
+        else:
+            cloned_key_content = voice_profiles.load_voice_cloning_key("male")
+
+        tts = CustomGoogleTTSService(
+            voice_cloning_key=cloned_key_content,
+            params=GoogleTTSService.InputParams(
+                language=Language(tts_language),
+                speaking_rate=tts_pace,
+            ),
+            text_filters=[MarkdownTextFilter()],
+        )
+    elif clean_tts_model.startswith("gemini"):
+        # For Gemini TTS, we can use the same language as STT or fallback
+        # If Hindi is in languages, prefer Hindi for TTS voice prompt
+        tts_lang = "en-US"
+        if stt_languages:
+            langs = [l.code for l in stt_languages]
+            hi_lang = next((l for l in langs if "hi" in l.lower()), None)
+            tts_lang = hi_lang if hi_lang else langs[0]
+
+        tts = CustomVertexGeminiTTSService(
+            project_id=project_id,
+            location=tts_location,
+            voice_id=tts_voice,
+            model=clean_tts_model, # Use the sanitized model
+            sample_rate=24000, 
+            voice_prompt=tts_voice_prompt,
+            language_code=tts_lang,
+            text_filters=[MarkdownTextFilter()]
+        )
     else:
         tts_language = "-".join(tts_voice.split("-")[:2])
         tts = CustomGoogleTTSService(

@@ -93,9 +93,17 @@ class WebsocketClientApp {
     { value: "Sadachbia", label: "Sadachbia (Male)" },
     { value: "Sadaltager", label: "Sadaltager (Male)" },
     { value: "Sulafat", label: "Sulafat (Female)" },
+    { value: "Custom-Male", label: "Chirp 3 HD Voice Clone (Male)" },
+    { value: "Custom-Female", label: "Chirp 3 HD Voice Clone (Female)" },
   ];
 
   private readonly GOOGLE_VOICES = [
+    { value: "Custom-Male", label: "Chirp 3 HD Voice Clone (Male)" },
+    { value: "Custom-Female", label: "Chirp 3 HD Voice Clone (Female)" },
+    { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
+    { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
+    { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
+    { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
     { value: "en-US-Chirp3-HD-Aoede", label: "en-US-Chirp3-HD-Aoede" },
     { value: "en-US-Chirp3-HD-Charon", label: "en-US-Chirp3-HD-Charon" },
     { value: "en-IN-Chirp3-HD-Zephyr", label: "en-IN-Chirp3-HD-Zephyr" },
@@ -106,12 +114,6 @@ class WebsocketClientApp {
     { value: "en-IN-Chirp3-HD-Aoede", label: "en-IN-Chirp3-HD-Aoede" },
     { value: "en-US-News-N", label: "en-US-News-N" },
     { value: "en-US-Wavenet-D", label: "en-US-Wavenet-D" },
-    { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
-    { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
-    { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
-    { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
-    { value: "Custom-Male", label: "Custom clone voice - Male" },
-    { value: "Custom-Female", label: "Custom clone voice - Female" },
   ];
 
   constructor() {
@@ -263,22 +265,16 @@ class WebsocketClientApp {
 
     const handleModelChange = () => {
       const selectedModel = geminiModelSelect.value;
-      const selectedVoice = geminiVoiceSelect.value;
 
-      // Only gemini-live-2.5-flash (cascaded) supports TEXT modality / external TTS.
+      // Only gemini-live-2.5-flash (cascaded) supports explicit manual TTS toggle.
+      // Other models can use native audio or automatic external TTS for custom clone voices.
       const supportsTTS = selectedModel === "gemini-live-2.5-flash";
 
       if (!supportsTTS) {
         ttsToggle.checked = false;
         ttsToggle.disabled = true;
         ttsWarning.style.display = "none";
-
-        if (selectedVoice.startsWith("Custom")) {
-          geminiVoiceSelect.value = "Aoede";
-          voiceWarning.style.display = "none";
-        } else {
-          voiceWarning.style.display = "none";
-        }
+        voiceWarning.style.display = "none";
       } else {
         ttsToggle.disabled = false;
         ttsWarning.style.display = "none";
@@ -296,27 +292,25 @@ class WebsocketClientApp {
     // TTS Model Change Logic
     const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
     const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
+    const ttsVoiceSetting = document.getElementById("tts-voice-setting") || ttsVoiceSelect?.parentElement;
 
     const populateVoices = () => {
       const model = ttsModelSelect.value;
-      ttsVoiceSelect.innerHTML = "";
-
-      let voices: { value: string, label: string }[] = [];
-      if (model.startsWith("gemini")) {
-        voices = this.GEMINI_VOICES;
+      if (model === "google-tts") {
+        if (ttsVoiceSetting) ttsVoiceSetting.style.display = "block";
+        ttsVoiceSelect.innerHTML = "";
+        this.GOOGLE_VOICES.forEach(voice => {
+          const option = document.createElement("option");
+          option.value = voice.value;
+          option.textContent = voice.label;
+          if (voice.value === "hi-IN-Chirp3-HD-Sulafat") {
+            option.selected = true;
+          }
+          ttsVoiceSelect.appendChild(option);
+        });
       } else {
-        voices = this.GOOGLE_VOICES;
+        if (ttsVoiceSetting) ttsVoiceSetting.style.display = "none";
       }
-
-      voices.forEach(voice => {
-        const option = document.createElement("option");
-        option.value = voice.value;
-        option.textContent = voice.label;
-        if (model.startsWith("gemini") && voice.value === "Aoede") {
-          option.selected = true;
-        }
-        ttsVoiceSelect.appendChild(option);
-      });
     };
 
     if (ttsModelSelect && ttsVoiceSelect) {
