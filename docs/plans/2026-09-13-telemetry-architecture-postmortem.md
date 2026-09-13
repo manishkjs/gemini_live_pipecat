@@ -137,6 +137,7 @@ Let `S` = actual caller speech end, `V = S + padding` = VAD stop frame arrival, 
 - Replace `TURN_LATENCY_RECORDS` with a single flat `deque(maxlen=2000)` process-wide (ceiling of 2,000 records total across all sessions, preventing unbounded memory leaks).
 - Each record carries `(session_id, turn_id, bot_type, stage, value_ms, status)`.
 - Reads and clears strictly filter by non-empty `session_id`.
+- **Global Eviction Caveat:** Retention is global; a long concurrent session can truncate another's history. Absent records are not proof a metric was never emitted.
 
 ### H. Structural Fast-Boot Test Gate (`sys.modules`)
 - Heavy AI SDKs (`grpc`, `pipecat`, `google.genai`, `vertexai`, `google.cloud.speech_v2`) must be deferred to session factory/handshake time.
