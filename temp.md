@@ -2831,3 +2831,29 @@ This entry captures the read-only architectural critique, baseline calibration, 
   }
 ]
 ```
+
+
+## 24. Session allocation, persona identity and packaging fixes — 2026-09-13 14:12:25 UTC
+
+**Reviewed base:** `6f5feff` on `ui-changes-sep`, clean before implementation. The owner approved the two concrete fixes identified after checking section 23, and explicitly instructed that `temp.md` remain in Git while being excluded from Docker. This entry supersedes the earlier suggestion to delete it. The historical transcript remains intact.
+
+### Implemented
+
+1. `/connect` now finishes reading and validating its configuration before allocating a session or clone profile. Invalid body types, malformed JSON, invalid preset languages and unknown engines do not consume capacity. Instructions are stored as part of session creation, eliminating the endpoint's separate unguarded setter step. Setup failures after allocation release both newly created resources. Duplicate IDs and full-capacity errors preserve existing owners.
+2. The retained `set_instructions` helper rejects unknown/expired sessions with a deliberate validation error. The previously alleged HTTP 500 was not reproduced: the former endpoint caught it as a generic 400. The more serious reproduced defect was invalid requests exhausting the session limit; that path now has regression coverage.
+3. Existing prompt, tool, VAD/thinking/compression and one-use credential semantics are covered by endpoint tests. Legacy query prompts still work but move into stored instructions rather than the returned WebSocket URL. With `bot_type` omitted, preset composition now agrees with the WebSocket's existing Cascade default.
+4. Added `server/persona_identity.py` as the single canonical ID/alias resolver. Architecture, editability, prompt and phase lookup all use it. `ananya`, `kavya`, `glass-buddy` and `ranvir` now receive their intended execution tools instead of static fallback. Existing UI IDs and `wealth-manager` are preserved. Direct registry alias lookups remain compatible. No speech regex, persona style rewrite, phase policy change or additional UI tiles were introduced.
+5. Added a cross-stack contract test that imports the real TypeScript `PERSONAS` export and checks backend registration, editor locks and complete phase-card coverage. Pragya's root opening is explicitly distinguished from her three injected cards. This test requires the documented Node.js prerequisite and reports a skip if Node is unavailable. It executed successfully here. Alias tests also compare the real preview endpoint, prompts, schemas and cards for both engines.
+6. Added `temp.md` and `**/temp.md` to root `.dockerignore` and `server/.dockerignore`. Added the same exclusions to `.gcloudignore` because the documented Cloud Run workflow uploads source. The file remains tracked and was not deleted. Updated `UI_CHANGES_SEP.md` and `docs/telemetry.md`.
+
+### Review corrections retained
+
+At the reviewed base there were **12 backend IDs and 8 UI entries**, with no UI ID missing from the backend. Additional registry IDs represented existing personas, not missing UI tiles. Current registry aliases are derived from one shared table; raw entry counts are not a parity contract. Process-wide retention and its cross-session eviction limitation were already documented. These facts do not remove the separate need to verify real provider behavior.
+
+### Verification and limits
+
+- Full backend suite: **176 passed, 45 subtests passed**, including real route failure/rollback checks, alias tool/preview parity, the actual UI export contract, media import/startup and prior accounting tests. Six existing dependency warnings remain.
+- Voice Studio: **100 tests passed** and TypeScript/production build passed; existing bundle-size warning remains.
+- Original client: production build passed; existing `style.css` warning remains. Its source and observability entry points are unchanged.
+- Docker and gcloud executables are unavailable in this environment. Ignore rules and existing Docker COPY paths were inspected; no container build or deployment is claimed. `temp.md` is excluded by configuration, retained for coordination.
+- No paid provider or microphone call was run. Transcribe Live billing-snapshot scope, continuous STT turn correlation, caller-perceived playback measurement and unconfigured Gemini 3.5 Live pricing retain their previously documented limits. No new numeric pricing or speculative correlation was added.

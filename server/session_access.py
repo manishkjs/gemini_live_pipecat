@@ -19,7 +19,7 @@ def _prune():
         del _sessions[key]
 
 
-def issue(session_id=None, token=None):
+def issue(session_id=None, token=None, *, instructions=None):
     _prune()
     session_id = session_id or str(uuid4())
     if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128:
@@ -28,14 +28,21 @@ def issue(session_id=None, token=None):
         raise ValueError("Session already exists; create a fresh session_id")
     if len(_sessions) >= MAX_SESSIONS:
         raise RuntimeError("Session capacity reached")
-    if token is not None and (len(token) < 32 or len(token) > 256 or not token.isascii()):
+    if token is not None and (not isinstance(token, str) or len(token) < 32 or len(token) > 256 or not token.isascii()):
         raise ValueError("Invalid session capability")
+    if instructions is not None and not isinstance(instructions, str):
+        raise ValueError("Invalid session instructions")
     token = token or secrets.token_urlsafe(32)
     join = secrets.token_urlsafe(32)
     now = time.monotonic()
     _sessions[session_id] = {"token": token, "join": join, "join_expires": now + JOIN_TTL_SECONDS,
-                             "expires": now + SESSION_TTL_SECONDS}
+                             "expires": now + SESSION_TTL_SECONDS, "instructions": instructions}
     return session_id, token, join
+
+
+def discard(session_id):
+    """Release a session whose connection setup failed before returning its handles."""
+    _sessions.pop(session_id, None)
 
 
 def authorized(session_id, token):
@@ -57,7 +64,13 @@ def consume_join(session_id, join):
 
 
 def set_instructions(session_id, prompt):
-    _sessions[session_id]["instructions"] = prompt
+    _prune()
+    record = _sessions.get(session_id)
+    if record is None:
+        raise ValueError("Unknown or expired session")
+    if not isinstance(prompt, str):
+        raise ValueError("Invalid session instructions")
+    record["instructions"] = prompt
 
 
 def take_instructions(session_id):

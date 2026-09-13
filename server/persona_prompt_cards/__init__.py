@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional
 
+from persona_identity import normalize_persona_id
+
 from persona_prompt_cards.types import PhaseCard, format_phase_card, render_state_summary
 from persona_prompt_cards.pragya_cards import (
     SupercarPhaseCard,
@@ -92,51 +94,40 @@ __all__ = [
 ]
 
 
-_ALIASES = {
-    **dict.fromkeys(("lamborghini-concierge", "pragya", "wealth-manager"), "pragya"),
-    **dict.fromkeys(("ananya-advisor", "groww-advisor", "ananya"), "ananya"),
-    **dict.fromkeys(("kavya-glass-buddy", "reservation-agent", "kavya", "glass-buddy"), "kavya"),
-    "car-negotiator": "ranvir", "debt-collector": "meera", "storyteller": "kabir", "ai-companion": "aisha",
-}
 _PHASED = {
-    "pragya": (PRAGYA_SUPERCAR_CARDS, get_pragya_phase_card, format_supercar_prompt_card,
+    "lamborghini-concierge": (PRAGYA_SUPERCAR_CARDS, get_pragya_phase_card, format_supercar_prompt_card,
                get_pragya_root_system_instruction, get_pragya_monolithic_system_instruction),
-    "ananya": (ANANYA_MF_CARDS, get_ananya_phase_card, format_ananya_prompt_card,
-               get_ananya_root_system_instruction, get_ananya_monolithic_system_instruction),
-    "kavya": (KAVYA_GLASS_BUDDY_CARDS, get_kavya_phase_card, format_kavya_prompt_card,
+    "ananya-advisor": (ANANYA_MF_CARDS, get_ananya_phase_card, format_ananya_prompt_card,
+              get_ananya_root_system_instruction, get_ananya_monolithic_system_instruction),
+    "kavya-glass-buddy": (KAVYA_GLASS_BUDDY_CARDS, get_kavya_phase_card, format_kavya_prompt_card,
               get_kavya_root_system_instruction, get_kavya_monolithic_system_instruction),
 }
 _STATIC = {
-    "ranvir": (get_ranvir_system_instruction, get_ranvir_signature_instruction),
-    "meera": (get_meera_system_instruction, get_meera_signature_instruction),
-    "kabir": (get_kabir_system_instruction, get_kabir_signature_instruction),
-    "aisha": (get_aisha_system_instruction, get_aisha_signature_instruction),
+    "car-negotiator": (get_ranvir_system_instruction, get_ranvir_signature_instruction),
+    "debt-collector": (get_meera_system_instruction, get_meera_signature_instruction),
+    "storyteller": (get_kabir_system_instruction, get_kabir_signature_instruction),
+    "ai-companion": (get_aisha_system_instruction, get_aisha_signature_instruction),
 }
 
 
-def _normalize_persona(persona_id: Optional[str]) -> str:
-    key = (persona_id or "").strip().lower()
-    return _ALIASES.get(key, key)
-
-
 def get_persona_card(persona_id: str, phase_id: str) -> Optional[PhaseCard]:
-    entry = _PHASED.get(_normalize_persona(persona_id))
+    entry = _PHASED.get(normalize_persona_id(persona_id))
     return entry[1](phase_id) if entry else None
 
 
 def get_persona_all_cards(persona_id: str) -> Dict[str, PhaseCard]:
-    entry = _PHASED.get(_normalize_persona(persona_id))
+    entry = _PHASED.get(normalize_persona_id(persona_id))
     return dict(entry[0]) if entry else {}
 
 
 def format_persona_prompt_card(persona_id: str, card: Any,
                                state: Optional[Mapping[str, Any]] = None, context: str = "") -> str:
-    entry = _PHASED.get(_normalize_persona(persona_id))
+    entry = _PHASED.get(normalize_persona_id(persona_id))
     return entry[2](card, context=context, state=state) if entry else format_phase_card(card, context=context)
 
 
 def get_persona_system_instruction(persona_id: str, engine: str = "live", tone: str = "professional") -> Optional[str]:
-    key = _normalize_persona(persona_id)
+    key = normalize_persona_id(persona_id)
     phased = _PHASED.get(key)
     if phased:
         return phased[4 if engine == "cascade" else 3]()
@@ -155,7 +146,7 @@ _LANGUAGE_NAMES = {
 def get_session_preset(persona_id: str, engine="live", tone="professional", language="en-US"):
     """One runtime/preview source. Custom instructions bypass preset resolution."""
     prompt = get_persona_system_instruction(persona_id, engine=engine, tone=tone)
-    if prompt and _normalize_persona(persona_id) in _STATIC:
+    if prompt and normalize_persona_id(persona_id) in _STATIC:
         name = _LANGUAGE_NAMES.get(language)
         if not name:
             raise ValueError("Unsupported preset language")

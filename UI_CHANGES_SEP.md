@@ -39,10 +39,12 @@ The seven fictional portraits ship as 400×400 WebP files, approximately 105 KB 
 
 - `server/persona_prompt_cards/`: canonical session presets, root prompts and phase cards. Existing professional/signature styles are preserved. Custom instructions override editable personas; architecture-owned prompts remain locked.
 - `server/persona_tools/`: execution engines and domain state. `server/persona_registry.py` is the application facade.
+- `server/persona_identity.py`: shared canonical IDs and compatibility aliases for architecture, prompts and card lookup. Existing UI IDs and `wealth-manager` remain supported.
 - `demos/voice-studio/src/lib/personas.ts`: display metadata, offline/older-backend preset fallback, journey phase IDs and sample conversations. Connected preset requests resolve through the backend and use its prompt preview.
 - `demos/voice-studio/src/components/studio/`: persona picker, compact conversation display, transcript, settings and cost panel.
 - `server/cascade_pricing.py` and `cascade_metering.py`: exact model/provider rates and provider-request accounting. See [pricing mechanisms and limits](docs/cascade-pricing.md).
 - `server/turn_telemetry.py`, `processors/turn_telemetry.py` and `diagnostic_buffer.py`: lifecycle, explicit metric emission and bounded diagnostics. See [telemetry contract](docs/telemetry.md).
+- `server/session_access.py`: expiring diagnostic/join capabilities and one-use instructions. `/connect` validates configuration before allocation and releases newly allocated sessions and voice profiles if setup fails.
 
 ## Integration constraints
 
@@ -54,6 +56,8 @@ Diagnostics require the call's `session_id` and in-memory `X-Session-Token`. Ope
 
 Custom instructions retain the existing 4,000 estimated-token editor limit. Generated websocket URLs carry a one-use connection handle; prompt text is stored briefly on the server. API/list-price estimates are not Cloud Billing invoices. Transcribe Live usage scope, continuous STT turn correlation and caller-perceived playback latency remain explicit verification gates.
 
+`temp.md` remains tracked for agent coordination. Root and server Docker ignore files exclude it, including nested copies; `.gcloudignore` also excludes it from the documented Cloud Run source upload. Keep durable implementation contracts in `docs/`. Do not delete the coordination file as a packaging step.
+
 ## Verification
 
 ```bash
@@ -64,4 +68,6 @@ npm test       # Voice Studio
 npm run build  # Voice Studio and original client
 ```
 
-This checkpoint passed 167 backend tests plus two subtests, 100 Voice Studio tests and both production builds. Existing dependency deprecation and bundle-size warnings remain. The task browser could not open the local preview (`ERR_BLOCKED_BY_CLIENT`), so no full browser visual/microphone validation is claimed. Follow the real-call checklist in `docs/telemetry.md` before presenting the demo as production-verified.
+The backend UI-contract test imports the real Voice Studio persona exports with Node.js 22.13+ and checks backend IDs, editor locks and phase cards. It skips explicitly if Node is absent; run the combined check with Node available before merging.
+
+This checkpoint passed 176 backend tests plus 45 subtests, 100 Voice Studio tests and both production builds. Existing dependency deprecation and bundle-size warnings remain. Docker/gcloud are unavailable in the task environment, so packaging exclusions were inspected without a container build or deployment. The task browser could not open the local preview (`ERR_BLOCKED_BY_CLIENT`), so no full browser visual/microphone validation is claimed. Follow the real-call checklist in `docs/telemetry.md` before presenting the demo as production-verified.

@@ -31,6 +31,7 @@ Barge-in closes the previous turn as `interrupted`; disconnect closes an open tu
 - `/connect` returns a viewer capability and a separate five-minute, single-use websocket join. A supplied session ID cannot overwrite an existing owner. Direct websocket clients receive an isolated anonymous scope.
 - Both UIs retain capabilities in memory and send them in headers. The original standalone dashboard receives access from its opener via an exact-window/exact-origin message handshake. Capabilities are not placed in dashboard URLs or browser storage.
 - Access records expire after four hours and are capped at 1,000 per process. Unclaimed custom/preset prompts expire with them and are consumed once at connection; prompt text is no longer added to a generated websocket URL.
+- `/connect` validates its body and prepares instructions before issuing a session. Rejected requests consume no session slots or voice profiles. If response preparation fails after allocation, both newly created handles are released; an existing owner's session is never removed by a rejected duplicate-ID request.
 - Raw Loguru capture remains to preserve the existing log console. It captures structured message/level fields only; it does **not** extract metrics or tokens from text. The standard-logging global interceptor and all metric parsers/debounce state are removed.
 - Standalone token counters use retained structured provider snapshots, replacing duplicate response snapshots. They are labelled retained responses, not a complete billing ledger. The per-call cost ledger remains separate.
 

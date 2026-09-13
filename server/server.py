@@ -207,6 +207,7 @@ async def persona_prompt(
 
 @app.post("/connect")
 async def bot_connect(request: Request) -> Dict[Any, Any]:
+    import json
     from urllib.parse import parse_qs, urlencode
     # Get the original query string from the incoming request (e.g., "model=...&voice=...")
     query_params_raw = request.url.query
@@ -214,89 +215,84 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         k: v[-1] for k, v in parse_qs(query_params_raw, keep_blank_values=True).items()
     }
 
-    try:
-        session_id, viewer_token, connection_id = session_access.issue(
-            params_dict.get("session_id"), request.headers.get("x-session-token"))
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    params_dict["session_id"] = session_id
-    params_dict["connection_id"] = connection_id
-
-    # Try to get parameters from the JSON body
+    # Finish reading and validating the request before allocating any handles.
+    # Invalid requests must not occupy a session slot for the four-hour TTL.
+    instructions = params_dict.pop("system_instruction", None)
     try:
         body = await request.json() if await request.body() else {}
-        if isinstance(body, dict):
-            if body.get("prompt_source") == "preset" and params_dict.get("persona_id") != "custom":
-                from persona_prompt_cards import get_session_preset
-                preset = get_session_preset(params_dict.get("persona_id", ""),
-                    engine="cascade" if params_dict.get("bot_type") == "tts-llm-stt" else "live",
-                    tone=body.get("persona_tone", "professional"),
-                    language=params_dict.get("language") or params_dict.get("stt_language", "en-US"))
-                if preset:
-                    body["system_instruction"] = preset
-            # Store system_instruction and URL-encode if within URL limits
-            if "system_instruction" in body:
-                custom_prompt = body["system_instruction"].strip()
-                if custom_prompt and custom_prompt != SYSTEM_PROMPT.strip():
-                    session_id = params_dict.get("session_id")
-                    if session_id:
-                        session_access.set_instructions(session_id, custom_prompt)
-                    params_dict.pop("system_instruction", None)
-            
-            # URL-encode the tools from the body
-            if "tools" in body:
-                import json
-                tools_data = body["tools"]
-                if isinstance(tools_data, (dict, list)):
-                    tools_str = json.dumps(tools_data)
-                else:
-                    tools_str = str(tools_data)
-                params_dict["tools"] = tools_str
+        if not isinstance(body, dict):
+            raise ValueError("Expected a configuration object")
+        for field in ("system_instruction", "prompt_source", "persona_tone", "thinking_level"):
+            if field in body and not isinstance(body[field], str):
+                raise ValueError(f"Invalid {field}")
+        for field in ("context_compression", "thinking", "vad"):
+            if field in body and not isinstance(body[field], bool):
+                raise ValueError(f"Invalid {field}")
+        clone_key = body.get("custom_voice_key")
+        if clone_key is not None and not isinstance(clone_key, str):
+            raise ValueError("Invalid custom_voice_key")
+        bot_type = params_dict.get("bot_type", "tts-llm-stt")
+        if bot_type not in diagnostic_buffer.BOT_TYPES:
+            raise ValueError("Unknown bot_type")
 
-            if "context_compression" in body:
-                params_dict["context_compression"] = "true" if body["context_compression"] else "false"
+        if body.get("prompt_source") == "preset" and params_dict.get("persona_id") != "custom":
+            from persona_prompt_cards import get_session_preset
+            preset = get_session_preset(params_dict.get("persona_id", ""),
+                engine="cascade" if bot_type == "tts-llm-stt" else "live",
+                tone=body.get("persona_tone", "professional"),
+                language=params_dict.get("language") or params_dict.get("stt_language", "en-US"))
+            if preset:
+                body["system_instruction"] = preset
+        if body.get("system_instruction", "").strip():
+            instructions = body["system_instruction"].strip()
 
-            if "context_compression_trigger_tokens" in body:
-                try:
-                    raw_val = int(body["context_compression_trigger_tokens"])
-                    # Strictly enforce minimum 5,000 tokens (upstream Vertex Live protocol limit)
-                    params_dict["context_compression_trigger_tokens"] = str(max(5000, raw_val))
-                except (ValueError, TypeError):
-                    params_dict["context_compression_trigger_tokens"] = "5000"
-
-            if "thinking" in body:
-                params_dict["thinking"] = "true" if body["thinking"] else "false"
-
-            if "thinking_level" in body:
-                params_dict["thinking_level"] = str(body["thinking_level"])
-
-            if "vad" in body:
-                params_dict["vad"] = "false" if body["vad"] is False else "true"
-
-            # A cloning key is a credential and must never reach the ws_url,
-            # which is written to browser history, access logs and the in-app
-            # diagnostics buffer. Exchange it for a single-use, expiring handle.
-            if "custom_voice_key" in body and body["custom_voice_key"]:
-                profile_id = voice_profiles.register(str(body["custom_voice_key"]))
-                if profile_id:
-                    params_dict["voice_profile_id"] = profile_id
-
-    except Exception:
+        if "tools" in body:
+            tools_data = body["tools"]
+            params_dict["tools"] = json.dumps(tools_data) if isinstance(tools_data, (dict, list)) else str(tools_data)
+        for field in ("context_compression", "thinking", "vad"):
+            if field in body:
+                params_dict[field] = "true" if body[field] else "false"
+        if "context_compression_trigger_tokens" in body:
+            try:
+                raw_val = int(body["context_compression_trigger_tokens"])
+                # Preserve the existing minimum and invalid-value fallback.
+                params_dict["context_compression_trigger_tokens"] = str(max(5000, raw_val))
+            except (ValueError, TypeError, OverflowError):
+                params_dict["context_compression_trigger_tokens"] = "5000"
+        if "thinking_level" in body:
+            params_dict["thinking_level"] = body["thinking_level"]
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Invalid session configuration")
-    
-    query_params = urlencode(params_dict)
-    
+
     # Dynamically determine WebSocket scheme (ws vs wss) and host
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     ws_scheme = "wss" if scheme == "https" else "ws"
     host = request.headers.get("x-forwarded-host", request.url.netloc)
-    
-    ws_url = f"{ws_scheme}://{host}/ws?{query_params}"
-    print(f"Issued websocket connection for session {session_id}")
-    
-    return {"ws_url": ws_url, "session_id": session_id, "diagnostic_token": viewer_token}
+
+    try:
+        session_id, viewer_token, connection_id = session_access.issue(
+            params_dict.get("session_id"), request.headers.get("x-session-token"),
+            instructions=instructions)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    profile_id = None
+    try:
+        params_dict.update(session_id=session_id, connection_id=connection_id)
+        # Exchange credentials for a one-use handle only after validation.
+        if clone_key:
+            profile_id = voice_profiles.register(clone_key)
+            if profile_id:
+                params_dict["voice_profile_id"] = profile_id
+        ws_url = f"{ws_scheme}://{host}/ws?{urlencode(params_dict)}"
+        return {"ws_url": ws_url, "session_id": session_id, "diagnostic_token": viewer_token}
+    except Exception:
+        # These handles have not reached the caller. Release both on failure.
+        voice_profiles.consume(profile_id)
+        session_access.discard(session_id)
+        raise HTTPException(status_code=500, detail="Unable to prepare session")
 
 
 @app.get("/connect/system-prompt")

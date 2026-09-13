@@ -70,5 +70,56 @@ class TestPersonaRegistry(unittest.TestCase):
         self.assertNotIn("switch_phase", llm_cascade.functions)
         self.assertIn("create_appointment_booking", llm_cascade.functions)
 
+    def test_prompt_aliases_keep_their_required_execution_architecture(self):
+        from persona_registry import get_persona_architecture
+        expected = {
+            "wealth-manager": ArchitecturePattern.JIT_PHASE_CARDS,
+            "pragya": ArchitecturePattern.JIT_PHASE_CARDS,
+            "ananya": ArchitecturePattern.JIT_MF_ADVISOR,
+            "groww-advisor": ArchitecturePattern.JIT_MF_ADVISOR,
+            "kavya": ArchitecturePattern.GLASS_BUDDY,
+            "glass-buddy": ArchitecturePattern.GLASS_BUDDY,
+            "reservation-agent": ArchitecturePattern.GLASS_BUDDY,
+            "ranvir": ArchitecturePattern.STATE_LADDER_NEGOTIATOR,
+        }
+        for alias, pattern in expected.items():
+            with self.subTest(alias=alias):
+                self.assertEqual(resolve_persona_architecture(alias), pattern)
+                for engine in ("live", "cascade"):
+                    self.assertTrue(get_persona_architecture(alias).get_tool_schemas(engine=engine))
+
+    def test_all_aliases_agree_across_preview_prompts_cards_tools_and_editability(self):
+        from fastapi.testclient import TestClient
+        import server
+        from persona_identity import PERSONA_ALIASES, normalize_persona_id
+        from persona_registry import get_persona_architecture
+        from persona_prompt_cards import get_persona_all_cards, get_persona_card, get_session_preset
+        client = TestClient(server.app)
+        for alias, canonical in PERSONA_ALIASES.items():
+            for spelling in (alias, f" {alias.upper()} "):
+                with self.subTest(alias=spelling):
+                    self.assertEqual(normalize_persona_id(spelling), canonical)
+                    self.assertEqual(normalize_persona_id(canonical), canonical)
+                    self.assertEqual(resolve_persona_architecture(spelling), resolve_persona_architecture(canonical))
+                    self.assertEqual(is_persona_ui_editable(spelling), is_persona_ui_editable(canonical))
+                    self.assertEqual(PERSONA_REGISTRY[alias].architecture, PERSONA_REGISTRY[canonical].architecture)
+                    alias_arch = get_persona_architecture(spelling)
+                    canonical_arch = get_persona_architecture(canonical)
+                    for engine in ("live", "cascade"):
+                        self.assertEqual([t.name for t in alias_arch.get_tool_schemas(engine)],
+                                         [t.name for t in canonical_arch.get_tool_schemas(engine)])
+                        for tone in ("professional", "signature"):
+                            self.assertEqual(get_session_preset(spelling, engine, tone, "hi-IN"),
+                                             get_session_preset(canonical, engine, tone, "hi-IN"))
+                    cards = get_persona_all_cards(canonical)
+                    self.assertEqual(get_persona_all_cards(spelling), cards)
+                    for card in cards.values():
+                        self.assertEqual(get_persona_card(spelling, card.phase_id), card)
+            for engine in ("live", "cascade"):
+                alias_preview = client.get(f"/persona-prompt/{alias}?engine={engine}").json()
+                canonical_preview = client.get(f"/persona-prompt/{canonical}?engine={engine}").json()
+                for key in ("prompt", "architecture", "editable"):
+                    self.assertEqual(alias_preview[key], canonical_preview[key], (alias, engine, key))
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,8 @@ import asyncio
 from enum import Enum
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
+from persona_identity import PERSONA_ALIASES, normalize_persona_id
+
 
 class ArchitecturePattern(str, Enum):
     """The prompt/tooling strategy a persona runs under."""
@@ -61,20 +63,6 @@ PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
         architecture=ArchitecturePattern.JIT_PHASE_CARDS,
         is_ui_editable=False,
     ),
-    # Deprecated id, kept only so a browser holding the old value in
-    # localStorage still reaches the phase-card architecture. Dropping it
-    # outright would degrade those sessions to a plain prompt with no cards and
-    # no tools, which is a failure that looks like a model regression.
-    "wealth-manager": PersonaConfig(
-        persona_id="wealth-manager",
-        architecture=ArchitecturePattern.JIT_PHASE_CARDS,
-        is_ui_editable=False,
-    ),
-    "pragya": PersonaConfig(
-        persona_id="pragya",
-        architecture=ArchitecturePattern.JIT_PHASE_CARDS,
-        is_ui_editable=False,
-    ),
     # Ranvir - car negotiator. Entirely independent of the supercar modules;
     # they share no code, no state and no branch.
     "car-negotiator": PersonaConfig(
@@ -88,19 +76,9 @@ PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
         architecture=ArchitecturePattern.GLASS_BUDDY,
         is_ui_editable=False,
     ),
-    "reservation-agent": PersonaConfig(
-        persona_id="reservation-agent",
-        architecture=ArchitecturePattern.GLASS_BUDDY,
-        is_ui_editable=False,
-    ),
     # Ananya - Cymbal Mutual Fund Advisor (portfolio/NAV/SIP + JIT phase cards)
     "ananya-advisor": PersonaConfig(
         persona_id="ananya-advisor",
-        architecture=ArchitecturePattern.JIT_MF_ADVISOR,
-        is_ui_editable=False,
-    ),
-    "groww-advisor": PersonaConfig(
-        persona_id="groww-advisor",
         architecture=ArchitecturePattern.JIT_MF_ADVISOR,
         is_ui_editable=False,
     ),
@@ -108,6 +86,12 @@ PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
     "ai-companion": PersonaConfig("ai-companion", ArchitecturePattern.MONOLITHIC_STATIC),
     "custom": PersonaConfig("custom", ArchitecturePattern.MONOLITHIC_STATIC),
 }
+
+# Preserve direct registry lookups for old IDs without duplicating routing rules.
+PERSONA_REGISTRY.update({
+    alias: PERSONA_REGISTRY[canonical]._replace(persona_id=alias)
+    for alias, canonical in PERSONA_ALIASES.items()
+})
 
 
 def resolve_persona_architecture(persona_id: Optional[str]) -> ArchitecturePattern:
@@ -119,7 +103,7 @@ def resolve_persona_architecture(persona_id: Optional[str]) -> ArchitecturePatte
     """
     if not persona_id:
         return ArchitecturePattern.MONOLITHIC_STATIC
-    config = PERSONA_REGISTRY.get(persona_id.strip())
+    config = PERSONA_REGISTRY.get(normalize_persona_id(persona_id))
     return config.architecture if config else ArchitecturePattern.MONOLITHIC_STATIC
 
 
@@ -127,7 +111,7 @@ def is_persona_ui_editable(persona_id: Optional[str]) -> bool:
     """Whether Voice Studio may let a demo user edit this persona's prompt."""
     if not persona_id:
         return True
-    config = PERSONA_REGISTRY.get(persona_id.strip())
+    config = PERSONA_REGISTRY.get(normalize_persona_id(persona_id))
     return config.is_ui_editable if config else True
 
 
@@ -732,5 +716,5 @@ def get_persona_architecture(persona_id: Optional[str]) -> BasePersonaArchitectu
     """
     pattern = resolve_persona_architecture(persona_id)
     architecture = _ARCHITECTURE_IMPLEMENTATIONS[pattern]()
-    architecture.persona_id = persona_id
+    architecture.persona_id = normalize_persona_id(persona_id)
     return architecture
