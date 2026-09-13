@@ -133,9 +133,10 @@ Let `S` = actual caller speech end, `V = S + padding` = VAD stop frame arrival, 
 - `pipecat-ai==1.2.1` is pinned at `requirements.txt:61`. In 1.2.1, `KrispVivaTurn` hardcodes `botSpeaking=False`, meaning TTv3's reset-while-bot-speaks path is not wired up.
 - While `ui-changes-sep` currently uses Silero (where the barge-in spec holds), any future merge of Krisp must re-validate the N / N+1 boundary rather than assuming TTv3 handles reset correctly.
 
-### G. Bounded Storage: Flat Deque
-- Replace `TURN_LATENCY_RECORDS` with a single flat `deque(maxlen=2000)` storing records with `session_id`, `turn_id`, `bot_type`, `stage`, and timestamps.
-- Reads and clears strictly filter by `session_id`.
+### G. Bounded Storage: Single Process-Wide Flat Deque
+- Replace `TURN_LATENCY_RECORDS` with a single flat `deque(maxlen=2000)` process-wide (ceiling of 2,000 records total across all sessions, preventing unbounded memory leaks).
+- Each record carries `(session_id, turn_id, bot_type, stage, value_ms, status)`.
+- Reads and clears strictly filter by non-empty `session_id`.
 
 ### H. Structural Fast-Boot Test Gate (`sys.modules`)
 - Heavy AI SDKs (`grpc`, `pipecat`, `google.genai`, `vertexai`, `google.cloud.speech_v2`) must be deferred to session factory/handshake time.
@@ -158,10 +159,10 @@ Let `S` = actual caller speech end, `V = S + padding` = VAD stop frame arrival, 
    record_metric(session_id: str, turn_id: str, bot_type: str, stage: str, value_ms: float, status: str = "ok")
    ```
 3. Pipeline orchestrator mints `turn_id` on `UserStoppedSpeakingFrame` and propagates it to all downstream frames and async callbacks.
-4. Measure true turnaround as a wall-clock interval from caller speech end to first bot playback.
-5. On barge-in, close Turn N immediately with `status="interrupted"` and omit `"turnaround_ms"`.
-6. On socket disconnect, close any open turn as `status="abandoned"`.
-7. Replace `TURN_LATENCY_RECORDS` with a single flat `deque(maxlen=2000)`. Require non-empty `session_id` on reads/clears.
+4. Measure pipeline turnaround as a wall-clock interval from `vad_stop_ts` to `first_server_audio_ts` (reporting `vad_stop_to_first_server_audio_ms`).
+5. On barge-in, close Turn N immediately with `status="interrupted"` and omit `"turnaround_ms"` and `"vad_stop_to_first_server_audio_ms"` entirely.
+6. On socket disconnect, close any open turn as `status="abandoned"` (omitting latency values).
+7. Replace `TURN_LATENCY_RECORDS` with a single process-wide flat `deque(maxlen=2000)`. Require non-empty `session_id` on reads/clears.
 
 ### PR #2: Fast Boot, Asset Compression & UI Decoupling
 1. Defer heavy SDK imports in `server.py` to handshake/session factory, enforcing the `sys.modules` structural test.
