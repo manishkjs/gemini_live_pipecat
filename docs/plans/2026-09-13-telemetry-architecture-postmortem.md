@@ -118,11 +118,16 @@ Let `S` = actual caller speech end, `V = S + padding` = VAD stop frame arrival, 
 - **Perceived Delay:** `A − S` (what the caller actually experiences waiting in silence).
 - **Frame-Anchored Delay:** `A − V = (A − S) − padding`.
 - **Understatement:** Anchoring latency solely on `UserStoppedSpeakingFrame` arrival understates perceived caller latency by the silence detection window (`stop_secs=0.4` / 400ms baseline in `agent.py:702` and `agent_live.py:1033`).
-- **Latency Blindness:** Crucially, `A − V` measures pipeline execution work and is insensitive to VAD tuning. If `stop_secs` is reduced from 0.4s to 0.2s, the caller experiences an immediate 200ms speedup, but `vad_stop_to_first_audio_ms` reports **0 change**.
-- **The Metric Contract:**
-  1. Record `vad_stop_to_first_audio_ms` (`A − V`) representing pipeline turnaround.
-  2. Expose `vad_stop_padding_ms` as session configuration metadata.
-  3. Where VAD provides a back-calculated speech-end estimate, record `perceived_turnaround_ms = speech_end_to_first_audio_ms` (`A − S`) as the headline responsiveness metric.
+- **Latency Blindness:** Crucially, `A − V` measures pipeline execution work and is insensitive to VAD tuning. If `stop_secs` is reduced from 0.4s to 0.2s, the caller experiences an immediate 200ms speedup, but `vad_stop_to_first_server_audio_ms` reports **0 change**.
+- **Retiring "Perceived" from Server Metrics:** Until client-side playback buffer onset instrumentation lands in PR #3, the term "perceived" is retired from server-side telemetry.
+
+#### Latency Metric Acceptance Criteria & Boundary Definitions
+
+| Status | Metric Name | Definition & Endpoint Boundary |
+|---|---|---|
+| **Measured** | `vad_stop_to_first_server_audio_ms` | `UserStoppedSpeakingFrame` event → first server audio chunk emission on WebSocket |
+| **Estimated** | `estimated_speech_end_to_first_server_audio_ms` | Caller speech end → first server audio emission, computed as `vad_stop_to_first_server_audio_ms + vad_stop_padding_ms` (configured `stop_secs=0.4` attached as metadata) |
+| **Unavailable today** | *Caller-perceived turnaround latency* | True acoustic speech end → client speaker playback onset. **Deferred to PR #3** (requires client-side playback buffer timestamp instrumentation) |
 
 ### F. Krisp VIVA Turn Pinning Caveat
 - `pipecat-ai==1.2.1` is pinned at `requirements.txt:61`. In 1.2.1, `KrispVivaTurn` hardcodes `botSpeaking=False`, meaning TTv3's reset-while-bot-speaks path is not wired up.
