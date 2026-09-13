@@ -586,3 +586,137 @@ An audit of an 18-turn LLM session (26 spoken turns, 54,315 billed tokens, ₹10
 * **Live Server:** Running on PID via `./venv/bin/python server/server.py` on port `:7860`.
 * **Git Commit:** Committed and pushed to `origin/ui-changes-sep` (`579c83b`).
 
+
+
+---
+
+## 10. Peer review of section 9 against commit 1808428 — 13 September 2026
+
+The microphone experiments and per-modality totals are useful reported evidence.
+Several root-cause claims are stronger than the available trace excerpts support.
+The review below distinguishes source-code reproductions from reported provider
+behavior. No application behavior was changed during this review.
+
+### A. Duplicate phase calls already deduplicate card delivery
+
+Reproduced against the current `JITPhaseCardsArchitecture` by invoking two
+identical `switch_phase(SOP_02_DISCOVERY)` handlers concurrently with an async
+injection stub:
+
+- Tool calls: **2**.
+- Actual calls to `inject_directive`: **1**.
+- Results: first `sent`, second `already_sent`.
+
+The existing `_card_lock` serializes execution, and `_last_card_key` checks phase
+plus collected state before injecting. The two “Calling function” lines in
+section 9 demonstrate two calls, not two successful card sends. Establish the
+running commit, architecture instance/session, send count, and intervening slot
+changes before blaming duplicate context for the 1,397 → 4,490 increase.
+An SDK send failure followed by a retry also needs separate analysis.
+
+Each distinct outstanding function-call ID still needs its own response; suppress
+the repeated side effect, not its acknowledgement. Dropping a duplicate function
+response can leave the model waiting. The current handler's two responses are
+appropriate. [Google Live tool protocol](https://ai.google.dev/gemini-api/docs/live-api/tools).
+
+**Actual idempotency gap:** Two identical concurrent `create_appointment_booking`
+requests produced two distinct `LAMBO-...` booking IDs in a local reproduction.
+This is a gap in the current implementation, including the earlier repair. The
+small fix is to reuse the successful result for the same normalized appointment
+within a call; changed appointment details must remain a separate request. No
+speech classifier or generic timed debounce layer is needed.
+
+### B. Keep 201 and 276 as observations, not proven backend constants
+
+If the stated zero-WebSocket-audio measurement is correct, the 201 reported audio
+tokens were not explained by those excluded PCM frames in that experiment.
+That does not establish a hardcoded preamble, its origin, or universal billing
+behavior. Backend attribution overhead, a reporting defect, or another setup
+input remains possible until a minimal reproduction/provider confirmation
+separates them. I could inspect the committed gate and tests, but the full raw
+session trace and Buganizer comment were not available in this checkout.
+
+Likewise, comparing 225 and 501 text tokens for one prompt does not isolate a
+universal 276-token scaffolding charge: tokenizer, setup, tools, transcription,
+thinking and model/provider settings must be controlled. The current root is
+**1,762 characters**, and characters cannot be added directly to token counts.
+
+There is also a reconciliation gap in the quoted usage record:
+
+`1,027 text + 201 audio = 1,228`, versus `1,397` reported prompt tokens.
+
+**169 prompt tokens are unattributed in the excerpt.** Retain that residual;
+do not silently put it into audio, text, or the proposed fixed overhead. Capture
+the complete raw `usage_metadata` and exact setup for the same response ID.
+
+### C. Cost arithmetic is useful; generalizations need limits
+
+Using the rates and counts provided in section 9, the modality counts sum to
+**54,315**, estimated cost is **$0.117819**, and audio input contributes **64.59%**.
+The arithmetic supports prioritizing retained audio/context in that example.
+Google documents per-turn charges for retained session context; that is stronger
+evidence than inferring billing merely from `cached_content_token_count == 0`.
+[Google Cloud Live pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing).
+
+The excerpt does not prove that bot audio is *always* converted to text at a
+fixed 0.25 ratio, that all audio-input tokens represent the user's spoken words,
+or that every fragmented interruption costs a fixed extra ₹0.42. Silence/noise,
+provider attribution, compression, response length and the counterfactual next
+turn matter. Cumulative reprocessing can approach quadratic growth while history
+grows; compression caps that growth. Preserve these as model/configuration-specific
+measurements and hypotheses rather than universal API properties.
+
+### D. The microphone gate is an experiment with behavior changes
+
+`StartTriggerProcessor` runs on the **server**, not in the browser. It is enabled
+for every model string containing `3.1`, across personas. It opens the gate on
+LLM `turn_complete`, which can precede the end of queued speaker playback; this
+cannot guarantee that the microphone stays gated throughout the audible greeting.
+Its RMS threshold measures energy, not speech: quiet speech can be dropped and
+noise can open it. The “12s watchdog” is checked only when an audio frame arrives,
+not by an independently scheduled timer. Its class documentation still claims
+the 201-token silence leak that section 9 itself rejects.
+
+Keep this optional while its benefit is measured. If retained, distinguish model
+generation completion from playback completion and test quiet callers, noisy rooms,
+frame durations, connection startup and speaker echo. The six isolated unit cases
+do not establish all of those live guarantees.
+
+### E. Prompt changes reintroduced unsupported completed actions
+
+The current Booked card says **“Concierge SMS sent, VIP valet reserved, vehicle
+ready on floor.”** The booking backend still only returns an in-memory demo
+confirmation. It sends no SMS, reserves no valet and checks no vehicle inventory.
+These claims were explicitly removed earlier and are now back. Remove them or
+clearly frame them as simulated demo actions. The new Monsoon Offer, warranty,
+allocation and price assertions likewise need approved demo data or verified
+business inputs; they cannot become factual tool results through prompt wording.
+
+The opening-first instruction is a sensible prompt improvement. It remains a
+model instruction, not a server-enforced guarantee that no early tool can occur.
+
+### F. Transcript reinsertion still complicates the cost experiment
+
+Capping `_inject_transcription_logs` to five dialogue entries is smaller than
+reinjecting the whole history, but it remains extra context triggered by a
+heuristic inferred from token totals/drops. It does not prove provider compression
+occurred. It also still calls `send_client_content` for all models, bypassing the
+model-specific text transport used by phase cards. This pre-existing path needs
+to be isolated or corrected before attributing token changes solely to cards.
+
+### Recommended order, keeping the architecture simple
+
+1. Fix duplicate booking execution and remove unsupported confirmation claims.
+2. Log actual card sends/skips with session, response, function-call ID and commit;
+   reconcile the 169-token residual using full raw metadata. Do not add another
+   phase debounce system when the existing card deduplication already works.
+3. Keep the new microphone gate optional; isolate transcript reinsertion in the
+   comparison. Preserve the model-driven phase tool and explicit card overrides.
+4. Repeat the same short voice script with exact model/provider/setup recorded.
+   Report observed cost and behavior separately from proposed model internals.
+
+Validation this review: the existing **88 focused backend tests and 2 protocol
+subtests pass** at 1808428. Additional ad hoc async reproductions established one
+card send for two identical phase calls and two bookings for two identical booking
+calls. The new full audio-gate test module and real microphone/provider sessions
+were not run here. These are review findings, not a claim of new live validation.
