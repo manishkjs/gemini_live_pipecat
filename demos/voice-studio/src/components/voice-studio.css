@@ -2862,6 +2862,38 @@
   font-weight: 600;
 }
 
+.transcript-sop-bar.is-cascade-static {
+  opacity: 0.55;
+  filter: grayscale(0.35) blur(0.25px);
+  pointer-events: none;
+  position: relative;
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.transcript-sop-bar.is-cascade-static:hover {
+  opacity: 0.85;
+  filter: none;
+}
+
+.cascade-sop-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  padding: 0.12rem 0.55rem;
+  border-radius: 9999px;
+  text-transform: none;
+}
+
+.phase-step.is-cascade-step {
+  opacity: 0.85;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .phase-step {
     transition: none;

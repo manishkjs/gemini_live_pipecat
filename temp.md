@@ -803,3 +803,71 @@ selection remains through `switch_phase`.
 - **Backend Tests:** 107 server unit tests passing (`PYTHONPATH=server venv/bin/python -m unittest discover -s server/tests -p "test_*.py"`), including 5 new tests in `server/tests/test_model_routing.py` validating key resolution, file loading, and voice matchers.
 - **Frontend Tests:** 93/93 unit & contract tests passing in `demos/voice-studio` (`npm test`).
 - **Build Verification:** Production builds succeeded cleanly for both `demos/voice-studio` and `client` (`tsc && vite build`).
+
+---
+
+## 13. Cascade Monolithic SOP Architecture, Tool Isolation & Static Roadmap Treatment — 2026-09-13 07:35:00 UTC
+
+**Scope:** The owner requested adapting Pragya's SOP and Voice Studio for the **Cascaded (`STT → LLM → TTS`) pipeline**. Dynamic JIT phase-card transitions (`switch_phase`, `inject_directive`) are an exclusive Gemini Live capability. In Cascade mode, turn-based chat context does not support mid-session directive injection. This work provides a complete monolithic system instruction in Cascade, isolates tools cleanly so `switch_phase` is excluded, registers `create_appointment_booking` on the turn-based LLM, and presents the Voice Studio SOP stepper as a de-emphasized static roadmap with a dedicated badge.
+
+### Core Architectural Insights & Trade-Offs
+
+1. **Gemini Live vs. Cascade Invariant:**
+   - *Gemini Live Duplex:* The WebSocket connection maintains continuous audio/text context. Gemini calls `switch_phase` as a tool call, and the backend injects the corresponding card (`inject_directive()` via `session.send_realtime_input()`).
+   - *Cascade Pipeline:* STT transcribes user speech turn-by-turn into text; text is passed into `GoogleVertexLLMService` (`messages=[{"role": "system", ...}, {"role": "user", ...}]`); the LLM response streams to TTS. Mid-flight directive injection into an active voice stream does not exist.
+   - *Conclusion:* Pragya must receive the entire monolithic SOP (opening greeting, discovery specs/rebuttals, lounge visit PIN collection, booking tool contract, and confirmation) in turn 0 when operating under Cascade.
+
+2. **The Token & Unit Economic Divergence:**
+   - *Live duplex pricing:* Carried audio and full conversation history are re-billed on every single packet, making lean root prompts (~300 tokens) and JIT cards necessary to avoid continuous prompt tax.
+   - *Cascade turn-based pricing:* The LLM runs once per turn on text tokens only. A comprehensive ~1,400-token prompt (3,690 characters) on `gemini-3.5-flash-lite` costs ~$0.0001 per turn (virtually free). Monolithic delivery delivers 100% reliable domain knowledge without tool latency or injection failure risks.
+
+3. **Tool Isolation & Registration:**
+   - `switch_phase` is strictly omitted from LLM tool schemas in Cascade mode (`get_tool_schemas(engine="cascade")` returns only `[create_appointment_booking_schema]`).
+   - `create_appointment_booking` is wired to `llm.register_function()` on `CustomGoogleVertexLLMService` with `broadcast_persona_event` pushing `booking_confirmed` and `call_state` frames downstream over RTVI.
+
+### Implemented Changes
+
+1. **Monolithic Instruction Definition (`server/supercar_cards.py`):**
+   - Implemented `get_pragya_monolithic_system_instruction() -> str`.
+   - Unified persona identity, Hindi/Hinglish grammar, turn-0 opening greeting (`नमस्ते, मैं Lamborghini India से Pragya...`), busy/callback handling, car catalog (Revuelto V12, Temerario V8 10k RPM, Urus SE luxury SUV), Indian road clearance & hydraulic lift (+45mm) rebuttals, EV city cruising, warranty & RSA, bespoke 2026 allocation slots, monsoon offers, ex-showroom pricing in words, exit bridge to private Lounge preview, 6-digit PIN code collection & Atelier locations (Mumbai BKC, Delhi Aerocity, Bengaluru Lavelle Road), booking tool contract, and aftercare confirmation protocol.
+   - Omitted all mentions of `switch_phase` and internal prompt cards.
+
+2. **Persona Architecture Routing (`server/persona_registry.py`):**
+   - Added `engine: str = "live"` parameter to `BasePersonaArchitecture.compose_system_prompt()`, `get_tool_schemas()`, and `register_handlers()`.
+   - In `JITPhaseCardsArchitecture`:
+     - `compose_system_prompt(..., engine="cascade")` returns `get_pragya_monolithic_system_instruction()`.
+     - `get_tool_schemas(engine="cascade")` returns `[create_appointment_booking_schema]`.
+     - `register_handlers(..., engine="cascade")` registers only `create_appointment_booking`, suppressing `switch_phase`.
+
+3. **Server & Agent Wiring (`server/server.py` & `server/agent.py`):**
+   - `/persona-prompt/{persona_id}` endpoint now accepts `engine: Optional[str] = "live"`. When `engine == "cascade"`, returns the monolithic instruction and skips individual phase-card formatting.
+   - `websocket_endpoint` passes `persona_id=persona_id` into `run_agent()` for `bot_type == "tts-llm-stt"`.
+   - `run_agent()` resolves `persona_architecture = get_persona_architecture(persona_id)`, composes the prompt for Cascade, passes `cascade_tools` to `CustomGoogleVertexLLMService`, and registers handlers via `broadcast_persona_event`.
+
+4. **Voice Studio UI Treatment (`demos/voice-studio`):**
+   - `src/lib/voice-session.ts`: `buildPersonaPromptUrl` forwards `engine: settings.engine` and omits `phase` when `engine === "cascade"`.
+   - `src/components/studio/transcript-panel.tsx`:
+     - Added `settings.engine` to the prompt preview fetch dependency array.
+     - When `settings.engine === "cascade"`:
+       - Appends CSS class `is-cascade-static` to `.transcript-sop-bar`.
+       - Renders badge: `⚡ Gemini Live feature · Monolithic SOP in Cascade`.
+       - Renders journey items as static roadmap steps without the active cyan pill.
+   - `src/components/voice-studio.css`:
+     - `.transcript-sop-bar.is-cascade-static`: styled with `opacity: 0.55`, `filter: grayscale(0.35) blur(0.25px)`, `pointer-events: none`, and subtle hover lift.
+     - `.cascade-sop-badge`: styled as an amber capsule with `color: #fbbf24`, `background: rgba(251, 191, 36, 0.12)`, `border: 1px solid rgba(251, 191, 36, 0.28)`.
+
+### Verification Results
+
+1. **Backend Tests:**
+   - **108/108 tests passing** (`PYTHONPATH=server:server/tests venv/bin/python -m unittest discover -s server/tests -p "test_*.py"` in 0.390s).
+   - Added `test_pragya_cascade_vs_live_routing` to `server/tests/test_persona_registry.py` validating system prompt content differences, tool schema isolation, and handler registration.
+2. **Frontend Tests:**
+   - **93/93 tests passing** in `demos/voice-studio` (`npm test`).
+3. **Build Verification:**
+   - `demos/voice-studio`: `npm run build` succeeded cleanly with 0 TypeScript or Vite errors.
+   - `client`: `npm run build` succeeded cleanly with 0 TypeScript or Vite errors.
+4. **Live Server Probing on Port 7860:**
+   - `GET /persona-prompt/lamborghini-concierge?engine=cascade` returns `architecture: "jit_phase_cards"`, `engine: "cascade"`, `phase: null`, and the complete 3,690-character monolithic system prompt.
+   - `GET /persona-prompt/lamborghini-concierge?engine=live` returns `engine: "live"`, `architecture: "jit_phase_cards"`, and the 1,762-character lean root instruction containing `switch_phase`.
+   - `POST /connect` with `engine: "cascade"` responds with HTTP 200 OK.
+

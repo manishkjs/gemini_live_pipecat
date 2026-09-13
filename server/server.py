@@ -177,13 +177,18 @@ async def websocket_endpoint(
                 skip_stt=skip_stt,
                 vad=vad,
                 custom_voice_key=custom_voice_key,
+                persona_id=persona_id,
             )
     except Exception as e:
         print(f"Exception in run_bot: {e}")
 
 
 @app.get("/persona-prompt/{persona_id}")
-async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[str, Any]:
+async def persona_prompt(
+    persona_id: str,
+    phase: Optional[str] = None,
+    engine: Optional[str] = "live",
+) -> Dict[str, Any]:
     """Return the system prompt the backend will actually run for a persona.
 
     Personas whose architecture owns their prompt discard whatever the client
@@ -191,7 +196,8 @@ async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[s
     copy, which would silently disagree with the running session.
 
     If `phase` is specified (e.g. SOP_02_DISCOVERY), returns the JIT
-    card formatted prompt for live phase inspection.
+    card formatted prompt for live phase inspection (for live engine).
+    In cascade engine, the monolithic prompt is always returned.
     """
     from persona_registry import (
         ArchitecturePattern,
@@ -210,20 +216,21 @@ async def persona_prompt(persona_id: str, phase: Optional[str] = None) -> Dict[s
         # Keyed off the architecture, not a persona id: the id has been renamed
         # once already, and a string comparison here fails silently by falling
         # through to the root prompt.
-        if phase and architecture == ArchitecturePattern.JIT_PHASE_CARDS:
+        if phase and architecture == ArchitecturePattern.JIT_PHASE_CARDS and engine != "cascade":
             from supercar_cards import get_pragya_phase_card, format_supercar_prompt_card
             card = get_pragya_phase_card(phase)
             if card:
                 composed = format_supercar_prompt_card(card)
         if not composed:
-            composed = get_persona_architecture(persona_id).compose_system_prompt(None)
+            composed = get_persona_architecture(persona_id).compose_system_prompt(None, engine=engine or "live")
 
     return {
         "persona_id": persona_id,
         "architecture": architecture.value,
         "editable": editable,
         "prompt": composed or "",
-        "phase": phase,
+        "phase": phase if engine != "cascade" else None,
+        "engine": engine,
     }
 
 

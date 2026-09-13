@@ -123,12 +123,12 @@ class BasePersonaArchitecture(ABC):
     pattern: ArchitecturePattern = ArchitecturePattern.MONOLITHIC_STATIC
     model_controls_conversation = False
 
-    def has_exclusive_tools(self) -> bool:
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
         """If True, only get_tool_schemas() are passed to the model, omitting global standard_tools."""
         return False
 
     @abstractmethod
-    def get_tool_schemas(self) -> List[Any]:
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         """Persona-specific tool schemas appended to the standard set."""
 
     @abstractmethod
@@ -136,6 +136,7 @@ class BasePersonaArchitecture(ABC):
         self,
         llm: Any,
         broadcast: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        engine: str = "live",
     ) -> List[str]:
         """Wire handlers onto ``llm``. Returns the names registered."""
 
@@ -154,7 +155,7 @@ class BasePersonaArchitecture(ABC):
         return None
 
 
-    def compose_system_prompt(self, system_instruction: Optional[str]) -> Optional[str]:
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
         """Final say over the system instruction sent to the model.
 
         Defaults to whatever the client supplied. Architectures whose prompt is
@@ -171,10 +172,10 @@ class MonolithicArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.MONOLITHIC_STATIC
 
-    def get_tool_schemas(self) -> List[Any]:
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         return []
 
-    def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
         return []
 
 
@@ -195,7 +196,7 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
             self._deal = negotiation.Deal(strict_ladder=True)
         return self._deal
 
-    def get_tool_schemas(self) -> List[Any]:
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         import negotiation
         from pipecat.adapters.schemas.function_schema import FunctionSchema
 
@@ -209,7 +210,7 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
             for s in negotiation.TOOL_SCHEMAS
         ]
 
-    def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
         from loguru import logger
 
         deal = self.deal
@@ -273,15 +274,20 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
             self._slots = CallSlots()
         return self._slots
 
-    def has_exclusive_tools(self) -> bool:
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
         return True
 
-    def compose_system_prompt(self, system_instruction: Optional[str]) -> Optional[str]:
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        if engine == "cascade":
+            from supercar_cards import get_pragya_monolithic_system_instruction
+            return get_pragya_monolithic_system_instruction()
         from supercar_cards import get_pragya_root_system_instruction
         return get_pragya_root_system_instruction()
 
-    def get_tool_schemas(self) -> List[Any]:
-        from supercar_tools import SUPERCAR_TOOL_SCHEMAS
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from supercar_tools import SUPERCAR_TOOL_SCHEMAS, create_appointment_booking_schema
+        if engine == "cascade":
+            return [create_appointment_booking_schema]
         return list(SUPERCAR_TOOL_SCHEMAS)
 
     async def _emit(self, payload: Dict[str, Any]) -> None:
@@ -404,23 +410,27 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         # phase after reading this tool result, just as for any topic change.
         return dict(res)
 
-    def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
         self._llm = llm
         self._phase_broadcast = broadcast
 
-        async def handle_switch_phase(params):
-            async with self._card_lock:
-                result = await self._switch_phase(params.arguments or {})
-            await params.result_callback(result)
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
 
         async def handle_create_appointment_booking(params):
             async with self._card_lock:
                 result = await self._book_appointment(params.arguments or {})
             await params.result_callback(result)
 
-        llm.register_function("switch_phase", handle_switch_phase)
         llm.register_function("create_appointment_booking", handle_create_appointment_booking)
-        return ["switch_phase", "create_appointment_booking"]
+        registered.append("create_appointment_booking")
+        return registered
 
 
 _ARCHITECTURE_IMPLEMENTATIONS = {

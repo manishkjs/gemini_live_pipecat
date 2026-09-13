@@ -73,9 +73,9 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     return () => {
       cancelled = true;
     };
-    // Re-fetch when persona, backendUrl, or active phase card changes
+    // Re-fetch when persona, backendUrl, active phase card, or engine changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptLocked, personaId, backendUrl, currentPhase]);
+  }, [promptLocked, personaId, backendUrl, currentPhase, settings.engine]);
 
   const previewPrompt = promptLocked
     ? serverPrompt
@@ -92,28 +92,41 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
 
       {/* Live SOP Phase Engine / DEMO FOCUS tracker: stays mounted during calls */}
       {persona.journey && persona.journey.length > 0 && (
-        <div className="transcript-sop-bar" aria-label="SOP journey tracker">
+        <div
+          className={`transcript-sop-bar ${settings.engine === "cascade" ? "is-cascade-static" : ""}`}
+          aria-label="SOP journey tracker"
+        >
           <div className="sop-bar-header">
             <span className="eyebrow">{promptLocked ? "Current topic:" : "Demo focus:"}</span>
-            {active && persona.id === "lamborghini-concierge" && phaseDelivery && (
-              <span className="eyebrow" role="status" title={
-                phaseDelivery === "sent" ? "Brief sent to the session; this does not confirm which reply used it."
-                  : phaseDelivery === "pending" ? "Waiting for the current response to finish before sending the brief."
-                    : "The brief was not sent. It will be retried on the next caller transcript."
-              }>
-                {phaseDelivery === "sent" ? "Brief sent" : phaseDelivery === "pending" ? "Brief pending" : "Brief failed"}
+            {settings.engine === "cascade" ? (
+              <span
+                className="cascade-sop-badge"
+                title="Cascade engine uses a monolithic prompt covering all SOP phases; dynamic phase switching is a Gemini Live exclusive."
+              >
+                ⚡ Gemini Live feature · Monolithic SOP in Cascade
               </span>
+            ) : (
+              active && persona.id === "lamborghini-concierge" && phaseDelivery && (
+                <span className="eyebrow" role="status" title={
+                  phaseDelivery === "sent" ? "Brief sent to the session; this does not confirm which reply used it."
+                    : phaseDelivery === "pending" ? "Waiting for the current response to finish before sending the brief."
+                      : "The brief was not sent. It will be retried on the next caller transcript."
+                }>
+                  {phaseDelivery === "sent" ? "Brief sent" : phaseDelivery === "pending" ? "Brief pending" : "Brief failed"}
+                </span>
+              )
             )}
           </div>
           <ol className="phase-track">
             {persona.journey.map((step, i) => {
-              const isActive = i === activeSopIndex;
-              const isVisited = visitedPhases.some((p) => SOP_MAP[p] === i);
+              const isCascade = settings.engine === "cascade";
+              const isActive = !isCascade && i === activeSopIndex;
+              const isVisited = !isCascade && visitedPhases.some((p) => SOP_MAP[p] === i);
               return (
                 <li
                   key={step}
                   aria-current={isActive ? "step" : undefined}
-                  className={`phase-step ${isActive ? "is-active" : isVisited ? "is-visited" : ""}`}
+                  className={`phase-step ${isActive ? "is-active" : isVisited ? "is-visited" : ""} ${isCascade ? "is-cascade-step" : ""}`}
                 >
                   <span className="step-num">{i + 1}</span>
                   <span className="step-text">{step}</span>

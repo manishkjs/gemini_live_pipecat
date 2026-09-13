@@ -279,7 +279,14 @@ export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string)
   const url = validatedBackendUrl(targetUrl);
   const base = url.pathname.replace(/\/$/, "");
   url.pathname = `${base}/persona-prompt/${encodeURIComponent(settings.personaId)}`;
-  url.search = phase ? new URLSearchParams({ phase }).toString() : "";
+  const searchParams = new URLSearchParams();
+  if (settings.engine) {
+    searchParams.set("engine", settings.engine);
+  }
+  if (phase && settings.engine !== "cascade") {
+    searchParams.set("phase", phase);
+  }
+  url.search = searchParams.toString();
   return url.href;
 }
 

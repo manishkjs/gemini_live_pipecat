@@ -686,6 +686,7 @@ async def run_agent(
     skip_stt: bool = False,
     vad: bool = True,
     custom_voice_key: Optional[str] = None,
+    persona_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -762,6 +763,18 @@ async def run_agent(
                 )
             )
 
+    persona_architecture = None
+    if persona_id:
+        from persona_registry import get_persona_architecture
+        persona_architecture = get_persona_architecture(persona_id)
+        logger.info(
+            f"[Cascade] Persona architecture: {persona_architecture.pattern.value} "
+            f"(persona_id={persona_id})"
+        )
+        arch_instruction = persona_architecture.compose_system_prompt(system_instruction, engine="cascade")
+        if arch_instruction:
+            system_instruction = arch_instruction
+
     neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
     if not system_instruction:
         neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
@@ -782,16 +795,39 @@ async def run_agent(
     elif any(k in clean_llm_model for k in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
 
-    llm = CustomGoogleVertexLLMService(
-        project_id=project_id,
-        location=llm_location,
-        settings=GoogleVertexLLMService.Settings(
+    cascade_tools = None
+    if persona_architecture:
+        cascade_tools = persona_architecture.get_tool_schemas(engine="cascade")
+        if not cascade_tools:
+            cascade_tools = None
+
+    llm_kwargs = {
+        "project_id": project_id,
+        "location": llm_location,
+        "settings": GoogleVertexLLMService.Settings(
             model=clean_llm_model,
             system_instruction=final_system_instruction,
             max_tokens=1024 if thinking_config else 4096,
-            thinking=thinking_config
+            thinking=thinking_config,
+        ),
+    }
+    if cascade_tools:
+        llm_kwargs["tools"] = cascade_tools
+
+    llm = CustomGoogleVertexLLMService(**llm_kwargs)
+
+    if persona_architecture:
+        async def broadcast_persona_event(payload: dict):
+            """Push a persona telemetry event to the client over RTVI."""
+            await llm.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": payload,
+            }))
+
+        persona_architecture.register_handlers(
+            llm, broadcast=broadcast_persona_event, engine="cascade"
         )
-    )
 
     if clean_tts_model.startswith("gemini"):
         # Use Gemini TTS (Vertex AI) requires 24kHz
