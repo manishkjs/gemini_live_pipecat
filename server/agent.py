@@ -267,11 +267,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                         language=primary_lang
                                     ))
                                     await self.stop_processing_metrics()
-                                    await self._handle_transcription(
-                                        transcript_text,
-                                        is_final=True,
-                                        language=primary_lang,
-                                    )
+                                    if hasattr(self, "_handle_transcription"):
+                                        await self._handle_transcription(
+                                            transcript_text,
+                                            is_final=True,
+                                            language=primary_lang,
+                                        )
                                     self._user_stopped_speaking_time = None
                                     self._user_started_speaking_time = None
 
@@ -428,6 +429,13 @@ class CustomGoogleSTTService(TurnOriginMixin, GoogleSTTService):
 
 class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
     def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-2.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
+        if voice_id and voice_id.lower() == "callirhoe":
+            voice_id = "Aoede"
+        elif voice_id and "-Chirp3-HD-" in voice_id:
+            voice_id = voice_id.split("-Chirp3-HD-")[-1]
+        elif voice_id and "-" in voice_id and not voice_id.startswith("Custom"):
+            voice_id = voice_id.split("-")[-1]
+
         # Pass a dummy API key since we're using Vertex.
         settings = GeminiTTSService.Settings(
             voice=voice_id,
@@ -934,10 +942,20 @@ async def run_agent(
         langs = [lang.strip() for lang in (stt_language or "en-US").split(",") if lang.strip()]
         tts_lang = next((lang for lang in langs if lang.lower().startswith("hi")), None) or (langs or ["en-US"])[0]
 
+        # Sanitize voice name for Gemini TTS
+        effective_voice = tts_voice
+        if "-Chirp3-HD-" in effective_voice:
+            effective_voice = effective_voice.split("-Chirp3-HD-")[-1]
+        elif "-" in effective_voice and not effective_voice.startswith("Custom"):
+            effective_voice = effective_voice.split("-")[-1]
+
+        if effective_voice.lower() == "callirhoe":
+            effective_voice = "Aoede"
+
         tts = CustomVertexGeminiTTSService(
             project_id=project_id,
             location=tts_location,
-            voice_id=tts_voice,
+            voice_id=effective_voice,
             model=clean_tts_model, # Use the sanitized model
             sample_rate=24000, 
             voice_prompt=tts_voice_prompt,
@@ -945,9 +963,16 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()]
         )
     else:
-        tts_language = "-".join(tts_voice.split("-")[:2])
+        effective_voice = tts_voice
+        langs = [lang.strip() for lang in (stt_language or "en-US").split(",") if lang.strip()]
+        tts_language = next((lang for lang in langs if lang.lower().startswith("hi")), None) or (langs or ["en-US"])[0]
+        if "-" not in effective_voice:
+            effective_voice = f"{tts_language}-Chirp3-HD-{effective_voice}"
+        else:
+            tts_language = "-".join(effective_voice.split("-")[:2])
+
         tts = CustomGoogleTTSService(
-            voice_id=tts_voice,
+            voice_id=effective_voice,
             params=GoogleTTSService.InputParams(
                 language=Language(tts_language),
                 speaking_rate=tts_pace

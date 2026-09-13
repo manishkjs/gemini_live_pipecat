@@ -183,7 +183,6 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Achird", "Achird (Male)"],
   ["Vindemiatrix", "Vindemiatrix (Female)"],
   ["Rasalgethi", "Rasalgethi (Male)"],
-  ["Callirhoe", "Callirhoe (Female)"],
   ["Autonoe", "Autonoe (Female)"],
   ["Enceladus", "Enceladus (Male)"],
   ["Iapetus", "Iapetus (Male)"],
