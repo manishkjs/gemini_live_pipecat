@@ -257,6 +257,7 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         self._card_delivery_status = None
         self._phase_broadcast = None
         self._phase_event_revision = 0
+        self._confirmed_bookings: Dict[tuple, Dict[str, Any]] = {}
 
     @property
     def tracker(self):
@@ -371,27 +372,37 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         if missing:
             return {"status": "needs_info", "missing": missing}
 
-        res = create_appointment_booking(
+        booking_args = dict(
             pincode=self.slots.get("pincode"),
             date=self.slots.get("visit_date"),
             time=self.slots.get("visit_time"),
             customer_name_or_phone=args.get("customer_name_or_phone", ""),
             vehicle_variant=self.slots.get("car_choice") or "the car chosen at the Lounge",
         )
+        # The handler's existing lock also covers this per-call cache. Each
+        # function call gets a response, but a successful booking executes once.
+        booking_key = tuple((key, str(value or "").strip().casefold())
+                            for key, value in sorted(booking_args.items()))
+        res = self._confirmed_bookings.get(booking_key)
+        if res is None:
+            res = create_appointment_booking(**booking_args)
         if res.get("status") == "confirmed":
+            self._confirmed_bookings[booking_key] = dict(res)
+            already_shown = self.slots.get("booking_ref") == res.get("booking_id")
             self.slots.set_tool(booking_status="confirmed", booking_ref=res.get("booking_id"))
             self.slots.set_server(lounge_id=res.get("center_id"), lounge_name=res.get("center_name"))
             self.tracker.booking_confirmed = True
             await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
-            await self._emit({
-                "type": "booking_confirmed",
-                **{key: res.get(key) for key in (
-                    "booking_id", "center_name", "city", "address", "date", "time", "vehicle_variant",
-                )},
-            })
+            if not already_shown:
+                await self._emit({
+                    "type": "booking_confirmed",
+                    **{key: res.get(key) for key in (
+                        "booking_id", "center_name", "city", "address", "date", "time", "vehicle_variant",
+                    )},
+                })
         # Recording a booking does not select a card. Gemini chooses the next
         # phase after reading this tool result, just as for any topic change.
-        return res
+        return dict(res)
 
     def register_handlers(self, llm: Any, broadcast=None) -> List[str]:
         self._llm = llm

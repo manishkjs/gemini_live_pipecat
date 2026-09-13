@@ -720,3 +720,46 @@ subtests pass** at 1808428. Additional ad hoc async reproductions established on
 card send for two identical phase calls and two bookings for two identical booking
 calls. The new full audio-gate test module and real microphone/provider sessions
 were not run here. These are review findings, not a claim of new live validation.
+
+
+---
+
+## 11. Booking duplicate fix and local test handoff — 2026-09-13 06:08:16 UTC
+
+**Scope:** The owner approved a small fix to the duplicate booking issue from
+section 10. This entry supersedes that issue's unresolved status. Future handoff
+entries should also include a full timestamp with timezone.
+
+**Implemented:** `JITPhaseCardsArchitecture` remembers successful booking results
+for the duration of one call. Identical effective booking arguments reuse the
+original booking ID and result. The existing handler lock covers concurrent calls;
+each function invocation still receives its own response. Duplicate confirmations
+are not emitted to the UI again. Changing appointment details creates a new
+booking; retrying an earlier appointment returns its original result. Failed
+attempts are not cached, and a new voice call gets an independent cache.
+
+The key includes PIN, day, time, vehicle and supplied customer contact, with case
+and outer whitespace normalized. This is structured-argument comparison, with no
+speech parsing, regex, time-based debounce or additional API/model call. It does
+not attempt to equate different date/time expressions such as “3 PM” and “15:00”.
+
+**Verification at 2026-09-13 06:08:16 UTC:** 46 focused backend tests passed, including five new
+regressions for concurrent duplicates, retained fields/case/whitespace, changed
+appointments and retrying the original, failed attempts, and isolation across calls.
+`git diff --check` passed. No new live-provider or UI-build result is claimed.
+
+Run locally from the repository root using the project's Python environment:
+
+```sh
+PYTHONPATH=server python -m pytest -q \
+  server/tests/test_agent_live_pragya.py \
+  server/tests/test_supercar_tools.py \
+  server/tests/test_persona_registry.py \
+  server/tests/test_supercar_phases.py
+```
+
+For the local demo, submit the same booking tool arguments twice within one call
+(including concurrently): expect one underlying booking execution, the same ID in
+both responses, and one confirmation event. Then change the day or time: expect a
+new ID. Failed booking responses must still allow a successful retry. Model phase
+selection remains through `switch_phase`.

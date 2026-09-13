@@ -5,8 +5,9 @@ live agent pulls the whole pipecat service graph and takes >120s on this host.
 The registry is the seam that decides routing, so testing it tests the contract.
 """
 
+import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from persona_registry import (
     ArchitecturePattern,
@@ -249,6 +250,65 @@ class TestModelSelectedCards(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.arch.tracker.current_phase, "SOP_02_DISCOVERY")
         self.assertEqual(self.arch.tracker.furthest_phase, "SOP_04_BOOKED")
         self.assertEqual(self.arch.slots.get("booking_ref"), result["booking_id"])
+
+    async def test_concurrent_duplicate_bookings_execute_once_and_both_respond(self):
+        from supercar_tools import create_appointment_booking
+        args = dict(pincode="560048", date="Saturday", time="3 PM", vehicle_variant="Urus SE")
+        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+            first, duplicate = await asyncio.gather(
+                self.call("create_appointment_booking", **args),
+                self.call("create_appointment_booking", **args),
+            )
+        book.assert_called_once()
+        self.assertEqual(first, duplicate)
+        self.assertEqual(first["status"], "confirmed")
+        self.assertEqual(len([e for e in self.events if e["type"] == "booking_confirmed"]), 1)
+        self.assertEqual(self.arch.tracker.current_phase, "SOP_01_OPENING")
+
+    async def test_booking_retry_uses_collected_fields_and_ignores_case_and_outer_spaces(self):
+        from supercar_tools import create_appointment_booking
+        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+            first = await self.call("create_appointment_booking", pincode="560048", date="Saturday", time="3 PM")
+            duplicate = await self.call("create_appointment_booking", date=" saturday ", time="3 pm")
+        book.assert_called_once()
+        self.assertEqual(first["booking_id"], duplicate["booking_id"])
+
+    async def test_changed_booking_is_new_and_retrying_original_reuses_its_result(self):
+        from supercar_tools import create_appointment_booking
+        args = dict(pincode="560048", date="Saturday", time="3 PM")
+        with patch("supercar_tools.create_appointment_booking", wraps=create_appointment_booking) as book:
+            first = await self.call("create_appointment_booking", **args)
+            changed = await self.call("create_appointment_booking", **{**args, "date": "Sunday"})
+            original_retry = await self.call("create_appointment_booking", **args)
+        self.assertEqual(book.call_count, 2)
+        self.assertNotEqual(first["booking_id"], changed["booking_id"])
+        self.assertEqual(first["booking_id"], original_retry["booking_id"])
+        self.assertEqual(self.arch.slots.get("booking_ref"), first["booking_id"])
+        self.assertEqual(self.events[-1]["booking_id"], first["booking_id"])
+
+    async def test_failed_booking_is_not_cached_and_can_be_retried(self):
+        from supercar_tools import create_appointment_booking
+        args = dict(pincode="560048", date="Saturday", time="3 PM")
+        with patch("supercar_tools.create_appointment_booking", side_effect=[
+            {"status": "error", "message": "Temporary failure"},
+            create_appointment_booking(**args),
+        ]) as book:
+            failed = await self.call("create_appointment_booking", **args)
+            retried = await self.call("create_appointment_booking", **args)
+        self.assertEqual(book.call_count, 2)
+        self.assertEqual(failed["status"], "error")
+        self.assertEqual(retried["status"], "confirmed")
+
+    async def test_identical_appointments_in_different_calls_are_independent(self):
+        args = dict(pincode="560048", date="Saturday", time="3 PM")
+        first = await self.call("create_appointment_booking", **args)
+        other = JITPhaseCardsArchitecture()
+        llm = _RecordingLLM()
+        other.register_handlers(llm)
+        params = _Params(args)
+        await llm.handlers["create_appointment_booking"](params)
+        second = params.result_callback.call_args.args[0]
+        self.assertNotEqual(first["booking_id"], second["booking_id"])
 
     async def test_calls_do_not_share_phase_or_booking_fields(self):
         await self.select("SOP_03_PINCODE", pincode="560048")
