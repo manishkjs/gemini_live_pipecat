@@ -991,3 +991,160 @@ To reload the backend with the latest commit:
   - `test_mf_advisor.py`: 7/7 passed (execution engine, idempotency, routing, live vs cascade schema isolation).
   - `test_glass_buddy.py`: 5/5 passed (all 14 mock tools, RTVI broadcasts, privacy/branding invariants).
 * **Frontend Unit Tests:** **93/93 passed** in `demos/voice-studio` (`npm test`).
+
+---
+
+## 16. Persona Tool Engines & Loose Server Files Reorganization — 13 September 2026
+
+**Context:** Following the centralization of all persona prompt cards and system instructions into `server/persona_prompt_cards/`, several persona-specific files remain loose in the root of `server/`:
+- `glass_buddy_cards.py`
+- `glass_buddy_tools.py`
+- `mf_advisor_cards.py`
+- `mf_advisor_tools.py`
+- `negotiation.py`
+- `persona_registry.py`
+*(plus `supercar_cards.py`, `supercar_tools.py`, `supercar_phases.py`)*
+
+### 1. File Breakdown & Current State
+
+1. **Dead Card Shims (Safe to Delete):**
+   - `server/glass_buddy_cards.py` (29 lines)
+   - `server/mf_advisor_cards.py` (29 lines)
+   - `server/supercar_cards.py` (29 lines)
+   *Analysis:* These were temporary backward-compatibility re-export shims created during prompt card centralization. All active callers in `persona_registry.py`, `server.py`, and test suites have already migrated to import directly from `persona_prompt_cards.kavya_cards`, `persona_prompt_cards.ananya_cards`, and `persona_prompt_cards.pragya_cards`. They can be deleted completely with zero downstream breakage.
+
+2. **Tool Execution Engines & Domain Logic (To Relocate):**
+   - `server/glass_buddy_tools.py`: `GlassBuddyExecutionEngine` + 14 smartglasses mock tools and RTVI event handlers.
+   - `server/mf_advisor_tools.py`: `AnanyaMFExecutionEngine` + portfolio summary, NAV lookup, SIP manager, and RTVI event handlers.
+   - `server/supercar_tools.py`: Dealership appointment booking tools and test drive catalog.
+   - `server/supercar_phases.py`: Monotonic regex transcript phase tracker for Pragya.
+   - `server/negotiation.py`: Car price concession ladder, floor enforcement, and leak detector for Pragya.
+
+3. **System Facade / Orchestrator:**
+   - `server/persona_registry.py`: Defines `PersonaArchitecture`, `JITPhaseCardsArchitecture`, `GlassBuddyArchitecture`, and `get_persona_architecture()`. Acts as the primary contract consumed by `agent_live.py`, `agent.py`, and `server.py`.
+
+---
+
+### 2. Architectural Options
+
+#### Option A: Dedicated Persona Tools Package (`server/persona_tools/`) — RECOMMENDED
+Mirror the existing `server/persona_prompt_cards/` package by creating a companion `server/persona_tools/` package for execution engines, leaving `persona_registry.py` at the root of `server/` as the facade.
+
+**Proposed Directory Tree:**
+```
+server/
+├── persona_prompt_cards/             # Prompt cards, SOP steps, root & monolithic SIs
+│   ├── types.py
+│   ├── pragya_cards.py
+│   ├── ananya_cards.py
+│   ├── kavya_cards.py
+│   └── ...
+├── persona_tools/                    # Tool execution engines & domain logic
+│   ├── __init__.py                   # Clean exports of engines & schemas
+│   ├── glass_buddy.py                # (moved from glass_buddy_tools.py)
+│   ├── mf_advisor.py                 # (moved from mf_advisor_tools.py)
+│   ├── supercar.py                   # (moved from supercar_tools.py)
+│   ├── supercar_phases.py            # (moved from supercar_phases.py)
+│   └── negotiation.py                # (moved from negotiation.py)
+├── persona_registry.py               # Central registry wiring architectures & tools
+└── [core server files: agent_live.py, server.py, etc.]
+```
+
+**Pros:**
+- Minimal blast radius: zero changes needed to callers of `persona_registry.py` (`agent_live.py`, `server.py`, `agent.py`).
+- Perfectly symmetric mental model: `persona_prompt_cards/` (prompts) alongside `persona_tools/` (execution engines).
+- Removes 8 loose files from `server/`.
+
+---
+
+#### Option B: Unified `server/personas/` Domain Package (Maximum Locality)
+Consolidate the entire persona subsystem (registry, prompt cards, and tool engines) under a single parent package `server/personas/`.
+
+**Proposed Directory Tree:**
+```
+server/
+├── personas/
+│   ├── __init__.py                   # Re-exports get_persona_architecture, registry
+│   ├── registry.py                   # (moved from persona_registry.py)
+│   ├── cards/                        # (moved from persona_prompt_cards/)
+│   │   ├── types.py
+│   │   ├── pragya_cards.py
+│   │   ├── ananya_cards.py
+│   │   ├── kavya_cards.py
+│   │   └── ...
+│   └── tools/                        # Tool execution engines
+│       ├── __init__.py
+│       ├── glass_buddy.py
+│       ├── mf_advisor.py
+│       ├── supercar.py
+│       ├── supercar_phases.py
+│       └── negotiation.py
+└── [core server files: agent_live.py, server.py, etc.]
+```
+
+**Pros:**
+- Complete isolation: zero persona files remain directly in `server/`.
+- Single import point: callers simply write `from personas import get_persona_architecture`.
+
+---
+
+### 3. Implementation Plan for Codex (Executing Option A)
+
+Codex can execute Option A cleanly through the following steps:
+
+1. **Create Directory:**
+   - Create directory `server/persona_tools/`.
+
+2. **Move & Rename Tool Engines:**
+   - `server/glass_buddy_tools.py` → `server/persona_tools/glass_buddy.py`
+   - `server/mf_advisor_tools.py` → `server/persona_tools/mf_advisor.py`
+   - `server/supercar_tools.py` → `server/persona_tools/supercar.py`
+   - `server/supercar_phases.py` → `server/persona_tools/supercar_phases.py`
+   - `server/negotiation.py` → `server/persona_tools/negotiation.py`
+
+3. **Create `server/persona_tools/__init__.py`:**
+   Export primary execution engines and schema collections:
+   - `GlassBuddyExecutionEngine`, `ALL_GLASS_BUDDY_TOOL_SCHEMAS`
+   - `AnanyaMFExecutionEngine`, `ALL_ANANYA_TOOL_SCHEMAS`
+   - `SupercarDealershipEngine` / `SUPERCAR_TOOL_SCHEMAS`
+   - `PragyaPhaseTracker`
+   - `Deal`, `find_floor_violations`
+
+4. **Delete Redundant Card Shims:**
+   - `rm server/glass_buddy_cards.py`
+   - `rm server/mf_advisor_cards.py`
+   - `rm server/supercar_cards.py`
+
+5. **Update Internal Tool Imports:**
+   - In `server/persona_tools/supercar.py`: update any import of `supercar_phases` to `from persona_tools.supercar_phases import ...` (or relative import `.supercar_phases`).
+   - In `server/persona_registry.py`:
+     - Change `from glass_buddy_tools import ...` → `from persona_tools.glass_buddy import ...`
+     - Change `from mf_advisor_tools import ...` → `from persona_tools.mf_advisor import ...`
+     - Change `from supercar_tools import ...` → `from persona_tools.supercar import ...`
+     - Change `from supercar_phases import ...` → `from persona_tools.supercar_phases import ...`
+
+6. **Update Test Imports:**
+   - `server/tests/test_glass_buddy.py`: Update import from `glass_buddy_tools` to `persona_tools.glass_buddy`.
+   - `server/tests/test_mf_advisor.py`: Update import from `mf_advisor_tools` to `persona_tools.mf_advisor`.
+   - `server/tests/test_negotiation.py`: Update import from `negotiation` to `persona_tools.negotiation`.
+   - `server/tests/test_agent_live_pragya.py`: Update any import of `supercar_tools`/`supercar_phases` to `persona_tools.*`.
+
+7. **Verification Gate:**
+   - Run backend test suite:
+     ```bash
+     PYTHONPATH=. venv/bin/python -m unittest discover -s tests -p "test_*.py"
+     ```
+     Ensure all **124/124 tests pass**.
+   - Run frontend test suite:
+     ```bash
+     cd demos/voice-studio && npm test
+     ```
+     Ensure all **93/93 tests pass**.
+
+8. **Commit & Push:**
+   - Commit with a clear summary: `refactor(server): reorganize persona tool engines into server/persona_tools/ and purge dead card shims`.
+   - Push to `ui-changes-sep` using the required pre-push flag:
+     ```bash
+     ALLOW_PUSH=1 git push origin ui-changes-sep
+     ```
+
