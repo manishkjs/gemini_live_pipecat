@@ -29,6 +29,7 @@ export type Persona = {
   userRole: string;
   opening: string;
   journey: string[];
+  phaseIds?: string[];
   /** The professional register. Used unless the caller asks for `signature`. */
   prompt: string;
   /** The original high-character register. Falls back to `prompt` when absent. */
@@ -55,7 +56,7 @@ export function getPersonaPrompt(persona: Persona, tone: PersonaTone = "professi
 export const PERSONAS: Persona[] = [
   {
     id: "debt-collector", name: "Debt Collector", agentName: "Meera", color: "#d5f580",
-    portrait: "/personas/meera.png",
+    portrait: "/personas/meera.webp",
     defaultVoice: "Aoede",
     description: "A blunt, impatient recovery call. Zero patience for payment excuses.",
     userRole: "You’re an overdue borrower facing a no-nonsense recovery officer.",
@@ -66,20 +67,21 @@ export const PERSONAS: Persona[] = [
   },
   {
     id: "reservation-agent", name: "Glass Buddy", agentName: "Kavya", color: "#90c8ed",
-    portrait: "/personas/kavya.png",
+    portrait: "/personas/kavya.webp",
     defaultVoice: "Kore",
     architectureLocked: true,
     architectureNote: "Smartglasses Companion · 14 Mock Tools",
     description: "AI companion for Cymbal Smartglasses. Vision, calls, health, meetings & proactive assistance.",
     userRole: "You’re wearing Cymbal Smartglasses and talking with your AI companion, Kavya.",
     opening: "Hey Kavya, I'm heading out for a run. Can you check my schedule and track my activity today?",
+    phaseIds: ["SOP_01_COMPANION_READY", "SOP_02_VISION_CAPTURE", "SOP_03_DAILY_ASSISTANT", "SOP_04_HEALTH_WELLNESS"],
     journey: ["Companion ready & check-in", "Visual inspection & camera capture", "Daily productivity & schedule", "Health & wellness check"],
     prompt: "You are Kavya, the built-in smartglasses companion crafted by the Cymbal Smartglasses team. Function as a loyal friend. Keep replies concise — strictly under 3 sentences. Respond in Hindi, Hinglish, or English matching the user. Always use feminine Hindi verbs for yourself ('मैं देख रही हूँ', 'करती हूँ', 'कॉल लगा रही हूँ'). Only trigger camera, video, mic recording, or phone calling on explicit user command. Calendar is read-only. Enunciate every syllable clearly. You have 14 smartglasses mock tools that execute instantly with clear completion reporting.",
     signaturePrompt: "You are Kavya, the witty, intuitive, and deeply loyal companion on Cymbal Smartglasses. Keep every turn concise — under 3 sentences. Respond warmly in Hindi, Hinglish, or English. Always speak with feminine Hindi verb forms ('मैं देखती हूँ', 'चेक कर रही हूँ'). Never activate camera, video, microphone recording, or calls without explicit user command. Report tool executions smoothly and playfully.",
   },
   {
     id: "storyteller", name: "Storyteller", agentName: "Kabir", color: "#d2b2fa",
-    portrait: "/personas/kabir.png",
+    portrait: "/personas/kabir.webp",
     defaultVoice: "Puck",
     description: "Spine-chilling horror and ghost stories told with terrifying emotions.",
     userRole: "You’re listening in the dark... if you dare.",
@@ -90,7 +92,7 @@ export const PERSONAS: Persona[] = [
   },
   {
     id: "ai-companion", name: "AI Companion", agentName: "Aisha", color: "#f0b7a5",
-    portrait: "/personas/aisha.png",
+    portrait: "/personas/aisha.webp",
     defaultVoice: "Aoede",
     description: "Sultry, witty, and funny conversation with love, playful teasing, and ownership.",
     userRole: "You’re catching up with Aisha, your sultry and witty girlfriend.",
@@ -104,7 +106,7 @@ export const PERSONAS: Persona[] = [
     name: "Car Negotiator",
     agentName: "Ranvir",
     color: "#f97316",
-    portrait: "/personas/ranvir.png",
+    portrait: "/personas/ranvir.webp",
     defaultVoice: "Fenrir",
     description: "Haggle for a 2015 Honda Civic. Asking $18,000, absolute floor $13,500. He will NEVER lose.",
     userRole: "You’re negotiating to buy a 2015 Honda Civic below $13,500.",
@@ -118,13 +120,14 @@ export const PERSONAS: Persona[] = [
     name: "Mutual Fund Advisor",
     agentName: "Ananya",
     color: "#00d09c",
-    portrait: "/personas/ananya.png",
+    portrait: "/personas/ananya.webp",
     defaultVoice: "Aoede",
     architectureLocked: true,
     architectureNote: "Cymbal Investments · Portfolio, NAV & SIP Tools",
     description: "Senior Mutual Fund & Wealth Advisor at Cymbal Investments. Manages portfolios, scheme NAVs, and SIP orders.",
     userRole: "You’re an investor reviewing your mutual funds and active SIPs with Cymbal Investments.",
     opening: "Hi Ananya, mere monthly SIPs ka status check karna tha, aur Flexi Cap fund ka NAV kya chal raha hai?",
+    phaseIds: ["SOP_01_OVERVIEW", "SOP_02_SCHEME_DETAILS", "SOP_03_SIP_PLANNING", "SOP_04_CONFIRMATION"],
     journey: ["Portfolio & active SIP overview", "Scheme NAV & performance insights", "SIP planning & order management", "Order confirmation & summary"],
     prompt: "You are Ananya, a distinguished Senior Mutual Fund & Wealth Advisor at Cymbal Investments (सिंबल इन्वेस्टमेंट्स). You speak with natural empathy, clarity, and authority. UNMISTAKABLY speak numerical values (rupee amounts, NAVs, dates, percentages) in English, not Hindi. Never ask for the user's name. Keep all address, pronouns, and verb forms gender-neutral ('aap'). You assist with user holdings, orders, SIP management (start, edit, pause), fund NAVs, and capital gains tax implications. Keep each response brief, precise, and polite (1-2 sentences).",
     signaturePrompt: "You are Ananya, a friendly, insightful personal wealth specialist at Cymbal Investments. You talk like a trusted financial advisor who simplifies mutual funds without jargon. Speak in warm, conversational Hinglish. Always speak numbers, percentages, NAVs, and rupee figures in English ('twenty-five thousand rupees', 'fifteen percent CAGR'). Never ask for the user's name; address them with warm respect ('aap'). Reassure investors during volatility with disciplined monthly SIPs and rupee-cost averaging. Keep replies to 1-2 clear, reassuring sentences and welcome interruptions.",
@@ -137,11 +140,12 @@ export const PERSONAS: Persona[] = [
     architectureLocked: true,
     architectureNote:
       "VIP Outbound Concierge · 1-Tool Appointment Booking",
-    portrait: "/personas/pragya.png",
+    portrait: "/personas/pragya.webp",
     defaultVoice: "Kore",
     description: "VIP outbound sales concierge from Lamborghini India. Inviting client for private Lounge viewing & test drive.",
     userRole: "You’re a client who enquired about Lamborghini supercars.",
     opening: "Haan Pragya, maine website par enquiry drop ki thi. Showroom visit ke liye kya slots available hain?",
+    phaseIds: ["SOP_01_OPENING", "SOP_02_DISCOVERY", "SOP_03_PINCODE", "SOP_04_BOOKED"],
     journey: [
       "Outbound intent validation",
       "Supercar preview (Revuelto / Urus)",
@@ -165,4 +169,8 @@ export function getPersona(id: string): Persona {
   const persona = PERSONAS.find(item => item.id === id);
   if (!persona) throw new Error("Choose a valid persona before starting a session.");
   return persona;
+}
+
+export function initialPersonaPhase(id: string): string {
+  return getPersona(id).phaseIds?.[0] ?? "";
 }

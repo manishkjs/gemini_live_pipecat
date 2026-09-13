@@ -2862,18 +2862,7 @@
   font-weight: 600;
 }
 
-.transcript-sop-bar.is-cascade-static {
-  opacity: 0.55;
-  filter: grayscale(0.35) blur(0.25px);
-  pointer-events: none;
-  position: relative;
-  transition: opacity 160ms ease, filter 160ms ease;
-}
-
-.transcript-sop-bar.is-cascade-static:hover {
-  opacity: 0.85;
-  filter: none;
-}
+.transcript-sop-bar.is-cascade-static { position: relative; }
 
 .cascade-sop-badge {
   display: inline-flex;
@@ -3210,3 +3199,10 @@
 .token-split .tok-modality {
   color: #6f7d75;
 }
+
+/* Readable journey cards, with space for long persona-specific phase names. */
+.studio-shell .phase-track { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.studio-shell .phase-step { border-radius: 10px; padding: 9px 11px; min-width: 0; align-items: flex-start; line-height: 1.45; }
+.studio-shell .phase-step .step-num { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.studio-shell .phase-step .phase-arrow { display: none; }
+@media (max-width: 520px) { .studio-shell .phase-track { grid-template-columns: 1fr; } }

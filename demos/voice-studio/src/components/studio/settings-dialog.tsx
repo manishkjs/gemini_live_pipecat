@@ -106,7 +106,8 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                     <label htmlFor="settings-custom-voice-key">Custom Voice Key / Replicated ID</label>
                     <Input
                       id="settings-custom-voice-key"
-                      type="text"
+                      type="password"
+                      autoComplete="off"
                       placeholder="e.g. projects/.../voices/my-voice or voice_key"
                       value={settings.customVoiceKey ?? ""}
                       disabled={active}
@@ -351,6 +352,12 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   options={CASCADE_TTS_MODELS}
                 />
 
+                {settings.ttsModel !== "google-tts" && (
+                  <Picker label="Gemini TTS Voice" value={settings.voice} disabled={active}
+                    onChange={(value) => update("voice", value)}
+                    options={GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom"))} />
+                )}
+
                 {settings.ttsModel === "google-tts" && (
                   <>
                     <Picker
@@ -366,7 +373,8 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         <label htmlFor="settings-custom-voice-key-cascade">Custom Voice Key / Replicated ID</label>
                         <Input
                           id="settings-custom-voice-key-cascade"
-                          type="text"
+                          type="password"
+                          autoComplete="off"
                           placeholder="e.g. projects/.../voices/my-voice or voice_key"
                           value={settings.customVoiceKey ?? ""}
                           disabled={active}

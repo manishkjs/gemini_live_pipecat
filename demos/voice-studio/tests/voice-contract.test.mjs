@@ -175,13 +175,13 @@ test('every prepared persona defines an appropriate default voice', () => {
 });
 
 // Public asset references must survive a fresh clone without external image hosting.
-test('every prepared persona ships a valid square PNG portrait', () => {
+test('every prepared persona ships a compact WebP portrait', () => {
   for (const persona of PERSONAS.filter(item => item.id !== 'custom')) {
-    assert.match(persona.portrait, /^\/personas\/[a-z]+\.png$/);
+    assert.match(persona.portrait, /^\/personas\/[a-z]+\.webp$/);
     const bytes = readFileSync(new URL(`../public${persona.portrait}`, import.meta.url));
-    assert.deepEqual([...bytes.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.equal(bytes.readUInt32BE(16), bytes.readUInt32BE(20), 'Portrait must stay square for all avatar placements');
-    assert.ok(bytes.readUInt32BE(16) >= 256);
+    assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
+    assert.equal(bytes.toString('ascii', 8, 12), 'WEBP');
+    assert.ok(bytes.length < 60000, 'Portrait should stay below its delivery budget');
   }
   assert.equal(PERSONAS.find(item => item.id === 'custom').portrait, null);
 });

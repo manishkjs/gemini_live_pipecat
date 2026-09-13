@@ -152,12 +152,12 @@ test('current topic can return to cars while booking and visited milestones rema
   phase('SOP_04_BOOKED', 2, 'sent');
   phase('SOP_02_DISCOVERY', 3, 'pending');
   let state = h.render();
-  assert.equal(state.currentPhase, 'SOP_02_DISCOVERY');
+  assert.equal(state.currentPhase, 'SOP_04_BOOKED');
   assert.equal(state.phaseDelivery, 'pending');
   assert.equal(state.confirmedBooking.booking_id, 'demo-booking');
   assert.ok(state.visitedPhases.includes('SOP_04_BOOKED'));
   phase('SOP_03_PINCODE', 1, 'sent'); // delayed older event
-  assert.equal(h.render().currentPhase, 'SOP_02_DISCOVERY');
+  assert.equal(h.render().currentPhase, 'SOP_04_BOOKED');
   phase('SOP_02_DISCOVERY', 4, 'sent');
   assert.equal(h.render().phaseDelivery, 'sent');
   await h.render().endSession();
@@ -165,7 +165,25 @@ test('current topic can return to cars while booking and visited milestones rema
   assert.equal(h.render().phaseDelivery, null);
   assert.equal(h.render().confirmedBooking, null);
   phase('SOP_03_PINCODE', 1, 'failed');
-  assert.equal(h.render().currentPhase, 'SOP_03_PINCODE');
+  assert.equal(h.render().currentPhase, 'SOP_01_OPENING');
   assert.equal(h.render().phaseDelivery, 'failed');
+  await h.render().endSession();
+});
+
+for (const [personaId, initial, target] of [
+  ['groww-advisor', 'SOP_01_OVERVIEW', 'SOP_02_SCHEME_DETAILS'],
+  ['reservation-agent', 'SOP_01_COMPANION_READY', 'SOP_02_VISION_CAPTURE'],
+]) test(`${personaId} commits only delivered phases for the current session`, async () => {
+  const h = await harness();
+  h.render().choosePersona(personaId);
+  assert.equal(h.render().currentPhase, initial);
+  await h.render().startBackend();
+  h.send({ type: 'phase_transition', phase_id: target, revision: 1, card_pushed: false, delivery_status: 'failed' });
+  assert.equal(h.render().currentPhase, initial);
+  h.send({ type: 'phase_transition', phase_id: target, revision: 2, card_pushed: true, session_id: 'another-call' });
+  assert.equal(h.render().currentPhase, initial);
+  h.send({ type: 'phase_transition', phase_id: target, revision: 2, card_pushed: true, delivery_status: 'sent' });
+  assert.equal(h.render().currentPhase, target);
+  assert.ok(h.render().visitedPhases.includes(target));
   await h.render().endSession();
 });

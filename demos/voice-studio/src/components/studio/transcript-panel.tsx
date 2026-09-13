@@ -29,20 +29,12 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   // backend regenerates them regardless of what the client sends, so offering an
   // editor here would be a lie.
   const promptLocked = Boolean(persona.architectureLocked);
+  const serverPreset = promptLocked || (!custom && !settings.instructions.trim());
 
   // Gemini selects the phase through switch_phase. The backend emits these
   // canonical identifiers after sending the requested card; retained milestones
   // and booking details remain separate from the current conversation topic.
-  const SOP_MAP: Record<string, number> = {
-    SOP_01_OPENING: 0,
-    SOP_02_DISCOVERY: 1,
-    SOP_03_PINCODE: 2,
-    SOP_04_BOOKED: 3,
-  };
-
-  const activeSopIndex = persona.id === "lamborghini-concierge" && currentPhase
-    ? (SOP_MAP[currentPhase] ?? 0)
-    : 0;
+  const activeSopIndex = persona.phaseIds?.indexOf(currentPhase) ?? -1;
 
   // ...and so would previewing our local copy. Ask the backend for the prompt it
   // will actually run. A stale preview is worse than a visibly pending one: it
@@ -52,7 +44,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   const [serverPromptFailed, setServerPromptFailed] = useState(false);
 
   useEffect(() => {
-    if (!promptLocked) {
+    if (!serverPreset) {
       setServerPrompt(null);
       setServerPromptFailed(false);
       return;
@@ -76,9 +68,9 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     };
     // Re-fetch when persona, backendUrl, active phase card, or engine changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptLocked, personaId, backendUrl, currentPhase, settings.engine]);
+  }, [serverPreset, personaId, backendUrl, currentPhase, settings.engine, settings.tone, settings.language]);
 
-  const previewPrompt = promptLocked
+  const previewPrompt = serverPreset
     ? serverPrompt
       ?? (serverPromptFailed
         ? "Backend unreachable — this persona's prompt is composed server-side and cannot be shown right now."
@@ -99,19 +91,19 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
         >
           <div className="sop-bar-header">
             <span className="eyebrow">{promptLocked ? "Current topic:" : "Demo focus:"}</span>
-            {settings.engine === "cascade" ? (
+            {settings.engine === "cascade" && persona.phaseIds ? (
               <span
                 className="cascade-sop-badge"
-                title="Cascade engine uses a monolithic prompt covering all SOP phases; dynamic phase switching is a Gemini Live exclusive."
+                title="This persona currently loads all phases at session start in Cascade. Live loads cards on demand."
               >
-                ⚡ Gemini Live feature · Monolithic SOP in Cascade
+                All phases loaded · Cascade
               </span>
             ) : (
-              active && persona.id === "lamborghini-concierge" && phaseDelivery && (
+              active && persona.phaseIds && phaseDelivery && (
                 <span className="eyebrow" role="status" title={
                   phaseDelivery === "sent" ? "Brief sent to the session; this does not confirm which reply used it."
                     : phaseDelivery === "pending" ? "Waiting for the current response to finish before sending the brief."
-                      : "The brief was not sent. It will be retried on the next caller transcript."
+                      : "The brief was not sent. The model can retry switch_phase; the current topic is unchanged."
                 }>
                   {phaseDelivery === "sent" ? "Brief sent" : phaseDelivery === "pending" ? "Brief pending" : "Brief failed"}
                 </span>
@@ -122,7 +114,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
             {persona.journey.map((step, i) => {
               const isCascade = settings.engine === "cascade";
               const isActive = !isCascade && i === activeSopIndex;
-              const isVisited = !isCascade && visitedPhases.some((p) => SOP_MAP[p] === i);
+              const isVisited = !isCascade && Boolean(persona.phaseIds?.[i] && visitedPhases.includes(persona.phaseIds[i]));
               return (
                 <li
                   key={step}

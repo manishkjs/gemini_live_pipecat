@@ -1,6 +1,6 @@
-# Latest implementation update — 2026-09-13 09:57:48 UTC: backend, persona delivery and diagnostics (section 20)
+# Latest implementation update — 2026-09-13 10:00:12 UTC: UI delivery and verification (section 21)
 
-The owner has requested continued Cascade pricing and implementation of the fleet recommendations. Sections 19–20 record implemented changes and verification gates. The verbatim discussion below is preserved.
+The owner has requested continued Cascade pricing and implementation of the fleet recommendations. Sections 19–21 record implemented changes and verification gates. The verbatim discussion below is preserved.
 
 # ⚡ LATEST (13 Sep 2026): [agentchattr transcription](#agentchattr-transcription) & [Section 17 Blueprint](#17-multi-agent-fleet-review-dialectical-debate--implementation-blueprint-ui-changes-sep--13-september-2026)
 
@@ -2668,3 +2668,34 @@ The local tester should provide one short trace containing timestamped numeric `
 ### Verification
 
 Full `pytest server/tests`: **167 passed, 2 subtests passed** with the media imports installed (Pipecat 1.2.1 / Google GenAI 2.4.0). Existing clone-file tests now use temporary dummy files; Transcribe constructor tests mock the provider client, not the routing implementation. Official SDK schema-conversion and pricing wrapper tests still run. Frontend changes are the next checkpoint; the final handoff will record combined build/test results.
+
+
+## 21. UI delivery and combined verification — 2026-09-13 10:00:12 UTC
+
+Continues section 20 and the published Cascade pricing work in section 19. The owner requested both streams of work continue; neither was dropped.
+
+### UI changes completed
+
+- All three card personas declare ordered phase IDs. Ananya/Kavya begin in their correct phase, and the journey tracker no longer hardcodes Pragya. Session/revision checks reject stale events; pending/failed sends do not mark a new phase active or visited. Recovery and returning to a previously visited phase are tested through the actual hook/event decoder.
+- Journey cards have clearer separation, wrapped labels and a responsive two-column layout. Cascade's static journey is readable without opacity/blur; the badge describes this implementation's all-phases-loaded behavior rather than claiming Cascade cannot support phased context.
+- Restored the Gemini TTS named-voice selector. Clone fields are masked; switching voice/provider clears stale custom credentials. Requests send a key only for explicit Custom-Key, reject an empty key, and reject a Cascade clone with a non-Chirp provider.
+- Connected presets request the central backend source with tone/language; custom overrides preserve their existing behavior. Prompt preview uses the same resolver. The current styles were migrated unchanged, not replaced with a new global tone policy.
+- Optimized all seven existing portraits from **12,372,007 bytes to 105,198 bytes** combined (400×400 WebP). All output dimensions were decoded and checked; Pragya's derivative was visually inspected. Originals remain in history.
+- Updated `UI_CHANGES_SEP.md`, which had incorrectly claimed server/client were unchanged, only four personas existed, and custom instructions had obsolete character limits.
+
+### Combined checks and practical limits
+
+- Full backend suite: **167 passed, 2 subtests passed**. This includes actual provider imports, schema conversion, pricing wrapper execution, booking dedup, phase delivery failures/retries, session authorization, bounded retention and captured turn/audio behavior.
+- Voice Studio: **100 tests passed**; production build passed.
+- Original client: production build passed; its diagnostics shortcuts, scoped access and raw log UI are retained. Missing/terminal metric values render as unavailable instead of `undefined ms`/`NaN`.
+- Python import/startup, whitespace checks and asset decoding passed. Existing dependency deprecations, large frontend bundle warnings and the original client's `style.css` build warning remain.
+- The browser preview connection was blocked by the task browser (`ERR_BLOCKED_BY_CLIENT` to the local preview). No full UI visual, microphone, paid-provider call or invoice reconciliation is claimed. No deployment was performed.
+
+### Remaining owner/local-test decisions
+
+1. **Transcribe Live billing scope:** provide a timestamped usage-only trace over two utterances, silence and a reconnect for the exact provider/model. Until verified, STT is visibly unpriced and the Cascade estimate remains partial. Do not use approximate audio-duration/transcript-token shortcuts.
+2. **Turn correlation:** current continuous STT/aggregator callbacks do not prove utterance origin. Their conversational latency remains unavailable; independent LLM/TTS request timers remain visible. Preserve this guard until real origin propagation is verified. Native Live interruption/completion ordering also needs the listed local call checks.
+3. **Booking revision triad:** not implemented as a pretend proof of readback/consent. The transcript-parser proposal conflicts with the owner's explicit no-regex/model-steering direction. If stronger confirmation is needed, agree the observable confirmation contract before changing tools or adding a user confirmation control. Existing structured field checks and idempotent mock bookings remain.
+4. **Client playback measurement, original-client deprecation and global tone redesign** remain separate design choices. Server first-audio is not caller-perceived latency; prompt cards append to history and do not guarantee savings.
+
+The archived fleet transcript below/above remains verbatim historical context. This timestamped implementation record and the linked contracts describe the delivered behavior and its limits.

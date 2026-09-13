@@ -1,3 +1,4 @@
+import { initialPersonaPhase } from "@/lib/personas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "motion/react";
 import {
@@ -61,10 +62,10 @@ export function useVoiceSession() {
 
   // Persona Phase Tracking (e.g. Pragya JIT Phase Cards)
   const [currentPhase, setCurrentPhase] = useState<string>(
-    settings.personaId === "lamborghini-concierge" ? "SOP_01_OPENING" : ""
+    initialPersonaPhase(settings.personaId)
   );
   const [visitedPhases, setVisitedPhases] = useState<string[]>(
-    settings.personaId === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []
+    [initialPersonaPhase(settings.personaId)].filter(Boolean)
   );
   const [phaseDirective, setPhaseDirective] = useState<string | null>(null);
   const [phaseDelivery, setPhaseDelivery] = useState<"pending" | "sent" | "failed" | null>(null);
@@ -197,8 +198,8 @@ export function useVoiceSession() {
     setCascadeCost(null);
     cascadeCostRevision.current = -1;
     setInterruptCount(0);
-    setCurrentPhase(personaId === "lamborghini-concierge" ? "SOP_01_OPENING" : "");
-    setVisitedPhases(personaId === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []);
+    setCurrentPhase(initialPersonaPhase(personaId));
+    setVisitedPhases([initialPersonaPhase(personaId)].filter(Boolean));
     setPhaseDirective(null);
     setPhaseDelivery(null);
     phaseRevision.current = 0;
@@ -224,8 +225,8 @@ export function useVoiceSession() {
       voice: p.defaultVoice || current.voice,
       instructions: value === "custom" ? customInstructions.current : "",
     }));
-    setCurrentPhase(value === "lamborghini-concierge" ? "SOP_01_OPENING" : "");
-    setVisitedPhases(value === "lamborghini-concierge" ? ["SOP_01_OPENING"] : []);
+    setCurrentPhase(initialPersonaPhase(value));
+    setVisitedPhases([initialPersonaPhase(value)].filter(Boolean));
     setPhaseDirective(null);
     setConfirmedBooking(null);
     resetConversation(value as PersonaId);
@@ -342,16 +343,18 @@ export function useVoiceSession() {
               setCascadeCost(cost);
             }
           } else if (type === "phase_transition") {
+            if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
             if (Number.isSafeInteger(val?.revision)) {
               if (val.revision <= phaseRevision.current) return;
               phaseRevision.current = val.revision;
             }
             const phaseId = val?.phase_id || val?.phase || "";
-            if (phaseId) {
+            const delivered = (val?.card_pushed === true || val?.delivery_status === "sent") && val?.card_pushed !== false && val?.delivery_status !== "failed";
+            if (phaseId && delivered && getPersona(activeSettings.personaId).phaseIds?.includes(phaseId)) {
               setCurrentPhase(phaseId);
               setVisitedPhases((prev) => (prev.includes(phaseId) ? prev : [...prev, phaseId]));
             }
-            if (val?.directive || val?.title) {
+            if (delivered && (val?.directive || val?.title)) {
               setPhaseDirective(val.directive || val.title);
             }
             setPhaseDelivery(
@@ -443,7 +446,9 @@ export function useVoiceSession() {
   };
 
   const update = (key: keyof SessionSettings, value: string) =>
-    setSettings((current) => ({ ...current, [key]: value }));
+    setSettings((current) => ({ ...current, [key]: value,
+      ...((key === "voice" && value !== "Custom-Key") || (key === "ttsModel" && value !== "google-tts") ? { customVoiceKey: "" } : {}),
+    }));
 
   const updateBool = (key: keyof SessionSettings, value: boolean) =>
     setSettings((current) => ({ ...current, [key]: value }));

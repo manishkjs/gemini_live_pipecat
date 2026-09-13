@@ -286,6 +286,8 @@ export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string)
   if (phase && settings.engine !== "cascade") {
     searchParams.set("phase", phase);
   }
+  searchParams.set("tone", settings.tone);
+  searchParams.set("language", settings.language);
   url.search = searchParams.toString();
   return url.href;
 }
@@ -348,6 +350,10 @@ export function buildConnectRequest(settings: SessionSettings) {
   const instructions = buildSessionInstructions(settings);
   const body: Record<string, unknown> = {};
   if (instructions) body.system_instruction = instructions;
+  if (!settings.instructions.trim() && settings.personaId !== "custom") {
+    body.prompt_source = "preset";
+    body.persona_tone = settings.tone;
+  }
   if (settings.toolsJson?.trim()) {
     try {
       body.tools = JSON.parse(settings.toolsJson);
@@ -363,7 +369,13 @@ export function buildConnectRequest(settings: SessionSettings) {
   // the server exchanges it for an opaque, short-lived voice_profile_id before
   // any WebSocket URL is minted — so it never reaches browser history, access
   // logs, or the in-app diagnostics buffer.
-  if (settings.customVoiceKey?.trim()) {
+  if (isClonedVoice(settings.voice) && settings.engine === "cascade" && settings.ttsModel !== "google-tts") {
+    throw new Error("Select Chirp 3 HD to use a cloned voice in Cascade.");
+  }
+  if (settings.voice === "Custom-Key" && !settings.customVoiceKey?.trim()) {
+    throw new Error("Enter your voice cloning key or select another voice.");
+  }
+  if (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim()) {
     body.custom_voice_key = settings.customVoiceKey.trim();
   }
   // NOTE: thinking_level intentionally travels only in the query string (see
