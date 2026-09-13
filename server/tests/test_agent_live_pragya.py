@@ -40,8 +40,8 @@ class TestDeterministicRouting(unittest.TestCase):
         self.assertNotIn("create_appointment_booking", names)
 
     def test_other_personas_get_no_persona_tools(self):
-        for persona_id in ["debt-collector", "reservation-agent", "storyteller",
-                           "ai-companion", "groww-advisor", "custom"]:
+        for persona_id in ["debt-collector", "storyteller",
+                           "ai-companion", "custom"]:
             arch = get_persona_architecture(persona_id)
             self.assertIsInstance(arch, MonolithicArchitecture, persona_id)
             self.assertEqual(arch.get_tool_schemas(), [], persona_id)

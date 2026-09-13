@@ -39,6 +39,10 @@ class ArchitecturePattern(str, Enum):
     STATE_LADDER_NEGOTIATOR = "negotiator_ladder"
     #: Pragya's context cards selected by Gemini through ``switch_phase``.
     JIT_PHASE_CARDS = "jit_phase_cards"
+    #: Ananya's Cymbal Mutual Fund Advisor with portfolio/NAV/SIP tools.
+    JIT_MF_ADVISOR = "jit_mf_advisor"
+    #: Kavya's Cymbal Smartglasses companion with 14 mock smartglasses tools.
+    GLASS_BUDDY = "glass_buddy"
 
 
 class PersonaConfig(NamedTuple):
@@ -78,10 +82,30 @@ PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
         architecture=ArchitecturePattern.STATE_LADDER_NEGOTIATOR,
     ),
     "debt-collector": PersonaConfig("debt-collector", ArchitecturePattern.MONOLITHIC_STATIC),
-    "reservation-agent": PersonaConfig("reservation-agent", ArchitecturePattern.MONOLITHIC_STATIC),
+    # Kavya - Cymbal Smartglasses AI Companion (14 tools + JIT phase cards)
+    "kavya-glass-buddy": PersonaConfig(
+        persona_id="kavya-glass-buddy",
+        architecture=ArchitecturePattern.GLASS_BUDDY,
+        is_ui_editable=False,
+    ),
+    "reservation-agent": PersonaConfig(
+        persona_id="reservation-agent",
+        architecture=ArchitecturePattern.GLASS_BUDDY,
+        is_ui_editable=False,
+    ),
+    # Ananya - Cymbal Mutual Fund Advisor (portfolio/NAV/SIP + JIT phase cards)
+    "ananya-advisor": PersonaConfig(
+        persona_id="ananya-advisor",
+        architecture=ArchitecturePattern.JIT_MF_ADVISOR,
+        is_ui_editable=False,
+    ),
+    "groww-advisor": PersonaConfig(
+        persona_id="groww-advisor",
+        architecture=ArchitecturePattern.JIT_MF_ADVISOR,
+        is_ui_editable=False,
+    ),
     "storyteller": PersonaConfig("storyteller", ArchitecturePattern.MONOLITHIC_STATIC),
     "ai-companion": PersonaConfig("ai-companion", ArchitecturePattern.MONOLITHIC_STATIC),
-    "groww-advisor": PersonaConfig("groww-advisor", ArchitecturePattern.MONOLITHIC_STATIC),
     "custom": PersonaConfig("custom", ArchitecturePattern.MONOLITHIC_STATIC),
 }
 
@@ -433,10 +457,285 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
         return registered
 
 
+class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
+    """Ananya: Cymbal Mutual Fund & Wealth Advisor.
+
+    Manages portfolio review, fund NAV queries, and SIP orders with JIT cards.
+    """
+
+    pattern = ArchitecturePattern.JIT_MF_ADVISOR
+    model_controls_conversation = True
+
+    def __init__(self) -> None:
+        self._llm = None
+        self._broadcast = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._engine = None
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from mf_advisor_tools import AnanyaMFExecutionEngine
+            self._engine = AnanyaMFExecutionEngine(broadcast=self._broadcast)
+        return self._engine
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        from persona_prompt_cards.ananya_cards import (
+            get_ananya_monolithic_system_instruction,
+            get_ananya_root_system_instruction,
+        )
+        if engine == "cascade":
+            return get_ananya_monolithic_system_instruction()
+        return get_ananya_root_system_instruction()
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from mf_advisor_tools import (
+            get_portfolio_summary_schema,
+            get_fund_nav_details_schema,
+            manage_sip_order_schema,
+            switch_phase_schema,
+        )
+        tools = [get_portfolio_summary_schema, get_fund_nav_details_schema, manage_sip_order_schema]
+        if engine != "cascade":
+            tools.append(switch_phase_schema)
+        return tools
+
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from loguru import logger
+        from persona_prompt_cards.ananya_cards import (
+            get_ananya_phase_card,
+            format_ananya_prompt_card,
+        )
+
+        phase_id = args.get("phase_id", "")
+        card = get_ananya_phase_card(phase_id)
+        if not card:
+            return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
+
+        if self._last_card_key == card.phase_id:
+            return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
+
+        delivered = False
+        if self._llm:
+            try:
+                directive = format_ananya_prompt_card(card)
+                delivered = await self._llm.inject_directive(
+                    directive,
+                    tag=f"Ananya/Card {card.phase_id}",
+                    speak_now=False,
+                    at_tool_boundary=True,
+                )
+            except Exception as exc:
+                logger.warning(f"[Ananya/Card] Send failed: {exc}")
+
+        if delivered:
+            self._last_card_key = card.phase_id
+            self.engine.active_phase = card.phase_id
+
+        if self._broadcast:
+            try:
+                await self._broadcast({
+                    "type": "phase_transition",
+                    "phase_id": card.phase_id,
+                    "title": card.title,
+                    "card_pushed": bool(delivered),
+                    "reason": "model selected phase",
+                })
+            except Exception:
+                pass
+
+        return {
+            "status": "success",
+            "phase_id": card.phase_id,
+            "delivery_status": "sent" if delivered else "delivery_failed",
+        }
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        self._llm = llm
+        self._broadcast = broadcast
+        if self._engine:
+            self._engine._broadcast = broadcast
+
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
+
+        async def handle_get_portfolio_summary(params):
+            result = await self.engine.get_portfolio_summary(params.arguments or {})
+            await params.result_callback(result)
+
+        async def handle_get_fund_nav_details(params):
+            result = await self.engine.get_fund_nav_details(params.arguments or {})
+            await params.result_callback(result)
+
+        async def handle_manage_sip_order(params):
+            result = await self.engine.manage_sip_order(params.arguments or {})
+            await params.result_callback(result)
+
+        llm.register_function("get_portfolio_summary", handle_get_portfolio_summary)
+        registered.append("get_portfolio_summary")
+        llm.register_function("get_fund_nav_details", handle_get_fund_nav_details)
+        registered.append("get_fund_nav_details")
+        llm.register_function("manage_sip_order", handle_manage_sip_order)
+        registered.append("manage_sip_order")
+
+        return registered
+
+
+class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
+    """Kavya: Cymbal Smartglasses AI Companion.
+
+    Provides 14 deterministic mock tools with RTVI event broadcasting
+    and JIT phase cards.
+    """
+
+    pattern = ArchitecturePattern.GLASS_BUDDY
+    model_controls_conversation = True
+
+    def __init__(self) -> None:
+        self._llm = None
+        self._broadcast = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._engine = None
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from glass_buddy_tools import GlassBuddyExecutionEngine
+            self._engine = GlassBuddyExecutionEngine(broadcast=self._broadcast)
+        return self._engine
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        from persona_prompt_cards.kavya_cards import (
+            get_kavya_monolithic_system_instruction,
+            get_kavya_root_system_instruction,
+        )
+        if engine == "cascade":
+            return get_kavya_monolithic_system_instruction()
+        return get_kavya_root_system_instruction()
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from glass_buddy_tools import ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema
+        if engine == "cascade":
+            return list(ALL_GLASS_BUDDY_TOOL_SCHEMAS)
+        return [*ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema]
+
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from loguru import logger
+        from persona_prompt_cards.kavya_cards import (
+            get_kavya_phase_card,
+            format_kavya_prompt_card,
+        )
+
+        phase_id = args.get("phase_id", "")
+        card = get_kavya_phase_card(phase_id)
+        if not card:
+            return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
+
+        if self._last_card_key == card.phase_id:
+            return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
+
+        delivered = False
+        if self._llm:
+            try:
+                directive = format_kavya_prompt_card(card)
+                delivered = await self._llm.inject_directive(
+                    directive,
+                    tag=f"Kavya/Card {card.phase_id}",
+                    speak_now=False,
+                    at_tool_boundary=True,
+                )
+            except Exception as exc:
+                logger.warning(f"[Kavya/Card] Send failed: {exc}")
+
+        if delivered:
+            self._last_card_key = card.phase_id
+            self.engine.active_phase = card.phase_id
+
+        if self._broadcast:
+            try:
+                await self._broadcast({
+                    "type": "phase_transition",
+                    "phase_id": card.phase_id,
+                    "title": card.title,
+                    "card_pushed": bool(delivered),
+                    "reason": "model selected phase",
+                })
+            except Exception:
+                pass
+
+        return {
+            "status": "success",
+            "phase_id": card.phase_id,
+            "delivery_status": "sent" if delivered else "delivery_failed",
+        }
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        self._llm = llm
+        self._broadcast = broadcast
+        if self._engine:
+            self._engine._broadcast = broadcast
+
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
+
+        tool_names = [
+            "make_call",
+            "start_live_ai",
+            "take_photo",
+            "start_video",
+            "meeting_mode",
+            "route_hardware_directive",
+            "log_my_meal",
+            "stop_b",
+            "set_reminder",
+            "get_health_data",
+            "get_calendar_events",
+            "get_nutrition",
+            "recall_memory",
+            "input_required",
+        ]
+
+        def _make_handler(fn):
+            async def _handler(params):
+                res = await fn(params.arguments or {})
+                await params.result_callback(res)
+            return _handler
+
+        for name in tool_names:
+            fn = getattr(self.engine, name, None)
+            if fn:
+                llm.register_function(name, _make_handler(fn))
+                registered.append(name)
+
+        return registered
+
+
 _ARCHITECTURE_IMPLEMENTATIONS = {
     ArchitecturePattern.MONOLITHIC_STATIC: MonolithicArchitecture,
     ArchitecturePattern.STATE_LADDER_NEGOTIATOR: NegotiatorLadderArchitecture,
     ArchitecturePattern.JIT_PHASE_CARDS: JITPhaseCardsArchitecture,
+    ArchitecturePattern.JIT_MF_ADVISOR: AnanyaMFAdvisorArchitecture,
+    ArchitecturePattern.GLASS_BUDDY: KavyaGlassBuddyArchitecture,
 }
 
 

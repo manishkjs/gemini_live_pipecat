@@ -915,4 +915,79 @@ To reload the backend with the latest commit:
 4. Ensure SSH port forwarding is established from local client:
    `ssh -L 7860:localhost:7860 -L 5173:localhost:5173 rangarok.c.googlers.com`.
 
+---
 
+## 15. Centralized Persona Cards Architecture, Ananya (Cymbal MF) & Kavya (Glass Buddy) Overhaul — 13 September 2026
+
+**Scope:** Architectural centralization of prompt cards across all personas into `server/persona_prompt_cards/`, end-to-end overhaul of Ananya into a pure Cymbal Mutual Fund Advisor, and overhaul of Kavya into a pure Cymbal Smartglasses Glass Buddy with 14 deterministic mock tools and JIT phase cards.
+
+### 1. Centralized Persona Prompt Cards (`server/persona_prompt_cards/`)
+* **Rationale:** As the number of JIT phase cards grew across multiple personas, maintaining scattered `*_cards.py` files in the `server/` root created sprawl. The centralized `persona_prompt_cards` module unifies all prompt cards, root instructions, and monolithic Cascade instructions in one maintainable package.
+* **Module Layout:**
+  - `types.py`: Shared `PhaseCard` dataclass, `render_state_summary()`, and `format_phase_card()` utilities.
+  - `pragya_cards.py`: Pragya (Lamborghini Concierge) `PRAGYA_SUPERCAR_CARDS` (`SOP_02_DISCOVERY`, `SOP_03_PINCODE`, `SOP_04_BOOKED`), root instruction, and monolithic SOP.
+  - `ananya_cards.py`: Ananya (Cymbal MF Advisor) `ANANYA_MF_CARDS` (`SOP_01_OVERVIEW`, `SOP_02_SCHEME_DETAILS`, `SOP_03_SIP_PLANNING`, `SOP_04_CONFIRMATION`), root instruction, and monolithic SOP.
+  - `kavya_cards.py`: Kavya (Cymbal Smartglasses) `KAVYA_GLASS_BUDDY_CARDS` (`SOP_01_COMPANION_READY`, `SOP_02_VISION_CAPTURE`, `SOP_03_DAILY_ASSISTANT`, `SOP_04_HEALTH_WELLNESS`), root instruction, and monolithic SOP.
+  - `ranvir_cards.py`: Ranvir (Car Negotiator) professional and signature instructions.
+  - `meera_cards.py`: Meera (Debt Collector) professional and signature instructions.
+  - `kabir_cards.py`: Kabir (Storyteller) professional and signature instructions.
+  - `aisha_cards.py`: Aisha (AI Companion) professional and signature instructions.
+  - `__init__.py`: Clean unified API (`get_persona_card()`, `get_persona_all_cards()`, `format_persona_prompt_card()`, `get_persona_system_instruction()`).
+* **Backward-Compatibility Shims:**
+  - `server/supercar_cards.py` re-exports from `persona_prompt_cards.pragya_cards`.
+  - `server/mf_advisor_cards.py` re-exports from `persona_prompt_cards.ananya_cards`.
+  - `server/glass_buddy_cards.py` re-exports from `persona_prompt_cards.kavya_cards`.
+
+### 2. Ananya — Cymbal Mutual Fund Advisor
+* **Branding:** 100% pure **Cymbal Investments** (सिंबल इन्वेस्टमेंट्स). Zero mention of Groww.
+* **Architecture:** `ArchitecturePattern.JIT_MF_ADVISOR = "jit_mf_advisor"`, UI-locked (`is_ui_editable=False`).
+* **SOP Phase Cards:**
+  - `SOP_01_OVERVIEW`: Portfolio holdings summary (₹4,85,000 invested, ₹5,72,400 current, +18.02% XIRR, 2 active SIPs).
+  - `SOP_02_SCHEME_DETAILS`: Fund scheme performance and NAV lookups (Cymbal Flexi Cap, Large & Mid Cap, ELSS Tax Saver, Liquid).
+  - `SOP_03_SIP_PLANNING`: Interactive SIP parameter collection (fund, amount, monthly debit date).
+  - `SOP_04_CONFIRMATION`: Execution confirmation and reference mandate generation.
+* **Tooling Engine (`AnanyaMFExecutionEngine`):**
+  - `get_portfolio_summary`: Mock portfolio stats with RTVI event `portfolio_viewed`.
+  - `get_fund_nav_details`: NAV, CAGR returns, expense ratios with RTVI event `fund_nav_fetched`.
+  - `manage_sip_order`: Idempotent SIP registration/modification with RTVI event `sip_order_confirmed`.
+  - `switch_phase`: Server-authoritative phase switching with directive injection via `inject_directive`.
+
+### 3. Kavya — Cymbal Smartglasses Glass Buddy
+* **Branding:** 100% pure **Cymbal Smartglasses**. Zero mention of Lenskart or AjnaLens.
+* **Architecture:** `ArchitecturePattern.GLASS_BUDDY = "glass_buddy"`, UI-locked (`is_ui_editable=False`).
+* **jna_v25 Invariants:**
+  - Strict turn length: Under 3 sentences.
+  - Feminine Hindi verb conjugation for self ('मैं देख रही हूँ', 'करती हूँ', 'कॉल लगा रही हूँ').
+  - Read-only calendar invariant: Never claim to create/modify calendar events.
+  - Explicit privacy gating: Hardware directive, live AI, camera, video, meeting mode, and calls fire ONLY on explicit user directive.
+  - Numbers in English words/digits.
+* **14 Deterministic Mock Tools (`GlassBuddyExecutionEngine`):**
+  1. `make_call`: Simulates phone calls (`calling`).
+  2. `start_live_ai`: Multimodal real-time vision activation (`active`).
+  3. `take_photo`: Camera capture (`captured`).
+  4. `start_video`: Video recording (`recording`).
+  5. `meeting_mode`: Meeting audio transcription (`recording`/`stopped`).
+  6. `route_hardware_directive`: Scene inspection through smartglasses (`success`).
+  7. `log_my_meal`: Logs meal with calories and macros (`logged`).
+  8. `stop_b`: Halts active hardware background tasks (`stopped`).
+  9. `set_reminder`: Schedules reminder alerts (`success`).
+  10. `get_health_data`: Retrieves steps, heart rate, battery (`success`).
+  11. `get_calendar_events`: Read-only calendar inspection (`success`).
+  12. `get_nutrition`: Nutritional and calorie lookups (`success`).
+  13. `recall_memory`: Recalls past user context and allergies (`success`).
+  14. `input_required`: Action authorization confirmation (`confirmed`).
+  - Plus `switch_phase` for Live duplex phase switching.
+  - All 14 mock tools broadcast RTVI events (`call_placed`, `photo_captured`, `meal_logged`, etc.).
+
+### 4. Server & Voice Studio Integration
+* **Server Endpoint (`/persona-prompt/{persona_id}`):** Updated to resolve phase cards generically using `persona_prompt_cards.get_persona_card()`, supporting Pragya, Ananya, and Kavya equally.
+* **Voice Studio Frontend (`demos/voice-studio/src/lib/personas.ts`):**
+  - Updated `reservation-agent` / `kavya-glass-buddy`: "Glass Buddy" (Kavya) · Cymbal Smartglasses Companion · 14 Mock Tools.
+  - Updated `groww-advisor` / `ananya-advisor`: "Mutual Fund Advisor" (Ananya) · Cymbal Investments · Portfolio, NAV & SIP Tools.
+
+### 5. Automated Verification
+* **Backend Unit Tests:** **124/124 passed** (`PYTHONPATH=. venv/bin/python -m unittest discover -s tests -p "test_*.py"` in 0.446s).
+  - `test_persona_prompt_cards.py`: 4/4 passed (Pragya, Ananya pure Cymbal, Kavya pure Cymbal, static prompts).
+  - `test_mf_advisor.py`: 7/7 passed (execution engine, idempotency, routing, live vs cascade schema isolation).
+  - `test_glass_buddy.py`: 5/5 passed (all 14 mock tools, RTVI broadcasts, privacy/branding invariants).
+* **Frontend Unit Tests:** **93/93 passed** in `demos/voice-studio` (`npm test`).

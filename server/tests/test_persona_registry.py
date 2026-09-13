@@ -18,7 +18,7 @@ class TestPersonaRegistry(unittest.TestCase):
         self.assertTrue(is_persona_ui_editable("car-negotiator"))
 
     def test_legacy_personas_fallback_to_monolithic(self):
-        for persona_id in ["debt-collector", "reservation-agent", "storyteller", "ai-companion", "groww-advisor"]:
+        for persona_id in ["debt-collector", "storyteller", "ai-companion"]:
             arch = resolve_persona_architecture(persona_id)
             self.assertEqual(arch, ArchitecturePattern.MONOLITHIC_STATIC)
             self.assertTrue(is_persona_ui_editable(persona_id))

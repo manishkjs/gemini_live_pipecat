@@ -216,11 +216,11 @@ async def persona_prompt(
         # Keyed off the architecture, not a persona id: the id has been renamed
         # once already, and a string comparison here fails silently by falling
         # through to the root prompt.
-        if phase and architecture == ArchitecturePattern.JIT_PHASE_CARDS and engine != "cascade":
-            from supercar_cards import get_pragya_phase_card, format_supercar_prompt_card
-            card = get_pragya_phase_card(phase)
+        if phase and engine != "cascade":
+            from persona_prompt_cards import get_persona_card, format_persona_prompt_card
+            card = get_persona_card(persona_id, phase)
             if card:
-                composed = format_supercar_prompt_card(card)
+                composed = format_persona_prompt_card(persona_id, card)
         if not composed:
             composed = get_persona_architecture(persona_id).compose_system_prompt(None, engine=engine or "live")
 
