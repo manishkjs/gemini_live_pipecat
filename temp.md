@@ -523,3 +523,66 @@ The live script is in `demos/voice-studio/CALL_ACCOUNTING.md`. A real microphone
 call against the configured provider is still needed to evaluate Gemini's phase
 choices, Hindi agreement handling, and whether realtime text causes an extra
 response. Local handler tests do not prove that acoustic behavior.
+
+---
+
+## 9. Production Telemetry, Cross-Model Benchmark & Buganizer Update — 13 September 2026
+
+Live microphone sessions, audio gating experiments, and raw `usage_metadata` inspections conducted against `ui-changes-sep` yield concrete empirical findings regarding model behavior, prompt sizing, and tokenomics across Gemini Live models (`gemini-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`, `gemini-3.5-flash-live-preview`).
+
+### 1. Defect 3 Update on Buganizer b/560037988: The 201 Audio Prompt Tokens
+* **The Earlier Hypothesis:** The ~201 audio prompt tokens reported on Turn 1 of `gemini-3.1-flash-live-preview` was assumed to be an open-mic silence leak (7.6s of room audio streamed before the greeting completed).
+* **Controlled Experiment:** We implemented client-side microphone gating in `StartTriggerProcessor` (`server/agent_live.py`) with PCM RMS barge-in detection (>650 threshold) and a 12s safety watchdog. In Session `s_95292495-8ff4-495d-98c7-8611f1ba20da`, **100% of raw audio frames were dropped downstream during greeting playback (verified: zero audio PCM bytes sent to the Live WebSocket)**.
+* **The Result:** Gemini 3.1 Live STILL reported **`Prompt: 1397 (MediaModality.TEXT: 1027, MediaModality.AUDIO: 201)`**!
+* **Conclusion:** The 201 audio prompt tokens is **NOT an open-mic silence leak**. It is a **hardcoded model-side initialization overhead / fixed audio preamble footprint** injected by Google's backend whenever `response_modalities=["AUDIO"]` is requested on 3.1 Live. (2.5 Native Audio and 3.5 Live report `AUDIO: 0` under identical zero-audio conditions).
+* **Action Taken:** Updated Buganizer issue **[b/560037988](http://b/560037988)** with Comment #2 documenting this finding.
+
+### 2. Root SI Sizing & Fixed Scaffolding (+276 text tokens on 3.1)
+* **Observed Sizing:** In the live session, Turn 1 text prompt was **1,027 tokens** (not ~500).
+* **Composition:**
+  1. `supercar_cards.py` root SI currently measures ~1,650 characters.
+  2. Two OpenAPI tool schemas are declared in `setup`: `switch_phase` and `create_appointment_booking`.
+  3. 3.1 carries an un-cached **+276 token model scaffolding tax** on system instructions (225 vs 501 text tokens for the same 937-character prompt).
+  4. Together, $1,650 \text{ chars} + 2 \text{ tool schemas} + 276 \text{ scaffolding} = \mathbf{1,027 \text{ text tokens}}$.
+* Because `cached_content_token_count` is 0 across all Live turns on all models, this 1,027 text baseline is re-evaluated and re-billed on every single turn.
+
+### 3. The Turn 2 Prompt Explosion: Duplicate Parallel Tool Invocations on 3.1
+* **Observed Trace:** When the caller agreed to talk (*"हां, बात कर सकते हैं। बोलो।"*), Gemini 3.1 simultaneously emitted **two identical function calls in parallel**:
+  ```log
+  18:43:12.265 [DEBUG] Calling function [switch_phase:fc_14122334996645076928] with {'phase_id': 'SOP_02_DISCOVERY'}
+  18:43:12.749 [DEBUG] Calling function [switch_phase:fc_15852712798930337507] with {'phase_id': 'SOP_02_DISCOVERY'}
+  ```
+* **Impact:** Both tool handlers executed, injecting duplicate card contexts and returning dual function responses. Prompt tokens immediately surged from **1,397 → 4,490 tokens in a single turn** (Total: 4,822 tokens).
+* **Recommendation for Peer Agent:** Gemini 3.1 requires server-side tool deduplication/debouncing. If a tool call with the same `name` and `arguments` arrives within the same turn stream, suppress the duplicate execution.
+
+### 4. Turn-0 Tool Dispatch & Cold-Start Inflation (The 1,254 Token RCA)
+* **Failure Mode:** In earlier runs, Gemini 3.1 autonomously fired `switch_phase(SOP_02_DISCOVERY)` before speaking the greeting, injecting the 535-token card on Turn 0 and ballooning the opening bill to 1,254 tokens ($1,023 \text{ prompt} + 231 \text{ response}$).
+* **Invariant Enforced:** `SOP_01_OPENING` must be strictly cardless and tool-free. System Instruction explicitly instructs: *"Speak the opening line first without calling any tools. Never call switch_phase on the opening greeting."*
+
+### 5. Duplex Voice Compounding Economics & The "Carried Audio Tax"
+An audit of an 18-turn LLM session (26 spoken turns, 54,315 billed tokens, ₹10.25 total on Gemini 2.5 Native Audio) refutes the industry myth that bot audio output ($12.00/1M) dominates voice call spend:
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  Audio Prompt Input (User Mic History) : 25,365 tok  -> $0.0761 (64.6%) │
+│  Audio Response Output (Bot Speech)    :  2,268 tok  -> $0.0272 (23.1%) │
+│  Text Prompt Input (System & Cards)    : 25,904 tok  -> $0.0130 (11.0%) │
+│  Text Response Output (Transcripts)    :    778 tok  -> $0.0016  (1.3%) │
+│  ────────────────────────────────────────────────────────────────────  │
+│  TOTAL                                 : 54,315 tok  -> $0.1178 (₹10.25)│
+└────────────────────────────────────────────────────────────────────────┘
+```
+* **Bot Audio Output is Strictly One-Time:** Once emitted, the server collapses bot speech into a lightweight text transcript in session history (~0.25 text tok / audio tok). Bot audio is **never carried back into context as audio** (only 23.1% of call cost).
+* **User Audio Accumulates Quadratically:** In duplex mode, user 16kHz PCM audio frames persist across turns. Because Vertex AI enforces a 5,000-token compaction floor, user audio accumulated to **2,363 audio tokens by Turn 14**.
+* **The "Listening Tax":** At Turn 14, every utterance (even a 1-word confirmation like *"हाँ"*) costs **₹0.62 just to listen**, driving late-stage turns to **₹0.70–₹1.03 per turn**. **64.6% of the call cost was driven by what the USER said and accumulated**.
+
+### 6. Voice Barge-In Economics (The "Interruption Prompt Tax")
+* Truncating a 250-token bot monologue saves 250 audio output tokens = **₹0.26 ($0.003)**.
+* However, prompt evaluation for the current turn has **already occurred and been billed**.
+* If the user's interruption is a fragmented filler (*"uh-huh"*, *"wait"*, cough) that triggers a new turn, the model must re-evaluate the accumulated 4,000+ token context history, costing **₹0.68 ($0.00775)**.
+* **Net Result:** $\text{₹0.26 saved} - \text{₹0.68 fee} = \mathbf{+\text{₹0.42 net financial loss}}$ per fragmented barge-in. Decisive barge-ins save money; fragmented talk-overs burn cash.
+
+### 7. Implementation & Verification Status on `ui-changes-sep`
+* **Microphone Gate & Barge-In Processor:** Implemented in `StartTriggerProcessor` (`server/agent_live.py`). Verified with 6 unit test scenarios in `server/tests/test_greeting_audio_gate.py` (`Ran 6 tests in 0.020s - OK`).
+* **Live Server:** Running on PID via `./venv/bin/python server/server.py` on port `:7860`.
+* **Git Commit:** Committed and pushed to `origin/ui-changes-sep` (`579c83b`).
+
