@@ -1,3 +1,13 @@
+# ⚡ LATEST (13 Sep 2026): [Section 17: Multi-Agent Fleet Review, Dialectical Debate & Implementation Blueprint](#17-multi-agent-fleet-review-dialectical-debate--implementation-blueprint-ui-changes-sep--13-september-2026)
+
+> [!IMPORTANT]
+> **Executive Summary & Blueprint Location:**
+> The complete post-mortem, dialectical debate, and implementation roadmap from the AgentChattr `#general` fleet review is recorded in:
+> - **Direct In-File Anchor:** [Jump to Section 17](#17-multi-agent-fleet-review-dialectical-debate--implementation-blueprint-ui-changes-sep--13-september-2026) (Line ~1160)
+> - **Permanent Plan Document:** [`docs/plans/2026-09-13-telemetry-architecture-postmortem.md`](docs/plans/2026-09-13-telemetry-architecture-postmortem.md)
+>
+> Sections 1 through 16 below are historical records from earlier development sessions.
+
 > **Current owner decision — supersedes earlier routing proposals:** Gemini chooses
 > Pragya's phase through `switch_phase`. Remove speech/regex routing entirely.
 > The implementation and validation are recorded in section 8 below. Earlier
