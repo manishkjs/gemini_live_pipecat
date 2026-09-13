@@ -1,9 +1,9 @@
-# Stage 1: Build the client
-FROM node:18-slim as client
-WORKDIR /app/client
-COPY client/package*.json ./
+# Stage 1: Build the client (Gemini Voice Studio)
+FROM node:22-slim as client
+WORKDIR /app/demos/voice-studio
+COPY demos/voice-studio/package*.json ./
 RUN npm install
-COPY client/ ./
+COPY demos/voice-studio/ ./
 RUN npm run build
 
 
@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y \
 COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && python -m spacy download en_core_web_sm
 COPY server/ .
-COPY --from=client /app/client/dist ./client/dist
+COPY --from=client /app/demos/voice-studio/dist ./demos/voice-studio/dist
+COPY --from=client /app/demos/voice-studio/dist ./client/dist
 
 # Copy the voice cloning keys and set the environment variables
 COPY server/voice_cloning_key_m.txt /app/voice_cloning_key_m.txt

@@ -337,6 +337,9 @@ async def get_current_trace_endpoint(session_id: str = Depends(diagnostic_sessio
 
 # Mount the static files directory
 possible_dist_dirs = [
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../demos/voice-studio/dist")),
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "demos/voice-studio/dist")),
+    os.path.abspath("/app/demos/voice-studio/dist"),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../client/dist")),
     os.path.abspath(os.path.join(os.path.dirname(__file__), "client/dist")),
     os.path.abspath("/app/client/dist"),
@@ -347,6 +350,17 @@ client_dist_dir = next((d for d in possible_dist_dirs if os.path.exists(d)), Non
 if client_dist_dir:
     app.mount("/assets", StaticFiles(directory=os.path.join(client_dist_dir, "assets")), name="assets")
     
+    personas_dir = os.path.join(client_dist_dir, "personas")
+    if os.path.exists(personas_dir):
+        app.mount("/personas", StaticFiles(directory=personas_dir), name="personas")
+
+    @app.get("/favicon.svg")
+    async def read_favicon():
+        fav_path = os.path.join(client_dist_dir, "favicon.svg")
+        if os.path.exists(fav_path):
+            return FileResponse(fav_path)
+        return Response(status_code=404)
+
     @app.get("/diagnostics")
     async def read_diagnostics():
         diag_path = os.path.join(client_dist_dir, "diagnostics.html")
