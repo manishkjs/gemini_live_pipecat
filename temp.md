@@ -871,3 +871,48 @@ selection remains through `switch_phase`.
    - `GET /persona-prompt/lamborghini-concierge?engine=live` returns `engine: "live"`, `architecture: "jit_phase_cards"`, and the 1,762-character lean root instruction containing `switch_phase`.
    - `POST /connect` with `engine: "cascade"` responds with HTTP 200 OK.
 
+---
+
+## 14. Server Startup Lifecycle Diagnostic & Process Verification — 2026-09-13 07:49:00 UTC
+
+**Scope:** Diagnostic audit and operational resolution following reported issues where the server appeared not to come up after pulling the latest `ui-changes-sep` commit (`0f98e6a`).
+
+### Root Causes Identified
+
+1. **Port 7860 Contention (`Address already in use`):**
+   - Process `venv/bin/python server/server.py` was already active under PID `3086995` bound to `0.0.0.0:7860` (launched at `07:33:48 UTC` in `pts/1`).
+   - Any attempt to run `python server/server.py` in another terminal or background task failed immediately with:
+     `ERROR: [Errno 98] error while attempting to bind on address ('0.0.0.0', 7860): address already in use`.
+
+2. **Cloudtop Heavy-Import Startup Latency (>120s):**
+   - On this Cloudtop VM host (`rangarok`), importing `server/agent.py` and `server/agent_live.py` (which transitively load `google-genai`, `pipecat-ai`, `grpc`, `vertexai`, and `google.cloud.speech_v2`) incurs **over 120 seconds of sustained CPU processing** before Uvicorn binds port 7860 and outputs its startup banner.
+   - During this 2-minute compilation and loading window, the process produces zero stdout, creating the false appearance of a hang or failure to launch.
+
+3. **Process Code Staleness:**
+   - PID `3086995` was initialized at `07:33:48 UTC`, whereas commit `0f98e6a` (Cascade Monolithic SOP and static roadmap UI) was committed at `07:34:54 UTC`. The running server in memory was executing pre-commit code.
+
+### Live Environment Verification & Contract Tests
+
+1. **Backend HTTP & WebSocket Service (`:7860`):**
+   - `GET http://localhost:7860/` → **`HTTP 200 OK`** (serves `client/dist`).
+   - `GET http://localhost:7860/persona-prompt/lamborghini-concierge?phase=SOP_03_PINCODE` → **`HTTP 200 OK`** (returns JIT phase card JSON).
+   - `WebSocket ws://localhost:7860/ws?bot_type=tts-llm-stt&persona_id=lamborghini-concierge&engine=cascade` → **`Connected successfully`** (handshake verified).
+
+2. **Voice Studio Frontend Service (`:5173`):**
+   - `GET http://localhost:5173/` → **`HTTP 200 OK`** (Vite dev server PID 1109027 active).
+
+3. **Automated Test Suites:**
+   - **Backend Suite:** **108/108 unit tests pass** (`PYTHONPATH=server:server/tests venv/bin/python -m unittest discover -s server/tests -p "test_*.py"` in 0.386s).
+   - **Frontend Suite:** **93/93 tests pass** in `demos/voice-studio` (`npm test`).
+   - **Production Build:** `npm run build` in `demos/voice-studio` succeeded cleanly.
+
+### Operator Runbook for Clean Reload
+
+To reload the backend with the latest commit:
+1. Stop existing process: `kill 3086995` (or `Ctrl+C` in terminal `pts/1`).
+2. Start server: `./venv/bin/python server/server.py`.
+3. Allow ~120s for module initialization before port 7860 opens.
+4. Ensure SSH port forwarding is established from local client:
+   `ssh -L 7860:localhost:7860 -L 5173:localhost:5173 rangarok.c.googlers.com`.
+
+
