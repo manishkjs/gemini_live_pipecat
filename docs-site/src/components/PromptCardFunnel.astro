@@ -19,7 +19,7 @@ const {
 ---
 
 <figure class="diagram-wrapper">
-  <svg viewBox="0 0 840 430" role="img" aria-labelledby="pcf-title pcf-desc" class="pcf-svg">
+  <svg viewBox="0 0 840 330" role="img" aria-labelledby="pcf-title pcf-desc" class="pcf-svg">
     <title id="pcf-title">Monolithic Prompt vs JIT Prompt Cards in 0–5s Bounce Funnel</title>
     <desc id="pcf-desc">
       A comparison between a monolithic 4,500-token prompt and dynamic JIT prompt cards.
@@ -28,7 +28,7 @@ const {
     </desc>
 
     <!-- Outer Card Surface -->
-    <rect x="12" y="12" width="816" height="406" rx="14" class="card-bg" />
+    <rect x="12" y="12" width="816" height="306" rx="14" class="card-bg" />
 
     <!-- Header Section -->
     <g class="header-group">
@@ -125,27 +125,6 @@ const {
       <rect x="630" y="248" width="176" height="56" rx="8" class="badge-bg jit-badge" />
       <text x="718" y="271" class="badge-value green-txt">120 TOKENS</text>
       <text x="718" y="291" class="badge-sub green-sub">97.3% TOKEN SAVINGS</text>
-    </g>
-
-    <!-- Bottom KPI Summary Bar -->
-    <g class="kpi-group">
-      <!-- KPI 1 -->
-      <rect x="36" y="342" width="235" height="44" rx="8" class="kpi-pill kpi-neutral" />
-      <text x="52" y="362" class="kpi-icon">📞</text>
-      <text x="78" y="361" class="kpi-header">40% Telephony Bounce</text>
-      <text x="78" y="376" class="kpi-detail">Callers drop within 0–5s</text>
-
-      <!-- KPI 2 -->
-      <rect x="291" y="342" width="245" height="44" rx="8" class="kpi-pill kpi-danger" />
-      <text x="307" y="362" class="kpi-icon">💸</text>
-      <text x="333" y="361" class="kpi-header red-txt">Monolithic: 4,500 tokens</text>
-      <text x="333" y="376" class="kpi-detail">Full prompt taxed on bounce</text>
-
-      <!-- KPI 3 -->
-      <rect x="556" y="342" width="250" height="44" rx="8" class="kpi-pill kpi-success" />
-      <text x="572" y="362" class="kpi-icon">⚡</text>
-      <text x="598" y="361" class="kpi-header green-txt">JIT Cards: 4,380 Saved</text>
-      <text x="598" y="376" class="kpi-detail">>97% savings on dropped calls</text>
     </g>
   </svg>
 
@@ -365,41 +344,6 @@ const {
 
   .green-sub {
     fill: #81c995;
-  }
-
-  /* Bottom KPI Pill Strip */
-  .kpi-pill {
-    stroke-width: 1;
-  }
-
-  .kpi-neutral {
-    fill: rgba(255, 255, 255, 0.03);
-    stroke: #2e3444;
-  }
-
-  .kpi-danger {
-    fill: rgba(234, 67, 53, 0.07);
-    stroke: rgba(234, 67, 53, 0.3);
-  }
-
-  .kpi-success {
-    fill: rgba(52, 168, 83, 0.08);
-    stroke: rgba(52, 168, 83, 0.35);
-  }
-
-  .kpi-icon {
-    font-size: 14px;
-  }
-
-  .kpi-header {
-    fill: #ffffff;
-    font-size: 11px;
-    font-weight: 700;
-  }
-
-  .kpi-detail {
-    fill: #80868b;
-    font-size: 9.5px;
   }
 
   /* ============================================================

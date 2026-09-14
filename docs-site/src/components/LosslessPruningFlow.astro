@@ -1,0 +1,382 @@
+---
+/**
+ * Animated comparison: Client-Side Lossless Pruning & Rolling FactStore.
+ *
+ * Demonstrates Pillar 3 Optimization:
+ * 1. Audio-to-Text Pruning: Historical caller PCM audio ($3.00/M) is pruned
+ *    and replaced with text transcripts ($0.50/M), delivering an 83% cost slash
+ *    with identical semantic grounding.
+ * 2. Rolling FactStore: Essential user attributes ({name, pin, car_model}) are
+ *    maintained in a compact <60-token JSON digest injected into each turn prefix,
+ *    surviving FIFO sliding window eviction indefinitely.
+ *
+ * Pure CSS/SVG on a smooth 6s looping timeline. Zero JS runtime dependencies.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Client-side lossless pruning slashes historical audio tokens by 83% via text transcripts, while a <60-token FactStore survives sliding-window FIFO eviction.",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 840 330" role="img" aria-labelledby="lpf-title lpf-desc" class="lpf-svg">
+    <title id="lpf-title">Client-Side Lossless Pruning & Rolling FactStore</title>
+    <desc id="lpf-desc">
+      A visualization showing audio-to-text transcript pruning saving 83% on historical turns,
+      and a rolling JSON FactStore under 60 tokens surviving sliding-window FIFO eviction.
+    </desc>
+
+    <!-- Outer Card Surface -->
+    <rect x="12" y="12" width="816" height="306" rx="14" class="card-bg" />
+
+    <!-- Header Section -->
+    <g class="header-group">
+      <text x="36" y="44" class="main-title">Client-Side Lossless Pruning & FactStore</text>
+      <text x="36" y="64" class="main-subtitle">
+        Turn older $3.00/M raw audio into $0.50/M text transcripts, while a &lt;60-token FactStore survives sliding eviction.
+      </text>
+    </g>
+
+    <!-- Lane 1: Audio-to-Text Transcript Pruning -->
+    <g class="lane-group audio-text-group">
+      <!-- Lane Label -->
+      <text x="36" y="112" class="lane-title at-title">Audio → Text</text>
+      <text x="36" y="129" class="lane-sub">Turn 3+ audio eviction</text>
+
+      <!-- Track Background -->
+      <rect x="180" y="92" width="430" height="60" rx="8" class="meter-bg" />
+
+      <!-- Raw Audio Box (Old turn) -->
+      <rect x="186" y="98" width="164" height="48" rx="6" class="box-audio-old" />
+      <text x="268" y="118" class="box-audio-title">Raw PCM Audio</text>
+      <text x="268" y="132" class="box-audio-sub">1,800 tokens @ $3.00/M</text>
+
+      <!-- Arrow -->
+      <text x="372" y="126" class="convert-arrow">→</text>
+      <text x="372" y="138" class="convert-tag">STT Prune</text>
+
+      <!-- Preserved Transcript Box -->
+      <rect x="416" y="98" width="188" height="48" rx="6" class="box-transcript" />
+      <text x="510" y="118" class="box-trans-title">Text Transcript</text>
+      <text x="510" y="132" class="box-trans-sub">300 tokens @ $0.50/M (Text)</text>
+
+      <!-- Result Badge 1 -->
+      <rect x="630" y="92" width="176" height="60" rx="8" class="badge-bg green-badge" />
+      <text x="718" y="117" class="badge-value green-txt">83% COST SLASH</text>
+      <text x="718" y="135" class="badge-sub green-sub">Transcripts @ $0.50/M</text>
+    </g>
+
+    <!-- Lane 2: Rolling FactStore Survival -->
+    <g class="lane-group factstore-group">
+      <!-- Lane Label -->
+      <text x="36" y="202" class="lane-title fs-title">FactStore</text>
+      <text x="36" y="219" class="lane-sub">Survives FIFO eviction</text>
+
+      <!-- Track Background -->
+      <rect x="180" y="174" width="430" height="114" rx="8" class="meter-bg" />
+
+      <!-- Row A: Evicted History Bar -->
+      <rect x="186" y="180" width="418" height="34" rx="6" class="bar-evicted" />
+      <text x="395" y="196" class="evicted-title">FIFO Eviction Boundary: Turns 1–5 pruned from window ✂️</text>
+      <text x="395" y="208" class="evicted-sub">Older dialogue evicted to stay under token budget</text>
+
+      <!-- Row B: FactStore Injection -->
+      <rect x="186" y="222" width="418" height="58" rx="6" class="box-factstore" />
+      <text x="198" y="242" class="fs-code">[FactStore: &#123;"user": "Vikram", "pin": "110001", "model": "AMG GT"&#125;]</text>
+      <text x="198" y="262" class="fs-desc">Persistent Turn Prefix · Survives sliding window · Zero memory loss</text>
+
+      <!-- Result Badge 2 -->
+      <rect x="630" y="192" width="176" height="78" rx="8" class="badge-bg green-badge" />
+      <text x="718" y="218" class="badge-value green-txt">&lt; 60 TOKENS</text>
+      <text x="718" y="236" class="badge-sub green-sub">ZERO MEMORY LOSS</text>
+      <text x="718" y="252" class="badge-detail green-sub">PIN &amp; Preference Intact</text>
+    </g>
+  </svg>
+
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 2rem 0;
+    padding: 0;
+  }
+
+  .lpf-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+    overflow: visible;
+  }
+
+  .diagram-caption {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--sl-color-gray-3);
+    font-style: italic;
+    line-height: 1.4;
+  }
+
+  /* Frame */
+  .card-bg {
+    fill: #13151b;
+    stroke: #232734;
+    stroke-width: 1.5;
+  }
+
+  /* Header */
+  .main-title {
+    fill: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .main-subtitle {
+    fill: #9aa0a6;
+    font-size: 11.5px;
+  }
+
+  /* Lane Labels */
+  .lane-title {
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+
+  .lane-sub {
+    fill: #80868b;
+    font-size: 10.5px;
+  }
+
+  .at-title {
+    fill: #8ab4f8;
+  }
+
+  .fs-title {
+    fill: #81c995;
+  }
+
+  /* Meter Track Background */
+  .meter-bg {
+    fill: #191c24;
+    stroke: #2e3444;
+    stroke-width: 1;
+  }
+
+  /* Lane 1 Boxes */
+  .box-audio-old {
+    fill: rgba(234, 67, 53, 0.12);
+    stroke: rgba(234, 67, 53, 0.4);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+  }
+
+  .box-audio-title {
+    fill: #f28b82;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .box-audio-sub {
+    fill: #ea868f;
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+
+  .convert-arrow {
+    fill: #8ab4f8;
+    font-size: 16px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+
+  .convert-tag {
+    fill: #aecbfa;
+    font-size: 8px;
+    font-weight: 600;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+
+  .box-transcript {
+    fill: rgba(66, 133, 244, 0.14);
+    stroke: rgba(66, 133, 244, 0.45);
+    stroke-width: 1;
+  }
+
+  .box-trans-title {
+    fill: #8ab4f8;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .box-trans-sub {
+    fill: #aecbfa;
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+
+  /* Lane 2 Boxes */
+  .bar-evicted {
+    fill: rgba(234, 67, 53, 0.06);
+    stroke: rgba(234, 67, 53, 0.3);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+
+  .evicted-title {
+    fill: #f28b82;
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .evicted-sub {
+    fill: #9aa0a6;
+    font-size: 8px;
+    text-anchor: middle;
+  }
+
+  .box-factstore {
+    fill: rgba(52, 168, 83, 0.12);
+    stroke: rgba(52, 168, 83, 0.45);
+    stroke-width: 1.2;
+  }
+
+  .fs-code {
+    fill: #a8dab5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .fs-desc {
+    fill: #81c995;
+    font-size: 9px;
+  }
+
+  /* Badges */
+  .badge-bg {
+    stroke-width: 1;
+  }
+
+  .green-badge {
+    fill: rgba(52, 168, 83, 0.08);
+    stroke: rgba(52, 168, 83, 0.4);
+  }
+
+  .badge-value {
+    font-size: 13px;
+    font-weight: 800;
+    text-anchor: middle;
+    letter-spacing: 0.04em;
+  }
+
+  .badge-sub {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+
+  .badge-detail {
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+
+  .green-txt {
+    fill: #81c995;
+  }
+
+  .green-sub {
+    fill: #a8dab5;
+  }
+
+  /* ============================================================
+   * Animation: 6s Loop
+   * 0.0s - 2.5s: Conversion pulse Audio -> Transcript
+   * 2.5s - 5.5s: FactStore glow highlight surviving eviction
+   * 5.5s - 6.0s: Reset loop
+   * ============================================================ */
+  .box-transcript {
+    animation: pulseTranscript 6s ease-in-out infinite;
+  }
+
+  @keyframes pulseTranscript {
+    0%, 30% {
+      opacity: 0.6;
+      stroke-opacity: 0.4;
+    }
+    45%, 85% {
+      opacity: 1;
+      stroke-opacity: 0.9;
+      filter: drop-shadow(0 0 5px rgba(66, 133, 244, 0.35));
+    }
+    95%, 100% {
+      opacity: 0.6;
+      stroke-opacity: 0.4;
+      filter: none;
+    }
+  }
+
+  .box-factstore {
+    animation: pulseFactStore 6s ease-in-out infinite;
+  }
+
+  @keyframes pulseFactStore {
+    0%, 35% {
+      filter: none;
+      stroke-width: 1.2;
+    }
+    50%, 85% {
+      filter: drop-shadow(0 0 6px rgba(52, 168, 83, 0.45));
+      stroke-width: 1.6;
+    }
+    95%, 100% {
+      filter: none;
+      stroke-width: 1.2;
+    }
+  }
+
+  .convert-arrow {
+    animation: bounceArrow 6s ease-in-out infinite;
+  }
+
+  @keyframes bounceArrow {
+    0%, 20% {
+      transform: translateX(0);
+    }
+    40%, 60% {
+      transform: translateX(3px);
+    }
+    80%, 100% {
+      transform: translateX(0);
+    }
+  }
+
+  /* High-Contrast & Accessibility */
+  @media (prefers-contrast: more) {
+    .card-bg {
+      stroke: #5f6368;
+    }
+    .green-txt {
+      fill: #4ade80;
+    }
+    .at-title {
+      fill: #93c5fd;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .box-transcript,
+    .box-factstore,
+    .convert-arrow {
+      animation: none !important;
+    }
+  }
+</style>
