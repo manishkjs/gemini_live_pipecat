@@ -1,0 +1,249 @@
+---
+/**
+ * Animated message replay: what the send buffer is actually for.
+ *
+ * The resumption rules read like bookkeeping until you watch the buffer drain.
+ * This shows the one thing people get wrong: you may only discard messages the
+ * server has *confirmed*, and on reconnect the rest must be replayed BEFORE any
+ * new message goes out.
+ *
+ * One 10s loop. Pure CSS/SVG, no JS.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'Discard only what the server confirmed. Replay the rest before sending anything new.',
+} = Astro.props;
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 290" role="img" aria-labelledby="mr-title mr-desc">
+    <title id="mr-title">Send buffer confirmation and replay after reconnect</title>
+    <desc id="mr-desc">
+      The client buffers every message it sends. The server periodically confirms
+      the last index it safely received — here, message seven — so messages up to
+      that point can be discarded. When the socket drops, the client reconnects
+      with its resumption handle and replays the remaining unconfirmed messages,
+      eight and nine, before sending anything new.
+    </desc>
+
+    <!-- actors -->
+    <text x="95" y="34" class="actor">Your client</text>
+    <text x="665" y="34" class="actor">Gemini Live</text>
+
+    <!-- the wire -->
+    <line x1="170" y1="62" x2="590" y2="62" class="wire" />
+    <line x1="170" y1="62" x2="590" y2="62" class="wire-dead" />
+    <text x="380" y="50" class="wire-status drop">socket drops</text>
+    <text x="380" y="50" class="wire-status back">reconnect(handle)</text>
+
+    <!-- server confirmation travelling back -->
+    <circle class="ack-pulse" cx="586" cy="62" r="5" />
+    <text x="380" y="84" class="ack-text">"received through 7"</text>
+
+    <!-- replayed messages travelling out -->
+    <circle class="replay-pulse p8" cx="174" cy="62" r="5" />
+    <circle class="replay-pulse p9" cx="174" cy="62" r="5" />
+    <text x="380" y="84" class="replay-text">replaying 8, 9</text>
+
+    <!-- the buffer -->
+    <text x="60" y="132" class="section">Unconfirmed send buffer</text>
+    <g class="slot m7">
+      <rect x="60" y="144" width="86" height="40" rx="6" />
+      <text x="103" y="169">msg 7</text>
+    </g>
+    <g class="slot m8">
+      <rect x="158" y="144" width="86" height="40" rx="6" />
+      <text x="201" y="169">msg 8</text>
+    </g>
+    <g class="slot m9">
+      <rect x="256" y="144" width="86" height="40" rx="6" />
+      <text x="299" y="169">msg 9</text>
+    </g>
+    <text x="366" y="169" class="hint confirmed">↞ confirmed, safe to drop</text>
+    <text x="366" y="169" class="hint pending">↞ still yours to replay</text>
+
+    <!-- phase caption -->
+    <text x="380" y="232" class="phase buffering">Buffering every message you send</text>
+    <text x="380" y="232" class="phase acked">Server confirms through 7 — discard 1–7</text>
+    <text x="380" y="232" class="phase dropped">Connection lost — 8 and 9 never landed</text>
+    <text x="380" y="232" class="phase replayed">Replayed 8 and 9 — now safe to send new</text>
+
+    <line x1="60" y1="256" x2="700" y2="256" class="rule" />
+    <text x="380" y="278" class="verdict">
+      Send anything new before the replay finishes and you reorder the conversation.
+    </text>
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .diagram { margin: 1.75rem 0; }
+  .diagram svg { width: 100%; height: auto; overflow: visible; }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .actor {
+    font-size: 13px; font-weight: 600;
+    text-anchor: middle; fill: var(--sl-color-white);
+  }
+  .section {
+    font-size: 11px; fill: var(--sl-color-gray-4);
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+
+  /* ── the wire: alive, then dead, then alive again ── */
+  .wire {
+    stroke: var(--sl-color-gray-5); stroke-width: 1.5; stroke-dasharray: 3 5;
+    animation: wire-alive 10s linear infinite;
+  }
+  .wire-dead {
+    stroke: #ea4335; stroke-width: 1.5; stroke-dasharray: 2 8;
+    opacity: 0;
+    animation: wire-dead 10s linear infinite;
+  }
+  @keyframes wire-alive {
+    0%, 36%   { opacity: 1; }
+    40%, 52%  { opacity: 0.15; }
+    56%, 100% { opacity: 1; }
+  }
+  @keyframes wire-dead {
+    0%, 36%   { opacity: 0; }
+    40%, 52%  { opacity: 1; }
+    56%, 100% { opacity: 0; }
+  }
+
+  .wire-status { font-size: 11.5px; text-anchor: middle; font-weight: 600; opacity: 0; }
+  .wire-status.drop { fill: #ea4335; animation: show 10s linear infinite; --a: 37%; }
+  .wire-status.back { fill: var(--sl-color-accent); animation: show-back 10s linear infinite; }
+  @keyframes show {
+    0%, 36%   { opacity: 0; }
+    40%, 48%  { opacity: 1; }
+    52%, 100% { opacity: 0; }
+  }
+  @keyframes show-back {
+    0%, 52%   { opacity: 0; }
+    56%, 62%  { opacity: 1; }
+    66%, 100% { opacity: 0; }
+  }
+
+  /* ── server confirmation ── */
+  .ack-pulse {
+    fill: #34a853; opacity: 0;
+    animation: ack-travel 10s linear infinite;
+  }
+  @keyframes ack-travel {
+    0%, 20%   { transform: translateX(0); opacity: 0; }
+    22%       { opacity: 1; }
+    28%       { transform: translateX(-412px); opacity: 1; }
+    30%, 100% { transform: translateX(-412px); opacity: 0; }
+  }
+  .ack-text {
+    font-size: 11.5px; text-anchor: middle; fill: #34a853; opacity: 0;
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    animation: ack-label 10s linear infinite;
+  }
+  @keyframes ack-label {
+    0%, 20%   { opacity: 0; }
+    24%, 33%  { opacity: 1; }
+    37%, 100% { opacity: 0; }
+  }
+
+  /* ── replay ── */
+  .replay-pulse { fill: var(--sl-color-accent); opacity: 0; }
+  .replay-pulse.p8 { animation: replay-travel 10s linear infinite; }
+  .replay-pulse.p9 { animation: replay-travel 10s linear infinite; animation-delay: 0.5s; }
+  @keyframes replay-travel {
+    0%, 62%   { transform: translateX(0); opacity: 0; }
+    64%       { opacity: 1; }
+    74%       { transform: translateX(412px); opacity: 1; }
+    76%, 100% { transform: translateX(412px); opacity: 0; }
+  }
+  .replay-text {
+    font-size: 11.5px; text-anchor: middle; fill: var(--sl-color-accent); opacity: 0;
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    animation: replay-label 10s linear infinite;
+  }
+  @keyframes replay-label {
+    0%, 62%   { opacity: 0; }
+    66%, 78%  { opacity: 1; }
+    82%, 100% { opacity: 0; }
+  }
+
+  /* ── buffer slots ── */
+  .slot rect {
+    fill: var(--sl-color-gray-6);
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1.5;
+  }
+  .slot text {
+    font-size: 12px; text-anchor: middle;
+    fill: var(--sl-color-white); font-weight: 500;
+  }
+  .slot { opacity: 0; }
+  .m7 { animation: slot-7 10s linear infinite; }
+  .m8 { animation: slot-89 10s linear infinite; }
+  .m9 { animation: slot-89 10s linear infinite; animation-delay: 0.6s; }
+
+  /* msg 7 fills, gets confirmed, then leaves the buffer for good. */
+  @keyframes slot-7 {
+    0%        { opacity: 0; }
+    5%, 28%   { opacity: 1; }
+    32%, 86%  { opacity: 0.12; }
+    90%, 100% { opacity: 0; }
+  }
+  /* 8 and 9 stay until they are replayed, then clear. */
+  @keyframes slot-89 {
+    0%        { opacity: 0; }
+    12%, 74%  { opacity: 1; }
+    80%, 100% { opacity: 0.12; }
+  }
+  .m8 rect, .m9 rect { stroke: var(--sl-color-accent); }
+
+  .hint { font-size: 11px; fill: var(--sl-color-gray-3); opacity: 0; }
+  .hint.confirmed { fill: #34a853; animation: ack-label 10s linear infinite; }
+  .hint.pending { animation: replay-label 10s linear infinite; }
+
+  /* ── phase captions ── */
+  .phase {
+    font-size: 12.5px; text-anchor: middle;
+    fill: var(--sl-color-white); font-weight: 500; opacity: 0;
+  }
+  .buffering { animation: p1 10s linear infinite; }
+  .acked     { animation: p2 10s linear infinite; fill: #34a853; }
+  .dropped   { animation: p3 10s linear infinite; fill: #ea4335; }
+  .replayed  { animation: p4 10s linear infinite; fill: var(--sl-color-accent); }
+
+  @keyframes p1 { 0%,2% {opacity:0} 6%,18% {opacity:1} 20%,100% {opacity:0} }
+  @keyframes p2 { 0%,22% {opacity:0} 26%,33% {opacity:1} 36%,100% {opacity:0} }
+  @keyframes p3 { 0%,38% {opacity:0} 42%,56% {opacity:1} 60%,100% {opacity:0} }
+  @keyframes p4 { 0%,64% {opacity:0} 68%,86% {opacity:1} 90%,100% {opacity:0} }
+
+  .rule { stroke: var(--sl-color-gray-6); stroke-width: 1; }
+  .verdict {
+    font-size: 12px; text-anchor: middle;
+    fill: var(--sl-color-gray-2); font-weight: 500;
+  }
+
+  /* Static frame: caught at the replay, the moment that matters most. */
+  @media (prefers-reduced-motion: reduce) {
+    .wire, .wire-dead, .wire-status, .ack-pulse, .ack-text,
+    .replay-pulse, .replay-text, .slot, .hint, .phase {
+      animation: none !important;
+    }
+    .wire { opacity: 1; }
+    .wire-dead, .wire-status, .ack-pulse, .ack-text, .hint.confirmed { opacity: 0; }
+    .m7 { opacity: 0.12; }
+    .m8, .m9 { opacity: 1; }
+    .replay-pulse { opacity: 1; }
+    .replay-pulse.p8 { transform: translateX(160px); }
+    .replay-pulse.p9 { transform: translateX(250px); }
+    .replay-text, .hint.pending, .replayed { opacity: 1; }
+  }
+</style>

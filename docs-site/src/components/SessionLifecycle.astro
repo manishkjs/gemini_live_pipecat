@@ -1,0 +1,198 @@
+---
+/**
+ * Animated session lifecycle: rotation is routine, not a crash.
+ *
+ * The 10-15 minute rotation is completely invisible in prose, so people ship
+ * agents that treat a normal `1008` as a fatal error and surface "call dropped"
+ * to users. A ticking timeline makes it obvious that the conversation survives.
+ *
+ * Pure CSS/SVG on one 9s timeline. No JS.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = 'The socket dies every 10–15 minutes. The conversation does not — the handle carries it across.',
+} = Astro.props;
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="life-title life-desc">
+    <title id="life-title">Session rotation and transparent resumption</title>
+    <desc id="life-desc">
+      A session runs for roughly ten to fifteen minutes. Shortly before it ends
+      the server sends a session resumption update containing a handle, then
+      closes the socket with code 1008. The client reconnects using that handle
+      and replays any unconfirmed messages. The conversation and its session ID
+      continue unbroken across both sockets.
+    </desc>
+
+    <!-- continuity arc: one conversation spanning both sockets -->
+    <path d="M 90 62 Q 380 20 670 62" class="arc" />
+    <text x="380" y="34" class="arc-label">one conversation · one stable sessionId</text>
+
+    <!-- socket 1 -->
+    <text x="90" y="104" class="sock-label">socket 1</text>
+    <rect x="90" y="112" width="270" height="26" rx="5" class="track" />
+    <rect x="91" y="113" width="268" height="24" rx="4" class="fill s1" />
+
+    <!-- handle emitted, then close -->
+    <g class="marker handle">
+      <line x1="330" y1="112" x2="330" y2="88" />
+      <circle cx="330" cy="84" r="5" />
+      <text x="330" y="72">sessionResumptionUpdate</text>
+    </g>
+    <g class="marker close">
+      <line x1="360" y1="138" x2="360" y2="164" />
+      <circle cx="360" cy="168" r="5" />
+      <text x="362" y="188">close 1008 — routine</text>
+    </g>
+
+    <!-- the gap -->
+    <text x="400" y="130" class="gap-label">reconnect(handle)</text>
+
+    <!-- socket 2 -->
+    <text x="670" y="104" class="sock-label end">socket 2</text>
+    <rect x="440" y="112" width="270" height="26" rx="5" class="track" />
+    <rect x="441" y="113" width="268" height="24" rx="4" class="fill s2" />
+
+    <g class="marker replay">
+      <line x1="470" y1="138" x2="470" y2="164" />
+      <circle cx="470" cy="168" r="5" />
+      <text x="472" y="188">replay unconfirmed</text>
+    </g>
+
+    <!-- axis -->
+    <text x="90" y="228" class="axis">0 min</text>
+    <text x="360" y="228" class="axis mid">~10–15 min</text>
+    <text x="710" y="228" class="axis end">~25 min</text>
+    <line x1="90" y1="210" x2="710" y2="210" class="axis-line" />
+
+    <text x="380" y="256" class="verdict">
+      Treat 1008 after a resumption update as expected. Never as an error.
+    </text>
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .diagram { margin: 1.75rem 0; }
+  .diagram svg { width: 100%; height: auto; overflow: visible; }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .arc {
+    fill: none;
+    stroke: var(--sl-color-accent);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+    opacity: 0.55;
+  }
+  .arc-label {
+    font-size: 11.5px;
+    text-anchor: middle;
+    fill: var(--sl-color-accent);
+    font-style: italic;
+  }
+
+  .sock-label {
+    font-size: 11px;
+    fill: var(--sl-color-gray-4);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .sock-label.end { text-anchor: end; }
+
+  .track {
+    fill: none;
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1.5;
+  }
+  .fill {
+    fill: var(--sl-color-accent);
+    fill-opacity: 0.4;
+    stroke: var(--sl-color-accent);
+    stroke-width: 1;
+    transform-box: fill-box;
+    transform-origin: left center;
+  }
+  .fill.s1 { animation: run-1 9s linear infinite; }
+  .fill.s2 { animation: run-2 9s linear infinite; }
+
+  @keyframes run-1 {
+    0%        { transform: scaleX(0); opacity: 1; }
+    40%       { transform: scaleX(1); opacity: 1; }
+    46%       { transform: scaleX(1); opacity: 1; }
+    50%       { transform: scaleX(1); opacity: 0.15; } /* socket closes */
+    100%      { transform: scaleX(1); opacity: 0.15; }
+  }
+  @keyframes run-2 {
+    0%, 52%   { transform: scaleX(0); opacity: 1; }
+    95%       { transform: scaleX(1); opacity: 1; }
+    100%      { transform: scaleX(1); opacity: 1; }
+  }
+
+  .marker line { stroke: var(--sl-color-gray-5); stroke-width: 1.5; }
+  .marker circle { fill: var(--sl-color-gray-5); }
+  .marker text { font-size: 11px; fill: var(--sl-color-gray-4); }
+  .marker.handle text { text-anchor: middle; }
+
+  .marker.handle, .marker.close, .marker.replay {
+    opacity: 0.25;
+  }
+  .marker.handle { animation: pop 9s linear infinite; }
+  .marker.close  { animation: pop 9s linear infinite; animation-delay: 0.6s; }
+  .marker.replay { animation: pop 9s linear infinite; animation-delay: 1.1s; }
+
+  @keyframes pop {
+    0%, 36%   { opacity: 0.25; }
+    40%, 52%  { opacity: 1; }
+    58%, 100% { opacity: 0.25; }
+  }
+
+  .marker.handle circle { fill: var(--sl-color-accent); }
+  .marker.close circle  { fill: #ea4335; }
+  .marker.close text    { fill: #ea4335; }
+  .marker.replay circle { fill: #34a853; }
+  .marker.replay text   { fill: #34a853; }
+
+  .gap-label {
+    font-size: 11px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-3);
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+    animation: pop 9s linear infinite;
+    animation-delay: 0.9s;
+  }
+
+  .axis-line {
+    stroke: var(--sl-color-gray-6);
+    stroke-width: 1;
+  }
+  .axis {
+    font-size: 10.5px;
+    fill: var(--sl-color-gray-4);
+  }
+  .axis.mid { text-anchor: middle; }
+  .axis.end { text-anchor: end; }
+
+  .verdict {
+    font-size: 12px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-2);
+    font-weight: 500;
+  }
+
+  /* Static frame: caught mid-rotation, which is the moment that matters. */
+  @media (prefers-reduced-motion: reduce) {
+    .fill, .marker, .gap-label { animation: none !important; }
+    .fill.s1 { transform: scaleX(1); }
+    .fill.s2 { transform: scaleX(0.35); }
+    .marker.handle, .marker.close, .marker.replay, .gap-label { opacity: 1; }
+  }
+</style>

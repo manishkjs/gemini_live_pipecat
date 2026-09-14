@@ -1,0 +1,157 @@
+---
+/**
+ * Animated duplex flow: continuous audio in both directions over one socket.
+ * Pure CSS/SVG — no JS, no runtime cost, works in a static build.
+ */
+interface Props {
+  caption?: string;
+}
+const { caption = 'One WebSocket. Audio flows both ways at the same time.' } = Astro.props;
+
+// Staggered packet departures (seconds) across a 4s loop.
+const up = [0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5];
+const down = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75];
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 250" role="img" aria-labelledby="duplex-title duplex-desc">
+    <title id="duplex-title">Bidirectional audio streaming over a single WebSocket</title>
+    <desc id="duplex-desc">
+      Your client continuously sends 16 kHz microphone audio to Gemini Live while
+      Gemini Live simultaneously streams 24 kHz generated audio back. Both flows
+      share one persistent connection.
+    </desc>
+
+    <!-- endpoints -->
+    <g class="node">
+      <rect x="24" y="80" width="164" height="90" rx="10" />
+      <text x="106" y="115" class="node-title">Your client</text>
+      <text x="106" y="137" class="node-sub">mic + speaker</text>
+      <text x="106" y="155" class="node-sub">jitter buffer</text>
+    </g>
+
+    <g class="node accent">
+      <rect x="572" y="80" width="164" height="90" rx="10" />
+      <text x="654" y="115" class="node-title">Gemini Live</text>
+      <text x="654" y="137" class="node-sub">speech-to-speech</text>
+      <text x="654" y="155" class="node-sub">server VAD</text>
+    </g>
+
+    <!-- upstream lane -->
+    <text x="380" y="52" class="lane-label up">realtimeInput · 16 kHz PCM · continuous</text>
+    <line x1="188" y1="70" x2="572" y2="70" class="wire" />
+    <polygon points="572,70 562,66 562,74" class="arrow up" />
+    {up.map((d) => (
+      <circle class="pkt up" cx="192" cy="70" r="4.5" style={`animation-delay:${d}s`} />
+    ))}
+
+    <!-- downstream lane -->
+    <line x1="188" y1="180" x2="572" y2="180" class="wire" />
+    <polygon points="188,180 198,176 198,184" class="arrow down" />
+    {down.map((d) => (
+      <circle class="pkt down" cx="568" cy="180" r="4.5" style={`animation-delay:${d}s`} />
+    ))}
+    <text x="380" y="204" class="lane-label down">serverContent · 24 kHz PCM · continuous</text>
+
+    <!-- single-socket brace -->
+    <text x="380" y="130" class="socket-note">one persistent socket</text>
+  </svg>
+
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .diagram {
+    margin: 1.75rem 0;
+  }
+  .diagram svg {
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  figcaption {
+    margin-top: 0.6rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3);
+  }
+
+  .node rect {
+    fill: var(--sl-color-gray-6);
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1.5;
+  }
+  .node.accent rect {
+    stroke: var(--sl-color-accent);
+  }
+  .node-title {
+    fill: var(--sl-color-white);
+    font-size: 15px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .node-sub {
+    fill: var(--sl-color-gray-3);
+    font-size: 11.5px;
+    text-anchor: middle;
+  }
+
+  .wire {
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1.5;
+    stroke-dasharray: 3 4;
+  }
+  .arrow.up {
+    fill: var(--sl-color-accent);
+  }
+  .arrow.down {
+    fill: #34a853;
+  }
+
+  .lane-label {
+    font-size: 12px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-3);
+    font-family: var(--sl-font-mono, ui-monospace, monospace);
+  }
+
+  .socket-note {
+    font-size: 11px;
+    text-anchor: middle;
+    fill: var(--sl-color-gray-4);
+    font-style: italic;
+  }
+
+  .pkt.up {
+    fill: var(--sl-color-accent);
+    animation: flow-right 4s linear infinite;
+  }
+  .pkt.down {
+    fill: #34a853;
+    animation: flow-left 4s linear infinite;
+  }
+
+  @keyframes flow-right {
+    from { transform: translateX(0); opacity: 0; }
+    8%   { opacity: 1; }
+    92%  { opacity: 1; }
+    to   { transform: translateX(376px); opacity: 0; }
+  }
+  @keyframes flow-left {
+    from { transform: translateX(0); opacity: 0; }
+    8%   { opacity: 1; }
+    92%  { opacity: 1; }
+    to   { transform: translateX(-376px); opacity: 0; }
+  }
+
+  /* Never animate for users who asked us not to. Show a static, still-legible
+     snapshot with packets spread along each wire instead. */
+  @media (prefers-reduced-motion: reduce) {
+    .pkt {
+      animation: none !important;
+      opacity: 1;
+    }
+    .pkt.up:nth-of-type(even)  { transform: translateX(120px); }
+    .pkt.down:nth-of-type(odd) { transform: translateX(-120px); }
+  }
+</style>
