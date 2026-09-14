@@ -1,0 +1,118 @@
+---
+title: Telephony pricing & tokenomics
+description: Understanding the Gemini Live rate card ($0.005/min audio in, $0.018/min audio out), turn-based re-evaluation, and how to achieve predictable telephony unit economics.
+---
+
+import { Aside, Badge, Card, CardGrid, Steps } from '@astrojs/starlight/components';
+
+Traditional voice architectures stitch together three disjoint cloud services: an Automatic Speech Recognizer (ASR), a Large Language Model (LLM), and a Text-to-Speech synthesizer (TTS). Each service meters differently: ASR charges per audio minute, the LLM charges per text token, and TTS charges per character.
+
+**Gemini Live collapses the entire pipeline into a single native speech-to-speech model**, dramatically slashing latency and enabling nuanced, human-like voice conversations.
+
+To evaluate call economics, Google provides both **token rates** and **per-minute audio equivalents**. Understanding how these two metrics relate is the key to building cost-effective, production-grade voice agents.
+
+---
+
+## The Gemini Live Rate Card
+
+The table below outlines the paid tier rates for `gemini-3.1-flash-live-preview` in Google AI Studio and Vertex AI:
+
+| Modality | Pricing per 1M Tokens (USD) | Effective Per-Minute Rate | What is Counted |
+| :--- | :--- | :--- | :--- |
+| **Input Text** | **$0.75** | — | System instructions, tool definitions, injected prompt cards, client text |
+| **Input Audio** | **$3.00** | **~$0.005 / min** | Caller spoken 16 kHz PCM audio streaming in real time |
+| **Input Video / Image** | **$1.00** | **~$0.002 / min** | Realtime video frames (~1 fps, ~258 tokens/frame) |
+| **Output Text** | **$4.50** | — | Bot text responses, transcripts, and internal thinking tokens |
+| **Output Audio** | **$12.00** | **~$0.018 / min** | Generated 24 kHz PCM speech streamed to caller |
+
+<Aside type="note" title="Thinking Tokens Included">
+  Output pricing includes reasoning and thinking tokens. In `gemini-3.1-flash-live-preview`, setting `thinkingLevel: "minimal"` optimizes both token consumption and Time-to-First-Audio-Byte (TTFB).
+</Aside>
+
+---
+
+## The Math Behind the Per-Minute Rate
+
+Telephony and CCaaS architects budget in **Cost Per Minute (CPM)**. To help teams compare against legacy telecom infrastructure, Google provides a direct conversion of audio token velocity into clock time:
+
+### 1. Caller Audio Input: ~$0.005 / min
+Raw 16 kHz PCM audio streams into Gemini Live at approximately **25 to 28 tokens per second** (~1,667 tokens per minute):
+
+```text
+1,667 tokens/minute × ($3.00 / 1,000,000 tokens) = $0.005001 / minute
+```
+
+### 2. Model Audio Output: ~$0.018 / min
+Generated 24 kHz PCM audio synthesizes at approximately **25 tokens per second** (~1,500 tokens per minute):
+
+```text
+1,500 tokens/minute × ($12.00 / 1,000,000 tokens) = $0.0180 / minute
+```
+
+### 3. Continuous Streaming Baseline
+If a caller and an assistant engage in continuous, uninterrupted single-pass streaming, pure audio processing totals:
+
+```text
+$0.005 (audio in) + $0.018 (audio out) ≈ $0.023 / minute
+```
+
+---
+
+## The Conversational Dynamic: Turns, Cache, and Barge-Ins
+
+In real-world enterprise telephony (customer service, appointment booking, outbound qualification), conversations are not linear audio streams. They are interactive dialogue trees with frequent turn-taking and natural user barge-ins (interruptions).
+
+### 1. Stateful Turn-Based Evaluation
+Gemini Live operates as a stateful bidirectional session over WebSockets. Whenever the user finishes speaking—or interrupts the assistant mid-sentence—a new generation turn is evaluated by the model.
+
+On each turn, the active inference context consists of:
+* The static `systemInstruction` (SOP rules, persona, guardrails).
+* Active tool declarations and schemas.
+* Accumulated conversational history, including prior caller audio tokens.
+
+### 2. The Interruption (Barge-In) Mechanism
+When a caller interrupts the assistant:
+1. The assistant’s active generation is halted via an `interrupted` protocol signal.
+2. The partial speech generated up to the interruption point is committed to session history.
+3. The caller’s new speech begins streaming immediately.
+4. **A new model generation turn is triggered.**
+5. The full system instruction and session history are re-evaluated for the new turn.
+
+If a caller has 4 back-and-forth exchanges and 2 interruptions in a 60-second window, the model evaluates active prompt context **6 times in that single minute**.
+
+### 3. Context Re-Billing in Duplex Sessions
+In standard batch chat APIs, static prompts frequently benefit from automatic caching discounts. In real-time duplex voice sessions, carried context is evaluated on demand at standard rates ($0.75/M for text and $3.00/M for raw caller audio).
+
+Without deliberate architecture, an unoptimized 4,000-token system prompt evaluated across 6 turns consumes **24,000 prompt tokens** in one minute alone—creating a gap between theoretical streaming time and billed token invoices.
+
+---
+
+## Comparative Breakdown: Unoptimized vs. Optimized
+
+The difference between an unoptimized deployment and an optimized architecture is dramatic:
+
+| Dimension | Unoptimized Baseline (Monolithic) | Production Stack (Optimized) | Impact |
+| :--- | :--- | :--- | :--- |
+| **0–5s Short Calls** (30%–50% of telephony) | Full 4,500-token prompt billed on instant bounce | **Card 1 Opening (~120 tokens)**: Downstream SOPs never loaded | **over 97% cost reduction** on dropped calls |
+| **Prompt Re-Evaluation** | 4,000 tokens re-evaluated on every turn and barge-in | **JIT Phase Progression**: Scoped to ~250 tokens per active phase | **85% reduction** in baseline prompt tax |
+| **Caller Audio History** | 1,500 tokens/min of raw audio re-evaluated at $3.00/M | **5k Compaction + Transcript Pruning**: Evicts raw audio cache; keeps $0.50/M text | **83% cost slash** on historical user turns |
+| **Long-Call State Retention** | Context balloons to 25k+ tokens; latency degrades | **Rolling FactStore (under 60 tokens)**: Preserves customer attributes indefinitely | Sub-second TTFB preserved throughout |
+| **Blended Real-World Cost** | **$0.10 – $0.25+ / minute** | **$0.02 – $0.035 / minute** | **Matches official rate card target** |
+
+---
+
+## How to Solve It: The Three Optimization Pillars
+
+Understanding that duplex voice evaluates context on every turn and interruption reveals why **context hygiene is the single highest-leverage engineering decision** in real-time AI.
+
+By eliminating redundant baseline prompt overhead and purging stale audio tokens before they compound, you can reliably bridge your real-world call costs to the advertised **~$0.02 – $0.035 / minute** rate card target while keeping latency under 600ms:
+
+1. **Deploy Just-in-Time (JIT) Prompt Cards (Pillar 2)**: Keep opening greeting cards featherlight (~120 tokens) so that the 30%–50% of telephony calls that bounce in under 5 seconds burn virtually nothing. Inject phase cards dynamically only as milestones advance.
+2. **Configure 5k Context Compression (Pillar 1)**: Treat `trigger_tokens: 5000` as a blessing in disguise to flush older raw caller audio ($3.00/M) before quadratic re-billing compounds.
+3. **Prune Audio into Text Transcripts (Pillar 3)**: After turn 3, convert historical caller audio into text transcripts ($0.50/M) to save 83%, and anchor persistent session entities in a rolling `<60 token` FactStore to survive sliding-window eviction.
+
+<Card title="How to Solve It: Explore Optimization Patterns" icon="rocket">
+  Ready to implement the production stack? Read our step-by-step engineering guide with animated architecture diagrams, complete code implementations, and telephony economics benchmarks:
+
+  **[Go to Optimization Patterns &rarr;](/gemini_live_pipecat/optimization/)**
+</Card>

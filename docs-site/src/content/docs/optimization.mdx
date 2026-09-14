@@ -16,6 +16,10 @@ Unlike standard chat interfaces where input is sent once, Gemini Live re-evaluat
 
 Without deliberate optimization, an audio session balloons to tens of thousands of tokens within minutes, driving up latency and exploding inference costs.
 
+<Aside type="note" title="Telephony Rate Card Deep Dive">
+  For a mathematical breakdown of the Gemini Live rate card ($0.005/min audio in, $0.018/min audio out) and how stateful duplex turns affect billing, read the companion concept guide: [Telephony pricing & tokenomics](/gemini_live_pipecat/pricing/).
+</Aside>
+
 ---
 
 ## The Three Optimization Pillars

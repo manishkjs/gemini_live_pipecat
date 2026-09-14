@@ -47,6 +47,7 @@ export default defineConfig({
             { label: 'Audio engineering', slug: 'audio-engineering' },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
+            { label: 'Telephony pricing & tokenomics', slug: 'pricing' },
           ],
         },
         {
