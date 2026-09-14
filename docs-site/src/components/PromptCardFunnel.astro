@@ -1,0 +1,251 @@
+---
+/**
+ * Animated comparison: Monolithic System Instruction vs Just-in-Time (JIT) Prompt Cards.
+ *
+ * Demonstrates the "0-5 Second Short-Call Economics":
+ * When 30-50% of callers bounce in the first 5 seconds, a monolithic 4,500-token prompt
+ * burns full prompt taxes on every drop. JIT Prompt Cards keep Card 1 lean (~150 tokens),
+ * slashing bounce costs by ~96%, and injecting downstream cards only when the caller advances.
+ *
+ * Pure CSS/SVG on an 8s looping timeline. Zero JS.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "In production telephony, 30–50% of calls drop in 0–5s. Monolithic prompts pay full token taxes on turn 1; JIT Prompt Cards cut bounce token burn by >95%.",
+} = Astro.props;
+---
+
+<figure class="diagram">
+  <svg viewBox="0 0 760 270" role="img" aria-labelledby="pcf-title pcf-desc">
+    <title id="pcf-title">Monolithic Prompt vs JIT Prompt Cards in 0-5s bounce funnel</title>
+    <desc id="pcf-desc">
+      A comparison between a monolithic 4500-token prompt and dynamic JIT prompt cards.
+      When calls drop in the first five seconds, monolithic prompts incur full token costs
+      while JIT prompt cards start with a lean 150-token greeting card, saving massive costs.
+    </desc>
+
+    <!-- 0-5s bounce zone marker -->
+    <rect x="180" y="32" width="130" height="174" class="bounce-zone" rx="6" />
+    <text x="245" y="24" class="zone-label">0–5s BOUNCE ZONE (30–50% of calls)</text>
+
+    <!-- Row 1: Monolithic -->
+    <g class="track-row">
+      <text x="168" y="70" class="row-label">Monolithic</text>
+      <text x="168" y="86" class="row-sub">all-in-one</text>
+
+      <!-- Full heavy prompt bar -->
+      <rect x="180" y="52" width="480" height="36" rx="5" class="bar-mono" />
+      <text x="320" y="74" class="bar-text">Initial System Prompt (4,500 tokens: SOPs, Objections, Catalogs, Schemas)</text>
+
+      <!-- Drop indicator at 4s -->
+      <g class="drop-marker mono-drop">
+        <line x1="260" y1="46" x2="260" y2="94" class="drop-line" />
+        <circle cx="260" cy="94" r="4" class="drop-dot" />
+        <text x="268" y="108" class="cost-tag red">4s Drop: 4,500 tokens billed (100% waste)</text>
+      </g>
+    </g>
+
+    <!-- Row 2: JIT Prompt Cards -->
+    <g class="track-row">
+      <text x="168" y="162" class="row-label accent">JIT Cards</text>
+      <text x="168" y="178" class="row-sub">dynamic injection</text>
+
+      <!-- Phase 1 Opening Card -->
+      <rect x="180" y="144" width="70" height="36" rx="5" class="bar-card card-1" />
+      <text x="215" y="166" class="bar-text-sm">Card 1: Opening (150 tkn)</text>
+
+      <!-- Phase 2 Discovery Card (Injected JIT) -->
+      <rect x="330" y="144" width="140" height="36" rx="5" class="bar-card card-2" />
+      <text x="400" y="166" class="bar-text-sm">Card 2: Discovery (800 tkn)</text>
+
+      <!-- Phase 3 Qualification Card (Injected JIT) -->
+      <rect x="490" y="144" width="170" height="36" rx="5" class="bar-card card-3" />
+      <text x="575" y="166" class="bar-text-sm">Card 3: Booking/SOP (1.2k tkn)</text>
+
+      <!-- Drop indicator at 4s for JIT -->
+      <g class="drop-marker jit-drop">
+        <line x1="260" y1="138" x2="260" y2="186" class="drop-line green-line" />
+        <circle cx="260" cy="186" r="4" class="drop-dot green-dot" />
+        <text x="268" y="200" class="cost-tag green">4s Drop: 150 tokens billed (96.7% SAVINGS)</text>
+      </g>
+    </g>
+
+    <!-- Funnel timeline axis -->
+    <line x1="180" y1="225" x2="670" y2="225" class="axis-line" />
+    <circle cx="180" cy="225" r="3" class="tick-dot" />
+    <text x="180" y="242" class="axis-txt">0s (Call Connect)</text>
+
+    <circle cx="260" cy="225" r="3" class="tick-dot active-tick" />
+    <text x="260" y="242" class="axis-txt active">4s (Hangup/Voicemail)</text>
+
+    <circle cx="330" cy="225" r="3" class="tick-dot" />
+    <text x="330" y="242" class="axis-txt">8s (Discovery)</text>
+
+    <circle cx="490" cy="225" r="3" class="tick-dot" />
+    <text x="490" y="242" class="axis-txt">20s (Qualification)</text>
+
+    <circle cx="660" cy="225" r="3" class="tick-dot" />
+    <text x="660" y="242" class="axis-txt">45s (Close)</text>
+  </svg>
+
+  <figcaption class="caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram {
+    margin: 1.5rem 0;
+    padding: 1.25rem 1rem 1rem;
+    background: var(--sl-color-gray-6);
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+  }
+  svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    font-family: var(--sl-font-sans, system-ui, sans-serif);
+    overflow: visible;
+  }
+  .caption {
+    margin-top: 0.75rem;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: var(--sl-color-gray-3);
+    text-align: center;
+    font-style: italic;
+  }
+
+  .bounce-zone {
+    fill: #ea4335;
+    fill-opacity: 0.08;
+    stroke: #ea4335;
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+  }
+  .zone-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    fill: #ea4335;
+    text-anchor: middle;
+  }
+
+  .row-label {
+    font-size: 13px;
+    font-weight: 600;
+    fill: var(--sl-color-white);
+    text-anchor: end;
+  }
+  .row-label.accent {
+    fill: var(--sl-color-accent);
+  }
+  .row-sub {
+    font-size: 10px;
+    fill: var(--sl-color-gray-4);
+    text-anchor: end;
+  }
+
+  .bar-mono {
+    fill: var(--sl-color-gray-4);
+    fill-opacity: 0.35;
+    stroke: var(--sl-color-gray-4);
+    stroke-width: 1;
+  }
+  .bar-text {
+    font-size: 10.5px;
+    fill: var(--sl-color-gray-2);
+    text-anchor: middle;
+  }
+  .bar-text-sm {
+    font-size: 9.5px;
+    fill: var(--sl-color-white);
+    font-weight: 500;
+    text-anchor: middle;
+  }
+
+  .bar-card {
+    fill: var(--sl-color-accent);
+    fill-opacity: 0.45;
+    stroke: var(--sl-color-accent);
+    stroke-width: 1.2;
+    transform-box: fill-box;
+    transform-origin: left center;
+  }
+  .bar-card.card-1 {
+    animation: pulse-card-1 8s infinite ease-in-out;
+  }
+  .bar-card.card-2 {
+    animation: fade-card-2 8s infinite ease-in-out;
+  }
+  .bar-card.card-3 {
+    animation: fade-card-3 8s infinite ease-in-out;
+  }
+
+  @keyframes pulse-card-1 {
+    0%, 100% { fill-opacity: 0.45; }
+    50% { fill-opacity: 0.75; }
+  }
+  @keyframes fade-card-2 {
+    0%, 25% { opacity: 0.2; }
+    35%, 85% { opacity: 1; }
+    95%, 100% { opacity: 0.2; }
+  }
+  @keyframes fade-card-3 {
+    0%, 50% { opacity: 0.2; }
+    60%, 85% { opacity: 1; }
+    95%, 100% { opacity: 0.2; }
+  }
+
+  .drop-line {
+    stroke: #ea4335;
+    stroke-width: 1.5;
+    stroke-dasharray: 2 2;
+  }
+  .drop-line.green-line {
+    stroke: #34a853;
+  }
+  .drop-dot {
+    fill: #ea4335;
+  }
+  .drop-dot.green-dot {
+    fill: #34a853;
+  }
+
+  .cost-tag {
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .cost-tag.red {
+    fill: #ea4335;
+  }
+  .cost-tag.green {
+    fill: #34a853;
+  }
+
+  .axis-line {
+    stroke: var(--sl-color-gray-5);
+    stroke-width: 1;
+  }
+  .tick-dot {
+    fill: var(--sl-color-gray-4);
+  }
+  .tick-dot.active-tick {
+    fill: #ea4335;
+  }
+  .axis-txt {
+    font-size: 9.5px;
+    fill: var(--sl-color-gray-4);
+    text-anchor: middle;
+  }
+  .axis-txt.active {
+    fill: #ea4335;
+    font-weight: 600;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar-card { animation: none !important; opacity: 1 !important; }
+  }
+</style>
