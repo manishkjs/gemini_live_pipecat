@@ -1,125 +1,124 @@
 ---
 title: Telephony pricing & tokenomics
-description: Understanding the Gemini Live rate card ($0.005/min audio in, $0.018/min audio out), turn-based re-evaluation, and how to achieve predictable telephony unit economics.
+description: Understanding the Gemini Live rate card ($0.005/min audio in, $0.018/min audio out), turn-based re-evaluation, modal memory asymmetry, and real-world telephony unit economics.
 ---
 
 import { Aside, Badge, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 import TurnSnowballDiagram from '../../components/TurnSnowballDiagram.astro';
-import CallLifecycleTimeline from '../../components/CallLifecycleTimeline.astro';
 import TelephonyCostCalculator from '../../components/TelephonyCostCalculator.astro';
 
 Traditional voice architectures stitch together three separate cloud services: Speech-to-Text (ASR), a Large Language Model (LLM), and Text-to-Speech (TTS). Each service bills differently—ASR bills by the audio minute, the LLM by the text token, and TTS by the character.
 
 **Gemini Live collapses the entire pipeline into a single native speech-to-speech model**, slashing latency and enabling natural, human-like voice conversations.
 
-However, when engineering teams first deploy Gemini Live into production telephony, they often notice a gap between the **official per-minute rate card (`~$0.023/min`)** and their **actual token invoice (`$0.08–$0.20+/min`)**. This guide explains the exact physics behind that gap in plain English—and how to solve it permanently.
+To help engineering and finance teams evaluate unit economics, Google publishes both **per-million-token prices** and **per-minute audio equivalents**. Understanding the mathematical relationship between these two metrics—and how live bidirectional conversations are metered—is essential for accurate telephony budgeting.
 
 ---
 
-## 1. The Rate Card vs. The "Photocopier Tax"
+## 1. The Official Gemini Live Rate Card
 
-Google AI Studio and Vertex AI publish both **per-million-token prices** and **per-minute audio equivalents** for `gemini-3.1-flash-live-preview`:
+The table below outlines the paid tier rates for `gemini-3.1-flash-live-preview` in Google AI Studio and Vertex AI:
 
-| Modality | Price per 1M Tokens | Effective Per-Minute Rate | What It Represents |
+| Modality | Price per 1M Tokens | Effective Per-Minute Rate | What Is Metered |
 | :--- | :--- | :--- | :--- |
 | **Caller Audio Input** | **$3.00** | **~$0.005 / min** | Caller spoken 16 kHz PCM audio (~27.8 tokens/sec) |
 | **Model Audio Output** | **$12.00** | **~$0.018 / min** | Generated 24 kHz PCM assistant speech (~25 tokens/sec) |
-| **Input Text** | **$0.75** | — | System prompt, tool schemas, injected cards, text history |
-| **Output Text** | **$4.50** | — | Transcripts and internal reasoning/thinking tokens |
+| **Input Text** | **$0.75** | — | System prompt, tool declarations, client text history |
+| **Output Text** | **$4.50** | — | Text transcripts and internal reasoning/thinking tokens |
 | **Input Video / Image** | **$1.00** | **~$0.002 / min** | Realtime video frames (~1 fps, ~258 tokens/frame) |
 
-If a caller and an assistant speak continuously in a single uninterrupted pass, pure audio streaming costs:
-
-```text
-$0.005/min (audio in) + $0.018/min (audio out) = ~$0.023 / minute
-```
-
-### Why Real Phone Calls Cost More: "The Photocopier Tax"
-
-Here is the single most important mental model for Gemini Live:
-
-<Aside type="caution" title="Mental Model #1: The Photocopier Tax">
-  **Gemini Live does not bill like a phone company timer; it bills like a photocopier.**
-  
-  Every time the caller finishes a sentence—or interrupts (barges in)—a **new model turn** is triggered. On *every single turn*, the model photocopies the **entire binder** of your System Prompt + Tool Schemas + All Past Conversation Turns and charges you per page.
+<Aside type="note" title="Thinking Tokens Included">
+  Output text pricing includes internal reasoning tokens. In `gemini-3.1-flash-live-preview`, configuring `thinkingLevel: "minimal"` minimizes both reasoning token consumption and Time-to-First-Audio-Byte (TTFB).
 </Aside>
 
-In a real 1-minute customer service call, you don't have 1 turn. You typically have **6 back-and-forth turns** (including 1 or 2 caller barge-ins). Because real-time duplex WebSocket sessions do not apply static prompt cache discounts by default, your active prompt context is re-evaluated **6 times in a single minute**:
+---
+
+## 2. How the Per-Minute Baseline Is Derived
+
+Telecom and CCaaS architects budget in **Cost Per Minute (CPM)**. The official per-minute audio figures represent a direct conversion of audio token velocity into clock time:
+
+1. **Caller Audio Input (`~$0.005 / min`)**: Raw 16 kHz PCM audio streams into Gemini Live at approximately **27.8 tokens per second** (~1,667 tokens per minute):
+   ```text
+   1,667 tokens/min × ($3.00 / 1,000,000 tokens) = $0.005001 / minute
+   ```
+2. **Model Audio Output (`~$0.018 / min`)**: Generated 24 kHz PCM audio synthesizes at approximately **25 tokens per second** (~1,500 tokens per minute):
+   ```text
+   1,500 tokens/min × ($12.00 / 1,000,000 tokens) = $0.018000 / minute
+   ```
+3. **Continuous Single-Pass Baseline (`~$0.023 / min`)**: In a continuous, uninterrupted single-pass audio stream with zero turn-taking, pure audio processing totals:
+   ```text
+   $0.005/min (audio in) + $0.018/min (audio out) ≈ $0.023 / minute
+   ```
+
+---
+
+## 3. Why Real-World Calls Diverge: The Four Billing Forces
+
+When teams deploy voice agents into live customer service or sales telephony, they quickly observe that real phone calls bill higher than `$0.023/min`—often landing between **$0.08 and $0.20+ per minute**.
+
+This divergence is not a billing error; it is the natural consequence of **four foundational forces** in stateful duplex tokenomics:
+
+### Force 1: Turn-Based Re-Evaluation ("The Photocopier Effect")
+
+Gemini Live does not meter by a wall-clock timer; it meters **per inference turn**.
+
+Whenever the caller finishes speaking—or interrupts (barges in) mid-sentence—a **new model generation turn** is triggered. On *every single turn*, the model re-evaluates the entire active session context from scratch:
+* Your `systemInstruction` (persona, SOP rules, guardrails)
+* All declared tool JSON schemas
+* The accumulated conversational history from all prior turns
+
+In a typical 1-minute phone call with **6 back-and-forth turns** (including 1 caller barge-in), active prompt context is re-evaluated **6 times in that single minute**:
 
 <TurnSnowballDiagram />
 
----
+### Force 2: Modal Memory Asymmetry (Caller Audio vs. Bot Speech)
 
-## 2. The Four Mental Models of Voice Tokenomics
-
-To bring your real-world call cost down to the advertised **~$0.025–$0.035/min** range, you don't need complex math—you just need four intuitive engineering rules:
+One of the most important—and least understood—nuances of Gemini Live tokenomics is how the model stores **caller speech** versus **its own speech** in conversational memory across turns:
 
 <CardGrid>
-  <Card title="1. Flashcards vs. Encyclopedia" icon="document">
-    **Pillar 2: Just-in-Time (JIT) Prompt Cards**
+  <Card title="Bot Speech Collapses to Cheap Text" icon="approve-check">
+    **$0.75 / 1M Tokens on Subsequent Turns**
     
-    Don't hand the AI a 4,500-token SOP manual on Turn 1 just to ask *"Hello, am I speaking with Rahul?"* 
-    
-    Even accounting for fixed model scaffolding and shared guardrails, keeping your active prompt at **~1,000 tokens/turn** (instead of 4,500) cuts prompt re-billing by **over 75%**. Better yet, on the **30%–50% of calls that hang up in the first 5 seconds**, your opening card (~120 tokens) burns almost nothing.
+    When the assistant speaks, you pay **$12.00/M** for audio generation on that turn. However, on all subsequent turns, the bot's audio is **automatically collapsed into a text transcript** (~0.25 text tokens per audio token) and re-billed at standard text input rates (**$0.75/M**).
   </Card>
 
-  <Card title="2. Voice Memo vs. Text Note" icon="translate">
-    **Pillar 3: Audio-to-Text Pruning**
+  <Card title="Caller Speech Stays as Raw Audio" icon="warning">
+    **$3.00 / 1M Tokens on Subsequent Turns**
     
-    When the caller speaks, their raw audio sits in conversation memory at **$3.00 / 1M tokens**. Every subsequent turn re-bills that old audio at $3.00/M!
-    
-    By converting caller audio older than 2 turns into text transcripts (**$0.75 / 1M tokens**), you preserve the exact same conversation memory while slashing history re-billing by **75% to 83%**.
-  </Card>
-
-  <Card title="3. Sticky Note on a Shredder" icon="setting">
-    **Pillar 1: 5k Compression + FactStore**
-    
-    Without a ceiling, a 10-minute call snowballs to 30,000+ tokens per turn. 
-    
-    Enabling `trigger_tokens: 5000` acts as an automatic shredder that flushes the oldest turns via a FIFO sliding window. To prevent the AI from forgetting key customer details when turns are shredded, pin a tiny **FactStore (`under 60 tokens`)** to the top of the prompt.
-  </Card>
-
-  <Card title="4. Single-Tool Hygiene" icon="puzzle">
-    **Tool Schema Thinning**
-    
-    Every declared tool JSON schema is re-billed as input text on **every single turn**. 
-    
-    Instead of declaring 8 tools upfront (~1,200 tokens/turn of dead weight), derive call phase transitions on the server from transcripts (zero tokens) and expose only the single action tool needed for the active phase.
+    Unlike bot speech, **caller spoken audio remains in the context window as raw audio tokens**. On every subsequent turn, historical caller audio is re-evaluated at **$3.00/M**—making carried user speech **4&times; to 6&times; more expensive** per word than text memory.
   </Card>
 </CardGrid>
 
+### Force 3: Zero Default Prompt Caching &amp; Model Scaffolding
+
+In standard batch request/response APIs, repeated static prompts frequently receive automatic context cache discounts. In real-time bidirectional WebSocket sessions (`BidiGenerateContent`), carried context is evaluated on demand at standard input rates (`cached_content_token_count: 0`).
+
+Additionally, live audio models include fixed model-side scaffolding (~500 tokens per turn on `gemini-3.1-flash-live` and `gemini-3.5-flash-live`) that is billed alongside your custom prompt instructions on every turn.
+
+### Force 4: The Telephony 0–5s Drop Distribution
+
+In enterprise telephony (outbound qualification, customer support, appointment reminders), call duration follows a steep power-law curve: **30% to 50% of calls terminate within the first 5 seconds** due to voicemails, wrong numbers, or instant hangups.
+
+If an agent initializes every WebSocket connection with a heavy 4,500-token monolithic system prompt and 8 tool declarations, **100% of that upfront prompt weight is billed on Turn 1**—even when the caller hangs up 3 seconds later.
+
 ---
 
-## 3. Call Lifecycle Cheat Sheet: When Each Pillar Fires
+## 4. Interactive Duplex Tokenomics Explorer
 
-You don't choose between these optimizations—they form a **3-stage defense system** that protects your unit economics across the lifecycle of every phone call:
-
-<CallLifecycleTimeline />
-
----
-
-## 4. Interactive Telephony Cost &amp; ROI Simulator
-
-Don't take static tables at face value. Use the interactive simulator below to test your own call duration, prompt size, turn frequency, and monthly volume. 
-
-Notice how realistic optimized deployments assume **~1,000 tokens/turn** for active prompt overhead (incorporating model scaffolding + base persona + active JIT card + single tool schema) and still achieve massive fleet savings:
+Use the interactive simulator below to model how your specific **Call Duration**, **System Prompt Size**, **Turn &amp; Barge-In Frequency**, and **Monthly Fleet Volume** affect real-world multi-turn billing compared to the single-pass rate card baseline:
 
 <TelephonyCostCalculator />
 
 ---
 
-## 5. Executive Summary: Unoptimized vs. Production Stack
+## 5. Bridging the Gap: Can You Achieve ~$0.03 / Minute?
 
-| Call Dimension | Unoptimized Baseline (Monolithic) | Production Stack (3 Pillars Enabled) | Real-World Impact |
-| :--- | :--- | :--- | :--- |
-| **0–5s Dropped Calls** (30%–50% of volume) | Full 4,500-token SOP billed on instant hangup | **Card 1 Opening (~120 tok + scaffolding)** | **&gt;80% cost reduction** on bounced calls |
-| **Active Prompt per Turn** | 4,500+ tokens re-billed on every turn &amp; barge-in | **~1,000 tokens/turn** (JIT card + scaffolding) | **77% reduction** in per-turn prompt tax |
-| **Caller Audio Memory** | Raw audio re-billed at **$3.00 / 1M tokens** | **Pruned to Text ($0.75/M)** after Turn 2 | **75%–83% savings** on historical memory |
-| **Long Calls (5–15 mins)** | Context balloons to 25k+ tokens; latency degrades | **5k FIFO Ceiling + FactStore (under 60 tok)** | Cost stays flat (**~$0.03/min**) forever |
-| **Blended Telephony Cost** | **$0.08 – $0.20+ / minute** | **$0.028 – $0.035 / minute** | **Matches official rate card target** |
+Understanding the four forces of duplex tokenomics reveals why naive voice deployments experience runaway token compounding.
 
-<Card title="Ready to Implement? Explore the Engineering Patterns" icon="rocket">
-  Dive into the complete architectural guide with animated protocol walkthroughs, copy-paste Python/TypeScript implementations, and production benchmarks for all three pillars:
+**However, high multi-turn costs are entirely avoidable.** By structuring how instructions, tool schemas, and historical audio flow through your WebSocket session, engineering teams routinely eliminate the turn-compounding multiplier and bring real-world blended telephony costs right back down to **~$0.028 – $0.035 per minute**—while keeping response latency under 600ms.
+
+<Card title="How to Solve It: The Production Optimization Architecture" icon="rocket">
+  Ready to eliminate turn compounding and slash your telephony invoice by up to 80%? Explore our complete engineering guide featuring visual call lifecycle blueprints, protocol animations, and copy-paste implementation code:
 
   **[Go to Optimization Patterns &rarr;](/gemini_live_pipecat/optimization/)**
 </Card>

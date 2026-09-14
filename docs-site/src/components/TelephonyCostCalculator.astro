@@ -1,17 +1,19 @@
 ---
 /**
  * TelephonyCostCalculator.astro
- * Interactive 4-slider telephony cost & ROI simulator comparing Unoptimized Monolithic
- * vs. Optimized 3-Pillar Stack (~1,000 tokens/turn active JIT + scaffolding, audio pruning, 5k cap).
+ * Pure Tokenomics & Cost Explorer for the Concepts (/pricing/) page.
+ * Lets users adjust Call Duration, System Prompt Size, Turns/Interruptions per Min, and Monthly Volume
+ * to see why multi-turn duplex sessions diverge from the $0.023/min single-pass streaming rate card.
+ * Zero architecture spoilers—bridges cleanly to /optimization/ at the bottom.
  */
 ---
 
 <div class="tcc-card" id="telephony-cost-calculator">
   <div class="tcc-header">
-    <div class="tcc-badge">INTERACTIVE TELEPHONY SIMULATOR</div>
-    <h3 class="tcc-title">Calculate Your Real-World Call Cost &amp; Fleet Savings</h3>
+    <div class="tcc-badge">INTERACTIVE TOKENOMICS EXPLORER</div>
+    <h3 class="tcc-title">Simulate Your Multi-Turn Duplex Telephony Cost</h3>
     <p class="tcc-subtitle">
-      Adjust the sliders below to see how turn frequency, prompt size, and call duration impact your per-minute telephony invoice—and how the 3-Pillar Stack locks in predictable economics.
+      Adjust the sliders below to observe how turn frequency, caller barge-ins, and system prompt length compound your real-world cost per minute compared to the continuous streaming baseline.
     </p>
   </div>
 
@@ -20,7 +22,7 @@
     <!-- Slider 1: Call Duration -->
     <div class="tcc-control-group">
       <div class="tcc-label-row">
-        <label for="tcc-duration">Average Call Duration</label>
+        <label for="tcc-duration">Call Duration</label>
         <span class="tcc-val-pill" id="tcc-duration-val">3.0 mins</span>
       </div>
       <input type="range" id="tcc-duration" min="1" max="10" step="0.5" value="3" class="tcc-slider" />
@@ -34,13 +36,13 @@
     <!-- Slider 2: System Prompt Size -->
     <div class="tcc-control-group">
       <div class="tcc-label-row">
-        <label for="tcc-prompt">Monolithic System Prompt Size</label>
+        <label for="tcc-prompt">Active Prompt &amp; Tool Schema</label>
         <span class="tcc-val-pill" id="tcc-prompt-val">4,500 tokens</span>
       </div>
-      <input type="range" id="tcc-prompt" min="1000" max="8000" step="250" value="4500" class="tcc-slider" />
+      <input type="range" id="tcc-prompt" min="500" max="8000" step="250" value="4500" class="tcc-slider" />
       <div class="tcc-range-hints">
-        <span>1,000 tok</span>
-        <span>4,500 tok (SOP)</span>
+        <span>500 tok</span>
+        <span>4,500 tok (Full SOP)</span>
         <span>8,000 tok</span>
       </div>
     </div>
@@ -48,12 +50,12 @@
     <!-- Slider 3: Turns per Minute -->
     <div class="tcc-control-group">
       <div class="tcc-label-row">
-        <label for="tcc-turns">Turns &amp; Interruptions / Min</label>
+        <label for="tcc-turns">Turns &amp; Barge-Ins / Min</label>
         <span class="tcc-val-pill" id="tcc-turns-val">6 turns/min</span>
       </div>
-      <input type="range" id="tcc-turns" min="3" max="10" step="1" value="6" class="tcc-slider" />
+      <input type="range" id="tcc-turns" min="2" max="10" step="1" value="6" class="tcc-slider" />
       <div class="tcc-range-hints">
-        <span>3 turns/m</span>
+        <span>2 turns/m</span>
         <span>6 turns/m (Duplex)</span>
         <span>10 turns/m</span>
       </div>
@@ -62,7 +64,7 @@
     <!-- Slider 4: Monthly Call Volume -->
     <div class="tcc-control-group">
       <div class="tcc-label-row">
-        <label for="tcc-volume">Monthly Call Volume</label>
+        <label for="tcc-volume">Monthly Fleet Volume</label>
         <span class="tcc-val-pill" id="tcc-volume-val">100,000 mins</span>
       </div>
       <input type="range" id="tcc-volume" min="10000" max="500000" step="10000" value="100000" class="tcc-slider" />
@@ -74,12 +76,38 @@
     </div>
   </div>
 
-  <!-- Live Comparison Receipts -->
+  <!-- Side-by-Side Comparison: Rate Card Slide vs Real Multi-Turn Invoice -->
   <div class="tcc-receipts-grid">
-    <!-- Left Receipt: Unoptimized -->
+    <!-- Left Receipt: Continuous Single-Pass Baseline -->
+    <div class="tcc-receipt tcc-receipt-blue">
+      <div class="tcc-receipt-head">
+        <span class="tcc-receipt-tag blue-tag">📘 SINGLE-PASS STREAMING BASELINE</span>
+        <div class="tcc-cpm-display blue-text">$0.023 / min</div>
+      </div>
+      <div class="tcc-receipt-lines">
+        <div class="tcc-line">
+          <span>Caller Audio Input (<span class="dur-ref">3.0</span>m @ $0.005/m)</span>
+          <strong id="tcc-base-in">$0.015</strong>
+        </div>
+        <div class="tcc-line">
+          <span>Model Audio Output (<span class="dur-ref">3.0</span>m @ $0.018/m)</span>
+          <strong id="tcc-base-out">$0.054</strong>
+        </div>
+        <div class="tcc-line">
+          <span>Turn Re-Evaluation Overhead</span>
+          <strong class="blue-text">$0.000 (0 turns)</strong>
+        </div>
+        <div class="tcc-line tcc-line-total">
+          <span>Theoretical <span class="dur-ref">3.0</span>-Min Streaming Cost</span>
+          <strong class="blue-text" id="tcc-base-total">$0.069</strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Receipt: Real Multi-Turn Duplex Session -->
     <div class="tcc-receipt tcc-receipt-red">
       <div class="tcc-receipt-head">
-        <span class="tcc-receipt-tag red-tag">🔴 UNOPTIMIZED MONOLITHIC</span>
+        <span class="tcc-receipt-tag red-tag">⚡ REAL MULTI-TURN DUPLEX INVOICE</span>
         <div class="tcc-cpm-display red-text" id="tcc-unopt-cpm">$0.082 / min</div>
       </div>
       <div class="tcc-receipt-lines">
@@ -88,62 +116,35 @@
           <strong id="tcc-unopt-stream">$0.069</strong>
         </div>
         <div class="tcc-line">
-          <span>Prompt Tax (<span id="unopt-prompt-ref">4.5k</span> tok &times; <span class="turns-ref">18</span> turns)</span>
+          <span>Prompt Re-Billing (<span id="unopt-prompt-ref">4.5k</span> tok &times; <span class="turns-ref">18</span> turns)</span>
           <strong class="red-text" id="tcc-unopt-prompt">$0.061</strong>
         </div>
         <div class="tcc-line">
-          <span>Raw Audio History Re-Billing ($3.00/M)</span>
+          <span>Carried Caller Audio History ($3.00/M)</span>
           <strong class="red-text" id="tcc-unopt-history">$0.116</strong>
         </div>
         <div class="tcc-line tcc-line-total">
-          <span>Total <span class="dur-ref">3.0</span>-Minute Call Cost</span>
+          <span>Actual Billed <span class="dur-ref">3.0</span>-Min Call Cost</span>
           <strong class="red-text" id="tcc-unopt-total">$0.246</strong>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right Receipt: Optimized 3-Pillar Stack -->
-    <div class="tcc-receipt tcc-receipt-green">
-      <div class="tcc-receipt-head">
-        <span class="tcc-receipt-tag green-tag">🟢 OPTIMIZED 3-PILLAR STACK</span>
-        <div class="tcc-cpm-display green-text" id="tcc-opt-cpm">$0.033 / min</div>
-      </div>
-      <div class="tcc-receipt-lines">
-        <div class="tcc-line">
-          <span>Base Audio Streaming (<span class="dur-ref">3.0</span>m @ $0.023/m)</span>
-          <strong id="tcc-opt-stream">$0.069</strong>
-        </div>
-        <div class="tcc-line">
-          <span>JIT Cards + Scaffolding (~1.0k tok &times; <span class="turns-ref">18</span> turns)</span>
-          <strong class="green-text" id="tcc-opt-prompt">$0.014</strong>
-        </div>
-        <div class="tcc-line">
-          <span>Pruned Text History ($0.75/M) + 5k Cap</span>
-          <strong class="green-text" id="tcc-opt-history">$0.017</strong>
-        </div>
-        <div class="tcc-line tcc-line-total">
-          <span>Total <span class="dur-ref">3.0</span>-Minute Call Cost</span>
-          <strong class="green-text" id="tcc-opt-total">$0.100</strong>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Bottom Savings Banner -->
+  <!-- Bottom Insight Banner -->
   <div class="tcc-savings-banner">
     <div class="tcc-savings-left">
-      <div class="tcc-savings-eyebrow">ESTIMATED FLEET IMPACT</div>
+      <div class="tcc-savings-eyebrow">THE TURN COMPOUNDING MULTIPLIER</div>
       <div class="tcc-savings-headline">
-        Save <span class="tcc-highlight-green" id="tcc-monthly-save">$4,900 / month</span>
-        (<span id="tcc-yearly-save">$58,800 / year</span>)
+        Multi-turn re-evaluation bills <span class="tcc-highlight-red" id="tcc-monthly-gap">$5,900 / month</span> above pure audio streaming
       </div>
       <div class="tcc-savings-note">
-        Plus: On the <strong>30%–50% of calls that drop in 0–5s</strong>, Card 1 (~120 tokens) cuts bounce waste by <strong>&gt;80%</strong>.
+        At <strong id="tcc-vol-note">100,000 mins/mo</strong>, continuous streaming is <strong id="tcc-stream-mo">$2,300/mo</strong> while unoptimized multi-turn billing reaches <strong id="tcc-actual-mo">$8,200/mo</strong>.
       </div>
     </div>
     <div class="tcc-savings-badge">
-      <span class="tcc-pct-number" id="tcc-pct-save">60%</span>
-      <span class="tcc-pct-label">COST REDUCTION</span>
+      <span class="tcc-pct-number" id="tcc-mult-val">3.6&times;</span>
+      <span class="tcc-pct-label">RATE CARD MULTIPLIER</span>
     </div>
   </div>
 </div>
@@ -166,21 +167,21 @@
     const turnsRefs = document.querySelectorAll('.turns-ref');
     const unoptPromptRef = document.getElementById('unopt-prompt-ref');
 
+    const baseInEl = document.getElementById('tcc-base-in');
+    const baseOutEl = document.getElementById('tcc-base-out');
+    const baseTotalEl = document.getElementById('tcc-base-total');
+
     const unoptCpmEl = document.getElementById('tcc-unopt-cpm');
     const unoptStreamEl = document.getElementById('tcc-unopt-stream');
     const unoptPromptEl = document.getElementById('tcc-unopt-prompt');
     const unoptHistoryEl = document.getElementById('tcc-unopt-history');
     const unoptTotalEl = document.getElementById('tcc-unopt-total');
 
-    const optCpmEl = document.getElementById('tcc-opt-cpm');
-    const optStreamEl = document.getElementById('tcc-opt-stream');
-    const optPromptEl = document.getElementById('tcc-opt-prompt');
-    const optHistoryEl = document.getElementById('tcc-opt-history');
-    const optTotalEl = document.getElementById('tcc-opt-total');
-
-    const monthlySaveEl = document.getElementById('tcc-monthly-save');
-    const yearlySaveEl = document.getElementById('tcc-yearly-save');
-    const pctSaveEl = document.getElementById('tcc-pct-save');
+    const monthlyGapEl = document.getElementById('tcc-monthly-gap');
+    const volNoteEl = document.getElementById('tcc-vol-note');
+    const streamMoEl = document.getElementById('tcc-stream-mo');
+    const actualMoEl = document.getElementById('tcc-actual-mo');
+    const multValEl = document.getElementById('tcc-mult-val');
 
     function fmtUSD(n) {
       return '$' + n.toFixed(3);
@@ -205,45 +206,26 @@
       unoptPromptRef.textContent = (promptTokens / 1000).toFixed(1) + 'k';
 
       // 1. Base Audio Streaming: $0.005/min in + $0.018/min out = $0.023/min
-      const baseStreamCost = duration * 0.023;
+      const baseInCost = duration * 0.005;
+      const baseOutCost = duration * 0.018;
+      const baseStreamCost = baseInCost + baseOutCost;
 
       // 2. Prompt Re-Billing Tax ($0.75 / 1M text tokens)
-      // Unoptimized: full monolithic prompt on every turn
       const unoptPromptCost = (totalTurns * promptTokens * 0.75) / 1000000;
-      // Optimized: realistic ~1,000 tokens/turn (base scaffolding + active JIT card + 1 tool)
-      const optPromptTokensPerTurn = 1000;
-      const optPromptCost = (totalTurns * optPromptTokensPerTurn * 0.75) / 1000000;
 
       // 3. Conversational History Re-Billing
       // On each turn i (0 to totalTurns-1), prior turns are re-billed.
-      // Unoptimized: each prior turn adds ~240 caller audio tokens ($3.00/M) + ~70 bot text tokens ($0.75/M)
+      // Each prior turn adds ~240 caller audio tokens ($3.00/M) + ~70 bot text tokens ($0.75/M)
       const pairs = (totalTurns * (totalTurns - 1)) / 2;
       const unoptHistoryCost = pairs * ((240 * 3.0) + (70 * 0.75)) / 1000000;
 
-      // Optimized:
-      // - Pillar 3 converts caller audio older than 2 turns into text (~60 text tokens @ $0.75/M)
-      // - Pillar 1 caps total session context at 5,000 tokens (so carried history never exceeds ~3,500 tokens)
-      let optHistoryCost = 0;
-      for (let t = 1; t < totalTurns; t++) {
-        // Last 2 turns kept as raw audio (2 * 240 tok @ $3/M), older turns pruned to text (60 tok @ $0.75/M)
-        const recentAudioTurns = Math.min(t, 2);
-        const olderTextTurns = Math.max(0, t - 2);
-        let carriedAudioTok = recentAudioTurns * 240;
-        let carriedTextTok = (t * 70) + (olderTextTurns * 60);
-        // Apply 5k total context cap (1,000 prompt + max 4,000 history)
-        if (carriedAudioTok + carriedTextTok > 4000) {
-          const scale = 4000 / (carriedAudioTok + carriedTextTok);
-          carriedAudioTok *= scale;
-          carriedTextTok *= scale;
-        }
-        optHistoryCost += ((carriedAudioTok * 3.0) + (carriedTextTok * 0.75)) / 1000000;
-      }
-
       const unoptTotal = baseStreamCost + unoptPromptCost + unoptHistoryCost;
-      const optTotal = baseStreamCost + optPromptCost + optHistoryCost;
-
       const unoptCpm = unoptTotal / duration;
-      const optCpm = optTotal / duration;
+      const mult = unoptCpm / 0.023;
+
+      baseInEl.textContent = fmtUSD(baseInCost);
+      baseOutEl.textContent = fmtUSD(baseOutCost);
+      baseTotalEl.textContent = fmtUSD(baseStreamCost);
 
       unoptCpmEl.textContent = '$' + unoptCpm.toFixed(3) + ' / min';
       unoptStreamEl.textContent = fmtUSD(baseStreamCost);
@@ -251,21 +233,15 @@
       unoptHistoryEl.textContent = fmtUSD(unoptHistoryCost);
       unoptTotalEl.textContent = fmtUSD(unoptTotal);
 
-      optCpmEl.textContent = '$' + optCpm.toFixed(3) + ' / min';
-      optStreamEl.textContent = fmtUSD(baseStreamCost);
-      optPromptEl.textContent = fmtUSD(optPromptCost);
-      optHistoryEl.textContent = fmtUSD(optHistoryCost);
-      optTotalEl.textContent = fmtUSD(optTotal);
+      const monthlyStream = 0.023 * monthlyMins;
+      const monthlyActual = unoptCpm * monthlyMins;
+      const monthlyGap = Math.max(0, monthlyActual - monthlyStream);
 
-      const monthlyUnopt = unoptCpm * monthlyMins;
-      const monthlyOpt = optCpm * monthlyMins;
-      const monthlySaved = Math.max(0, monthlyUnopt - monthlyOpt);
-      const yearlySaved = monthlySaved * 12;
-      const pctSaved = Math.round(((unoptCpm - optCpm) / unoptCpm) * 100);
-
-      monthlySaveEl.textContent = '$' + Math.round(monthlySaved).toLocaleString() + ' / month';
-      yearlySaveEl.textContent = '$' + Math.round(yearlySaved).toLocaleString() + ' / year';
-      pctSaveEl.textContent = pctSaved + '%';
+      monthlyGapEl.textContent = '$' + Math.round(monthlyGap).toLocaleString() + ' / month';
+      volNoteEl.textContent = monthlyMins.toLocaleString() + ' mins/mo';
+      streamMoEl.textContent = '$' + Math.round(monthlyStream).toLocaleString() + '/mo';
+      actualMoEl.textContent = '$' + Math.round(monthlyActual).toLocaleString() + '/mo';
+      multValEl.textContent = mult.toFixed(1) + '×';
     }
 
     durInput.addEventListener('input', update);
@@ -366,13 +342,13 @@
     border-radius: 10px;
     border: 1.2px solid transparent;
   }
+  .tcc-receipt-blue {
+    background: rgba(59, 130, 246, 0.06);
+    border-color: rgba(59, 130, 246, 0.3);
+  }
   .tcc-receipt-red {
     background: rgba(239, 68, 68, 0.06);
-    border-color: rgba(239, 68, 68, 0.3);
-  }
-  .tcc-receipt-green {
-    background: rgba(16, 185, 129, 0.06);
-    border-color: rgba(16, 185, 129, 0.35);
+    border-color: rgba(239, 68, 68, 0.35);
   }
   .tcc-receipt-head {
     display: flex;
@@ -389,24 +365,24 @@
     padding: 0.18rem 0.5rem;
     border-radius: 4px;
   }
+  .blue-tag {
+    background: rgba(59, 130, 246, 0.15);
+    color: #93c5fd;
+  }
   .red-tag {
     background: rgba(239, 68, 68, 0.15);
     color: #fca5a5;
-  }
-  .green-tag {
-    background: rgba(16, 185, 129, 0.15);
-    color: #6ee7b7;
   }
   .tcc-cpm-display {
     font-family: var(--sl-font-mono, monospace);
     font-size: 1.15rem;
     font-weight: 800;
   }
+  .blue-text {
+    color: #60a5fa;
+  }
   .red-text {
     color: #f87171;
-  }
-  .green-text {
-    color: #34d399;
   }
   .tcc-receipt-lines {
     display: flex;
@@ -436,24 +412,24 @@
     gap: 1rem;
     padding: 1.1rem 1.3rem;
     border-radius: 10px;
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.14) 0%, rgba(59, 130, 246, 0.14) 100%);
-    border: 1px solid rgba(16, 185, 129, 0.4);
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(59, 130, 246, 0.12) 100%);
+    border: 1px solid rgba(239, 68, 68, 0.35);
   }
   .tcc-savings-eyebrow {
     font-family: var(--sl-font-mono, monospace);
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #34d399;
+    color: #fca5a5;
     margin-bottom: 0.2rem;
   }
   .tcc-savings-headline {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: var(--sl-color-white, #ffffff);
   }
-  .tcc-highlight-green {
-    color: #34d399;
+  .tcc-highlight-red {
+    color: #f87171;
     font-weight: 800;
   }
   .tcc-savings-note {
@@ -468,21 +444,21 @@
     justify-content: center;
     padding: 0.5rem 1rem;
     border-radius: 8px;
-    background: rgba(16, 185, 129, 0.2);
-    border: 1px solid rgba(16, 185, 129, 0.45);
+    background: rgba(239, 68, 68, 0.18);
+    border: 1px solid rgba(239, 68, 68, 0.4);
   }
   .tcc-pct-number {
     font-family: var(--sl-font-mono, monospace);
     font-size: 1.55rem;
     font-weight: 800;
-    color: #34d399;
+    color: #f87171;
     line-height: 1.1;
   }
   .tcc-pct-label {
     font-family: var(--sl-font-mono, monospace);
     font-size: 0.65rem;
     font-weight: 700;
-    color: #a7f3d0;
+    color: #fecaca;
     letter-spacing: 0.05em;
   }
 </style>
