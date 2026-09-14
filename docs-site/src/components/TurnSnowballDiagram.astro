@@ -1,0 +1,340 @@
+---
+/**
+ * Visual comparison: The "Photocopier Tax" Snowball (Unoptimized) vs. The Flatline (Optimized 1k/turn Stack).
+ * Shows why 6 turns in a 1-minute duplex voice call compounds token billing when unoptimized,
+ * versus staying predictable and flat with JIT Cards (~1k tok/turn) + Audio-to-Text Pruning + 5k Cap.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Every back-and-forth turn or interruption triggers a full context re-evaluation ('The Photocopier Tax'). Unoptimized prompts snowball to 38,000+ tokens/min; the 3-pillar stack keeps turns flat around ~1,300 tokens.",
+} = Astro.props;
+---
+
+<figure class="snowball-wrapper">
+  <svg viewBox="0 0 860 390" role="img" aria-labelledby="snow-title snow-desc" class="snow-svg">
+    <title id="snow-title">Duplex Turn Compounding: Unoptimized Snowball vs Optimized Flatline</title>
+    <desc id="snow-desc">
+      Side-by-side bar chart comparing 6 turns in a 1-minute call. Left shows unoptimized 4,500-token prompt plus accumulating $3/M raw audio growing from 4.7k to 8.2k tokens per turn (38,700 tokens billed in 1 min). Right shows optimized ~1,000-token JIT prompt plus pruned text history staying flat around 1.3k tokens per turn (8,100 tokens billed in 1 min).
+    </desc>
+
+    <!-- Background Card -->
+    <rect x="10" y="10" width="840" height="370" rx="14" class="card-bg" />
+
+    <!-- Top Header -->
+    <text x="34" y="42" class="header-title">The "Photocopier Tax": Why Per-Turn Re-Billing Snowballs</text>
+    <text x="34" y="62" class="header-sub">
+      In a 1-minute call with 6 turns (including 1 barge-in), Gemini Live re-reads active prompt + history 6 times.
+    </text>
+
+    <!-- Divider Line -->
+    <line x1="430" y1="82" x2="430" y2="356" class="panel-divider" />
+
+    <!-- ================= LEFT PANEL: UNOPTIMIZED SNOWBALL ================= -->
+    <g class="panel-left">
+      <rect x="28" y="80" width="384" height="38" rx="8" class="panel-header-red" />
+      <text x="44" y="104" class="panel-title-red">🔴 Unoptimized Monolithic (Snowball)</text>
+      <text x="396" y="104" class="panel-badge-red" text-anchor="end">38,700 tok / min</text>
+
+      <!-- Y-axis grid lines -->
+      <line x1="68" y1="300" x2="398" y2="300" class="grid-line" />
+      <line x1="68" y1="245" x2="398" y2="245" class="grid-line" />
+      <line x1="68" y1="190" x2="398" y2="190" class="grid-line" />
+      <line x1="68" y1="140" x2="398" y2="140" class="grid-line" />
+
+      <text x="60" y="304" class="axis-lbl" text-anchor="end">0</text>
+      <text x="60" y="249" class="axis-lbl" text-anchor="end">3k</text>
+      <text x="60" y="194" class="axis-lbl" text-anchor="end">6k</text>
+      <text x="60" y="144" class="axis-lbl" text-anchor="end">9k</text>
+
+      <!-- Bars for Turns 1 to 6 (Unoptimized) -->
+      <!-- Scale: 300 is y=0. 9000 tok = 160px height -> 1k tok = 17.7px -->
+      <!-- Turn 1: 4.5k prompt (80px) + 0.2k audio (4px) = 84px -> y=216 -->
+      <g class="turn-bar t1">
+        <rect x="82" y="220" width="36" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="82" y="215" width="36" height="5" rx="2" class="bar-audio-orange" />
+        <text x="100" y="208" class="bar-val-red" text-anchor="middle">4.7k</text>
+        <text x="100" y="318" class="turn-lbl" text-anchor="middle">T1</text>
+      </g>
+
+      <!-- Turn 2: 4.5k prompt (80px) + 0.9k audio (16px) = 96px -> y=204 -->
+      <g class="turn-bar t2">
+        <rect x="136" y="220" width="36" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="136" y="204" width="36" height="16" rx="2" class="bar-audio-orange" />
+        <text x="154" y="197" class="bar-val-red" text-anchor="middle">5.4k</text>
+        <text x="154" y="318" class="turn-lbl" text-anchor="middle">T2</text>
+      </g>
+
+      <!-- Turn 3: 4.5k prompt (80px) + 1.6k audio (28px) = 108px -> y=192 -->
+      <g class="turn-bar t3">
+        <rect x="190" y="220" width="36" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="190" y="192" width="36" height="28" rx="2" class="bar-audio-orange" />
+        <text x="208" y="185" class="bar-val-red" text-anchor="middle">6.1k</text>
+        <text x="208" y="318" class="turn-lbl" text-anchor="middle">T3</text>
+      </g>
+
+      <!-- Turn 4 (Barge-In!): 4.5k prompt (80px) + 2.3k audio (41px) = 121px -> y=179 -->
+      <g class="turn-bar t4">
+        <rect x="244" y="220" width="36" height="80" rx="3" class="bar-prompt-red pulse-bar" />
+        <rect x="244" y="179" width="36" height="41" rx="2" class="bar-audio-orange pulse-bar" />
+        <text x="262" y="172" class="bar-val-red" text-anchor="middle">6.8k⚡</text>
+        <text x="262" y="318" class="turn-lbl-alert" text-anchor="middle">T4 (Barge)</text>
+      </g>
+
+      <!-- Turn 5: 4.5k prompt (80px) + 3.0k audio (53px) = 133px -> y=167 -->
+      <g class="turn-bar t5">
+        <rect x="298" y="220" width="36" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="298" y="167" width="36" height="53" rx="2" class="bar-audio-orange" />
+        <text x="316" y="160" class="bar-val-red" text-anchor="middle">7.5k</text>
+        <text x="316" y="318" class="turn-lbl" text-anchor="middle">T5</text>
+      </g>
+
+      <!-- Turn 6: 4.5k prompt (80px) + 3.7k audio (66px) = 146px -> y=154 -->
+      <g class="turn-bar t6">
+        <rect x="352" y="220" width="36" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="352" y="154" width="36" height="66" rx="2" class="bar-audio-orange" />
+        <text x="370" y="147" class="bar-val-red" text-anchor="middle">8.2k</text>
+        <text x="370" y="318" class="turn-lbl" text-anchor="middle">T6</text>
+      </g>
+
+      <!-- Legend Left -->
+      <rect x="44" y="338" width="12" height="12" rx="3" class="bar-prompt-red" />
+      <text x="62" y="348" class="legend-txt">4.5k Prompt Tax (re-billed 6×)</text>
+      <rect x="236" y="338" width="12" height="12" rx="3" class="bar-audio-orange" />
+      <text x="254" y="348" class="legend-txt">Raw Audio History ($3.00/M)</text>
+    </g>
+
+    <!-- ================= RIGHT PANEL: OPTIMIZED FLATLINE ================= -->
+    <g class="panel-right">
+      <rect x="448" y="80" width="384" height="38" rx="8" class="panel-header-green" />
+      <text x="464" y="104" class="panel-title-green">🟢 Optimized 3-Pillar Stack (Flatline)</text>
+      <text x="816" y="104" class="panel-badge-green" text-anchor="end">~8,100 tok / min (-79%)</text>
+
+      <!-- Y-axis grid lines -->
+      <line x1="488" y1="300" x2="818" y2="300" class="grid-line" />
+      <line x1="488" y1="245" x2="818" y2="245" class="grid-line" />
+      <line x1="488" y1="190" x2="818" y2="190" class="grid-line" />
+      <line x1="488" y1="140" x2="818" y2="140" class="grid-line" />
+
+      <text x="480" y="304" class="axis-lbl" text-anchor="end">0</text>
+      <text x="480" y="249" class="axis-lbl" text-anchor="end">3k</text>
+      <text x="480" y="194" class="axis-lbl" text-anchor="end">6k</text>
+      <text x="480" y="144" class="axis-lbl" text-anchor="end">9k</text>
+
+      <!-- 5k Compression Cap Ceiling Line -->
+      <line x1="488" y1="211" x2="818" y2="211" class="cap-line" />
+      <text x="814" y="205" class="cap-label" text-anchor="end">🛡️ 5k Compression Ceiling (Auto-Flush)</text>
+
+      <!-- Bars for Turns 1 to 6 (Optimized: ~1k prompt + pruned text history) -->
+      <!-- Turn 1: 0.8k opening card + scaffolding (15px) + 0.1k audio (2px) = 17px -> y=283 -->
+      <g class="turn-bar">
+        <rect x="502" y="285" width="36" height="15" rx="3" class="bar-prompt-green" />
+        <rect x="502" y="282" width="36" height="3" rx="1" class="bar-history-teal" />
+        <text x="520" y="275" class="bar-val-green" text-anchor="middle">0.9k</text>
+        <text x="520" y="318" class="turn-lbl" text-anchor="middle">T1</text>
+      </g>
+
+      <!-- Turn 2: 1.0k JIT card (18px) + 0.25k history (5px) = 23px -> y=277 -->
+      <g class="turn-bar">
+        <rect x="556" y="282" width="36" height="18" rx="3" class="bar-prompt-green" />
+        <rect x="556" y="277" width="36" height="5" rx="2" class="bar-history-teal" />
+        <text x="574" y="270" class="bar-val-green" text-anchor="middle">1.2k</text>
+        <text x="574" y="318" class="turn-lbl" text-anchor="middle">T2</text>
+      </g>
+
+      <!-- Turn 3: 1.0k JIT card (18px) + 0.35k history (6px) = 24px -> y=276 -->
+      <g class="turn-bar">
+        <rect x="610" y="282" width="36" height="18" rx="3" class="bar-prompt-green" />
+        <rect x="610" y="276" width="36" height="6" rx="2" class="bar-history-teal" />
+        <text x="628" y="269" class="bar-val-green" text-anchor="middle">1.3k</text>
+        <text x="628" y="318" class="turn-lbl" text-anchor="middle">T3</text>
+      </g>
+
+      <!-- Turn 4 (Barge-In): 1.0k JIT card (18px) + 0.45k pruned text (8px) = 26px -> y=274 -->
+      <g class="turn-bar">
+        <rect x="664" y="282" width="36" height="18" rx="3" class="bar-prompt-green" />
+        <rect x="664" y="274" width="36" height="8" rx="2" class="bar-history-teal" />
+        <text x="682" y="267" class="bar-val-green" text-anchor="middle">1.4k⚡</text>
+        <text x="682" y="318" class="turn-lbl-green" text-anchor="middle">T4 (Barge)</text>
+      </g>
+
+      <!-- Turn 5: 1.0k JIT card (18px) + 0.5k pruned text (9px) = 27px -> y=273 -->
+      <g class="turn-bar">
+        <rect x="718" y="282" width="36" height="18" rx="3" class="bar-prompt-green" />
+        <rect x="718" y="273" width="36" height="9" rx="2" class="bar-history-teal" />
+        <text x="736" y="266" class="bar-val-green" text-anchor="middle">1.5k</text>
+        <text x="736" y="318" class="turn-lbl" text-anchor="middle">T5</text>
+      </g>
+
+      <!-- Turn 6: 1.0k JIT card (18px) + 0.55k pruned text (10px) = 28px -> y=272 -->
+      <g class="turn-bar">
+        <rect x="772" y="282" width="36" height="18" rx="3" class="bar-prompt-green" />
+        <rect x="772" y="272" width="36" height="10" rx="2" class="bar-history-teal" />
+        <text x="790" y="265" class="bar-val-green" text-anchor="middle">1.5k</text>
+        <text x="790" y="318" class="turn-lbl" text-anchor="middle">T6</text>
+      </g>
+
+      <!-- Legend Right -->
+      <rect x="464" y="338" width="12" height="12" rx="3" class="bar-prompt-green" />
+      <text x="482" y="348" class="legend-txt">~1k JIT Card + Scaffolding</text>
+      <rect x="652" y="338" width="12" height="12" rx="3" class="bar-history-teal" />
+      <text x="670" y="348" class="legend-txt">Pruned Text ($0.75/M) + FactStore</text>
+    </g>
+  </svg>
+  {caption && <figcaption class="snowball-caption">{caption}</figcaption>}
+</figure>
+
+<style>
+  .snowball-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .snow-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 14px;
+    box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.25);
+  }
+  .card-bg {
+    fill: var(--sl-color-gray-6, #14171c);
+    stroke: var(--sl-color-gray-5, #2a2e37);
+    stroke-width: 1.5;
+  }
+  .header-title {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 16px;
+    font-weight: 700;
+    fill: var(--sl-color-white, #ffffff);
+  }
+  .header-sub {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 12.5px;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .panel-divider {
+    stroke: var(--sl-color-gray-5, #2a2e37);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+  }
+  .panel-header-red {
+    fill: rgba(239, 68, 68, 0.12);
+    stroke: rgba(239, 68, 68, 0.35);
+    stroke-width: 1;
+  }
+  .panel-title-red {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 13px;
+    font-weight: 700;
+    fill: #fca5a5;
+  }
+  .panel-badge-red {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 12px;
+    font-weight: 700;
+    fill: #ef4444;
+  }
+  .panel-header-green {
+    fill: rgba(16, 185, 129, 0.12);
+    stroke: rgba(16, 185, 129, 0.35);
+    stroke-width: 1;
+  }
+  .panel-title-green {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 13px;
+    font-weight: 700;
+    fill: #6ee7b7;
+  }
+  .panel-badge-green {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 12px;
+    font-weight: 700;
+    fill: #10b981;
+  }
+  .grid-line {
+    stroke: var(--sl-color-gray-5, #262932);
+    stroke-width: 1;
+  }
+  .axis-lbl {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10.5px;
+    fill: var(--sl-color-gray-3, #8b949e);
+  }
+  .bar-prompt-red {
+    fill: #dc2626;
+    opacity: 0.88;
+  }
+  .bar-audio-orange {
+    fill: #f97316;
+    opacity: 0.92;
+  }
+  .bar-prompt-green {
+    fill: #059669;
+    opacity: 0.9;
+  }
+  .bar-history-teal {
+    fill: #14b8a6;
+    opacity: 0.92;
+  }
+  .bar-val-red {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #fca5a5;
+  }
+  .bar-val-green {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #6ee7b7;
+  }
+  .turn-lbl {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .turn-lbl-alert {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #f87171;
+  }
+  .turn-lbl-green {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #34d399;
+  }
+  .cap-line {
+    stroke: #10b981;
+    stroke-width: 1.5;
+    stroke-dasharray: 5 3;
+  }
+  .cap-label {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 10.5px;
+    font-weight: 600;
+    fill: #34d399;
+  }
+  .legend-txt {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11px;
+    fill: var(--sl-color-gray-2, #d1d5db);
+  }
+  .pulse-bar {
+    animation: barPulse 2.4s ease-in-out infinite;
+  }
+  @keyframes barPulse {
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(1.3); }
+  }
+  .snowball-caption {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3, #9ca3af);
+    text-align: center;
+    line-height: 1.45;
+  }
+</style>
