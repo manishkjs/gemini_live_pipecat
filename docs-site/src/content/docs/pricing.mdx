@@ -7,11 +7,15 @@ import { Aside, Badge, Card, CardGrid, Steps } from '@astrojs/starlight/componen
 import TurnSnowballDiagram from '../../components/TurnSnowballDiagram.astro';
 import TelephonyCostCalculator from '../../components/TelephonyCostCalculator.astro';
 
+<Aside type="tip" title="Step 1 of 2 · Understand the bill (5 min read)">
+  This page explains *why* a Gemini Live invoice can look different from the per-minute rate card, and how to verify that on your own traffic. When you are done, continue to **Step 2 of 2 · [Optimization patterns](/gemini_live_pipecat/optimization/)** (15 min) to build the fix.
+</Aside>
+
 Traditional voice architectures stitch together three separate cloud services: Speech-to-Text (ASR), a Large Language Model (LLM), and Text-to-Speech (TTS). Each service bills differently—ASR bills by the audio minute, the LLM by the text token, and TTS by the character.
 
 **Gemini Live collapses the entire pipeline into a single native speech-to-speech model**, slashing latency and enabling natural, human-like voice conversations.
 
-To help engineering and finance teams evaluate unit economics, Google publishes both **per-million-token prices** and **per-minute audio equivalents**. Understanding the mathematical relationship between these two metrics—and how live bidirectional conversations are metered—is essential for accurate telephony budgeting.
+To help engineering and finance teams evaluate unit economics, Google publishes both **per-million-token prices** and **per-minute audio equivalents**. Understanding how these two numbers relate—and how a live, two-way phone conversation is actually metered—is essential for accurate telephony budgeting.
 
 ---
 
@@ -21,31 +25,31 @@ The table below outlines the paid tier rates for `gemini-3.1-flash-live-preview`
 
 | Modality | Price per 1M Tokens | Effective Per-Minute Rate | What Is Metered |
 | :--- | :--- | :--- | :--- |
-| **Caller Audio Input** | **$3.00** | **~$0.005 / min** | Caller spoken 16 kHz PCM audio (~27.8 tokens/sec) |
-| **Model Audio Output** | **$12.00** | **~$0.018 / min** | Generated 24 kHz PCM assistant speech (~25 tokens/sec) |
+| **Caller Audio Input** | **$3.00** | **~$0.005 / min** | The caller's voice as they speak (16 kHz PCM audio, ~27.8 tokens/sec) |
+| **Model Audio Output** | **$12.00** | **~$0.018 / min** | The bot's voice as it speaks (24 kHz PCM audio, ~25 tokens/sec) |
 | **Input Text** | **$0.75** | — | System prompt, tool declarations, client text history |
 | **Output Text** | **$4.50** | — | Text transcripts and internal reasoning/thinking tokens |
 | **Input Video / Image** | **$1.00** | **~$0.002 / min** | Realtime video frames (~1 fps, ~258 tokens/frame) |
 
 <Aside type="note" title="Thinking Tokens Included">
-  Output text pricing includes internal reasoning tokens. In `gemini-3.1-flash-live-preview`, configuring `thinkingLevel: "minimal"` minimizes both reasoning token consumption and Time-to-First-Audio-Byte (TTFB).
+  Output text pricing includes internal reasoning tokens. In `gemini-3.1-flash-live-preview`, configuring `thinkingLevel: "minimal"` minimizes both reasoning token consumption and the delay before the bot starts speaking (Time-to-First-Audio-Byte, TTFB).
 </Aside>
 
 ---
 
 ## 2. How the Per-Minute Baseline Is Derived
 
-Telecom and CCaaS architects budget in **Cost Per Minute (CPM)**. The official per-minute audio figures represent a direct conversion of audio token velocity into clock time:
+Telecom and contact-center (CCaaS) architects budget in **Cost Per Minute (CPM)**. The official per-minute figures simply convert how fast audio turns into tokens back into clock time:
 
-1. **Caller Audio Input (`~$0.005 / min`)**: Raw 16 kHz PCM audio streams into Gemini Live at approximately **27.8 tokens per second** (~1,667 tokens per minute):
+1. **Caller Audio Input (`~$0.005 / min`)**: The caller's voice streams into Gemini Live at approximately **27.8 tokens per second** (~1,667 tokens per minute):
    ```text
    1,667 tokens/min × ($3.00 / 1,000,000 tokens) = $0.005001 / minute
    ```
-2. **Model Audio Output (`~$0.018 / min`)**: Generated 24 kHz PCM audio synthesizes at approximately **25 tokens per second** (~1,500 tokens per minute):
+2. **Model Audio Output (`~$0.018 / min`)**: The bot's voice is generated at approximately **25 tokens per second** (~1,500 tokens per minute):
    ```text
    1,500 tokens/min × ($12.00 / 1,000,000 tokens) = $0.018000 / minute
    ```
-3. **Continuous Single-Pass Baseline (`~$0.023 / min`)**: In a continuous, uninterrupted single-pass audio stream with zero turn-taking, pure audio processing totals:
+3. **Continuous Streaming Baseline (`~$0.023 / min`)**: If both sides simply streamed audio non-stop with no back-and-forth at all, pure audio processing would total:
    ```text
    $0.005/min (audio in) + $0.018/min (audio out) ≈ $0.023 / minute
    ```
@@ -56,13 +60,13 @@ Telecom and CCaaS architects budget in **Cost Per Minute (CPM)**. The official p
 
 When teams deploy voice agents into live customer service or sales telephony, they quickly observe that real phone calls bill higher than `$0.023/min`—often landing between **$0.08 and $0.20+ per minute**.
 
-This divergence is not a billing error; it is the natural consequence of **four foundational forces** in stateful duplex tokenomics:
+This is not a billing error. It is the natural consequence of **four forces** in how a live, two-way session is metered:
 
 ### Force 1: Turn-Based Re-Evaluation ("The Photocopier Effect")
 
-Gemini Live does not meter by a wall-clock timer; it meters **per inference turn**.
+Gemini Live does not meter by the clock; it meters **per model turn**—each time the model has to produce an answer.
 
-Whenever the caller finishes speaking—or interrupts (barges in) mid-sentence—a **new model generation turn** is triggered. On *every single turn*, the model re-evaluates the entire active session context from scratch:
+Whenever the caller finishes speaking—or talks over the bot mid-sentence (a **barge-in**)—a **new model turn** begins. On *every single turn*, the model re-reads the whole call so far, from scratch:
 * Your `systemInstruction` (persona, SOP rules, guardrails)
 * All declared tool JSON schemas
 * The accumulated conversational history from all prior turns
@@ -73,7 +77,7 @@ In a typical 1-minute phone call with **6 back-and-forth turns** (including 1 ca
 
 ### Force 2: Modal Memory Asymmetry (Caller Audio vs. Bot Speech)
 
-One of the most important—and least understood—nuances of Gemini Live tokenomics is how the model stores **caller speech** versus **its own speech** in conversational memory across turns:
+In plain terms: **the bot remembers its own words as text, but remembers the caller's words as audio.** That single difference is the most important—and least understood—part of Gemini Live billing:
 
 <CardGrid>
   <Card title="Bot Speech Collapses to Cheap Text" icon="approve-check">
@@ -91,34 +95,85 @@ One of the most important—and least understood—nuances of Gemini Live tokeno
 
 ### Force 3: Zero Default Prompt Caching &amp; Model Scaffolding
 
-In standard batch request/response APIs, repeated static prompts frequently receive automatic context cache discounts. In real-time bidirectional WebSocket sessions (`BidiGenerateContent`), carried context is evaluated on demand at standard input rates (`cached_content_token_count: 0`).
+In plain terms: **there is no "already read this" discount on a live call.** In standard request/response APIs, repeated prompts often receive automatic cache discounts. In a real-time voice session (the `BidiGenerateContent` WebSocket), the carried context is billed at full input rates on every turn (`cached_content_token_count: 0`).
 
-Additionally, live audio models include fixed model-side scaffolding (~500 tokens per turn on `gemini-3.1-flash-live` and `gemini-3.5-flash-live`) that is billed alongside your custom prompt instructions on every turn.
+Additionally, live audio models carry a fixed internal overhead (~500 tokens of model-side scaffolding per turn on `gemini-3.1-flash-live` and `gemini-3.5-flash-live`) that is billed alongside your own prompt on every turn—even if your prompt were empty.
 
 ### Force 4: The Telephony 0–5s Drop Distribution
 
-In enterprise telephony (outbound qualification, customer support, appointment reminders), call duration follows a steep power-law curve: **30% to 50% of calls terminate within the first 5 seconds** due to voicemails, wrong numbers, or instant hangups.
+In enterprise telephony (outbound qualification, customer support, appointment reminders), a large share of calls end almost immediately: **30% to 50% of calls terminate within the first 5 seconds** due to voicemails, wrong numbers, or instant hangups.
 
-If an agent initializes every WebSocket connection with a heavy 4,500-token monolithic system prompt and 8 tool declarations, **100% of that upfront prompt weight is billed on Turn 1**—even when the caller hangs up 3 seconds later.
+If an agent opens every call with one heavy 4,500-token system prompt and 8 tool declarations, **100% of that upfront prompt weight is billed on Turn 1**—even when the caller hangs up 3 seconds later.
 
 ---
 
 ## 4. Interactive Duplex Tokenomics Explorer
 
-Use the interactive simulator below to model how your specific **Call Duration**, **System Prompt Size**, **Turn &amp; Barge-In Frequency**, and **Monthly Fleet Volume** affect real-world multi-turn billing compared to the single-pass rate card baseline:
+Use the interactive simulator below to model how your specific **Call Duration**, **System Prompt Size**, **Turn &amp; Barge-In Frequency**, and **Monthly Call Volume** affect real-world billing compared to the rate-card baseline:
 
 <TelephonyCostCalculator />
 
+### Rule of Thumb: What This Means Per 1,000 Calls
+
+Finance teams do not budget per minute; they budget per call volume. At a typical **3-minute average handle time**, the ranges above translate to:
+
+| Volume | Unoptimized ($0.08 – $0.20 / min) | Optimized ($0.028 – $0.035 / min) |
+| :--- | :--- | :--- |
+| **1,000 calls** (3,000 min) | **$240 – $600** | **$84 – $105** |
+| **10,000 calls** (30,000 min) | **$2,400 – $6,000** | **$840 – $1,050** |
+| **100,000 calls / month** (300,000 min) | **$24,000 – $60,000** | **$8,400 – $10,500** |
+
+Longer handle times widen the gap: the re-read cost grows with every minute of history, while the optimized stack stays flat.
+
 ---
 
-## 5. Bridging the Gap: Can You Achieve ~$0.03 / Minute?
+## 5. Verify It on Your Own Traffic
 
-Understanding the four forces of duplex tokenomics reveals why naive voice deployments experience runaway token compounding.
+You do not have to take this page's word for it. Every Gemini Live server message can carry a `usage_metadata` block. Log it once per turn and all four forces become visible in minutes:
+
+```python
+# Inside your receive loop (google-genai Live API)
+async for msg in session.receive():
+    usage = msg.usage_metadata
+    if usage:
+        by_modality = {
+            d.modality: d.token_count
+            for d in (usage.prompt_tokens_details or [])
+        }
+        log.info(
+            "turn=%d prompt=%d audio_in=%d text_in=%d cached=%d out=%d",
+            turn_index,
+            usage.prompt_token_count,
+            by_modality.get("AUDIO", 0),
+            by_modality.get("TEXT", 0),
+            usage.cached_content_token_count or 0,
+            usage.response_token_count,
+        )
+```
+
+What to look for:
+
+| Signal in the log | What it means | Force |
+| :--- | :--- | :--- |
+| `prompt` **climbs turn after turn** | You are paying the re-read tax. Each turn re-bills the previous ones. | 1 |
+| `audio_in` is the fastest-growing number | The caller's raw audio is being carried in history at $3.00/M. This is the biggest lever. | 2 |
+| `cached` is `0` | No caching discount is being applied. Budget every re-read at full rate. | 3 |
+| `text_in` is large on turn 1, even for a 3-second call | Your opening prompt and tool schemas are heavy; dropped calls pay for all of it. | 4 |
+
+<Aside type="tip" title="One-line health check">
+  If `prompt` on turn 10 is not roughly the same as on turn 3, the session is not being trimmed and the bill is compounding. That is the one number to put on a dashboard.
+</Aside>
+
+---
+
+## 6. Bridging the Gap: Can You Achieve ~$0.03 / Minute?
+
+Once the four forces are visible, it is clear why an unoptimized voice deployment sees its per-minute cost climb as calls get longer.
 
 **However, high multi-turn costs are entirely avoidable.** By structuring how instructions, tool schemas, and historical audio flow through your WebSocket session, engineering teams routinely eliminate the turn-compounding multiplier and bring real-world blended telephony costs right back down to **~$0.028 – $0.035 per minute**—while keeping response latency under 600ms.
 
-<Card title="How to Solve It: The Production Optimization Architecture" icon="rocket">
-  Ready to eliminate turn compounding and slash your telephony invoice by up to 80%? Explore our complete engineering guide featuring visual call lifecycle blueprints, protocol animations, and copy-paste implementation code:
+<Card title="Step 2 of 2 · Build the fix: Optimization Patterns" icon="rocket">
+  Ready to eliminate turn compounding and cut your telephony invoice by up to 80%? The engineering guide has visual call-lifecycle blueprints, protocol animations, and copy-paste implementation code for all three pillars:
 
-  **[Go to Optimization Patterns &rarr;](/gemini_live_pipecat/optimization/)**
+  **[Continue to Optimization Patterns &rarr;](/gemini_live_pipecat/optimization/)**
 </Card>
