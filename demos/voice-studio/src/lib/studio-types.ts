@@ -6,7 +6,6 @@ export type Message = {
   role: "user" | "assistant";
   text: string;
   time: string;
-  createdAt?: number;
   metrics?: MessageMetrics;
 };
 export type WaveProps = {

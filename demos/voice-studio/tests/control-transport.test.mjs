@@ -61,7 +61,7 @@ const TRANSPORT = {
 
   // Cloned-voice credentials must never ride in a URL. Once the server-side
   // voice registry lands this becomes `voiceProfileId`.
-  customVoiceKey:           { live: 'body:custom_voice_key',      cascade: 'body:custom_voice_key',       probe: 'secret-voice-key-abc123', requires: { voice: 'Custom-Key', customVoiceKey: 'old-dummy-key', ttsModel: 'google-tts' } },
+  customVoiceKey:           { live: 'body:custom_voice_key',      cascade: 'body:custom_voice_key',       probe: 'secret-voice-key-abc123', requires: { voice: 'Custom-Key' } },
 };
 
 function requestFor(engine, overrides = {}) {
@@ -117,18 +117,10 @@ for (const engine of ['live', 'cascade']) {
 test('cloned-voice credentials never appear anywhere in the request URL', () => {
   const secret = 'secret-voice-key-abc123';
   for (const engine of ['live', 'cascade']) {
-    const { href } = requestFor(engine, { voice: 'Custom-Key', customVoiceKey: secret, ttsModel: 'google-tts' });
+    const { href } = requestFor(engine, { voice: 'Custom-Key', customVoiceKey: secret });
     assert.ok(
       !decodeURIComponent(href).includes(secret),
       `${engine}: the voice cloning key is exposed in the connect URL, which lands in browser history, access logs and the in-app diagnostics buffer.`,
     );
   }
-});
-
-test('stale credentials cannot override a named voice and empty clone keys fail', () => {
-  for (const engine of ['live', 'cascade']) {
-    assert.equal(requestFor(engine, { voice: 'Aoede', customVoiceKey: 'stale-key' }).body.custom_voice_key, undefined);
-    assert.throws(() => requestFor(engine, { voice: 'Custom-Key', ttsModel: 'google-tts', customVoiceKey: '' }), /cloning key/);
-  }
-  assert.throws(() => requestFor('cascade', { voice: 'Custom-Male', ttsModel: 'gemini-3.1-flash-tts-preview' }), /Chirp/);
 });

@@ -36,8 +36,6 @@ class WebsocketClientApp {
   private activeTab: string = "gemini-live";
   private selectedBotType: string = "gemini-live";
   private connectedBotType: string = "gemini-live";
-  private diagnosticSessionId = "";
-  private diagnosticToken = "";
   private activePipeline: HTMLElement | null = null;
 
   // Observability UI Elements
@@ -95,17 +93,9 @@ class WebsocketClientApp {
     { value: "Sadachbia", label: "Sadachbia (Male)" },
     { value: "Sadaltager", label: "Sadaltager (Male)" },
     { value: "Sulafat", label: "Sulafat (Female)" },
-    { value: "Custom-Male", label: "Chirp 3 HD Voice Clone (Male)" },
-    { value: "Custom-Female", label: "Chirp 3 HD Voice Clone (Female)" },
   ];
 
   private readonly GOOGLE_VOICES = [
-    { value: "Custom-Male", label: "Chirp 3 HD Voice Clone (Male)" },
-    { value: "Custom-Female", label: "Chirp 3 HD Voice Clone (Female)" },
-    { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
-    { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
-    { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
-    { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
     { value: "en-US-Chirp3-HD-Aoede", label: "en-US-Chirp3-HD-Aoede" },
     { value: "en-US-Chirp3-HD-Charon", label: "en-US-Chirp3-HD-Charon" },
     { value: "en-IN-Chirp3-HD-Zephyr", label: "en-IN-Chirp3-HD-Zephyr" },
@@ -116,6 +106,12 @@ class WebsocketClientApp {
     { value: "en-IN-Chirp3-HD-Aoede", label: "en-IN-Chirp3-HD-Aoede" },
     { value: "en-US-News-N", label: "en-US-News-N" },
     { value: "en-US-Wavenet-D", label: "en-US-Wavenet-D" },
+    { value: "hi-IN-Chirp3-HD-Achird", label: "hi-IN-Chirp3-HD-Achird" },
+    { value: "hi-IN-Chirp3-HD-Sulafat", label: "hi-IN-Chirp3-HD-Sulafat" },
+    { value: "hi-IN-Chirp3-HD-Vindemiatrix", label: "hi-IN-Chirp3-HD-Vindemiatrix" },
+    { value: "hi-IN-Chirp3-HD-Rasalgethi", label: "hi-IN-Chirp3-HD-Rasalgethi" },
+    { value: "Custom-Male", label: "Custom clone voice - Male" },
+    { value: "Custom-Female", label: "Custom clone voice - Female" },
   ];
 
   constructor() {
@@ -180,7 +176,7 @@ class WebsocketClientApp {
       if (this.debugLog) this.debugLog.innerHTML = "";
       if (this.chatWindow) this.chatWindow.innerHTML = "";
       try {
-        if (this.diagnosticSessionId) await fetch(`${getApiBaseUrl()}/api/logs/clear?session_id=${encodeURIComponent(this.diagnosticSessionId)}`, { method: "POST", headers: { "X-Session-Token": this.diagnosticToken } });
+        await fetch(`${getApiBaseUrl()}/api/logs/clear`, { method: "POST" });
       } catch (e) {}
       const feed = document.getElementById("diag-log-feed");
       if (feed) feed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
@@ -267,16 +263,22 @@ class WebsocketClientApp {
 
     const handleModelChange = () => {
       const selectedModel = geminiModelSelect.value;
+      const selectedVoice = geminiVoiceSelect.value;
 
-      // Only gemini-live-2.5-flash (cascaded) supports explicit manual TTS toggle.
-      // Other models can use native audio or automatic external TTS for custom clone voices.
+      // Only gemini-live-2.5-flash (cascaded) supports TEXT modality / external TTS.
       const supportsTTS = selectedModel === "gemini-live-2.5-flash";
 
       if (!supportsTTS) {
         ttsToggle.checked = false;
         ttsToggle.disabled = true;
         ttsWarning.style.display = "none";
-        voiceWarning.style.display = "none";
+
+        if (selectedVoice.startsWith("Custom")) {
+          geminiVoiceSelect.value = "Aoede";
+          voiceWarning.style.display = "none";
+        } else {
+          voiceWarning.style.display = "none";
+        }
       } else {
         ttsToggle.disabled = false;
         ttsWarning.style.display = "none";
@@ -294,25 +296,27 @@ class WebsocketClientApp {
     // TTS Model Change Logic
     const ttsModelSelect = document.getElementById("tts-model-select") as HTMLSelectElement;
     const ttsVoiceSelect = document.getElementById("tts-voice-select") as HTMLSelectElement;
-    const ttsVoiceSetting = document.getElementById("tts-voice-setting") || ttsVoiceSelect?.parentElement;
 
     const populateVoices = () => {
       const model = ttsModelSelect.value;
-      if (model === "google-tts") {
-        if (ttsVoiceSetting) ttsVoiceSetting.style.display = "block";
-        ttsVoiceSelect.innerHTML = "";
-        this.GOOGLE_VOICES.forEach(voice => {
-          const option = document.createElement("option");
-          option.value = voice.value;
-          option.textContent = voice.label;
-          if (voice.value === "hi-IN-Chirp3-HD-Sulafat") {
-            option.selected = true;
-          }
-          ttsVoiceSelect.appendChild(option);
-        });
+      ttsVoiceSelect.innerHTML = "";
+
+      let voices: { value: string, label: string }[] = [];
+      if (model.startsWith("gemini")) {
+        voices = this.GEMINI_VOICES;
       } else {
-        if (ttsVoiceSetting) ttsVoiceSetting.style.display = "none";
+        voices = this.GOOGLE_VOICES;
       }
+
+      voices.forEach(voice => {
+        const option = document.createElement("option");
+        option.value = voice.value;
+        option.textContent = voice.label;
+        if (model.startsWith("gemini") && voice.value === "Aoede") {
+          option.selected = true;
+        }
+        ttsVoiceSelect.appendChild(option);
+      });
     };
 
     if (ttsModelSelect && ttsVoiceSelect) {
@@ -934,9 +938,7 @@ class WebsocketClientApp {
       const botTypeToConnect = this.selectedBotType || (this.activeTab !== "observability" ? this.activeTab : "gemini-live");
       this.connectedBotType = botTypeToConnect;
 
-      this.diagnosticSessionId = crypto.randomUUID();
-      this.diagnosticToken = crypto.randomUUID();
-      let connectUrl = `/connect?bot_type=${botTypeToConnect}&session_id=${this.diagnosticSessionId}`;
+      let connectUrl = `/connect?bot_type=${botTypeToConnect}`;
       let systemInstructions = "";
 
       if (botTypeToConnect === "tts-llm-stt") {
@@ -1006,8 +1008,7 @@ class WebsocketClientApp {
         connectUrl += `&tts_pace=${livePaceSlider?.value || "1.0"}`;
         connectUrl += `&context_compression=${contextCompressionToggle?.checked || false}`;
         if (contextCompressionToggle?.checked && compressionTokensInput?.value?.trim()) {
-          const val = parseInt(compressionTokensInput.value, 10);
-          connectUrl += `&context_compression_trigger_tokens=${Math.max(5000, isNaN(val) ? 5000 : val)}`;
+          connectUrl += `&context_compression_trigger_tokens=${parseInt(compressionTokensInput.value)}`;
         }
         systemInstructions = geminiSystemInstructionsTextarea?.value || "";
       }
@@ -1038,7 +1039,6 @@ class WebsocketClientApp {
         transport,
         params: {
           baseUrl: import.meta.env.VITE_WSS_URL || getApiBaseUrl(),
-          headers: new Headers({ "X-Session-Token": this.diagnosticToken }),
           endpoints: {
             connect: connectUrl,
           },
@@ -1197,15 +1197,15 @@ class WebsocketClientApp {
       <div id="diag-latency-panel" style="display: none; padding: 16px; overflow-y: auto; flex: 1; font-size: 13px; line-height: 1.5; color: #e2e8f0; background: rgba(0,0,0,0.15); flex-direction: column; gap: 16px;">
         <div style="background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <span id="latency-active-title" style="font-weight: 800; color: #38bdf8; display: flex; align-items: center; gap: 6px; font-size: 13px;">
-            <span>📊</span> Session Latency Benchmarks (Server Response)
+            <span>📊</span> Session Latency Benchmarks (Total Turnaround)
           </span>
-          <span id="latency-turn-count-badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 800;">0 Samples</span>
+          <span id="latency-turn-count-badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 800;">0 Turns</span>
         </div>
 
         <!-- Interactive Stage Selector Pills -->
         <div id="latency-filter-pills" style="display: flex; gap: 6px; flex-wrap: wrap;">
           <button class="lat-stage-pill" data-stage="total" style="background: #0284c7; color: #ffffff; border: 1px solid #38bdf8; padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
-            <span>🌟 Server response</span>
+            <span>🌟 Total (E2E)</span>
             <span id="pill-count-total" style="background: rgba(255,255,255,0.25); border-radius: 10px; padding: 1px 6px; font-size: 10px;">0</span>
           </button>
           <button class="lat-stage-pill" data-stage="llm" style="background: rgba(30, 41, 59, 0.8); color: #cbd5e1; border: 1px solid rgba(192, 132, 252, 0.3); padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: all 0.15s ease;">
@@ -1265,7 +1265,7 @@ class WebsocketClientApp {
                 <th style="padding: 8px 12px; color: #fbbf24;">P95</th>
                 <th style="padding: 8px 12px; color: #4ade80;">Mean</th>
                 <th style="padding: 8px 12px;">Min / Max</th>
-                <th style="padding: 8px 12px;">Samples</th>
+                <th style="padding: 8px 12px;">Turns</th>
               </tr>
             </thead>
             <tbody id="latency-breakdown-tbody">
@@ -1303,24 +1303,6 @@ class WebsocketClientApp {
 
     container.appendChild(dialog);
     container.appendChild(badge);
-    container.querySelectorAll<HTMLAnchorElement>('a[href="/diagnostics"]').forEach(link => {
-      link.addEventListener("click", event => {
-        event.preventDefault();
-        if (!this.diagnosticSessionId) return;
-        const url = new URL(link.href, window.location.href);
-        const sessionId = this.diagnosticSessionId, token = this.diagnosticToken;
-        const child = window.open(url.href, "_blank");
-        if (!child) return;
-        const respond = (message: MessageEvent) => {
-          if (message.source !== child || message.origin !== url.origin || message.data?.type !== "diagnostic-access-request") return;
-          child.postMessage({ type: "diagnostic-access", sessionId, token }, url.origin);
-          window.removeEventListener("message", respond);
-        };
-        window.addEventListener("message", respond);
-        setTimeout(() => window.removeEventListener("message", respond), 30000);
-      });
-    });
-
     document.body.appendChild(container);
 
     let isOpen = false;
@@ -1403,7 +1385,7 @@ class WebsocketClientApp {
 
     dialog.querySelector("#diag-clear-btn")?.addEventListener("click", async () => {
       try {
-        if (this.diagnosticSessionId) await fetch(`${getApiBaseUrl()}/api/logs/clear?session_id=${encodeURIComponent(this.diagnosticSessionId)}`, { method: "POST", headers: { "X-Session-Token": this.diagnosticToken } });
+        await fetch(`${getApiBaseUrl()}/api/logs/clear`, { method: "POST" });
       } catch (err) {}
       logsFeed.innerHTML = '<div style="color: #64748b; font-style: italic; padding: 20px; text-align: center;">Logs cleared. Waiting for fresh items...</div>';
       const countSpan = document.getElementById("diag-log-count");
@@ -1413,16 +1395,20 @@ class WebsocketClientApp {
 
     setInterval(async () => {
       try {
-        if (!this.diagnosticSessionId) return;
-        const res = await fetch(`${getApiBaseUrl()}/api/logs?session_id=${encodeURIComponent(this.diagnosticSessionId)}`, { headers: { "X-Session-Token": this.diagnosticToken } });
+        const res = await fetch(`${getApiBaseUrl()}/api/logs`);
         if (!res.ok) return;
         const data = await res.json();
         const logs: Array<{ timestamp: string; level: string; message: string; ttfb_ms?: number }> = data.logs || [];
         const latencySummary = data.latency_summary || null;
 
-        const metric = latencySummary?.[this.connectedBotType === "gemini-live" ? "live_ttfb" : "llm"];
-        const pill = document.getElementById("diag-ttfb-pill");
-        if (pill) pill.innerText = metric?.count ? `TTFB p50: ${metric.p50} ms` : "TTFB: unavailable";
+        // Check latest TTFB
+        for (let i = logs.length - 1; i >= 0; i--) {
+          if (logs[i].ttfb_ms && logs[i].ttfb_ms! > 0) {
+            const pill = document.getElementById("diag-ttfb-pill");
+            if (pill) pill.innerText = `TTFB: ${logs[i].ttfb_ms} ms`;
+            break;
+          }
+        }
 
         const countSpan = document.getElementById("diag-log-count");
         if (countSpan) countSpan.innerText = String(logs.length);
@@ -1433,8 +1419,8 @@ class WebsocketClientApp {
           const llmStat = latencySummary.llm || {};
           const sttStat = latencySummary.stt || {};
           const ttsStat = latencySummary.tts || {};
-          const totalStat = latencySummary.vad_stop_to_first_server_audio || {};
-          const turns: Array<{ timestamp: string; stage: string; value_ms?: number; details?: string; turn_id?: number | null; status?: string; vad_stop_to_first_server_audio_ms?: number }> = latencySummary.turns || [];
+          const totalStat = latencySummary.total_turnaround || {};
+          const turns: Array<{ timestamp: string; stage: string; value_ms: number; details: string }> = latencySummary.turns || [];
 
           // Update stage pill count badges
           const cTotal = document.getElementById("pill-count-total");
@@ -1450,7 +1436,7 @@ class WebsocketClientApp {
 
           // Select stat according to active filter pill
           let activeStat = totalStat;
-          let stageLabel = "VAD stop → first server audio";
+          let stageLabel = "Total Turnaround (E2E)";
           if (selectedLatencyStage === "llm") {
             activeStat = llmStat;
             stageLabel = "LLM TTFB (Reasoning Stream)";
@@ -1480,15 +1466,15 @@ class WebsocketClientApp {
           if (p95El) p95El.innerText = activeStat.p95 !== undefined && activeStat.count > 0 ? `${activeStat.p95} ms` : "-- ms";
           if (meanEl) meanEl.innerText = activeStat.mean !== undefined && activeStat.count > 0 ? `${activeStat.mean} ms` : "-- ms";
           if (minmaxEl) minmaxEl.innerText = activeStat.count > 0 ? `Min: ${activeStat.min}ms / Max: ${activeStat.max}ms` : "Min: -- / Max: --";
-          if (badgeEl) badgeEl.innerText = `${activeStat.count || 0} Samples (${stageLabel})`;
+          if (badgeEl) badgeEl.innerText = `${activeStat.count || 0} Turns (${stageLabel})`;
 
           // Populate Breakdown Table
           const tbody = document.getElementById("latency-breakdown-tbody");
           if (tbody) {
             const rows = [
-              { stageKey: "total", name: "🌟 VAD stop → first server audio", stat: totalStat, color: "#f472b6" },
+              { stageKey: "total", name: "🌟 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
               { stageKey: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
-              { stageKey: "stt", name: "🎙️ STT Latency", stat: sttStat, color: "#fbbf24" },
+              { stageKey: "stt", name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
               { stageKey: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
               { stageKey: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Duplex)", stat: liveStat, color: "#38bdf8" },
             ].filter(r => r.stat && r.stat.count > 0);
@@ -1527,20 +1513,18 @@ class WebsocketClientApp {
               turnsTbody.innerHTML = `<tr><td colspan="5" style="padding: 16px; text-align: center; color: #64748b; font-style: italic;">No recorded turns for stage: ${stageLabel}</td></tr>`;
             } else {
               turnsTbody.innerHTML = [...filteredTurns].reverse().slice(0, 30).map(t => {
-                const measured = t.stage === "turn" ? t.vad_stop_to_first_server_audio_ms : t.value_ms;
-                const available = typeof measured === "number" && Number.isFinite(measured);
                 let stageBadge = `<span style="background: rgba(56, 189, 248, 0.18); color: #38bdf8; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">${t.stage.toUpperCase()}</span>`;
                 if (t.stage === "llm") stageBadge = `<span style="background: rgba(192, 132, 252, 0.18); color: #c084fc; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">LLM TTFB</span>`;
-                if (t.stage === "stt") stageBadge = `<span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">STT</span>`;
+                if (t.stage === "stt") stageBadge = `<span style="background: rgba(251, 191, 36, 0.18); color: #fbbf24; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">STT CHIRP</span>`;
                 if (t.stage === "tts") stageBadge = `<span style="background: rgba(74, 222, 128, 0.18); color: #4ade80; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700;">TTS AUDIO</span>`;
 
                 return `
                   <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); font-family: monospace;">
                     <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">⏱️ ${t.timestamp}</td>
                     <td style="padding: 6px 12px;">${stageBadge}</td>
-                    <td style="padding: 6px 12px; font-weight: 800; color: #f8fafc;">${available ? `${measured.toFixed(1)} ms` : "Unavailable"}</td>
-                    <td style="padding: 6px 12px; color: #7dd3fc;">${available ? `${(measured / 1000).toFixed(3)}s` : "—"}</td>
-                    <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">${t.status || "ok"} · ${t.turn_id == null ? "turn attribution unavailable" : `turn ${t.turn_id}`}</td>
+                    <td style="padding: 6px 12px; font-weight: 800; color: #f8fafc;">${t.value_ms} ms</td>
+                    <td style="padding: 6px 12px; color: #7dd3fc;">${(t.value_ms / 1000).toFixed(3)}s</td>
+                    <td style="padding: 6px 12px; color: #94a3b8; font-size: 11px;">${t.details || "-"}</td>
                   </tr>
                 `;
               }).join("");

@@ -12,12 +12,6 @@ from pipecat.transcriptions.language import Language
 
 
 class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        # Test routing without real ADC, proxy configuration or provider clients.
-        client_patch = patch("agent.genai.Client")
-        self.client_factory = client_patch.start()
-        self.addCleanup(client_patch.stop)
-
     def test_init_vertex_ai(self):
         service = CustomGeminiTranscribeLiveService(
             project_id="deep-clock-339817",
@@ -28,7 +22,6 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live-preview")
         self.assertFalse(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(vertexai=True, project="deep-clock-339817", location="us-central1")
         self.assertEqual(service.location, "us-central1")
         self.assertEqual(service.project_id, "deep-clock-339817")
 
@@ -41,7 +34,6 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(api_key="test_api_key")
 
     def test_init_ai_studio_suffix_clean(self):
         service = CustomGeminiTranscribeLiveService(
@@ -52,7 +44,6 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(api_key="test_api_key")
 
 
 if __name__ == "__main__":

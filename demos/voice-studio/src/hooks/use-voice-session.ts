@@ -1,4 +1,3 @@
-import { initialPersonaPhase } from "@/lib/personas";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "motion/react";
 import {
@@ -10,9 +9,7 @@ import {
 } from "@/lib/voice-session";
 import { getPersona, type PersonaId } from "@/lib/personas";
 import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
-import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
-import { UsageLedger } from "@/lib/usage-ledger";
-import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
+import { calculateTurnCost } from "@/lib/pricing";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /**
@@ -21,20 +18,18 @@ import type { Message, Phase } from "@/lib/studio-types";
  * presentational -- they read this and call back into it.
  */
 export function useVoiceSession() {
-  const [settings, setSettings] = useState<SessionSettings>({
-    ...DEFAULT_SETTINGS,
-    contextCompression: true,
-    contextCompressionTokens: 5000,
-    sessionId: newSessionId(),
-  });
+  // Minted once per browser tab so this demoer's logs and latency percentiles
+  // stay separate from anyone else connected to the same backend.
+  const [settings, setSettings] = useState<SessionSettings>({ ...DEFAULT_SETTINGS, sessionId: newSessionId() });
   const [phase, setPhase] = useState<Phase>("idle");
-  const [source, setSource] = useState<"backend" | null>(null);
+  const [source, setSource] = useState<"preview" | "backend" | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [sound, setSound] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [complete, setComplete] = useState(false);
   const [latency, setLatency] = useState<number | null>(null);
   const [track, setTrack] = useState<MediaStreamTrack | null>(null);
   const [partialUser, setPartialUser] = useState("");
@@ -46,70 +41,14 @@ export function useVoiceSession() {
   const [lastTTFB, setLastTTFB] = useState<number | null>(null);
   const [lastTTS, setLastTTS] = useState<number | null>(null);
   const [tokenCount, setTokenCount] = useState(0);
-  // Billed tokens split by direction and modality. The flat total hides the
-  // only number that matters for cost: audio is 6x text on input and 6x on
-  // output, so 16k "tokens" can mean very different bills.
-  const [tokenSplit, setTokenSplit] = useState<TokenSplit>(EMPTY_TOKEN_SPLIT);
   const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
-  const [sessionCostBounds, setSessionCostBounds] = useState({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
-  const ledger = useRef(new UsageLedger());
-  const [cascadeCost, setCascadeCost] = useState<CascadeCost | null>(null);
-  const cascadeCostRevision = useRef(-1);
-  const responseMetrics = useRef(new Map<string, MessageMetrics>());
-  const seenEvents = useRef(new Set<string>());
-  const starting = useRef(false);
   const [interruptCount, setInterruptCount] = useState(0);
-
-  // Persona Phase Tracking (e.g. Pragya JIT Phase Cards)
-  const [currentPhase, setCurrentPhase] = useState<string>(
-    initialPersonaPhase(settings.personaId)
-  );
-  const [visitedPhases, setVisitedPhases] = useState<string[]>(
-    [initialPersonaPhase(settings.personaId)].filter(Boolean)
-  );
-  const [phaseDirective, setPhaseDirective] = useState<string | null>(null);
-  const [phaseDelivery, setPhaseDelivery] = useState<"pending" | "sent" | "failed" | null>(null);
-  const phaseRevision = useRef(0);
-  const [confirmedBooking, setConfirmedBooking] = useState<{
-    booking_id?: string;
-    center_name?: string;
-    date?: string;
-    time?: string;
-    vehicle_variant?: string;
-  } | null>(null);
-
-  // Context Compression toast event state
-  const [compressionEvent, setCompressionEvent] = useState<{
-    id: string;
-    tokens?: number;
-    threshold?: number;
-    message?: string;
-  } | null>(null);
-  const compressionTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const triggerCompressionToast = useCallback((payload?: { tokens?: number; threshold?: number; message?: string }) => {
-    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
-    const effectiveThreshold = Math.max(5000, payload?.threshold ?? settings.contextCompressionTokens ?? 5000);
-    setCompressionEvent({
-      id: crypto.randomUUID(),
-      tokens: payload?.tokens,
-      threshold: effectiveThreshold,
-      message: payload?.message,
-    });
-    compressionTimeout.current = setTimeout(() => {
-      setCompressionEvent(null);
-    }, 4500);
-  }, [settings.contextCompressionTokens]);
-
-  const dismissCompressionToast = useCallback(() => {
-    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
-    setCompressionEvent(null);
-  }, []);
 
   const customInstructions = useRef("");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const session = useRef<LiveSession | null>(null);
   const run = useRef(0);
+  const soundRef = useRef(sound);
   const audio = useRef<HTMLAudioElement | null>(null);
   const transcript = useRef<HTMLDivElement | null>(null);
   const followTranscript = useRef(true);
@@ -118,6 +57,7 @@ export function useVoiceSession() {
   const persona = getPersona(settings.personaId);
   const custom = persona.id === "custom";
   const engineName = settings.engine === "live" ? "Gemini Live" : "Cascade";
+  soundRef.current = sound;
 
   useEffect(() => {
     // Tear the session down if the tab navigates away mid-call; a dangling
@@ -125,6 +65,7 @@ export function useVoiceSession() {
     return () => {
       run.current++;
       timers.current.forEach(clearTimeout);
+      window.speechSynthesis?.cancel();
       void session.current?.disconnect();
     };
   }, []);
@@ -160,31 +101,30 @@ export function useVoiceSession() {
         role,
         text,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        createdAt: Date.now(),
         metrics,
       },
     ]);
   }, []);
 
-
   const endSession = useCallback(async () => {
     run.current++;
     timers.current.forEach(clearTimeout);
     timers.current = [];
+    window.speechSynthesis?.cancel();
     const current = session.current;
     session.current = null;
     setPhase("idle");
     setTrack(null);
     setMuted(false);
     setPartialUser("");
-    starting.current = false;
     if (current) await current.disconnect();
   }, []);
 
-  const resetConversation = (personaId = settings.personaId) => {
+  const resetConversation = () => {
     setError("");
     setMessages([]);
     setElapsed(0);
+    setComplete(false);
     setLatency(null);
     setSource(null);
     setCopied(false);
@@ -193,24 +133,8 @@ export function useVoiceSession() {
     setLastTTFB(null);
     setLastTTS(null);
     setTokenCount(0);
-    setTokenSplit(EMPTY_TOKEN_SPLIT);
     setSessionCostUSD(0);
-    setCascadeCost(null);
-    cascadeCostRevision.current = -1;
     setInterruptCount(0);
-    setCurrentPhase(initialPersonaPhase(personaId));
-    setVisitedPhases([initialPersonaPhase(personaId)].filter(Boolean));
-    setPhaseDirective(null);
-    setPhaseDelivery(null);
-    phaseRevision.current = 0;
-    setConfirmedBooking(null);
-    ledger.current = new UsageLedger();
-    responseMetrics.current.clear();
-    seenEvents.current.clear();
-    setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
-    starting.current = false;
-    if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
-    setCompressionEvent(null);
     followTranscript.current = true;
   };
 
@@ -225,11 +149,7 @@ export function useVoiceSession() {
       voice: p.defaultVoice || current.voice,
       instructions: value === "custom" ? customInstructions.current : "",
     }));
-    setCurrentPhase(initialPersonaPhase(value));
-    setVisitedPhases([initialPersonaPhase(value)].filter(Boolean));
-    setPhaseDirective(null);
-    setConfirmedBooking(null);
-    resetConversation(value as PersonaId);
+    resetConversation();
   };
 
   const chooseEngine = (value: string) => {
@@ -238,32 +158,67 @@ export function useVoiceSession() {
     resetConversation();
   };
 
+  const startPreview = () => {
+    resetConversation();
+    setSource("preview");
+    setPhase("thinking");
+    const current = ++run.current;
+    const playTurn = (index: number) => {
+      if (run.current !== current) return;
+      const item = persona.sample[index];
+      if (!item) {
+        setPhase("idle");
+        setComplete(true);
+        return;
+      }
+      setPhase(item.role === "user" ? "listening" : "speaking");
+      addMessage(item.role, item.text);
+      let finished = false;
+      let fallback: ReturnType<typeof setTimeout>;
+      const next = () => {
+        if (finished || run.current !== current) return;
+        finished = true;
+        clearTimeout(fallback);
+        setPhase("thinking");
+        timers.current.push(setTimeout(() => playTurn(index + 1), 500));
+      };
+      if (soundRef.current && "speechSynthesis" in window) {
+        const speech = new SpeechSynthesisUtterance(item.text);
+        speech.lang = settings.language || "hi-IN";
+        speech.rate = 1.04;
+        speech.pitch = item.role === "user" ? 0.9 : 1.05;
+        speech.onend = next;
+        speech.onerror = next;
+        fallback = setTimeout(() => {
+          window.speechSynthesis.cancel();
+          next();
+        }, item.duration + 8000);
+        timers.current.push(fallback);
+        window.speechSynthesis.speak(speech);
+      } else {
+        fallback = setTimeout(next, item.duration);
+        timers.current.push(fallback);
+      }
+    };
+    playTurn(0);
+  };
+
   const startBackend = async (engineOverride?: Engine) => {
-    if (starting.current || session.current) return;
     const targetEngine = engineOverride || settings.engine;
     const targetBackendUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
     const activeSettings: SessionSettings = {
       ...settings,
       engine: targetEngine,
       backendUrl: targetBackendUrl,
-      sessionId: newSessionId(),
     };
-    setSettings((current) => ({ ...current, sessionId: activeSettings.sessionId }));
     if (engineOverride && engineOverride !== settings.engine) {
       setSettings((current) => ({ ...current, engine: engineOverride }));
     }
     setSettingsOpen(false);
     resetConversation();
-    starting.current = true;
     setSource("backend");
     setPhase("connecting");
     const current = ++run.current;
-    const updateResponse = (responseId: string, patch: MessageMetrics) => {
-      const metrics = { ...responseMetrics.current.get(responseId), ...patch, responseId };
-      responseMetrics.current.set(responseId, metrics);
-      setMessages(items => items.map(item => item.role === "assistant" && item.metrics?.responseId === responseId
-        ? { ...item, metrics: { ...item.metrics, ...metrics } } : item));
-    };
     try {
       const live = await createLiveSession(activeSettings, {
         onPhase: (value) => {
@@ -271,9 +226,6 @@ export function useVoiceSession() {
         },
         onMessage: (role, text, append, metrics) => {
           if (run.current !== current) return;
-          if (metrics?.responseId) {
-            metrics = { ...metrics, ...responseMetrics.current.get(metrics.responseId) };
-          }
           if (role === "user") {
             setPartialUser("");
             if (metrics?.sttLatency !== undefined) {
@@ -287,12 +239,9 @@ export function useVoiceSession() {
               setLastTTS(Math.round(metrics.ttsLatency * 1000));
             }
           }
-          if (append || metrics?.responseId) {
+          if (append) {
             setMessages((items) => {
-              const index = metrics?.responseId
-                ? items.findIndex(m => m.role === role && m.metrics?.responseId === metrics?.responseId)
-                : items.length - 1;
-              const last = items[index];
+              const last = items.at(-1);
               if (last?.role === "assistant") {
                 const separator =
                   targetEngine === "cascade" && /\S$/.test(last.text) && /^[\p{L}\p{N}]/u.test(text) ? " " : "";
@@ -305,7 +254,7 @@ export function useVoiceSession() {
                   turnCostUSD: metrics?.turnCostUSD ?? last.metrics?.turnCostUSD,
                   usage: metrics?.usage ?? last.metrics?.usage,
                 };
-                return items.map((item, i) => i === index ? { ...last, text: last.text + separator + text, metrics: mergedMetrics } : item);
+                return [...items.slice(0, -1), { ...last, text: last.text + separator + text, metrics: mergedMetrics }];
               }
               return [
                 ...items,
@@ -314,7 +263,6 @@ export function useVoiceSession() {
                   role,
                   text,
                   time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                  createdAt: Date.now(),
                   metrics,
                 },
               ];
@@ -335,70 +283,76 @@ export function useVoiceSession() {
         },
         onMetricUpdate: (type, val) => {
           if (run.current !== current) return;
-          if (type === "cascade_cost") {
-            if (targetEngine !== "cascade") return;
-            const cost = readCascadeCost(val, activeSettings.sessionId!, cascadeCostRevision.current);
-            if (cost) {
-              cascadeCostRevision.current = cost.revision;
-              setCascadeCost(cost);
-            }
-          } else if (type === "phase_transition") {
-            if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
-            if (Number.isSafeInteger(val?.revision)) {
-              if (val.revision <= phaseRevision.current) return;
-              phaseRevision.current = val.revision;
-            }
-            const phaseId = val?.phase_id || val?.phase || "";
-            const delivered = (val?.card_pushed === true || val?.delivery_status === "sent") && val?.card_pushed !== false && val?.delivery_status !== "failed";
-            if (phaseId && delivered && getPersona(activeSettings.personaId).phaseIds?.includes(phaseId)) {
-              setCurrentPhase(phaseId);
-              setVisitedPhases((prev) => (prev.includes(phaseId) ? prev : [...prev, phaseId]));
-            }
-            if (delivered && (val?.directive || val?.title)) {
-              setPhaseDirective(val.directive || val.title);
-            }
-            setPhaseDelivery(
-              ["pending", "sent", "failed"].includes(val?.delivery_status)
-                ? val.delivery_status
-                : typeof val?.card_pushed === "boolean" ? (val.card_pushed ? "sent" : "failed") : null
-            );
-          } else if (type === "booking_confirmed") {
-            setConfirmedBooking(val);
-          } else if (type === "context_compression") {
-            triggerCompressionToast(val);
-          } else if (type === "turn_complete" || type === "interruption") {
-            if (val?.event_id) {
-              if (seenEvents.current.has(val.event_id)) return;
-              seenEvents.current.add(val.event_id);
-            }
-            if (type === "turn_complete") setTurnCount(c => c + 1);
-            else setInterruptCount(c => c + 1);
-            if (val?.response_id && val.elapsed_ms !== undefined) {
-              updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
-            }
-          } else if (["stt_latency", "llm_latency", "tts_latency"].includes(type)) {
-            const value = typeof val === "number" ? val : val?.value;
-            if (!Number.isFinite(value) || value < 0) return;
-            const setter = type === "stt_latency" ? setLastSTT : type === "llm_latency" ? setLastTTFB : setLastTTS;
-            setter(Math.round(value * 1000));
-            if (val?.response_id && type !== "stt_latency") {
-              updateResponse(val.response_id, { [type === "llm_latency" ? "llmLatency" : "ttsLatency"]: value });
-            }
-          } else if (type === "usage") {
-            if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
-            if (!val || !ledger.current.ingest(val)) return;
-            const totals = ledger.current.snapshot(targetEngine, activeSettings.model);
-            setTokenCount(totals.tokens);
-            setTokenSplit(totals.split);
-            setSessionCostUSD(totals.costUSD);
-            setSessionCostBounds({ minUSD: totals.minUSD, maxUSD: totals.maxUSD, estimated: totals.estimated, complete: totals.complete });
-            if (val.response_id) {
-              const cost = targetEngine === "live" ? calculateTurnCost(val.model ?? activeSettings.model, val) : null;
-              updateResponse(val.response_id, {
-                usage: val, turnCostUSD: cost?.totalUSD, costEstimated: cost?.estimated,
-                costMinUSD: cost?.minUSD, costMaxUSD: cost?.maxUSD,
+          if (type === "turn_complete") {
+            setTurnCount((c) => c + 1);
+          } else if (type === "interruption") {
+            setInterruptCount((c) => c + 1);
+            if (val?.elapsed_ms !== undefined) {
+              setMessages((items) => {
+                const idx = items.findLastIndex((m) => m.role === "assistant");
+                if (idx === -1) return items;
+                const copy = [...items];
+                copy[idx] = {
+                  ...copy[idx],
+                  metrics: { ...copy[idx].metrics, interruptedMs: val.elapsed_ms },
+                };
+                return copy;
               });
             }
+          } else if (type === "stt_latency") {
+            setLastSTT(Math.round(val * 1000));
+            setMessages((items) => {
+              const idx = items.findLastIndex((m) => m.role === "user");
+              if (idx === -1) return items;
+              const copy = [...items];
+              copy[idx] = {
+                ...copy[idx],
+                metrics: { ...copy[idx].metrics, sttLatency: val },
+              };
+              return copy;
+            });
+          } else if (type === "llm_latency") {
+            setLastTTFB(Math.round(val * 1000));
+            setMessages((items) => {
+              const idx = items.findLastIndex((m) => m.role === "assistant");
+              if (idx === -1) return items;
+              const copy = [...items];
+              copy[idx] = {
+                ...copy[idx],
+                metrics: { ...copy[idx].metrics, llmLatency: val },
+              };
+              return copy;
+            });
+          } else if (type === "tts_latency") {
+            setLastTTS(Math.round(val * 1000));
+            setMessages((items) => {
+              const idx = items.findLastIndex((m) => m.role === "assistant");
+              if (idx === -1) return items;
+              const copy = [...items];
+              copy[idx] = {
+                ...copy[idx],
+                metrics: { ...copy[idx].metrics, ttsLatency: val },
+              };
+              return copy;
+            });
+          } else if (type === "usage") {
+            if (val?.total_token_count) {
+              setTokenCount((c) => c + val.total_token_count);
+            }
+            const turnCost = val?.turnCostUSD ?? (targetEngine === "live" ? calculateTurnCost(settings.model, val)?.totalUSD : undefined);
+            if (turnCost) {
+              setSessionCostUSD((c) => c + turnCost);
+            }
+            setMessages((items) => {
+              const idx = items.findLastIndex((m) => m.role === "assistant");
+              if (idx === -1) return items;
+              const copy = [...items];
+              copy[idx] = {
+                ...copy[idx],
+                metrics: { ...copy[idx].metrics, usage: val, turnCostUSD: turnCost ?? copy[idx].metrics?.turnCostUSD },
+              };
+              return copy;
+            });
           }
         },
         onPartialUser: (text) => {
@@ -421,7 +375,6 @@ export function useVoiceSession() {
           setMuted(false);
           setPartialUser("");
           session.current = null;
-          starting.current = false;
         },
       });
       if (run.current !== current) {
@@ -446,9 +399,7 @@ export function useVoiceSession() {
   };
 
   const update = (key: keyof SessionSettings, value: string) =>
-    setSettings((current) => ({ ...current, [key]: value,
-      ...((key === "voice" && value !== "Custom-Key") || (key === "ttsModel" && value !== "google-tts") ? { customVoiceKey: "" } : {}),
-    }));
+    setSettings((current) => ({ ...current, [key]: value }));
 
   const updateBool = (key: keyof SessionSettings, value: boolean) =>
     setSettings((current) => ({ ...current, [key]: value }));
@@ -469,9 +420,9 @@ export function useVoiceSession() {
   };
 
   const phaseLabel = {
-    idle: messages.length ? "Session ended" : "Ready to start",
+    idle: complete ? "Preview complete" : messages.length ? "Session ended" : "Ready to start",
     connecting: "Connecting…",
-    listening: muted ? "Microphone muted" : "Listening",
+    listening: source === "preview" ? "You are speaking" : muted ? "Microphone muted" : "Listening",
     thinking: "Thinking",
     speaking: `${persona.agentName} is speaking`,
   }[phase];
@@ -480,12 +431,9 @@ export function useVoiceSession() {
 
   return {
     // state
-    settings, phase, source, messages, elapsed, muted, sound, error, copied,
+    settings, phase, source, messages, elapsed, muted, sound, error, copied, complete,
     latency, track, partialUser, settingsOpen, showInlineEditor,
-    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
-    compressionEvent, dismissCompressionToast, triggerCompressionToast,
-    // phase tracking & booking
-    currentPhase, visitedPhases, phaseDirective, phaseDelivery, confirmedBooking,
+    turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, sessionCostUSD, interruptCount,
     // setters the views drive directly
     setMuted, setError, setSettingsOpen, setShowInlineEditor,
     // refs
@@ -495,6 +443,10 @@ export function useVoiceSession() {
     // actions
     endSession, choosePersona, chooseEngine, startBackend, toggleSound,
     update, updateBool, updateNumber, copyTranscript,
+    // Scripted persona playback. No control currently starts it -- the entry
+    // point was dropped in a UI pass -- but the transcript still renders the
+    // `source === "preview"` states, so the path is kept intact.
+    startPreview,
   };
 }
 

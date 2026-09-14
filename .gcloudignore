@@ -27,7 +27,3 @@ venv/
 __pycache__/
 *.pyc
 .git
-
-# Keep agent coordination out of Cloud Run source uploads as well.
-temp.md
-**/temp.md

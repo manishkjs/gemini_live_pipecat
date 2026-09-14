@@ -18,10 +18,6 @@ logs
 .git
 .gitignore
 
-# Agent coordination stays in git, outside every Docker build context.
-temp.md
-**/temp.md
-
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db

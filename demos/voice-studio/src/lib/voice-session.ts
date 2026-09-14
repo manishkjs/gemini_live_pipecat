@@ -1,5 +1,4 @@
 import { getPersona, getPersonaPrompt, type PersonaId, type PersonaTone } from "./personas.ts";
-import { estimateTokens } from "./pricing.ts";
 
 export type Engine = "live" | "cascade";
 
@@ -55,7 +54,7 @@ export type SessionSettings = {
 /** A short, non-secret id used only to partition diagnostics by demoer. */
 export function newSessionId(): string {
   const random = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
+    ? crypto.randomUUID().slice(0, 8)
     : Math.random().toString(36).slice(2, 10);
   return `s_${random}`;
 }
@@ -91,7 +90,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   skipStt: false,
   vad: true,
   contextCompression: false,
-  contextCompressionTokens: 5000,
+  contextCompressionTokens: 20000,
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
@@ -183,6 +182,7 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Achird", "Achird (Male)"],
   ["Vindemiatrix", "Vindemiatrix (Female)"],
   ["Rasalgethi", "Rasalgethi (Male)"],
+  ["Callirhoe", "Callirhoe (Female)"],
   ["Autonoe", "Autonoe (Female)"],
   ["Enceladus", "Enceladus (Male)"],
   ["Iapetus", "Iapetus (Male)"],
@@ -200,14 +200,12 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Zubenelgenubi", "Zubenelgenubi (Male)"],
   ["Sadachbia", "Sadachbia (Male)"],
   ["Sadaltager", "Sadaltager (Male)"],
-  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
-  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
+  ["Custom-Male", "Custom Clone Voice (Male)"],
+  ["Custom-Female", "Custom Clone Voice (Female)"],
   ["Custom-Key", "Custom Voice Cloning Key"],
 ];
 
 export const CHIRP_HD_VOICES: [string, string][] = [
-  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
-  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
   ["hi-IN-Chirp3-HD-Sulafat", "hi-IN-Chirp3-HD-Sulafat (Hindi Female)"],
   ["hi-IN-Chirp3-HD-Achird", "hi-IN-Chirp3-HD-Achird (Hindi Male)"],
   ["hi-IN-Chirp3-HD-Vindemiatrix", "hi-IN-Chirp3-HD-Vindemiatrix (Hindi Female)"],
@@ -220,6 +218,8 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["en-US-Chirp3-HD-Gacrux", "en-US-Chirp3-HD-Gacrux (US Female)"],
   ["en-US-Chirp3-HD-Leda", "en-US-Chirp3-HD-Leda (US Female)"],
   ["en-US-Chirp3-HD-Puck", "en-US-Chirp3-HD-Puck (US Male)"],
+  ["Custom-Male", "Custom Clone Voice (Male)"],
+  ["Custom-Female", "Custom Clone Voice (Female)"],
 ];
 
 /** Cloned-voice selections are backed by a voice cloning key rather than a named Gemini voice. */
@@ -245,7 +245,7 @@ export function buildSessionInstructions(settings: SessionSettings): string {
   const persona = getPersona(settings.personaId);
   const language = LANGUAGE_MAP[settings.language] || LANGUAGE_OPTIONS.find(([value]) => value === settings.language)?.[1];
   if (!language) throw new Error("Choose one of the supported session languages.");
-  if (estimateTokens(settings.instructions) > 4000) throw new Error("Keep custom persona instructions under 4,000 tokens.");
+  if (settings.instructions.length > 1000) throw new Error("Keep custom persona instructions under 1,000 characters.");
   const prompt = settings.instructions.trim() || getPersonaPrompt(persona, settings.tone);
   if (!prompt) return ""; // Leave the backend’s existing instructions intact in custom mode.
   return `${prompt} Speak in ${language}, unless the user requests another language.`;
@@ -267,32 +267,6 @@ export function buildBackendPageUrl(backendUrl: string, page: "original" | "diag
   return url.href;
 }
 
-/**
- * Where to read the prompt the backend will actually run for a persona.
- *
- * Architecture-managed personas have their prompt composed server-side, so the
- * studio has to ask for it rather than display its own local copy.
- */
-export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string): string {
-  const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
-  const url = validatedBackendUrl(targetUrl);
-  const base = url.pathname.replace(/\/$/, "");
-  url.pathname = `${base}/persona-prompt/${encodeURIComponent(settings.personaId)}`;
-  const searchParams = new URLSearchParams();
-  if (settings.engine) {
-    searchParams.set("engine", settings.engine);
-  }
-  if (phase && settings.engine !== "cascade") {
-    searchParams.set("phase", phase);
-  }
-  searchParams.set("tone", settings.tone);
-  searchParams.set("language", settings.language);
-  url.search = searchParams.toString();
-  return url.href;
-}
-
-
-
 export function buildConnectUrl(settings: SessionSettings): URL {
   buildSessionInstructions(settings);
   const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
@@ -310,10 +284,6 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       // endpointing to Gemini's own server-side turn detection.
       vad: settings.vad === false ? "false" : "true",
       context_compression: settings.contextCompression ? "true" : "false",
-      // Selects the persona's execution architecture server-side. The backend
-      // routes on this id alone and never inspects prompt text, so editing a
-      // prompt can no longer silently disable a persona's engine.
-      persona_id: settings.personaId,
     };
     if (settings.sessionId) params.session_id = settings.sessionId;
     // Native audio has no pace parameter, so only send one when a TTS service
@@ -338,7 +308,6 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: settings.vad === false ? "false" : "true",
       skip_stt: settings.skipStt ? "true" : "false",
-      persona_id: settings.personaId,
       ...(settings.sessionId ? { session_id: settings.sessionId } : {}),
     }).toString();
   } else throw new Error("Choose Gemini Live or Cascade.");
@@ -349,10 +318,6 @@ export function buildConnectRequest(settings: SessionSettings) {
   const instructions = buildSessionInstructions(settings);
   const body: Record<string, unknown> = {};
   if (instructions) body.system_instruction = instructions;
-  if (!settings.instructions.trim() && settings.personaId !== "custom") {
-    body.prompt_source = "preset";
-    body.persona_tone = settings.tone;
-  }
   if (settings.toolsJson?.trim()) {
     try {
       body.tools = JSON.parse(settings.toolsJson);
@@ -361,20 +326,16 @@ export function buildConnectRequest(settings: SessionSettings) {
     }
   }
   if (settings.contextCompression) {
-    const rawTokens = settings.contextCompressionTokens ?? 5000;
-    body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
+    body.context_compression = true;
+    if (settings.contextCompressionTokens) {
+      body.context_compression_trigger_tokens = settings.contextCompressionTokens;
+    }
   }
   // A voice cloning key is a credential. It travels in the POST body only, and
   // the server exchanges it for an opaque, short-lived voice_profile_id before
   // any WebSocket URL is minted — so it never reaches browser history, access
   // logs, or the in-app diagnostics buffer.
-  if (isClonedVoice(settings.voice) && settings.engine === "cascade" && settings.ttsModel !== "google-tts") {
-    throw new Error("Select Chirp 3 HD to use a cloned voice in Cascade.");
-  }
-  if (settings.voice === "Custom-Key" && !settings.customVoiceKey?.trim()) {
-    throw new Error("Enter your voice cloning key or select another voice.");
-  }
-  if (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim()) {
+  if (settings.customVoiceKey?.trim()) {
     body.custom_voice_key = settings.customVoiceKey.trim();
   }
   // NOTE: thinking_level intentionally travels only in the query string (see
