@@ -2,250 +2,544 @@
 /**
  * Animated comparison: Monolithic System Instruction vs Just-in-Time (JIT) Prompt Cards.
  *
- * Demonstrates the "0-5 Second Short-Call Economics":
- * When 30-50% of callers bounce in the first 5 seconds, a monolithic 4,500-token prompt
- * burns full prompt taxes on every drop. JIT Prompt Cards keep Card 1 lean (~150 tokens),
- * slashing bounce costs by ~96%, and injecting downstream cards only when the caller advances.
+ * Demonstrates the 0–5 Second Short-Call Telephony Economics:
+ * When 30%–50% of calls drop within the first 5 seconds (voicemail, instant hangup, wrong number),
+ * a monolithic 4,500-token prompt burns full prompt taxes on every bounce.
+ * JIT Prompt Cards keep Card 1 featherlight (~120 tokens), slashing bounce token burn by >97%.
+ * Downstream cards are injected dynamically only when the caller advances.
  *
- * Pure CSS/SVG on an 8s looping timeline. Zero JS.
+ * Pure CSS/SVG on a smooth 6s looping timeline. Zero JS runtime dependencies.
  */
 interface Props {
   caption?: string;
 }
 const {
-  caption = "In production telephony, 30–50% of calls drop in 0–5s. Monolithic prompts pay full token taxes on turn 1; JIT Prompt Cards cut bounce token burn by >95%.",
+  caption = "In production telephony, 30%–50% of calls drop in 0–5s. Monolithic prompts bill full token taxes on turn 1; JIT Prompt Cards cut bounce token burn by >97%.",
 } = Astro.props;
 ---
 
-<figure class="diagram">
-  <svg viewBox="0 0 760 270" role="img" aria-labelledby="pcf-title pcf-desc">
-    <title id="pcf-title">Monolithic Prompt vs JIT Prompt Cards in 0-5s bounce funnel</title>
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 840 430" role="img" aria-labelledby="pcf-title pcf-desc" class="pcf-svg">
+    <title id="pcf-title">Monolithic Prompt vs JIT Prompt Cards in 0–5s Bounce Funnel</title>
     <desc id="pcf-desc">
-      A comparison between a monolithic 4500-token prompt and dynamic JIT prompt cards.
-      When calls drop in the first five seconds, monolithic prompts incur full token costs
-      while JIT prompt cards start with a lean 150-token greeting card, saving massive costs.
+      A comparison between a monolithic 4,500-token prompt and dynamic JIT prompt cards.
+      When a caller hangs up at 3 seconds, the monolithic approach bills 4,500 tokens (100% waste),
+      while JIT Prompt Cards bill only 120 tokens for Card 1 (97.3% savings) because Cards 2 and 3 are never loaded.
     </desc>
 
-    <!-- 0-5s bounce zone marker -->
-    <rect x="180" y="32" width="130" height="174" class="bounce-zone" rx="6" />
-    <text x="245" y="24" class="zone-label">0–5s BOUNCE ZONE (30–50% of calls)</text>
+    <!-- Outer Card Surface -->
+    <rect x="12" y="12" width="816" height="406" rx="14" class="card-bg" />
 
-    <!-- Row 1: Monolithic -->
-    <g class="track-row">
-      <text x="168" y="70" class="row-label">Monolithic</text>
-      <text x="168" y="86" class="row-sub">all-in-one</text>
-
-      <!-- Full heavy prompt bar -->
-      <rect x="180" y="52" width="480" height="36" rx="5" class="bar-mono" />
-      <text x="320" y="74" class="bar-text">Initial System Prompt (4,500 tokens: SOPs, Objections, Catalogs, Schemas)</text>
-
-      <!-- Drop indicator at 4s -->
-      <g class="drop-marker mono-drop">
-        <line x1="260" y1="46" x2="260" y2="94" class="drop-line" />
-        <circle cx="260" cy="94" r="4" class="drop-dot" />
-        <text x="268" y="108" class="cost-tag red">4s Drop: 4,500 tokens billed (100% waste)</text>
-      </g>
+    <!-- Header Section -->
+    <g class="header-group">
+      <text x="36" y="44" class="main-title">The 0–5s Short-Call Drop Problem</text>
+      <text x="36" y="64" class="main-subtitle">
+        30%–50% of production voice calls drop before Turn 2. Upfront prompt loading is catastrophic for unit economics.
+      </text>
     </g>
 
-    <!-- Row 2: JIT Prompt Cards -->
-    <g class="track-row">
-      <text x="168" y="162" class="row-label accent">JIT Cards</text>
-      <text x="168" y="178" class="row-sub">dynamic injection</text>
+    <!-- Call Timeline Header -->
+    <g class="timeline-group">
+      <!-- 0-5s Bounce Zone Shading -->
+      <rect x="180" y="82" width="180" height="46" rx="6" class="bounce-zone-bg" />
+      <text x="270" y="98" class="bounce-zone-title">0–5s BOUNCE ZONE (30–50% of calls)</text>
 
-      <!-- Phase 1 Opening Card -->
-      <rect x="180" y="144" width="70" height="36" rx="5" class="bar-card card-1" />
-      <text x="215" y="166" class="bar-text-sm">Card 1: Opening (150 tkn)</text>
+      <!-- Track line -->
+      <line x1="180" y1="116" x2="610" y2="116" class="time-track" />
 
-      <!-- Phase 2 Discovery Card (Injected JIT) -->
-      <rect x="330" y="144" width="140" height="36" rx="5" class="bar-card card-2" />
-      <text x="400" y="166" class="bar-text-sm">Card 2: Discovery (800 tkn)</text>
+      <!-- Ticks -->
+      <circle cx="180" cy="116" r="3.5" class="time-tick" />
+      <text x="180" y="136" class="time-label">0s (Connect)</text>
 
-      <!-- Phase 3 Qualification Card (Injected JIT) -->
-      <rect x="490" y="144" width="170" height="36" rx="5" class="bar-card card-3" />
-      <text x="575" y="166" class="bar-text-sm">Card 3: Booking/SOP (1.2k tkn)</text>
+      <circle cx="288" cy="116" r="4.5" class="time-tick-drop" />
+      <text x="288" y="136" class="time-label-drop">3s (Hangup 🔴)</text>
 
-      <!-- Drop indicator at 4s for JIT -->
-      <g class="drop-marker jit-drop">
-        <line x1="260" y1="138" x2="260" y2="186" class="drop-line green-line" />
-        <circle cx="260" cy="186" r="4" class="drop-dot green-dot" />
-        <text x="268" y="200" class="cost-tag green">4s Drop: 150 tokens billed (96.7% SAVINGS)</text>
-      </g>
+      <circle cx="360" cy="116" r="3" class="time-tick" />
+      <text x="360" y="136" class="time-label">5s</text>
+
+      <circle cx="480" cy="116" r="3" class="time-tick" />
+      <text x="480" y="136" class="time-label">15s (Discovery)</text>
+
+      <circle cx="610" cy="116" r="3" class="time-tick" />
+      <text x="610" y="136" class="time-label">45s (Close)</text>
+
+      <!-- Animated Call Playhead -->
+      <circle class="playhead-halo" cx="180" cy="116" r="10" />
+      <circle class="playhead-dot" cx="180" cy="116" r="5" />
+
+      <!-- Animated Hangup Ripple at 3s -->
+      <circle class="hangup-ripple" cx="288" cy="116" r="8" />
     </g>
 
-    <!-- Funnel timeline axis -->
-    <line x1="180" y1="225" x2="670" y2="225" class="axis-line" />
-    <circle cx="180" cy="225" r="3" class="tick-dot" />
-    <text x="180" y="242" class="axis-txt">0s (Call Connect)</text>
+    <!-- Lane 1: Monolithic Prompt -->
+    <g class="lane-group mono-group">
+      <!-- Lane Label -->
+      <text x="36" y="185" class="lane-title mono-title">Monolithic</text>
+      <text x="36" y="202" class="lane-sub">All-in-one upfront</text>
 
-    <circle cx="260" cy="225" r="3" class="tick-dot active-tick" />
-    <text x="260" y="242" class="axis-txt active">4s (Hangup/Voicemail)</text>
+      <!-- Monolithic Heavy Container -->
+      <rect x="180" y="166" width="430" height="52" rx="8" class="mono-bar" />
+      <text x="200" y="189" class="mono-bar-title">Initial System Instruction (4,500 tokens)</text>
+      <text x="200" y="206" class="mono-bar-sub">SOP Rules · 20 Objections · Full Product Catalog · Schemas</text>
 
-    <circle cx="330" cy="225" r="3" class="tick-dot" />
-    <text x="330" y="242" class="axis-txt">8s (Discovery)</text>
+      <!-- Monolithic Result Badge -->
+      <rect x="630" y="166" width="176" height="52" rx="8" class="badge-bg mono-badge" />
+      <text x="718" y="188" class="badge-value red-txt">4,500 TOKENS</text>
+      <text x="718" y="206" class="badge-sub red-sub">100% Wasted on 3s drop</text>
+    </g>
 
-    <circle cx="490" cy="225" r="3" class="tick-dot" />
-    <text x="490" y="242" class="axis-txt">20s (Qualification)</text>
+    <!-- Lane 2: JIT Prompt Cards -->
+    <g class="lane-group jit-group">
+      <!-- Lane Label -->
+      <text x="36" y="268" class="lane-title jit-title">JIT Cards</text>
+      <text x="36" y="285" class="lane-sub">Phased JIT injection</text>
 
-    <circle cx="660" cy="225" r="3" class="tick-dot" />
-    <text x="660" y="242" class="axis-txt">45s (Close)</text>
+      <!-- Card 1: Opening (Active on Connect) -->
+      <g class="card-opening-group">
+        <rect x="180" y="248" width="128" height="56" rx="8" class="card-active" />
+        <text x="244" y="271" class="card-active-title">Card 1: Opening</text>
+        <text x="244" y="290" class="card-active-sub">120 tokens (Greeting)</text>
+      </g>
+
+      <!-- Phase Arrow -->
+      <text x="323" y="280" class="flow-arrow">→</text>
+
+      <!-- Card 2: Discovery (Downstream) -->
+      <g class="card-downstream card-2">
+        <rect x="342" y="248" width="128" height="56" rx="8" class="card-ghost" />
+        <text x="406" y="271" class="card-ghost-title">Card 2: Discovery</text>
+        <text x="406" y="290" class="card-ghost-sub">Skipped (0 tokens)</text>
+      </g>
+
+      <!-- Phase Arrow -->
+      <text x="485" y="280" class="flow-arrow">→</text>
+
+      <!-- Card 3: Booking (Downstream) -->
+      <g class="card-downstream card-3">
+        <rect x="504" y="248" width="106" height="56" rx="8" class="card-ghost" />
+        <text x="557" y="271" class="card-ghost-title">Card 3: Booking</text>
+        <text x="557" y="290" class="card-ghost-sub">Skipped (0 tokens)</text>
+      </g>
+
+      <!-- JIT Result Badge -->
+      <rect x="630" y="248" width="176" height="56" rx="8" class="badge-bg jit-badge" />
+      <text x="718" y="271" class="badge-value green-txt">120 TOKENS</text>
+      <text x="718" y="291" class="badge-sub green-sub">97.3% TOKEN SAVINGS</text>
+    </g>
+
+    <!-- Bottom KPI Summary Bar -->
+    <g class="kpi-group">
+      <!-- KPI 1 -->
+      <rect x="36" y="342" width="235" height="44" rx="8" class="kpi-pill kpi-neutral" />
+      <text x="52" y="362" class="kpi-icon">📞</text>
+      <text x="78" y="361" class="kpi-header">40% Telephony Bounce</text>
+      <text x="78" y="376" class="kpi-detail">Callers drop within 0–5s</text>
+
+      <!-- KPI 2 -->
+      <rect x="291" y="342" width="245" height="44" rx="8" class="kpi-pill kpi-danger" />
+      <text x="307" y="362" class="kpi-icon">💸</text>
+      <text x="333" y="361" class="kpi-header red-txt">Monolithic: 4,500 tokens</text>
+      <text x="333" y="376" class="kpi-detail">Full prompt taxed on bounce</text>
+
+      <!-- KPI 3 -->
+      <rect x="556" y="342" width="250" height="44" rx="8" class="kpi-pill kpi-success" />
+      <text x="572" y="362" class="kpi-icon">⚡</text>
+      <text x="598" y="361" class="kpi-header green-txt">JIT Cards: 4,380 Saved</text>
+      <text x="598" y="376" class="kpi-detail">>97% savings on dropped calls</text>
+    </g>
   </svg>
 
-  <figcaption class="caption">{caption}</figcaption>
+  <figcaption class="diagram-caption">{caption}</figcaption>
 </figure>
 
 <style>
-  .diagram {
-    margin: 1.5rem 0;
-    padding: 1.25rem 1rem 1rem;
-    background: var(--sl-color-gray-6);
-    border: 1px solid var(--sl-color-gray-5);
-    border-radius: 8px;
-  }
-  svg {
-    display: block;
-    width: 100%;
-    height: auto;
-    font-family: var(--sl-font-sans, system-ui, sans-serif);
-    overflow: visible;
-  }
-  .caption {
-    margin-top: 0.75rem;
-    font-size: 0.8125rem;
-    line-height: 1.4;
-    color: var(--sl-color-gray-3);
-    text-align: center;
-    font-style: italic;
+  .diagram-wrapper {
+    margin: 2rem 0;
+    padding: 0;
   }
 
-  .bounce-zone {
-    fill: #ea4335;
-    fill-opacity: 0.08;
-    stroke: #ea4335;
+  .pcf-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+    overflow: visible;
+  }
+
+  .diagram-caption {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--sl-color-gray-3);
+    font-style: italic;
+    line-height: 1.4;
+  }
+
+  /* Card Frame */
+  .card-bg {
+    fill: #13151b;
+    stroke: #232734;
+    stroke-width: 1.5;
+  }
+
+  /* Typography */
+  .main-title {
+    fill: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .main-subtitle {
+    fill: #9aa0a6;
+    font-size: 11.5px;
+  }
+
+  /* Timeline & Bounce Zone */
+  .bounce-zone-bg {
+    fill: rgba(234, 67, 53, 0.08);
+    stroke: rgba(234, 67, 53, 0.35);
     stroke-width: 1;
     stroke-dasharray: 4 3;
   }
-  .zone-label {
+
+  .bounce-zone-title {
+    fill: #f28b82;
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+    letter-spacing: 0.04em;
+  }
+
+  .time-track {
+    stroke: #2e3444;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+  }
+
+  .time-tick {
+    fill: #5f6368;
+  }
+
+  .time-tick-drop {
+    fill: #ea4335;
+  }
+
+  .time-label {
+    fill: #80868b;
+    font-size: 10px;
+    text-anchor: middle;
+  }
+
+  .time-label-drop {
+    fill: #f28b82;
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    fill: #ea4335;
     text-anchor: middle;
   }
 
-  .row-label {
-    font-size: 13px;
-    font-weight: 600;
-    fill: var(--sl-color-white);
-    text-anchor: end;
-  }
-  .row-label.accent {
-    fill: var(--sl-color-accent);
-  }
-  .row-sub {
-    font-size: 10px;
-    fill: var(--sl-color-gray-4);
-    text-anchor: end;
+  /* Lane Labels */
+  .lane-title {
+    font-size: 14px;
+    font-weight: 700;
   }
 
-  .bar-mono {
-    fill: var(--sl-color-gray-4);
-    fill-opacity: 0.35;
-    stroke: var(--sl-color-gray-4);
-    stroke-width: 1;
-  }
-  .bar-text {
+  .lane-sub {
+    fill: #80868b;
     font-size: 10.5px;
-    fill: var(--sl-color-gray-2);
-    text-anchor: middle;
-  }
-  .bar-text-sm {
-    font-size: 9.5px;
-    fill: var(--sl-color-white);
-    font-weight: 500;
-    text-anchor: middle;
   }
 
-  .bar-card {
-    fill: var(--sl-color-accent);
-    fill-opacity: 0.45;
-    stroke: var(--sl-color-accent);
+  .mono-title {
+    fill: #f28b82;
+  }
+
+  .jit-title {
+    fill: #81c995;
+  }
+
+  /* Monolithic Bar */
+  .mono-bar {
+    fill: rgba(234, 67, 53, 0.12);
+    stroke: rgba(234, 67, 53, 0.4);
     stroke-width: 1.2;
-    transform-box: fill-box;
-    transform-origin: left center;
-  }
-  .bar-card.card-1 {
-    animation: pulse-card-1 8s infinite ease-in-out;
-  }
-  .bar-card.card-2 {
-    animation: fade-card-2 8s infinite ease-in-out;
-  }
-  .bar-card.card-3 {
-    animation: fade-card-3 8s infinite ease-in-out;
   }
 
-  @keyframes pulse-card-1 {
-    0%, 100% { fill-opacity: 0.45; }
-    50% { fill-opacity: 0.75; }
-  }
-  @keyframes fade-card-2 {
-    0%, 25% { opacity: 0.2; }
-    35%, 85% { opacity: 1; }
-    95%, 100% { opacity: 0.2; }
-  }
-  @keyframes fade-card-3 {
-    0%, 50% { opacity: 0.2; }
-    60%, 85% { opacity: 1; }
-    95%, 100% { opacity: 0.2; }
+  .mono-bar-title {
+    fill: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
   }
 
-  .drop-line {
-    stroke: #ea4335;
-    stroke-width: 1.5;
-    stroke-dasharray: 2 2;
+  .mono-bar-sub {
+    fill: #bdc1c6;
+    font-size: 10px;
   }
-  .drop-line.green-line {
+
+  /* JIT Cards */
+  .card-active {
+    fill: rgba(52, 168, 83, 0.2);
     stroke: #34a853;
-  }
-  .drop-dot {
-    fill: #ea4335;
-  }
-  .drop-dot.green-dot {
-    fill: #34a853;
+    stroke-width: 1.5;
   }
 
-  .cost-tag {
+  .card-active-title {
+    fill: #ffffff;
+    font-size: 11.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+
+  .card-active-sub {
+    fill: #81c995;
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .flow-arrow {
+    fill: #5f6368;
+    font-size: 14px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .card-ghost {
+    fill: rgba(255, 255, 255, 0.02);
+    stroke: #3c4043;
+    stroke-width: 1.2;
+    stroke-dasharray: 4 3;
+  }
+
+  .card-ghost-title {
+    fill: #80868b;
     font-size: 11px;
     font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .card-ghost-sub {
+    fill: #5f6368;
+    font-size: 9px;
+    text-anchor: middle;
+  }
+
+  /* Result Badges */
+  .badge-bg {
+    stroke-width: 1.5;
+  }
+
+  .mono-badge {
+    fill: rgba(234, 67, 53, 0.14);
+    stroke: #ea4335;
+  }
+
+  .jit-badge {
+    fill: rgba(52, 168, 83, 0.15);
+    stroke: #34a853;
+  }
+
+  .badge-value {
+    font-size: 13px;
+    font-weight: 800;
+    text-anchor: middle;
+    letter-spacing: 0.02em;
     font-family: var(--sl-font-mono, monospace);
   }
-  .cost-tag.red {
+
+  .badge-sub {
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .red-txt {
     fill: #ea4335;
   }
-  .cost-tag.green {
+
+  .red-sub {
+    fill: #f28b82;
+  }
+
+  .green-txt {
     fill: #34a853;
   }
 
-  .axis-line {
-    stroke: var(--sl-color-gray-5);
+  .green-sub {
+    fill: #81c995;
+  }
+
+  /* Bottom KPI Pill Strip */
+  .kpi-pill {
     stroke-width: 1;
   }
-  .tick-dot {
-    fill: var(--sl-color-gray-4);
+
+  .kpi-neutral {
+    fill: rgba(255, 255, 255, 0.03);
+    stroke: #2e3444;
   }
-  .tick-dot.active-tick {
-    fill: #ea4335;
+
+  .kpi-danger {
+    fill: rgba(234, 67, 53, 0.07);
+    stroke: rgba(234, 67, 53, 0.3);
   }
-  .axis-txt {
+
+  .kpi-success {
+    fill: rgba(52, 168, 83, 0.08);
+    stroke: rgba(52, 168, 83, 0.35);
+  }
+
+  .kpi-icon {
+    font-size: 14px;
+  }
+
+  .kpi-header {
+    fill: #ffffff;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .kpi-detail {
+    fill: #80868b;
     font-size: 9.5px;
-    fill: var(--sl-color-gray-4);
-    text-anchor: middle;
   }
-  .axis-txt.active {
-    fill: #ea4335;
-    font-weight: 600;
+
+  /* ============================================================
+   * Seamless Looping Animation (6s Loop)
+   * 0.0s - 2.5s: Call in flight from 0s to 3s
+   * 2.5s - 5.5s: Hangup trigger, red ripple, badges pulse
+   * 5.5s - 6.0s: Fade and reset
+   * ============================================================ */
+
+  .playhead-dot {
+    fill: #4285f4;
+    animation: 6s cubic-bezier(0.25, 0.1, 0.25, 1) infinite playhead-move;
+  }
+
+  .playhead-halo {
+    fill: rgba(66, 133, 244, 0.35);
+    animation: 6s cubic-bezier(0.25, 0.1, 0.25, 1) infinite playhead-move;
+  }
+
+  @keyframes playhead-move {
+    0% {
+      transform: translateX(0px);
+      opacity: 0;
+    }
+    5% {
+      opacity: 1;
+    }
+    40% {
+      transform: translateX(108px); /* 180 + 108 = 288px (3s mark) */
+      opacity: 1;
+    }
+    85% {
+      transform: translateX(108px);
+      opacity: 1;
+    }
+    95%, 100% {
+      transform: translateX(108px);
+      opacity: 0;
+    }
+  }
+
+  /* Hangup Ripple */
+  .hangup-ripple {
+    fill: none;
+    stroke: #ea4335;
+    stroke-width: 2;
+    opacity: 0;
+    animation: 6s ease-out infinite ripple-pulse;
+  }
+
+  @keyframes ripple-pulse {
+    0%, 38% {
+      transform: scale(0.8);
+      transform-origin: 288px 116px;
+      opacity: 0;
+    }
+    42% {
+      opacity: 1;
+      stroke-width: 3;
+    }
+    55% {
+      transform: scale(3.5);
+      transform-origin: 288px 116px;
+      opacity: 0;
+      stroke-width: 0.5;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Badge Reactions */
+  .mono-badge {
+    animation: 6s ease-in-out infinite mono-reaction;
+  }
+
+  @keyframes mono-reaction {
+    0%, 39% {
+      stroke: rgba(234, 67, 53, 0.4);
+      filter: none;
+    }
+    42%, 75% {
+      stroke: #ea4335;
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 8px rgba(234, 67, 53, 0.55));
+    }
+    90%, 100% {
+      stroke: rgba(234, 67, 53, 0.4);
+      filter: none;
+    }
+  }
+
+  .jit-badge {
+    animation: 6s ease-in-out infinite jit-reaction;
+  }
+
+  @keyframes jit-reaction {
+    0%, 39% {
+      stroke: rgba(52, 168, 83, 0.4);
+      filter: none;
+    }
+    42%, 75% {
+      stroke: #34a853;
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 10px rgba(52, 168, 83, 0.6));
+    }
+    90%, 100% {
+      stroke: rgba(52, 168, 83, 0.4);
+      filter: none;
+    }
+  }
+
+  /* Opening Card Pulse */
+  .card-active {
+    animation: 6s ease-in-out infinite card-glow;
+  }
+
+  @keyframes card-glow {
+    0%, 39% {
+      stroke-width: 1.5;
+      filter: none;
+    }
+    42%, 75% {
+      stroke-width: 2;
+      filter: drop-shadow(0 0 6px rgba(52, 168, 83, 0.4));
+    }
+    90%, 100% {
+      stroke-width: 1.5;
+      filter: none;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .bar-card { animation: none !important; opacity: 1 !important; }
+    .playhead-dot,
+    .playhead-halo,
+    .hangup-ripple,
+    .mono-badge,
+    .jit-badge,
+    .card-active {
+      animation: none !important;
+    }
   }
 </style>
