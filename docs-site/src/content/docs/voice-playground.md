@@ -36,10 +36,10 @@ instructions shape behavior, tone, and language. Pick one, press start, and talk
 
 ## Model choices
 
-- **Native audio / Live:** the model handles speech directly.
-- **Cascade STT:** streaming transcription models.
-- **Cascade LLM:** the reasoning model that fits your latency/quality budget.
-- **Cascade TTS:** native Gemini TTS voices or high-definition neural voices.
+- **Native audio / Live:** `gemini-3.1-flash-live-preview` (and `gemini-3.5-flash-live-preview`) handling speech-to-speech directly.
+- **Cascade STT:** `gemini-3.5-transcribe-live` and Chirp 2 streaming transcription models.
+- **Cascade LLM:** `gemini-3.5-flash-lite` or `gemini-3.7-flash` depending on latency and reasoning budget.
+- **Cascade TTS:** `gemini-3.1-flash-tts-preview` (or `gemini-2.5-pro-preview-tts`) native Gemini speech synthesis.
 
 :::note
 Previews that use browser speech synthesis are clearly labeled and do **not**

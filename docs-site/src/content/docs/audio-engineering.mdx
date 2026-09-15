@@ -56,6 +56,25 @@ capture.port.onmessage = (e) => sendPcmChunk(e.data); // Int16Array, 16 kHz
 source.connect(capture);
 ```
 
+A minimal `/pcm-capture-worklet.js` converts Float32 Web Audio samples into 16-bit little-endian PCM without clipping distortion:
+
+```javascript title="pcm-capture-worklet.js"
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0]?.[0];
+    if (!channel) return true;
+    const pcm16 = new Int16Array(channel.length);
+    for (let i = 0; i < channel.length; i++) {
+      const s = Math.max(-1, Math.min(1, channel[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor);
+```
+
 ## Buffer adaptively in both directions
 
 Networks do not deliver audio evenly. Two buffers absorb that unevenness.
@@ -69,10 +88,9 @@ Both should be **adaptive**. A fixed buffer is either too shallow on bad network
 (choppy) or too deep on good ones (laggy). Scale depth from observed
 inter-arrival jitter.
 
-<Aside type="tip" title="The jitter-buffer tradeoff">
+<Aside type="tip" title="The jitter-buffer tradeoff and compliance guardrail">
 Playing the first chunk the instant it arrives gives the lowest possible latency
-and the worst possible smoothness. Queuing 3–5 chunks costs you a few tens of
-milliseconds and removes most audible choppiness. Tune deliberately rather than leaving it at arbitrary defaults.
+and the worst possible smoothness. Queuing 150 to 200 ms of audio removes audible choppiness and doubles as a **pre-speech compliance guardrail**: because `outputTranscription` text frames arrive ahead of audio playout, your backend can inspect text against policy regexes and flush the 200 ms playout buffer before a prohibited phrase reaches the caller's speaker. See [Optimization patterns](/gemini_live_pipecat/optimization/#pre-speech-compliance-guardrail-200ms-jitter-buffer).
 </Aside>
 
 ## Respect WebSocket backpressure

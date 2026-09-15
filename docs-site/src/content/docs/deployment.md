@@ -19,6 +19,7 @@ gcloud run deploy voice-backend \
   --region us-central1 \
   --allow-unauthenticated \
   --timeout 3600 \
+  --no-cpu-throttling \
   --session-affinity \
   --cpu 2 --memory 2Gi
 ```
@@ -27,8 +28,12 @@ What matters for real-time voice:
 
 - **`--timeout 3600`**: A voice session is one long request. The default 5-minute
   timeout will cut calls off mid-conversation.
-- **`--session-affinity`**: Keep a client pinned to the same instance for the life
-  of the WebSocket.
+- **`--no-cpu-throttling`**: Cloud Run throttles CPU to near zero outside active HTTP
+  request cycles by default. Without this flag, background asyncio tasks, WebSocket
+  heartbeats, and audio frame buffers freeze mid-call.
+- **`--session-affinity`**: Keep a client pinned to the same container instance for the
+  life of the WebSocket so session resumption reconnects hit the warm process holding
+  your in-memory state.
 - **CPU and memory**: Audio processing is CPU-bound; provision accordingly and
   load-test before launch.
 - **Concurrency**: Each active call consumes an instance slot. Size max instances

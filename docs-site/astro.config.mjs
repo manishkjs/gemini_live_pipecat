@@ -47,14 +47,20 @@ export default defineConfig({
             { label: 'Audio engineering', slug: 'audio-engineering' },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
+          ],
+        },
+        {
+          label: 'Economics & Optimization',
+          items: [
             { label: 'Telephony pricing & tokenomics', slug: 'pricing' },
+            { label: 'Pricing calculator', slug: 'pricing-calculator' },
+            { label: 'Optimization patterns', slug: 'optimization' },
           ],
         },
         {
           label: 'Operate',
           items: [
             { label: 'Latency & telemetry', slug: 'latency-and-telemetry' },
-            { label: 'Optimization patterns', slug: 'optimization' },
             { label: 'Deployment', slug: 'deployment' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],

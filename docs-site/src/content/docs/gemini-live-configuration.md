@@ -53,6 +53,7 @@ session**. To change them, close the socket and open a new one.
 | `systemInstruction` | The agent's behavior | **Immutable.** No update frame exists |
 | `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never both (`["AUDIO","TEXT"]` closes with `1007`) |
 | `generationConfig.speechConfig` | Voice + language | Voice names are **case-sensitive** |
+| `generationConfig.thinkingConfig` | Reasoning budget (`thinkingLevel: "minimal"`) | Minimizes thinking token overhead and cuts initial audio delay |
 | `tools` | Function declarations | See [Tools & function calling](/gemini_live_pipecat/tools/) |
 | `realtimeInputConfig.automaticActivityDetection` | VAD behavior | Sensitivity, silence window, prefix padding |
 | `outputAudioTranscription` | Text alongside audio | `{}` to enable |
