@@ -1,276 +1,241 @@
 ---
 title: Optimization patterns
-description: Keep long voice sessions cheap and responsive with context compression, JIT prompt cards, and audio cache pruning.
+description: Keep long voice sessions cheap, responsive, and alive through context compression, JIT prompt cards, and audio cache pruning.
 ---
 
-import { Aside, Badge, Card, CardGrid, Steps } from '@astrojs/starlight/components';
-import CallLifecycleTimeline from '../../components/CallLifecycleTimeline.astro';
-import ContextCompressionFlow from '../../components/ContextCompressionFlow.astro';
+import { Tabs, TabItem, Aside, Badge, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 import PromptCardFunnel from '../../components/PromptCardFunnel.astro';
-import LosslessPruningFlow from '../../components/LosslessPruningFlow.astro';
 
-As detailed in the companion concept guide ([Telephony pricing &amp; tokenomics](/gemini_live_pipecat/pricing/)), bidirectional voice sessions face four compounding cost forces:
-1. **Per-Turn Context Re-Evaluation ("The Photocopier Tax")**: Every back-and-forth turn or caller interruption triggers a full re-evaluation of active prompt instructions and conversation history.
-2. **Modal Memory Asymmetry**: While assistant speech automatically collapses to cheap text transcripts (**\$0.75/M**), caller spoken audio accumulates in context as **raw audio tokens at \$3.00/M** (4&times; to 6&times; more expensive per word).
-3. **Zero Default Prompt Caching**: Real-time WebSocket streams evaluate carried context on demand (`cached_content_token_count: 0`) alongside fixed model-side scaffolding (~500 tokens/turn).
-4. **The 0–5s Telephony Drop Curve**: 30%–50% of phone calls drop in the first 5 seconds, turning heavy upfront prompts into pure waste.
+Long-running duplex voice sessions face an invisible financial and performance trap: quadratic token growth.
 
-This engineering guide demonstrates how to eliminate all four cost forces using a **3-Pillar Production Architecture**, bringing blended real-world telephony costs right back down to **~\$0.028 – \$0.035 / minute**.
+Unlike standard chat interfaces where input is sent once, Gemini Live re-evaluates the entire context on every interaction:
+1. Quadratic Prompt Re-Billing: The initial `systemInstruction` plus the entire carried turn history is re-billed on every single model turn as prompt text.
+2. Accumulating Audio Input Cache: User audio streams in at ~25 tokens/second (~1,500 tokens/minute). In Gemini Live, user speech accumulates in the context window as raw audio tokens and is re-billed at \$3.00/1M tokens (6x more expensive than text input at \$0.50/1M) on every subsequent turn.
 
-<Aside type="tip" title="Step 2 of 2 · Build the fix (15 min read)">
-  New here? Start with **Step 1 of 2 · [Telephony pricing &amp; tokenomics](/gemini_live_pipecat/pricing/)** (5 min). It explains the four forces above and shows how to verify them on your own traffic with `usage_metadata`. This page shows how to fix them.
-</Aside>
+Without deliberate optimization, an audio session balloons to tens of thousands of tokens within minutes, driving up latency and exploding inference costs.
 
 ---
 
-## Master blueprint: when each pillar fires
+## Learning from the Cascade: Bridging the Caching Gap
 
-You do not choose between the three optimizations; they operate as a **3-stage defense pipeline** across the lifecycle of every phone call:
+Enterprise teams often evaluate Gemini Live against a traditional three-stage cascade: Speech-to-Text (STT) into an LLM, then into Text-to-Speech (TTS). 
 
-<CallLifecycleTimeline />
+On paper, cascades look cheaper because of two built-in properties:
+1. Ephemeral audio ingestion: STT transcribes speech once and discards the raw audio. Turn 10 never bills for Turn 1 audio.
+2. Built-in prompt caching: Standard LLM endpoints discount static system instructions and chat history by 50% to 75%.
 
-<CardGrid>
-  <Card title="1. Context Window Compression" icon="setting">
-    **"Sticky Note on a Shredder"**
-    
-    Aggressive 5k FIFO flush caps long-call audio memory permanently while pinned instructions survive.
-    
-    [Explore Pillar 1 &darr;](#pillar-1-context-window-compression)
-  </Card>
-  <Card title="2. JIT Prompt Cards" icon="document">
-    **"Flashcards vs. Encyclopedia"**
-    
-    Featherlight opening cards save &gt;80% on 0–5s bounced calls and keep active prompts at ~1,000 tok/turn.
-    
-    [Explore Pillar 2 &darr;](#pillar-2-just-in-time-jit-prompt-cards)
-  </Card>
-  <Card title="3. Client-Side Lossless Pruning" icon="laptop">
-    **"Voice Memo vs. Text Note"**
-    
-    Convert older \$3.00/M caller audio into \$0.75/M text transcripts and anchor state in a rolling FactStore.
-    
-    [Explore Pillar 3 &darr;](#pillar-3-client-side-lossless-pruning)
-  </Card>
-</CardGrid>
+However, running a cascade in production forces your DevOps team to scale, monitor, and manage three separate distributed microservices, three independent rate limits, and stacked tail latencies.
+
+You do not need to manage three models to get cascade unit economics. By applying the Three Optimization Pillars below, you bring cascade-level cost discipline directly into Gemini Live's single-model duplex pipeline.
 
 ---
 
-## Pillar 1: Context window compression
+## The Three Optimization Pillars
 
-<Aside type="tip" title="Mental Model: Sticky Note on a Shredder">
-  Imagine your conversation history feeding into an automatic shredder set to trigger at **5,000 tokens**. Older pages are shredded so your per-turn photocopy bill never grows above 5,000 tokens, while your system instruction and a tiny **FactStore sticky note (`under 60 tokens`)** stay pinned safely at the top.
-</Aside>
+<Tabs>
+  <TabItem label="1. Context Window Compression">
 
-### Server-side compaction: the safety net
+    ### Server-Side Compaction: The Safety Net
 
-Gemini Live provides built-in sliding-window context compression configured in `BidiGenerateContentSetup`. It is **not** an LLM summarizer; it is a deterministic **FIFO sliding window** that evicts the oldest conversation turns when context crosses a token threshold.
+    Gemini Live provides built-in sliding-window context compression configured in `BidiGenerateContentSetup`. It is not an LLM summarizer; it is a deterministic FIFO sliding window that evicts the oldest conversation turns when context crosses a token threshold.
 
-| Field | What It Does | Default | Production Target |
-| --- | --- | --- | --- |
-| `trigger_tokens` | Compaction fires when context crosses this count | ~80% of window (~32k) | **`5000`** (aggressive voice prune) |
-| `sliding_window.target_tokens` | How far context shrinks when compaction triggers | `trigger_tokens / 2` | **`3500` to `4000`** |
+    | Field | What it does | Default | Production Target |
+    | --- | --- | --- | --- |
+    | `trigger_tokens` | Compaction fires when context crosses this count | ~80% of window (~32k) | `5000` (aggressive voice prune) |
+    | `sliding_window.target_tokens` | How far context shrinks when compaction triggers | `trigger_tokens / 2` | `3500` to `4000` |
 
-System instructions and pinned prefix turns are always preserved; older turns are **FIFO-evicted**.
+    System instructions and pinned prefix turns are always preserved; older turns are FIFO-evicted.
 
----
+    ---
 
-### Why context optimization matters more with large system instructions
+    ### Why Context Optimization Matters More with Large System Instructions
 
-If your agent uses a massive system prompt (2,000–5,000+ tokens of enterprise SOPs, product catalogs, schema specifications, and compliance rules), context optimization is **exponentially more critical**.
+    If your agent uses a massive system prompt (2,000 to 5,000+ tokens of enterprise SOPs, product catalogs, schema specifications, and compliance rules), context optimization is far more critical.
 
-Because Gemini Live does not discount carried system prompts across turns, that 4,000-token instruction is billed on Turn 1, Turn 2, Turn 10, and Turn 30. Over a 10-turn call, a 4,000-token prompt alone consumes **40,000 prompt tokens** before counting a single second of user audio:
+    Because Gemini Live does not discount carried system prompts across turns, that 4,000-token instruction is billed on Turn 1, Turn 2, Turn 10, and Turn 30. Over a 10-turn call, a 4,000-token prompt alone consumes 40,000 prompt tokens before counting a single second of user audio:
 
-```text
-Prompt Token Tax = Number of Turns × System Instruction Tokens
-```
+    ```text
+    Prompt Token Tax = Number of Turns × System Instruction Tokens
+    ```
 
-When initial instructions are heavy, letting history accumulate unchecked accelerates quadratic cost explosion. Keeping context trimmed is the only way to prevent baseline prompt overhead from dominating call unit economics.
+    When initial instructions are heavy, letting history accumulate unchecked accelerates quadratic cost explosion. Keeping context trimmed is the only way to prevent baseline prompt overhead from dominating call unit economics.
 
----
+    ---
 
-### 5k compression: capping caller audio memory
+    ### 5k Compression: The Blessing in Disguise
 
-Most developers configure high triggers (`32,000` tokens), fearing that compacting at `5,000` tokens will drop conversation history prematurely.
+    Most developers configure high triggers (`32,000` tokens), fearing that compacting at `5,000` tokens will drop conversation history prematurely.
 
-In duplex voice, **setting `trigger_tokens: 5000` is a massive blessing in disguise**:
+    In duplex voice, setting `trigger_tokens: 5000` is a blessing in disguise:
 
-1. **Slashes the Expensive Audio Input Cache**:
-   Caller speech costs **\$3.00 per million tokens** and remains in the context window as raw audio tokens.
-2. **Halts Quadratic Audio Re-billing**:
-   Without fast compaction, 2 minutes of user speech (~3,000 audio tokens) is re-billed at \$3.00/M on *every subsequent turn*. Over a 15-turn session, that audio cache is billed over and over again.
-3. **The Blessing**:
-   Firing compaction at **5,000 tokens** aggressively flushes older raw audio turns from the prompt cache. The model retains the pinned system instruction and the last few immediate dialog turns, cutting prompt token volume by **60% to 75%** and keeping Time-to-First-Audio-Byte (TTFB) fast.
+    1. Slashes the Expensive Audio Input Cache:
+       User audio costs \$3.00 per million tokens. While the assistant's generated audio is collapsed to text when returned to context, the caller's spoken PCM audio remains in the context window as raw audio tokens.
+    2. Halts Quadratic Audio Re-billing:
+       Without fast compaction, 2 minutes of user speech (~3,000 audio tokens) is re-billed at \$3.00/M on every subsequent turn. Over a 15-turn session, that audio cache is billed over and over again.
+    3. The Blessing:
+       Firing compaction at 5,000 tokens aggressively flushes older raw audio turns from the prompt cache. The model retains the pinned system instruction and the last few immediate dialog turns, cutting prompt token volume by 60% to 75% and keeping Time-to-First-Audio-Byte (TTFB) fast.
 
-<ContextCompressionFlow />
-
-```python
-# Production Vertex AI / AI Studio Live Session Configuration
-context_window_compression = {
-    "enabled": True,
-    "trigger_tokens": 5000,   # "Blessing in disguise": flushes raw user audio cache early
-    "sliding_window": {
-        "target_tokens": 3500 # Drops ~1.5k tokens of stale audio, retaining recent turns
+    ```python
+    # Production Vertex AI / AI Studio Live Session Configuration
+    context_window_compression = {
+        "enabled": True,
+        "trigger_tokens": 5000,   # Flushes raw user audio cache early
+        "sliding_window": {
+            "target_tokens": 3500 # Drops ~1.5k tokens of stale audio, retaining recent turns
+        }
     }
-}
-```
+    ```
 
-<Aside type="tip" title="Tuning Rule of Thumb">
-  Never leave `target_tokens` unset. The default drops 50% of the entire window (`trigger_tokens / 2`). Explicitly set `target_tokens` to `trigger_tokens - 1500` so it trims only the oldest audio turns while leaving recent conversational context intact.
+    <Aside type="tip" title="Tuning rule of thumb">
+      Never leave `target_tokens` unset. The default drops 50% of the entire window (`trigger_tokens / 2`). Explicitly set `target_tokens` to `trigger_tokens - 1500` so it trims only the oldest audio turns while leaving conversational context intact.
+    </Aside>
+
+  </TabItem>
+
+  <TabItem label="2. JIT Prompt Cards">
+
+    ### Just-in-Time (JIT) Prompt Cards: The Funnel Optimization
+
+    Rather than packing every conceivable instruction into a monolithic system prompt, Just-in-Time (JIT) Prompt Cards segment your agent's behavior into modular phase cards (`SOP_01_OPENING`, `SOP_02_DISCOVERY`, `SOP_03_PINCODE`, `SOP_04_BOOKED`).
+
+    <PromptCardFunnel />
+
+    ---
+
+    ### The 0 to 5 Second Drop: Short-Call Economics
+
+    In real-world enterprise telephony (tele-sales, outbound screening, IVR bots, lead qualification):
+
+    > 30% to 50% of all phone calls drop within the first 0 to 5 seconds (voicemail, immediate hangup, wrong number, prompt rejection).
+
+    #### The Monolithic Failure
+    If you deploy a monolithic 4,500-token prompt:
+    - Even if the caller hangs up after 3 seconds, you are billed for the full 4,500 prompt tokens.
+    - If you run 100,000 calls and 40,000 bounce in under 5s, you burn 180,000,000 tokens on dropped calls that never made it past "Hello".
+
+    #### The Prompt Card Advantage
+    With JIT Prompt Cards:
+    - Card 1 (`SOP_01_OPENING`) is ultra-lean: ~100 to 150 tokens containing only voice persona, opening greeting, and hook. It omits objection matrices, qualification logic, and booking schemas until needed.
+    - When calls are cut in the first 5 seconds, you save over 95% on tokens because the initial card has minimal instructions.
+    - Downstream phase cards are injected only when the caller advances into discovery or qualification.
+
+    ---
+
+    ### Dynamic Server-Side Card Injection
+
+    Do not rely on the model calling a tool to change phases, as models frequently skip tool calls when users speak conversationally.
+
+    Instead, track phases on the server from the live user transcription stream and inject prompt cards dynamically via `send_client_content(turn_complete=False)`:
+
+    ```python
+    # server/persona_prompt_cards/pragya_cards.py
+    CARDS = {
+        "SOP_01_OPENING": """
+        You are Pragya, a luxury automotive concierge.
+        Greeting: "Hello! Welcome to Silver Star Concierge. Are you inquiring about the GT Roadster or our bespoke leasing?"
+        Tone: Refined, crisp, polite. Max 1 sentence.
+        """, # ~120 tokens
+
+        "SOP_02_DISCOVERY": """
+        Phase 2: Qualify Interest & Model Preference.
+        Ask whether they prefer weekend touring or track performance.
+        Answer model questions concisely.
+        """, # ~280 tokens
+
+        "SOP_03_PINCODE": """
+        Phase 3: Delivery Location.
+        Request caller 6-digit postal code for showroom allocation.
+        Format: Listen for 6 digits. Do not accept partial postal codes.
+        """, # ~310 tokens
+
+        "SOP_04_BOOKED": """
+        Phase 4: Final Booking Confirmation.
+        Confirm showroom test drive schedule and state booking reference ID.
+        """  # ~210 tokens
+    }
+    ```
+
+    ```python
+    # Injected into the active live session by the server
+    async def advance_phase_card(session, new_phase_id: str):
+        card_content = CARDS.get(new_phase_id)
+        if not card_content:
+            return
+
+        # send_client_content with turn_complete=False updates instructions without triggering output
+        await session.send_client_content(
+            turns=[{
+                "role": "user",
+                "parts": [{"text": f"[SYSTEM INSTRUCTION UPDATE - {new_phase_id}]:\n{card_content}"}]
+            }],
+            turn_complete=False
+        )
+    ```
+
+    <Aside type="caution" title="Funnel Telemetry Rule">
+      Derive phase progression on the server using deterministic regex or transcript keywords (e.g. 6-digit PIN code detected $\to$ advance to `SOP_03`). Never force the LLM to call `get_phase_card()`, which adds turn latency and token schema overhead.
+    </Aside>
+
+  </TabItem>
+
+  <TabItem label="3. Client-Side Lossless Pruning">
+
+    ### Lossless Client-Side Compaction
+
+    The sliding window is a safety net, but client-side orchestration lets you reduce token consumption without discarding conversation context.
+
+    | Lever | Mechanism | Benefit |
+    | --- | --- | --- |
+    | Transcribe, then Prune Audio | Evict raw client PCM audio turns older than 4 to 6 turns; retain their text transcripts in history. | Spoken audio is billed at \$3.00/M tokens. Text transcripts cost \$0.50/M tokens. You get the exact same semantic grounding at 83% lower cost. |
+    | Rolling Structured FactStore | Maintain a JSON digest (`<60 tokens`) of extracted user facts (`{name, pin, car_model, budget}`); re-inject each turn. | Survives sliding window eviction. Even if turn 1 was evicted 10 minutes ago, the bot remembers the user's postal code and preferred vehicle. |
+    | Pin System Instructions | Declare persistent constraints in `setup.systemInstruction`. | The built-in sliding window never evicts system instructions or pinned prefix turns. |
+
+    ---
+
+    ### The FactStore Pattern
+
+    ```python
+    # Rolling fact store injected into turn context
+    fact_digest = {
+        "user_name": "Vikram",
+        "pin_code": "110001",
+        "vehicle_tier": "AMG GT Coupe",
+        "budget": "Flexible"
+    }
+
+    # Re-inject during user turn payload
+    turn_prefix = f"[Active Context FactStore: {json.dumps(fact_digest)}]\n"
+    ```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Architectural Comparison Matrix
+
+| Strategy | Primary Optimization Target | When It Saves Money | Typical Token Savings | Latency Impact |
+| --- | --- | --- | --- | --- |
+| JIT Prompt Cards | Static prompt text overhead | In the first 0 to 5 seconds (call drop / bounce funnel) and across staged multi-step workflows | 90% to 96% on bounced calls; 40% to 60% across long calls | Zero latency impact (cards injected asynchronously) |
+| 5k Context Compression | Stale user PCM audio cache | In active conversations running longer than 2 to 3 minutes | 60% to 75% on cumulative audio cache re-billing | Neutral; reduces prompt processing latency |
+| Transcript-Only Pruning | Historical audio input tokens | After turn 4 of any session | ~83% on historical user turn volume | Positive (smaller token context = faster TTFB) |
+| Rolling FactStore | Context survival across long calls | After sliding window eviction triggers | Lossless context retention in `<60 tokens` | Negligible (`<10ms` prompt overhead) |
+
+---
+
+## Real-World Telephony Unit Economics (3-Minute Call)
+
+To see how these patterns close the cost gap against a traditional cascade while keeping single-model scaling simplicity, compare a typical 3-minute, 12-turn enterprise contact center call:
+
+| Pipeline Architecture | 3-Minute Call Cost | Ops & Scaling Footprint | TTFB Latency | Prosody & Barge-In |
+| --- | --- | --- | --- | --- |
+| Traditional Cascade (STT + Flash + TTS) | ~\$0.025 to \$0.035 | 3 distributed services, 3 quota pools, stacked tail latency | ~750ms to 1,100ms | Flat prosody; cheap barge-in (&lt;\$0.001) |
+| Native Live (Un-optimized Monolithic) | ~\$0.180 to \$0.350 | 1 unified model endpoint, 1 quota pool | ~550ms to 700ms | Expressive; expensive barge-in (\$0.020+) |
+| Native Live (Optimized: 5k + JIT + FactStore) | ~\$0.035 to \$0.050 | 1 unified model endpoint, 1 quota pool | ~550ms to 700ms | Expressive; cheap barge-in (flushes stale audio) |
+
+<Aside type="tip" title="The Complete Production Mental Model">
+  1. Start with a featherlight Opening Prompt Card so 0 to 5 second dropped calls cost virtually nothing.
+  2. Set `trigger_tokens: 5000` as a blessing in disguise to flush the expensive \$3.00/M user audio cache before it compounds.
+  3. Let the server inject JIT Phase Cards as the caller advances through the conversation funnel.
+  4. Use a rolling FactStore so critical user data survives FIFO eviction without carrying thousands of tokens.
 </Aside>
-
----
-
-## Pillar 2: Just-in-time (JIT) prompt cards
-
-<Aside type="tip" title="Mental Model: Flashcards vs. Encyclopedia">
-  Don't hand the AI a 50-page encyclopedia on Turn 1 just to say *"Hello, am I speaking with Rahul?"* Hand it one lightweight index card at a time as the conversation progresses. Even with fixed model scaffolding (~500 tokens), keeping your active prompt at **~1,000 tokens/turn** instead of 4,500 slashes your per-turn prompt tax by **over 75%**.
-</Aside>
-
-### The funnel optimization
-
-Rather than packing every conceivable instruction into a monolithic system prompt, **Just-in-Time (JIT) Prompt Cards** segment your agent's behavior into modular phase cards (`SOP_01_OPENING`, `SOP_02_DISCOVERY`, `SOP_03_PINCODE`, `SOP_04_BOOKED`).
-
-<PromptCardFunnel />
-
----
-
-### The 0–5 second drop and active turn economics
-
-In real-world enterprise telephony (tele-sales, outbound screening, IVR bots, lead qualification):
-
-> **30% to 50% of all phone calls drop within the first 0 to 5 seconds** (voicemail, immediate hangup, wrong number, prompt rejection).
-
-#### 1. Protecting the 0–5s Bounce Zone
-* **Monolithic Failure**: If you initialize a 4,500-token prompt on connect and the caller hangs up at 3 seconds, you pay for all 4,500 tokens. Across 40,000 bounced calls, that burns **180,000,000 wasted tokens**.
-* **JIT Card 1 (`SOP_01_OPENING`)**: Contains only voice persona, opening greeting, and hook (~120 custom tokens + base scaffolding). Downstream objection matrices and booking schemas are never loaded on dropped calls, cutting bounce waste by **over 80%**.
-
-#### 2. Active Turn Economics (~1,000 Tokens/Turn vs. 4,500 Tokens/Turn)
-During active multi-turn conversations, your total prompt footprint per turn consists of:
-* Fixed model-side scaffolding (~500 tokens on `gemini-3.1-flash-live`)
-* Shared persona guardrails (~150 tokens)
-* The active phase JIT card (~250 tokens)
-* The single declared tool schema for the active phase (~100 tokens)
-
-This yields a realistic active prompt floor of **~1,000 tokens per turn**. Across an 18-turn (3-minute) call, you bill **18,000 prompt tokens (`$0.014`)** instead of **81,000 prompt tokens (`$0.061`)**, a **77% reduction** in per-turn prompt tax.
-
----
-
-### Dynamic server-side card injection and tool thinning
-
-Never rely on the model calling a tool to change phases. Models frequently skip tool calls when users speak conversationally, and declaring 8 tool schemas upfront adds ~1,200 tokens of dead weight to every turn.
-
-Instead, track phases on the server from the live user transcription stream and inject prompt cards dynamically via `send_client_content(turn_complete=False)`:
-
-```python
-# server/persona_prompt_cards/pragya_cards.py
-CARDS = {
-    "SOP_01_OPENING": """
-    You are Pragya, a luxury automotive concierge.
-    Greeting: "Hello! Welcome to Silver Star Concierge. Are you inquiring about the GT Roadster or our bespoke leasing?"
-    Tone: Refined, crisp, polite. Max 1 sentence.
-    """, # ~120 tokens
-
-    "SOP_02_DISCOVERY": """
-    Phase 2: Qualify Interest & Model Preference.
-    Ask whether they prefer weekend touring or track performance.
-    Answer model questions concisely.
-    """, # ~280 tokens
-
-    "SOP_03_PINCODE": """
-    Phase 3: Delivery Location.
-    Request caller 6-digit postal code for showroom allocation.
-    Format: Listen for 6 digits. Do not accept partial postal codes.
-    """, # ~310 tokens
-
-    "SOP_04_BOOKED": """
-    Phase 4: Final Booking Confirmation.
-    Confirm showroom test drive schedule and state booking reference ID.
-    """  # ~210 tokens
-}
-```
-
-```python
-# Injected into the active live session by the server
-async def advance_phase_card(session, new_phase_id: str):
-    card_content = CARDS.get(new_phase_id)
-    if not card_content:
-        return
-
-    # send_client_content with turn_complete=False updates instructions without triggering output
-    await session.send_client_content(
-        turns=[{
-            "role": "user",
-            "parts": [{"text": f"[SYSTEM INSTRUCTION UPDATE - {new_phase_id}]:\n{card_content}"}]
-        }],
-        turn_complete=False
-    )
-```
-
-<Aside type="caution" title="Funnel Telemetry Rule">
-  Derive phase progression on the server using deterministic regex or transcript keywords (e.g. 6-digit PIN code detected $\to$ advance to `SOP_03`). Never force the LLM to call `get_phase_card()`, which adds turn latency and token schema overhead.
-</Aside>
-
----
-
-## Pillar 3: Client-side lossless pruning
-
-<Aside type="tip" title="Mental Model: Voice Memo vs. Text Note">
-  Keeping historical user turns as raw audio in memory costs **\$3.00 / 1M tokens** on every subsequent turn. Converting older caller turns into text transcripts costs **\$0.75 / 1M tokens**, preserving the exact same conversation memory at **75% to 83% lower cost**.
-</Aside>
-
-### Lossless client-side compaction
-
-The server-side 5k sliding window is your hard ceiling, while client-side orchestration lets you compress historical memory with zero loss of customer context:
-
-| Lever | Mechanism | Concrete Benefit |
-| --- | --- | --- |
-| **Transcribe, then Prune Audio** | Evict raw client PCM audio turns older than 2–3 turns; retain their text transcripts in history. | Spoken audio is re-billed at \$3.00/M tokens. Text transcripts cost \$0.75/M tokens. You get identical semantic grounding at **75%–83% lower cost**. |
-| **Rolling Structured FactStore** | Maintain a JSON digest (`under 60 tokens`) of extracted user facts (`{name, pin, car_model, budget}`); re-inject each turn. | Survives 5k FIFO sliding window eviction. Even if Turn 1 was evicted 10 minutes ago, the agent remembers the caller's postal code and vehicle preference. |
-| **Pin System Instructions** | Declare persistent constraints in `setup.systemInstruction`. | The built-in sliding window never evicts system instructions or pinned prefix turns. |
-
-<LosslessPruningFlow />
-
----
-
-### The FactStore implementation pattern
-
-```python
-# Rolling fact store injected into turn context (under 60 tokens)
-fact_digest = {
-    "user_name": "Vikram",
-    "pin_code": "110001",
-    "vehicle_tier": "AMG GT Coupe",
-    "budget": "Flexible"
-}
-
-# Re-inject during user turn payload so key facts survive 5k FIFO eviction
-turn_prefix = f"[Active Context FactStore: {json.dumps(fact_digest)}]\n"
-```
-
----
-
-## Architecture comparison: unmanaged vs. three-pillar production stack
-
-Below is the itemized receipt comparison for a typical **3-minute enterprise customer support call (18 back-and-forth turns)**, incorporating realistic **~1,000 tokens/turn** active prompt overhead:
-
-| Call Dimension | Unoptimized Baseline (Monolithic) | Production Stack (3 Pillars Enabled) | Concrete Savings |
-| :--- | :--- | :--- | :--- |
-| **Base Audio Streaming** (3.0 mins) | `$0.069` ($0.023/min continuous audio) | `$0.069` ($0.023/min continuous audio) | Identical audio quality |
-| **0–5s Bounced Calls** (30%–50% of calls) | 4,500 tokens billed on instant drop (`$0.0034`) | **Card 1 Opening (~120 tok + scaffolding)** | **&gt;80% savings** on dropped calls |
-| **Prompt Re-Billing Tax** (18 turns) | 4,500 tok &times; 18 turns = 81k tok (**`$0.061`**) | **~1,000 tok/turn** &times; 18 turns = 18k tok (**`$0.014`**) | **77% reduction** in prompt tax |
-| **Carried Audio History** (18 turns) | Raw caller audio snowballs at $3.00/M (**`$0.116`**) | **Pruned to Text ($0.75/M) + 5k Cap** (**`$0.017`**) | **85% reduction** in memory tax |
-| **Total 3-Minute Call Cost** | **`$0.246` (`$0.082 / min`)** 🔴 | **`$0.100` (`$0.033 / min`)** 🟢 | **60% total cost reduction** |
-| **10-Minute Long Call Cost/Min** | Climbs to **`$0.16+ / min`** (quadratic snowball) | Stays flat at **`~$0.031 / min`** (5k cap) | **&gt;80% long-call savings** |
-
----
-
-## Summary: production checklist
-
-No single optimization solves telephony voice economics in isolation. Layer all three pillars into a unified production pipeline:
-
-1. **0s – 5s (Call inception: Pillar 2)**: Initialize with a featherlight `SOP_01_OPENING` card (~120 tokens) so the 30%–50% of calls that bounce in under 5 seconds burn virtually nothing.
-2. **Turn 1 – Turn 3 (Funnel progression: Pillars 2 &amp; 3)**: Keep active prompt overhead around **~1,000 tokens/turn** by injecting phase cards (`send_client_content(turn_complete=False)`) only when milestones advance, and prune caller audio older than 2 turns into text transcripts (**$0.75/M** instead of **$3.00/M**).
-3. **Minute 2+ (Long-call safety net: Pillars 1 &amp; 3)**: Configure server-side sliding window compression (`trigger_tokens: 5000`, `target_tokens: 3500`) to automatically flush stale turns while anchoring key entities in a `<60 token` FactStore.
-
-> **The Production Golden Rule:**  
-> *Start lean (Pillar 2), convert voice memos to text notes (Pillar 3), and put a sticky note on top of a 5k shredder (Pillar 1).* Together, these three patterns lock blended telephony costs at **~\$0.028 – \$0.035 / minute** while maintaining sub-600ms latency.
