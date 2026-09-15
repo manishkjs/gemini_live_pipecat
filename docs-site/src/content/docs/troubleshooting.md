@@ -103,8 +103,11 @@ Some backends **silently fall back** to a default model when you request one tha
 is not on their allowlist. Log the **effective** model the server used, not the
 one you asked for.
 
-Related: if you are on public AI Studio and the newest Live models close with
-`1008`, they are experiment-gated there. Move to Vertex AI.
+If a connection closes with `1008` during setup, verify that your model name
+matches the provider format (`gemini-3.1-flash-live-preview` or
+`projects/…/locations/…/publishers/google/models/gemini-3.1-flash-live-preview`),
+that the API is enabled on your Cloud project, and that your quota tier or
+service account has access to the requested model.
 
 ## Audio sounds sped up or slowed down
 

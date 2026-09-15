@@ -94,7 +94,8 @@ gcloud run deploy voice-backend \
   --service-account="voice-backend@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
-Only the **AI Studio** path needs an API key; even then, store it in Secret Manager rather than the container image:
+For **Google AI Studio in production**, pass your API key via Secret Manager rather
+than baking it into the container image:
 
 ```bash
 gcloud run deploy voice-backend \

@@ -18,25 +18,39 @@ then stream 16 kHz PCM in and play 24 kHz PCM out.
 
 This is the first decision, and getting it wrong costs you an afternoon.
 
-| | **Vertex AI** <Badge text="production" variant="success" /> | **AI Studio** <Badge text="prototyping" variant="note" /> |
+Both Google AI Studio and Vertex AI run on Google's unified infrastructure stack and Cloud Billing. Choose based on your organization's compliance and governance boundaries.
+
+| | **Google AI Studio** <Badge text="production" variant="success" /> | **Vertex AI** <Badge text="enterprise compliance" variant="note" /> |
 | --- | --- | --- |
-| **Host** | `us-central1-aiplatform.googleapis.com` | `generativelanguage.googleapis.com` |
-| **API version** | `v1beta1` | `v1alpha` / `v1beta` |
-| **WebSocket path** | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` |
-| **Auth** | OAuth bearer (ADC / service account) | `?key=$GEMINI_API_KEY` |
-| **Model form** | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` | `models/<model>` |
-| **Org policy, VPC-SC, CMEK** | Yes | No |
+| **Target Workload** | Production deployments where regulatory compliance certifications are not an obstacle | Enterprise deployments requiring HIPAA, SOC 2, VPC-SC, CMEK, or custom Cloud ToS |
+| **Host** | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **API version** | `v1alpha` / `v1beta` | `v1beta1` |
+| **WebSocket path** | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
+| **Auth** | API key (`?key=$GEMINI_API_KEY`) with Cloud Billing tiers | OAuth bearer (Application Default Credentials / service account) |
+| **Model form** | `models/<model>` | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` |
+| **Data residency & VPC-SC** | Global endpoint, standard Google APIs terms | Regional endpoints, VPC Service Controls, CMEK |
+| **Compliance (HIPAA / SOC 2)** | Not in compliance audit scope | Fully certified under Google Cloud enterprise terms |
 
-<Aside type="danger" title="Newest Live models are gated on public AI Studio">
-The current-generation Live preview models are **experiment-gated** on the public
-AI Studio gateway. Connecting there returns close code **`1008` Policy
-Violation**, which resembles an auth failure and often delays diagnosis.
+<Aside type="note" title="Production on AI Studio vs. Vertex AI">
+Google AI Studio is built for production at scale. It handles millions of active API developers and high-volume production traffic backed by Google Cloud Billing and tiered rate limits.
 
-**If you are building anything real, use Vertex AI.** Use AI Studio only for
-throwaway prototypes on a generally-available Live model.
+- **Deploy on Google AI Studio** when you want lightweight API key provisioning, faster setup, and high-throughput production usage without enterprise compliance friction.
+- **Deploy on Vertex AI** when you require enterprise compliance boundaries: VPC Service Controls data perimeters, customer-managed encryption keys (CMEK), HIPAA Business Associate Agreements (BAAs), SOC 2 compliance reports, regional data residency, or negotiated enterprise Master Services Agreements.
 </Aside>
 
-## 2. Authenticate (Vertex path)
+## 2. Authenticate
+
+### Path A: Google AI Studio (Production API key)
+
+For production deployments where enterprise compliance boundaries are not required, create an API key in [Google AI Studio](https://aistudio.google.com/apikey) linked to your Google Cloud Billing project:
+
+```bash
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+### Path B: Vertex AI (Enterprise IAM / ADC)
+
+For workloads requiring VPC Service Controls, CMEK, or HIPAA/SOC 2 compliance:
 
 <Steps>
 
@@ -59,7 +73,7 @@ throwaway prototypes on a generally-available Live model.
      --role="roles/aiplatform.user"
    ```
 
-   Building a cascade (STT → LLM → TTS) instead? Add `roles/speech.client` and
+   Building a cascade (STT -> LLM -> TTS) instead? Add `roles/speech.client` and
    `roles/texttospeech.client`.
 
 3. **Set up Application Default Credentials, including the quota project.**
@@ -70,7 +84,7 @@ throwaway prototypes on a generally-available Live model.
    ```
 
    <Aside type="caution">
-   Skipping `set-quota-project` is the single most common setup failure. Your
+   Skipping `set-quota-project` is the single most common setup failure on Vertex AI. Your
    token authenticates fine, then every call fails with a quota or permission
    error that never mentions the real cause.
    </Aside>
@@ -92,13 +106,18 @@ import asyncio, os, wave
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-live-2.5-flash"  # use a Live model available to your project
+# Modern Gemini Live model
+MODEL = "gemini-3.1-flash-live-preview"
 
+# Option A: Vertex AI (Enterprise ADC / Service Account)
 client = genai.Client(
     vertexai=True,
     project=os.environ["PROJECT_ID"],
     location=os.environ.get("LOCATION", "us-central1"),
 )
+
+# Option B: Google AI Studio (Production API key)
+# client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 config = types.LiveConnectConfig(
     # AUDIO only. Never ["AUDIO", "TEXT"] (see gotchas below).
@@ -168,7 +187,7 @@ A minimal `setup` frame:
 ```json
 {
   "setup": {
-    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/MODEL",
+    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview",
     "systemInstruction": {
       "parts": [{ "text": "You are a warm, concise voice assistant." }]
     },
@@ -289,7 +308,7 @@ The three you will hit first:
 | --- | --- |
 | **`1006`** | Abnormal close, no handshake. Proxy blocked the upgrade, TLS failed, or the network dropped. |
 | **`1007`** | Invalid payload. Usually `["AUDIO","TEXT"]`, a bad voice name, or malformed `setup`. |
-| **`1008`** | Policy violation. Either normal session rotation, or a model gated on your surface. |
+| **`1008`** | Policy violation. Either normal session rotation, or an unauthorized or misspelled model name. |
 
 The full table (including codes `1000`, `1011`, and how to distinguish rotation from policy blocks) lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
 
