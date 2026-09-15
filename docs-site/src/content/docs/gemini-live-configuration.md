@@ -1,9 +1,9 @@
 ---
 title: Configuration reference
-description: The wire envelopes, the setup frame, and every session option — one page to bookmark.
+description: The wire envelopes, the setup frame, and every session option in one reference guide.
 ---
 
-This is the **lookup page** — every WebSocket frame, every `setup` field, and every
+This is the **reference page** for every WebSocket frame, `setup` field, and
 session option in one place. For the tutorial framing, see
 [Getting started](/gemini_live_pipecat/getting-started/); for the concurrency model
 behind these frames, see [Architecture](/gemini_live_pipecat/architecture/).
@@ -17,10 +17,10 @@ before the handshake completes; everything else follows `setupComplete`.
 
 | Frame | When you send it | Enters history? |
 | --- | --- | --- |
-| `setup` | **First frame only**, alone, before anything else | — |
+| `setup` | **First frame only**, alone, before anything else | N/A |
 | `clientContent` | Turn-based input you want remembered; also interrupts output | Yes |
 | `realtimeInput` | Continuous audio/video/text stream | No |
-| `toolResponse` | The result of a function the model asked you to run | — |
+| `toolResponse` | The result of a function the model asked you to run | N/A |
 
 ### Server → client
 
@@ -45,34 +45,33 @@ The distinction people get wrong most. Mic audio goes on `realtimeInput`
 ## The `setup` frame
 
 Declared once, at session start. Most fields are **immutable for the life of the
-session** — to change them, tear down the socket and open a new one.
+session**. To change them, close the socket and open a new one.
 
 | Field | Sets | Notes |
 | --- | --- | --- |
 | `model` | The Live model | Vertex needs the full `projects/…/locations/…/publishers/google/models/…` path |
 | `systemInstruction` | The agent's behavior | **Immutable.** No update frame exists |
-| `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never both — `["AUDIO","TEXT"]` closes with `1007` |
+| `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never both (`["AUDIO","TEXT"]` closes with `1007`) |
 | `generationConfig.speechConfig` | Voice + language | Voice names are **case-sensitive** |
 | `tools` | Function declarations | See [Tools & function calling](/gemini_live_pipecat/tools/) |
 | `realtimeInputConfig.automaticActivityDetection` | VAD behavior | Sensitivity, silence window, prefix padding |
 | `outputAudioTranscription` | Text alongside audio | `{}` to enable |
 | `inputAudioTranscription` | Transcript of user speech | `{}` to enable |
 | `sessionResumption` | Transparent reconnects | `{}` to enable; see [Architecture](/gemini_live_pipecat/architecture/#session-resumption) |
-| `contextWindowCompression` | Auto-trim long sessions | Lossy by default — see [Optimization patterns](/gemini_live_pipecat/optimization/) |
+| `contextWindowCompression` | Auto-trim long sessions | See [Optimization patterns](/gemini_live_pipecat/optimization/) for tuning |
 
 For a complete minimal `setup` payload with real values, see
 [Getting started → the raw protocol](/gemini_live_pipecat/getting-started/#4-what-the-raw-protocol-looks-like).
 
 ## Voices and language
 
-- **Voice** — a prebuilt voice name in `speechConfig`. Names are **case-sensitive**; an invalid one closes the connection during setup.
-- **Language** — set the output language with a BCP-47 code (`en-US`, `hi-IN`, …).
+- **Voice**: A prebuilt voice name in `speechConfig`. Names are **case-sensitive**; an invalid one closes the connection during setup.
+- **Language**: Set the output language with a BCP-47 code (`en-US`, `hi-IN`, etc.).
 - Native audio is **single-speaker**.
 
 ## Voice-activity detection (VAD)
 
-Automatic VAD is on by default — the server decides when the user starts and stops
-speaking. Tunable under `realtimeInputConfig.automaticActivityDetection`:
+Automatic VAD is on by default; the server decides when the user starts and stops speaking. Tunable under `realtimeInputConfig.automaticActivityDetection`:
 
 | Knob | Effect | Field-tested default |
 | --- | --- | --- |
@@ -88,12 +87,12 @@ user is talking.
 
 A session returns **either audio or text**, not both as audio. Request the one you
 need in `generationConfig.responseModalities`. For a live transcript alongside
-audio, enable transcription — do **not** add `TEXT` as a second modality.
+audio, enable transcription; do **not** add `TEXT` as a second modality.
 
 ## Transcription
 
 Enable `inputAudioTranscription` and/or `outputAudioTranscription` in `setup`.
-Transcripts stream in fragments with a `finished` flag — append fragments until
+Transcripts stream in fragments with a `finished` flag; append fragments until
 `finished` is true, then close that line.
 
 ## Native options worth knowing
@@ -101,11 +100,11 @@ Transcripts stream in fragments with a `finished` flag — append fragments unti
 | Option | Why it matters |
 | --- | --- |
 | **Media resolution** | Lower resolution for video/screenshare frames cuts input token cost |
-| **Context window compression** | Compresses older context so long sessions do not overflow — [tune it carefully](/gemini_live_pipecat/optimization/) |
+| **Context window compression** | Compresses older context so long sessions do not overflow (see [Optimization patterns](/gemini_live_pipecat/optimization/)) |
 | **Thinking budget** | Set to zero to disable "thinking" tokens for the lowest latency and cost |
 
 :::note
 Field names on the wire are camelCase (`responseModalities`); the Python SDK
 exposes snake_case equivalents (`response_modalities`). This page uses the wire
-names — see [Getting started](/gemini_live_pipecat/getting-started/) for the SDK forms.
+names; see [Getting started](/gemini_live_pipecat/getting-started/) for the SDK forms.
 :::

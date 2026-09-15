@@ -3,7 +3,7 @@ title: Tools & function calling
 description: Non-blocking tools, the five failure modes that freeze a voice agent, and cancellation on barge-in.
 ---
 
-Tools let the model take actions — look up an order, book a slot, query a
+Tools let the model take actions: look up an order, book a slot, query a
 balance. In a **voice** agent, how you run tools decides whether the conversation
 feels alive or frozen.
 
@@ -64,7 +64,7 @@ different cause.
 
 Multi-tool batching queues typically flush on server `TURN_COMPLETE`. If you
 track non-blocking calls in that same turn-level buffer, their results are
-trapped waiting for a flush **that never comes** — the turn already ended. The
+trapped waiting for a flush **that never comes** because the turn already ended. The
 response sits in memory forever.
 
 ```python
@@ -97,7 +97,7 @@ Let the model speak its own filler instead.
 
 Returning a placeholder response to "keep things moving" **resolves the turn
 early**. The model then verbalizes hallucinated progress updates, and treats your
-real data — when it finally arrives — as an unrelated user interjection.
+real data (when it arrives) as an unrelated user interjection.
 
 Return a `FunctionResponse` exactly once, with the real result.
 
@@ -132,9 +132,9 @@ Large tool menus cause redundant and incorrect calls. Three rules:
 
 1. **Put deterministic routing in your application**, not in the model. State
    machines belong in Python, not in prose.
-2. **Keep system instructions lean** — persona, tone, and safety. Strip
+2. **Keep system instructions lean**: persona, tone, and safety. Strip
    line-of-business decision trees out of them.
-3. **Expose a dynamic allow-list** — only the tools valid for the current
+3. **Expose a dynamic allow-list**: only the tools valid for the current
    conversation state.
 
 ## Cancellation on barge-in
@@ -156,7 +156,7 @@ handle produces one orphaned trace fragment per turn.
 
 ## Common failure modes, condensed
 
-- **Mismatched ids** — always echo the exact `id` from the `toolCall`.
-- **Responding to cancelled calls** — drop them silently.
-- **Serial execution** — run independent tools concurrently.
-- **Silent gaps** — always cover tool latency with speech.
+- **Mismatched ids**: Always echo the exact `id` from the `toolCall`.
+- **Responding to cancelled calls**: Drop them silently.
+- **Serial execution**: Run independent tools concurrently.
+- **Silent gaps**: Always cover tool latency with speech.

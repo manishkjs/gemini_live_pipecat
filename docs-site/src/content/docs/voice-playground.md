@@ -1,6 +1,6 @@
 ---
 title: Voice Studio
-description: Talk to a live Gemini agent in your browser and compare native vs cascade — before you write any code.
+description: Talk to a live Gemini agent in your browser and compare native vs cascade before you write any code.
 ---
 
 **Voice Studio** is the companion demo in this repo. Talk to a live agent in the
@@ -26,14 +26,13 @@ npm run dev
 ```
 
 Open the URL Vite prints. Persona previews run immediately with browser speech
-synthesis — no credentials needed. For real Gemini audio, point **Settings** at a
+synthesis with no credentials needed. For real Gemini audio, point **Settings** at a
 running backend (see [Deployment](/gemini_live_pipecat/deployment/)).
 
 ## Personas
 
 Voice Studio ships with ready-made agent personas so you can hear how system
-instructions shape behavior, tone, and language. Pick one, press start, and talk —
-or choose **Custom Agent** and paste your own system instructions.
+instructions shape behavior, tone, and language. Pick one, press start, and talk, or choose **Custom Agent** to paste custom instructions.
 
 ## Model choices
 

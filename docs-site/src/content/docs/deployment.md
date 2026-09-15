@@ -9,7 +9,7 @@ deployment decisions.
 ## Containerize
 
 Package your backend as a container that listens on a single port and speaks
-WebSocket. Keep the image lean — install only what the server needs.
+WebSocket. Keep the image lean: install only what the server needs.
 
 ## Deploy to Cloud Run
 
@@ -25,13 +25,13 @@ gcloud run deploy voice-backend \
 
 What matters for real-time voice:
 
-- **`--timeout 3600`** — a voice session is one long request. The default 5-minute
+- **`--timeout 3600`**: A voice session is one long request. The default 5-minute
   timeout will cut calls off mid-conversation.
-- **`--session-affinity`** — keep a client pinned to the same instance for the life
+- **`--session-affinity`**: Keep a client pinned to the same instance for the life
   of the WebSocket.
-- **CPU and memory** — audio processing is CPU-bound; provision accordingly and
+- **CPU and memory**: Audio processing is CPU-bound; provision accordingly and
   load-test before launch.
-- **Concurrency** — each active call consumes an instance slot. Size max instances
+- **Concurrency**: Each active call consumes an instance slot. Size max instances
   to your expected concurrent-call peak.
 
 ## When Cloud Run is not enough
@@ -59,7 +59,7 @@ reconnect.
 
 ## Sizing
 
-Each active call occupies a slot for its entire duration — this is not
+Each active call occupies a slot for its entire duration. This is not
 request/response traffic where concurrency multiplies throughput.
 
 ```text
@@ -86,7 +86,7 @@ most common "it works locally but not in production" bug.
 
 **On Vertex AI (recommended), you ship no API key at all.** Cloud Run and GKE
 workloads authenticate as their **service account** through Application Default
-Credentials — grant that account `roles/aiplatform.user` and the SDK finds the
+Credentials: Grant that account `roles/aiplatform.user` and the SDK finds the
 credentials automatically. Nothing to mount, nothing to leak.
 
 ```bash
@@ -94,8 +94,7 @@ gcloud run deploy voice-backend \
   --service-account="voice-backend@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
-Only the **AI Studio** path needs an API key — and even then it belongs in Secret
-Manager, never in the image:
+Only the **AI Studio** path needs an API key; even then, store it in Secret Manager rather than the container image:
 
 ```bash
 gcloud run deploy voice-backend \
@@ -106,5 +105,4 @@ gcloud run deploy voice-backend \
 
 This documentation site is deployed **separately** to GitHub Pages and is
 excluded from the application container and Cloud Build context. Your runtime
-image should contain only the server (and, if applicable, the built client) —
-nothing else.
+image should contain only the server (and, if applicable, the built client).

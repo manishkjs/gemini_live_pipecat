@@ -9,61 +9,61 @@ import SessionLifecycle from '../../components/SessionLifecycle.astro';
 import MessageReplay from '../../components/MessageReplay.astro';
 import { Aside } from '@astrojs/starlight/components';
 
-Gemini Live is **stateful and bidirectional**. Four ideas explain almost
-everything you will see in production: the two input channels, the turn
+Gemini Live is **stateful and bidirectional**. Four concepts explain almost
+everything you will see in production: two input channels, the turn
 lifecycle, interruptions, and session resumption.
 
-## It is a conversation, not a request
+## Continuous conversation over a single socket
 
 <DuplexFlow />
 
-There is no "send request, await response." Audio moves in both directions
-continuously over a single socket, and the model can start speaking before you
-have stopped.
+There is no "send request, await response" loop. Audio moves in both directions
+continuously over a single WebSocket, and the model can start speaking before you
+stop.
 
-## Two input channels (do not confuse them)
+## Two input channels
 
 | Channel | Purpose | Enters history? | Interrupts model? |
 | --- | --- | --- | --- |
-| **`realtimeInput`** | Continuous mic/camera stream | No | No |
-| **`clientContent`** | Deliberate, turn-based messages | Yes | Yes |
+| **`realtimeInput`** | Continuous microphone/camera stream | No | No |
+| **`clientContent`** | Explicit turn-based messages | Yes | Yes |
 
 Send live microphone audio as `realtimeInput`. Use `clientContent` only for
-explicit turns you want remembered.
+explicit turns you want committed to conversational history.
 
 <Aside type="caution">
-Getting this backwards is a classic. Mic audio sent as `clientContent` interrupts
-the model constantly and bloats context. A real user turn sent as `realtimeInput`
-is never remembered.
+Do not swap these channels. Microphone audio sent as `clientContent` interrupts
+the model on every chunk and bloats context. A user turn sent as `realtimeInput`
+is never saved to session history.
 </Aside>
 
 ## The turn lifecycle
 
-Three signals, and they are **not** interchangeable:
+Three server signals govern playback:
 
 | Signal | What it actually means |
 | --- | --- |
-| **`generationComplete`** | The model stopped generating. Your buffer may still hold seconds of audio. |
+| **`generationComplete`** | The model finished generating tokens. Your playback buffer may still hold seconds of audio. |
 | **`turnComplete`** | The logical end of the turn. |
-| **`interrupted`** | The user barged in. Stop and discard queued audio *now*. |
+| **`interrupted`** | The user barged in. Discard queued audio immediately. |
 
-The gap between the first two is where most "the agent talks over me" bugs live.
+The gap between `generationComplete` and `turnComplete` is where most "the agent talks over me" bugs occur.
 
 ## Interruptions (barge-in)
 
 <BargeIn />
 
-Natural conversation requires talking over the agent. When the server detects
-speech during playback it sends `interrupted` — and the audio you must throw away
+Conversational voice requires callers to talk over the agent. When the server detects
+speech during playback, it sends `interrupted`. The audio you must discard
 is audio **you have already received**. If you only stop requesting new chunks,
-the agent keeps talking from the queue.
+the agent keeps talking from the local playout buffer.
 
-Treat it as a hard, immediate stop:
+Handle it with an immediate stop:
 
 ```javascript
 function onInterrupted() {
-  playbackQueue.length = 0;   // drop everything not yet played
-  currentSource?.stop();      // kill the chunk mid-flight
+  playbackQueue.length = 0;   // drop unplayed chunks
+  currentSource?.stop();      // cut off active playback immediately
 }
 ```
 
@@ -71,32 +71,27 @@ function onInterrupted() {
 
 <SessionLifecycle />
 
-The server ends sessions proactively roughly every 10–15 minutes. **This is
-routine.** It emits a `sessionResumptionUpdate` carrying a handle, then closes
-with `1008`. Treat that close as expected, not as a failure.
+The server closes sessions proactively roughly every 10 to 15 minutes. This is
+expected protocol behavior. It emits a `sessionResumptionUpdate` containing a handle,
+then closes with code `1008`. Treat this close as routine rotation rather than a crash.
 
-To survive it transparently:
+To resume cleanly:
 
-1. **Enable resumption** in `setup`.
-2. **Number and buffer** every message you send.
-3. The server tells you the **last index it safely received** — discard buffered
-   messages up to there.
-4. On reconnect, open a new socket **with the stored handle**, then **replay the
-   remaining buffer before sending anything new**.
-5. If the handle expired, start fresh.
+1. Enable resumption in `setup`.
+2. Number and buffer every message you send.
+3. The server reports the last index it safely received. Discard buffered messages up to that index.
+4. On reconnect, open a new socket with the stored handle, then replay the remaining buffer before sending new turns.
+5. If the handle expired, start a fresh session.
 
 <MessageReplay />
 
 <Aside type="tip">
-Higher-level frameworks usually manage this for you — see
-[Choosing a framework](/gemini_live_pipecat/frameworks/). On a raw WebSocket you
-own this state machine, and it is the single largest chunk of work in a production
-voice backend.
+Higher-level frameworks like Pipecat handle resumption state machines automatically. See
+[Choosing a framework](/gemini_live_pipecat/frameworks/). On a raw WebSocket, you implement
+this message replay queue directly.
 </Aside>
 
 ## Jitter buffering
 
-Networks deliver audio chunks unevenly. A small **playout buffer** — queue a few
-chunks, then play at a steady cadence — trades a little latency for a lot of
-smoothness. Tune it deliberately; see
-[Audio engineering](/gemini_live_pipecat/audio-engineering/).
+Networks deliver audio packets unevenly. A small playout buffer (queuing a few chunks and playing them at a steady cadence) trades minimal latency for smooth, glitch-free audio. See
+[Audio engineering](/gemini_live_pipecat/audio-engineering/) for buffer tuning.

@@ -1,15 +1,13 @@
 ---
 title: Getting started
-description: From zero to a working Gemini Live voice turn — the real endpoints, the real code, and the six things that will break first.
+description: "From zero to a working Gemini Live voice turn: endpoints, code, and six common failure modes."
 ---
 
 import { Steps, Aside, Badge } from '@astrojs/starlight/components';
 import HandshakeSequence from '../../components/HandshakeSequence.astro';
 
 You can have a Gemini Live agent talking back to you in about fifteen minutes.
-Most of that time is authentication. Almost all of the pain that follows comes
-from six specific mistakes — so this page front-loads them instead of leaving
-them for you to discover at 2am.
+Most of that time is authentication. Most early friction comes from six specific mistakes. This guide covers them upfront before they cause issues in production.
 
 <Aside type="tip" title="The one-sentence version">
 Open a WebSocket, send **`setup`** and nothing else, wait for **`setupComplete`**,
@@ -32,8 +30,7 @@ This is the first decision, and getting it wrong costs you an afternoon.
 <Aside type="danger" title="Newest Live models are gated on public AI Studio">
 The current-generation Live preview models are **experiment-gated** on the public
 AI Studio gateway. Connecting there returns close code **`1008` Policy
-Violation** — which looks exactly like an auth failure and sends people down the
-wrong rabbit hole for hours.
+Violation**, which resembles an auth failure and often delays diagnosis.
 
 **If you are building anything real, use Vertex AI.** Use AI Studio only for
 throwaway prototypes on a generally-available Live model.
@@ -65,7 +62,7 @@ throwaway prototypes on a generally-available Live model.
    Building a cascade (STT → LLM → TTS) instead? Add `roles/speech.client` and
    `roles/texttospeech.client`.
 
-3. **Set up Application Default Credentials — including the quota project.**
+3. **Set up Application Default Credentials, including the quota project.**
 
    ```bash
    gcloud auth application-default login
@@ -104,7 +101,7 @@ client = genai.Client(
 )
 
 config = types.LiveConnectConfig(
-    # AUDIO only. Never ["AUDIO", "TEXT"] — see the gotchas below.
+    # AUDIO only. Never ["AUDIO", "TEXT"] (see gotchas below).
     response_modalities=["AUDIO"],
     system_instruction="You are a warm, concise voice assistant. Keep replies short.",
     speech_config=types.SpeechConfig(
@@ -154,7 +151,7 @@ asyncio.run(main())
 
 ```bash
 PROJECT_ID="$PROJECT_ID" python first_turn.py
-# then play reply.wav — macOS: `open reply.wav` · Linux: `xdg-open reply.wav`
+# Play reply.wav (macOS: `open reply.wav`, Linux: `xdg-open reply.wav`)
 ```
 
 If you hear a voice, your plumbing is correct and everything from here is
@@ -162,9 +159,7 @@ refinement.
 
 ## 4. What the raw protocol looks like
 
-The SDK hides the handshake. When you write your own client — and for a
-production voice backend you probably will — this is the shape you are
-implementing:
+The SDK hides the handshake. When you build your own production backend, this is the protocol flow you implement:
 
 <HandshakeSequence />
 
@@ -197,9 +192,7 @@ A minimal `setup` frame:
 }
 ```
 
-The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log that
-session ID — it is the stable key that survives every reconnect, and the only
-sane thing to index your traces by.
+The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log that session ID: it is the stable key that survives reconnects, and the most reliable index for traces.
 
 <Aside type="tip" title="Why those VAD numbers">
 `LOW` sensitivity on both ends plus a **1200 ms** silence window is the setting
@@ -211,26 +204,24 @@ and room noise; a shorter silence window guillotines people mid-thought.
 
 | Direction | Format |
 | --- | --- |
-| **Input** (you → model) | 16 kHz, 16-bit little-endian, **mono** PCM — `audio/pcm;rate=16000` |
-| **Output** (model → you) | 24 kHz, 16-bit, **mono** PCM — `audio/pcm;rate=24000` |
+| **Input** (you → model) | 16 kHz, 16-bit little-endian, **mono** PCM (`audio/pcm;rate=16000`) |
+| **Output** (model → you) | 24 kHz, 16-bit, **mono** PCM (`audio/pcm;rate=24000`) |
 
 These are not negotiable, and they are **different rates in each direction**.
 Resample on the client if your capture device disagrees.
 
 <Aside type="caution" title="The chipmunk test">
-Playback too fast and high-pitched? You are playing 24 kHz audio at 16 kHz — or
-some other rate mismatch. Slow and demonic? The reverse. Before debugging
+If playback is fast and high-pitched, you are playing 24 kHz audio at 16 kHz or have an equivalent sample rate mismatch. Slow and demonic? The reverse. Before debugging
 anything else, confirm both rates independently.
 </Aside>
 
-Capture audio with the two constraints that matter most — the full set is in
-[Audio engineering](/gemini_live_pipecat/audio-engineering/#clean-the-signal-at-the-source):
+Capture audio with these core constraints (see the full set in [Audio engineering](/gemini_live_pipecat/audio-engineering/#clean-the-signal-at-the-source)):
 
 ```javascript
 const stream = await navigator.mediaDevices.getUserMedia({
   audio: {
     sampleRate: 16000,
-    echoCancellation: true,   // critical — stops the model hearing itself
+    echoCancellation: true,   // stops the model hearing its own speaker output
     // plus noiseSuppression, autoGainControl, channelCount: 1
   },
 });
@@ -243,8 +234,7 @@ itself in a loop. This looks like a mysterious model bug. It is an audio-routing
 bug.
 </Aside>
 
-Do the PCM capture and resampling in an **`AudioWorklet`**, not on the main
-thread — DOM rendering will otherwise stutter your audio. See
+Do the PCM capture and resampling in an **`AudioWorklet`**, not on the main thread, where DOM rendering and layout can cause audio jitter. See
 [Audio engineering](/gemini_live_pipecat/audio-engineering/).
 
 ## 6. The six things that will break first
@@ -257,7 +247,7 @@ thread — DOM rendering will otherwise stutter your audio. See
    send behind a "handshake done" flag.
 
 2. **You asked for `["AUDIO", "TEXT"]`.**
-   A session returns audio **or** text — never both as response modalities.
+   A session returns audio **or** text, never both as response modalities.
    Requesting both closes the connection with **`1007`**. If you want a
    transcript alongside speech, that is `outputAudioTranscription`, not a second
    modality.
@@ -301,12 +291,10 @@ The three you will hit first:
 | **`1007`** | Invalid payload. Usually `["AUDIO","TEXT"]`, a bad voice name, or malformed `setup`. |
 | **`1008`** | Policy violation. Either normal session rotation, or a model gated on your surface. |
 
-The full table — `1000`, `1011`, and how to tell rotation from a real policy block
-— lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
+The full table (including codes `1000`, `1011`, and how to distinguish rotation from policy blocks) lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
 
 <Aside type="note">
-Voice names are **case-sensitive**. `aoede` fails; `Aoede` works — and the
-failure surfaces at setup time as a generic close, not a helpful message.
+Voice names are **case-sensitive**. `aoede` fails, whereas `Aoede` succeeds. Invalid voice names close the socket during setup without detailed error payloads.
 </Aside>
 
 ## 8. Verify before you build
@@ -316,25 +304,17 @@ Run through this once. Every item catches a bug that is far more expensive later
 - [ ] `setupComplete` arrives and you logged the `sessionId`.
 - [ ] You hear speech, at natural pitch, from `reply.wav`.
 - [ ] Output transcription matches what you hear.
-- [ ] Talking over the agent produces an `interrupted` signal — and playback
-      actually stops.
+- [ ] Talking over the agent produces an `interrupted` signal, and playback stops immediately.
 - [ ] A call left running for 20 minutes survives at least one reconnect.
 - [ ] `usageMetadata` is being recorded so you can reason about cost.
 - [ ] Time from end-of-speech to first audio chunk is measured, not guessed.
 
 ## Next steps
 
-- [Architecture](/gemini_live_pipecat/architecture/) — turns, interruptions, and
-  the resumption state machine you now know you need.
-- [Audio engineering](/gemini_live_pipecat/audio-engineering/) — worklets, jitter
-  buffers, backpressure, and client-side VAD.
-- [Configuration reference](/gemini_live_pipecat/gemini-live-configuration/) —
-  every `setup` option and wire envelope in one place.
-- [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/) — measure
-  the number your users actually feel.
-- [Optimization patterns](/gemini_live_pipecat/optimization/) — keep long
-  sessions cheap without dropping the conversation.
-- [Tools & function calling](/gemini_live_pipecat/tools/) — keep the conversation
-  alive while your backend works.
-- [Deployment](/gemini_live_pipecat/deployment/) — ship the WebSocket backend to
-  Cloud Run or GKE without the session-affinity and timeout traps.
+- [Architecture](/gemini_live_pipecat/architecture/): Turns, interruptions, and the resumption state machine.
+- [Audio engineering](/gemini_live_pipecat/audio-engineering/): AudioWorklets, jitter buffers, backpressure, and client-side VAD.
+- [Configuration reference](/gemini_live_pipecat/gemini-live-configuration/): Wire envelopes and setup options reference.
+- [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/): Accurate latency metrics and diagnostic logging.
+- [Optimization patterns](/gemini_live_pipecat/optimization/): Context compression, prompt cards, and audio pruning.
+- [Tools & function calling](/gemini_live_pipecat/tools/): Non-blocking tools and async execution patterns.
+- [Deployment](/gemini_live_pipecat/deployment/): Production container setup on Cloud Run and GKE.
