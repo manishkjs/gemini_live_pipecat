@@ -68,6 +68,8 @@ VALID_LLM_MODELS = {
 VALID_TTS_MODELS = {
     "gemini-3.8-flash-tts",
     "gemini-3.8-flash-lite-tts",
+    "gemini-3.8-flash-tts-aistudio",
+    "gemini-3.8-flash-lite-tts-aistudio",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-lite-preview-tts",
     "gemini-2.5-flash-preview-tts",
@@ -76,8 +78,8 @@ VALID_TTS_MODELS = {
 }
 
 AI_STUDIO_TTS_MODELS = {
-    "gemini-3.8-flash-tts",
-    "gemini-3.8-flash-lite-tts",
+    "gemini-3.8-flash-tts-aistudio",
+    "gemini-3.8-flash-lite-tts-aistudio",
 }
 
 PERSONA_VOICE_DESIGN_DEFAULTS = {
@@ -210,6 +212,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             await self.cancel_task(self._streaming_task)
             self._streaming_task = None
 
+    async def cancel(self, frame: CancelFrame):
+        await super().cancel(frame)
+        if self._streaming_task:
+            await self.cancel_task(self._streaming_task)
+            self._streaming_task = None
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             self._user_started_speaking_time = time.time()
@@ -317,64 +325,63 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                             self._user_stopped_speaking_time = None
                             self._user_started_speaking_time = None
 
-                        async for response in session.receive():
-                            if meter and getattr(response, "usage_metadata", None):
-                                observe_tokens(meter, cost_key, response.usage_metadata)
-                                await publish_cost(self)
-                            server_content = getattr(response, "server_content", None)
-                            if not server_content:
-                                continue
+                        while True:
+                            async for response in session.receive():
+                                if meter and getattr(response, "usage_metadata", None):
+                                    observe_tokens(meter, cost_key, response.usage_metadata)
+                                    await publish_cost(self)
+                                server_content = getattr(response, "server_content", None)
+                                if not server_content:
+                                    continue
 
-                            primary_lang = self.languages[0].value if self.languages else "en-US"
+                                primary_lang = self.languages[0].value if self.languages else "en-US"
 
-                            # 1. Real-time interim transcript for instantaneous UI streaming
-                            interim = getattr(server_content, "interim_input_transcription", None)
-                            if interim and interim.text:
-                                interim_text = interim.text.strip()
-                                if interim_text:
-                                    await self.push_frame(InterimTranscriptionFrame(
-                                        text=interim_text,
-                                        user_id=self._user_id,
-                                        timestamp=time_now_iso8601(),
-                                        language=primary_lang
-                                    ))
+                                # 1. Real-time interim transcript for instantaneous UI streaming
+                                interim = getattr(server_content, "interim_input_transcription", None)
+                                if interim and interim.text:
+                                    interim_text = interim.text.strip()
+                                    if interim_text:
+                                        await self.push_frame(InterimTranscriptionFrame(
+                                            text=interim_text,
+                                            user_id=self._user_id,
+                                            timestamp=time_now_iso8601(),
+                                            language=primary_lang
+                                        ))
 
-                            # 2. Progressive / finalized speech turn transcript from Gemini 3.5 Transcribe Live
-                            input_transcription = getattr(server_content, "input_transcription", None)
-                            if input_transcription and input_transcription.text:
-                                transcript_text = input_transcription.text.strip()
-                                if transcript_text:
-                                    # If new speech starts after a finalized turn, clear dedup guard
-                                    if last_emitted_final and not transcript_text.startswith(last_emitted_final):
-                                        last_emitted_final = None
-                                    pending_text = transcript_text
-                                    # Always stream live preview to the single interim bubble immediately
-                                    await self.push_frame(InterimTranscriptionFrame(
-                                        text=transcript_text,
-                                        user_id=self._user_id,
-                                        timestamp=time_now_iso8601(),
-                                        language=primary_lang
-                                    ))
+                                # 2. Progressive / finalized speech turn transcript from Gemini 3.5 Transcribe Live
+                                input_transcription = getattr(server_content, "input_transcription", None)
+                                if input_transcription and input_transcription.text:
+                                    transcript_text = input_transcription.text.strip()
+                                    if transcript_text:
+                                        if last_emitted_final and not transcript_text.startswith(last_emitted_final):
+                                            last_emitted_final = None
+                                        pending_text = transcript_text
+                                        await self.push_frame(InterimTranscriptionFrame(
+                                            text=transcript_text,
+                                            user_id=self._user_id,
+                                            timestamp=time_now_iso8601(),
+                                            language=primary_lang
+                                        ))
+                                        if flush_task and not flush_task.done():
+                                            flush_task.cancel()
+                                        is_explicit_end = bool(
+                                            getattr(server_content, "turn_complete", False)
+                                            or getattr(input_transcription, "finished", False)
+                                        )
+                                        flush_task = asyncio.create_task(
+                                            flush_final_transcript(0.05 if is_explicit_end else 0.35)
+                                        )
+                                elif getattr(server_content, "turn_complete", False) and pending_text:
                                     if flush_task and not flush_task.done():
                                         flush_task.cancel()
-                                    is_explicit_end = bool(
-                                        getattr(server_content, "turn_complete", False)
-                                        or getattr(input_transcription, "finished", False)
-                                    )
-                                    flush_task = asyncio.create_task(
-                                        flush_final_transcript(0.05 if is_explicit_end else 0.48)
-                                    )
-                            elif getattr(server_content, "turn_complete", False) and pending_text:
-                                if flush_task and not flush_task.done():
-                                    flush_task.cancel()
-                                flush_task = asyncio.create_task(flush_final_transcript(0.0))
+                                    flush_task = asyncio.create_task(flush_final_transcript(0.0))
 
                     send_task = asyncio.create_task(send_audio())
                     receive_task = asyncio.create_task(receive_transcripts())
                     
                     done, pending = await asyncio.wait(
                         [send_task, receive_task],
-                        return_when=asyncio.FIRST_EXCEPTION
+                        return_when=asyncio.FIRST_COMPLETED
                     )
                     for task in pending:
                         task.cancel()
@@ -545,11 +552,12 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             voice_id = voice_id.split("-")[-1]
 
         self._is_aistudio = model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
+        clean_tts_model = (model or "gemini-3.8-flash-lite-tts").replace("-aistudio", "")
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy"
 
         settings = GeminiTTSService.Settings(
             voice=voice_id,
-            model=model,
+            model=clean_tts_model,
             prompt=voice_prompt,
             language=language_code or "en-US",
         )
@@ -557,9 +565,12 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         if self._is_aistudio:
             self._client = genai.Client(api_key=api_key)
             self._cost_provider = "gemini"
+            self._cost_region = "global"
         else:
-            self._client = genai.Client(vertexai=True, project=project_id, location=location)
+            tts_location = "global" if "3.8" in clean_tts_model else location
+            self._client = genai.Client(vertexai=True, project=project_id, location=tts_location)
             self._cost_provider = "vertex"
+            self._cost_region = tts_location
         self._voice_prompt = voice_prompt
         self._language_code = language_code
         self._tts_style = tts_style
@@ -567,7 +578,6 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         self._tts_pitch = tts_pitch
         self._tts_pace = tts_pace
         self._tts_pace_label = tts_pace_label
-        self._cost_region = "global" if self._is_aistudio else location
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
@@ -949,24 +959,34 @@ class TranscriptionBroadcaster(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM:
-            text = ""
-            if isinstance(frame, (TranscriptionFrame, TextFrame)):
-                text = frame.text
-
-            if text:
-                ui_text = re.sub(r'\[.*?\]', '', text).strip()
+            if isinstance(frame, InterimTranscriptionFrame):
+                ui_text = re.sub(r'\[.*?\]', '', frame.text or "").strip()
                 if ui_text:
-                    logger.info(f"TranscriptionBroadcaster [{self.participant}]: {ui_text}")
                     await self.push_frame(OutputTransportMessageFrame(message={
                         "label": "rtvi-ai",
                         "type": "server-message",
                         "data": {
-                            'type': 'transcription',
+                            'type': 'interim_transcription',
                             'participant': self.participant,
-                            'response_id': getattr(frame, 'response_id', None),
                             'text': ui_text
                         }
                     }))
+            elif isinstance(frame, (TranscriptionFrame, TextFrame)):
+                text = frame.text
+                if text:
+                    ui_text = re.sub(r'\[.*?\]', '', text).strip()
+                    if ui_text:
+                        logger.info(f"TranscriptionBroadcaster [{self.participant}]: {ui_text}")
+                        await self.push_frame(OutputTransportMessageFrame(message={
+                            "label": "rtvi-ai",
+                            "type": "server-message",
+                            "data": {
+                                'type': 'transcription',
+                                'participant': self.participant,
+                                'response_id': getattr(frame, 'response_id', None),
+                                'text': ui_text
+                            }
+                        }))
 
         await self.push_frame(frame, direction)
 

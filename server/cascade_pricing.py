@@ -61,10 +61,11 @@ def rate_card(stage, model, provider, region="global", at=None):
     elif stage == "stt" and provider == "cloud-speech-v2" and model in ("chirp_3", "chirp_2", "latest_long", "latest_short", "telephony"):
         # Standard recognition, first monthly tier. Invoice tiers are account-wide.
         card.update(audio_minute="0.016", source=SOURCES["speech"])
-    elif stage == "tts" and model in ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts") and provider in ("gemini", "vertex"):
+    elif stage == "tts" and model.replace("-aistudio", "") in ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts") and provider in ("gemini", "vertex"):
+        clean_tts_model = model.replace("-aistudio", "")
         card.update(
             text_in="0.50",
-            audio_out="9.00" if model == "gemini-3.8-flash-tts" else "6.00",
+            audio_out="9.00" if clean_tts_model == "gemini-3.8-flash-tts" else "6.00",
             source=SOURCES["gemini"],
         )
     elif stage == "tts" and provider == "vertex" and model in (

@@ -227,34 +227,72 @@ export const LIVE_MODEL_GROUPS: { label: string; options: [string, string][] }[]
 
 export const LIVE_MODELS: [string, string][] = LIVE_MODEL_GROUPS.flatMap((group) => group.options);
 
-export const CASCADE_STT_MODELS: [string, string][] = [
-  ["gemini-3.5-transcribe-live-aistudio", "gemini-3.5-transcribe-live-aistudio (AI Studio Live STT - Default)"],
-  ["gemini-3.5-transcribe-live-preview", "gemini-3.5-transcribe-live-preview (Vertex AI Live STT - Global)"],
-  ["chirp_3", "chirp_3 (Cloud Speech v2 Multilingual - US)"],
-  ["chirp_2", "chirp_2 (Cloud Speech v2 - us-central1)"],
-  ["latest_long", "latest_long (General Long - US)"],
-  ["telephony", "telephony (Telephony - US)"],
+export const CASCADE_STT_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
+  {
+    label: "Vertex AI & Google Cloud (STT)",
+    options: [
+      ["gemini-3.5-transcribe-live-preview", "gemini-3.5-transcribe-live-preview (Vertex AI Global)"],
+      ["chirp_3", "chirp_3 (Vertex / Cloud Speech v2 Multilingual)"],
+      ["chirp_2", "chirp_2 (Vertex / Cloud Speech v2 - us-central1)"],
+      ["latest_long", "latest_long (Cloud Speech v2 Long)"],
+      ["telephony", "telephony (Cloud Speech v2 Telephony)"],
+    ],
+  },
+  {
+    label: "AI Studio (Gemini Live STT)",
+    options: [
+      ["gemini-3.5-transcribe-live-aistudio", "gemini-3.5-transcribe-live (AI Studio - Default)"],
+    ],
+  },
 ];
 
-export const CASCADE_LLM_MODELS: [string, string][] = [
-  ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite (Vertex AI - Default)"],
-  ["gemini-3.5-flash-lite-aistudio", "gemini-3.5-flash-lite (AI Studio)"],
-  ["gemini-3.8-flash", "gemini-3.8-flash (Vertex AI)"],
-  ["gemini-3.8-flash-aistudio", "gemini-3.8-flash (AI Studio)"],
-  ["gemini-3.7-flash", "gemini-3.7-flash (Vertex AI)"],
-  ["gemini-2.5-flash", "gemini-2.5-flash (Vertex AI)"],
-  ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite (Vertex AI)"],
+export const CASCADE_STT_MODELS: [string, string][] = CASCADE_STT_MODEL_GROUPS.flatMap((group) => group.options);
+
+export const CASCADE_LLM_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
+  {
+    label: "Vertex AI (Enterprise LLM)",
+    options: [
+      ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite (Vertex AI - Default)"],
+      ["gemini-3.8-flash", "gemini-3.8-flash (Vertex AI)"],
+      ["gemini-3.7-flash", "gemini-3.7-flash (Vertex AI)"],
+      ["gemini-2.5-flash", "gemini-2.5-flash (Vertex AI)"],
+      ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite (Vertex AI)"],
+    ],
+  },
+  {
+    label: "AI Studio (Gemini LLM)",
+    options: [
+      ["gemini-3.5-flash-lite-aistudio", "gemini-3.5-flash-lite (AI Studio)"],
+      ["gemini-3.8-flash-aistudio", "gemini-3.8-flash (AI Studio)"],
+    ],
+  },
 ];
 
-export const CASCADE_TTS_MODELS: [string, string][] = [
-  ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (Gemini 3.8 Flash Lite TTS - $0.50/$6.00 - Default)"],
-  ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (Gemini 3.8 Flash TTS - Voice Design - $0.50/$9.00)"],
-  ["gemini-3.1-flash-tts-preview", "gemini-3.1-flash-tts-preview (Vertex Gemini 3.1 Flash TTS)"],
-  ["gemini-2.5-flash-lite-preview-tts", "gemini-2.5-flash-lite-preview-tts (Gemini 2.5)"],
-  ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-preview-tts (Gemini 2.5)"],
-  ["gemini-2.5-pro-preview-tts", "gemini-2.5-pro-preview-tts (Gemini 2.5)"],
-  ["google-tts", "Google TTS (Chirp 3 HD Indian Voices)"],
+export const CASCADE_LLM_MODELS: [string, string][] = CASCADE_LLM_MODEL_GROUPS.flatMap((group) => group.options);
+
+export const CASCADE_TTS_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
+  {
+    label: "Vertex AI (Gemini TTS & Cloud TTS)",
+    options: [
+      ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (Vertex AI - $0.50/$6.00 - Default)"],
+      ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (Vertex AI Voice Design - $0.50/$9.00)"],
+      ["gemini-3.1-flash-tts-preview", "gemini-3.1-flash-tts-preview (Vertex AI)"],
+      ["gemini-2.5-flash-lite-preview-tts", "gemini-2.5-flash-lite-preview-tts (Vertex AI)"],
+      ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-preview-tts (Vertex AI)"],
+      ["gemini-2.5-pro-preview-tts", "gemini-2.5-pro-preview-tts (Vertex AI)"],
+      ["google-tts", "Google Cloud TTS (Chirp 3 HD Indian Voices)"],
+    ],
+  },
+  {
+    label: "AI Studio (Gemini TTS)",
+    options: [
+      ["gemini-3.8-flash-lite-tts-aistudio", "gemini-3.8-flash-lite-tts (AI Studio - $0.50/$6.00)"],
+      ["gemini-3.8-flash-tts-aistudio", "gemini-3.8-flash-tts (AI Studio Voice Design - $0.50/$9.00)"],
+    ],
+  },
 ];
+
+export const CASCADE_TTS_MODELS: [string, string][] = CASCADE_TTS_MODEL_GROUPS.flatMap((group) => group.options);
 
 export const TTS_STYLE_OPTIONS: [string, string][] = [
   ["Empathetic", "Empathetic (Warm & understanding)"],

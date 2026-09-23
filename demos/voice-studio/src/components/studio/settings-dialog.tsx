@@ -10,8 +10,11 @@ import {
   LIVE_MODELS,
   LIVE_MODEL_GROUPS,
   CASCADE_STT_MODELS,
+  CASCADE_STT_MODEL_GROUPS,
   CASCADE_LLM_MODELS,
+  CASCADE_LLM_MODEL_GROUPS,
   CASCADE_TTS_MODELS,
+  CASCADE_TTS_MODEL_GROUPS,
   TTS_STYLE_OPTIONS,
   TTS_ACCENT_OPTIONS,
   TTS_PITCH_OPTIONS,
@@ -346,6 +349,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   disabled={active}
                   onChange={(value) => update("sttModel", value)}
                   options={CASCADE_STT_MODELS}
+                  groups={CASCADE_STT_MODEL_GROUPS}
                 />
 
                 <label className="toggle-label" style={{ marginBottom: "10px" }}>
@@ -365,6 +369,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   disabled={active}
                   onChange={(value) => update("llmModel", value)}
                   options={CASCADE_LLM_MODELS}
+                  groups={CASCADE_LLM_MODEL_GROUPS}
                 />
 
                 {/* 3. TTS */}
@@ -381,6 +386,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                     }
                   }}
                   options={CASCADE_TTS_MODELS}
+                  groups={CASCADE_TTS_MODEL_GROUPS}
                 />
 
                 {settings.ttsModel !== "google-tts" && (

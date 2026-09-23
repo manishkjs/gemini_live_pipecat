@@ -147,6 +147,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       if (data.participant?.toLowerCase() === "user") {
         turnStarted = false;
         lastUserAt = performance.now();
+        events.onPartialUser("");
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
         pendingSTTLatency = null;
         lastTurnSTTLatency = effStt ?? null;
