@@ -36,6 +36,7 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Getting started', slug: 'getting-started' },
+            { label: 'Gemini Live Skill', slug: 'gemini-live-skill' },
             { label: 'Voice Studio', slug: 'voice-playground' },
           ],
         },
