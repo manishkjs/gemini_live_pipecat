@@ -11,6 +11,10 @@ export default defineConfig({
         target: "http://127.0.0.1:7860",
         changeOrigin: true,
       },
+      "/persona-prompt": {
+        target: "http://127.0.0.1:7860",
+        changeOrigin: true,
+      },
       "/api": {
         target: "http://127.0.0.1:7860",
         changeOrigin: true,

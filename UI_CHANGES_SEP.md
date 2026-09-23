@@ -1,12 +1,12 @@
-# Voice Studio: ui-changes-sep
+# Voice Studio on ui-changes-sep
 
-This branch contains the complete Voice Studio UI from the demo plus generated Indian persona portraits, names, localized system instructions and matching sample conversations.
+Updated: 13 September 2026. Work stays on `ui-changes-sep`; main is unchanged.
 
-The implementation is isolated in `demos/voice-studio`. The original `client/`, `server/`, deployment configuration and dependency manifests are unchanged. Continue to run or deploy the original application with its existing workflow.
+This branch now includes Voice Studio, backend persona/tool execution, provider usage accounting and scoped diagnostics. The original client remains available. There is no automatic deployment.
 
-## Start the new UI in your IDE
+## Run locally
 
-After checking out `ui-changes-sep`, open the repository in your IDE. Use Node.js 22.13 or newer:
+Use Node.js 22.13 or newer:
 
 ```bash
 cd demos/voice-studio
@@ -14,55 +14,60 @@ npm ci
 npm run dev
 ```
 
-Open the local URL printed by Vite. The four persona previews run immediately with browser speech synthesis and no model credentials. Custom Agent lets you enter your own instructions.
+Run the backend with its configured Google credentials, then select its URL in Voice Studio Settings. For local development the backend normally listens at `http://localhost:7860`. Build `client/` for the original server-hosted interface and `/diagnostics` page.
 
-For real audio, run the repository's existing backend with its usual credentials, then set its URL in Voice Studio's **Settings**. Use `http://localhost:7860` for local development or the deployed HTTPS address. Both **Gemini Live** and **Cascade** use that backend. Configure CORS to allow the UI origin.
+Both Gemini Live and Cascade keep the existing `/connect` POST and protobuf websocket contract. Sample conversations use browser speech; they are scripted previews, not model or latency benchmarks. Custom Agent accepts your own instructions or leaves the backend default in place when blank.
 
-## Existing UI and observability
+## Current personas
 
-The original client and its Observability tab, chart icon, configuration controls and `/diagnostics` console remain unchanged. Voice Studio adds an **Observability** chart icon that opens the configured backend's existing `/diagnostics` dashboard, plus an **Original UI** shortcut to the backend root. Both open in a separate tab and remain available during a voice session. If the server URL is missing or invalid, configure it in Settings first. Build the original `client/` for these server-hosted pages to be available.
-
-## Personas
-
-| Name | Role | Demo setting |
+| Agent | Demo role | Execution |
 | --- | --- | --- |
-| Meera | Debt Collector | A respectful payment discussion for fictional Sahaj Finance |
-| Kavya | Reservation Agent | A birthday dinner request at fictional Aangan in Bengaluru |
-| Kabir | Storyteller | Original, interactive stories with Indian settings when requested |
-| Aisha | AI Companion | Warm everyday conversation in the user's preferred language |
-| Custom Agent | Your own role | Supply instructions or keep the backend's existing prompt |
+| Meera | Debt Collector | Editable static preset |
+| Kavya | Glass Buddy | Smartglasses demo tools; four Live prompt cards |
+| Kabir | Storyteller | Editable static preset |
+| Aisha | AI Companion | Editable static preset |
+| Ranvir | Car Negotiator | Server-owned concession ladder |
+| Ananya | Mutual Fund Advisor | Mock portfolio/NAV/SIP tools; four Live prompt cards |
+| Pragya | Lamborghini Concierge | Model-selected Live cards; mock booking tool |
+| Custom Agent | Your instructions | Existing basic implementation flow |
 
-All portraits depict fictional adults and were AI-generated. They are checked into `demos/voice-studio/public/personas/`; there is no runtime dependency on an image service. Exact generation prompts and provenance are in `demos/voice-studio/docs/portrait-generation.json`.
+Pragya, Ananya and Kavya load cards on demand in Live and use the existing monolithic prompt choice in Cascade. Each journey declares its own phase IDs. Failed/pending card delivery leaves the last successfully delivered topic selected. Phase selection is model-driven; no transcript regex router is used.
 
-## Where to continue editing
+The seven fictional portraits ship as 400×400 WebP files, approximately 105 KB combined. Original generated PNGs remain in git history; generation provenance and derivative settings are in `demos/voice-studio/docs/portrait-generation.json`.
 
-- `demos/voice-studio/src/lib/personas.ts`: names, image paths, prompts, sample conversations and demo journeys.
-- `demos/voice-studio/src/components/voice-studio.tsx`: persona cards, compact agent display, transcript, session controls and settings.
-- `demos/voice-studio/src/components/voice-studio.css`: layout, colors, responsive behavior and portrait sizing.
-- `demos/voice-studio/src/lib/voice-session.ts`: validated connection parameters and prompt selection.
-- `demos/voice-studio/src/lib/pipecat-session.ts`: microphone/audio transport and custom backend event adapter.
-- `demos/voice-studio/tests/voice-contract.test.mjs`: connection and persona contract checks.
+## Where to edit
 
-## Keep these integration constraints
+- `server/persona_prompt_cards/`: canonical session presets, root prompts and phase cards. Existing professional/signature styles are preserved. Custom instructions override editable personas; architecture-owned prompts remain locked.
+- `server/persona_tools/`: execution engines and domain state. `server/persona_registry.py` is the application facade.
+- `server/persona_identity.py`: shared canonical IDs and compatibility aliases for architecture, prompts and card lookup. Existing UI IDs and `wealth-manager` remain supported.
+- `demos/voice-studio/src/lib/personas.ts`: display metadata, offline/older-backend preset fallback, journey phase IDs and sample conversations. Connected preset requests resolve through the backend and use its prompt preview.
+- `demos/voice-studio/src/components/studio/`: persona picker, compact conversation display, transcript, settings and cost panel.
+- `server/cascade_pricing.py` and `cascade_metering.py`: exact model/provider rates and provider-request accounting. See [pricing mechanisms and limits](docs/cascade-pricing.md).
+- `server/turn_telemetry.py`, `processors/turn_telemetry.py` and `diagnostic_buffer.py`: lifecycle, explicit metric emission and bounded diagnostics. See [telemetry contract](docs/telemetry.md).
+- `server/session_access.py`: expiring diagnostic/join capabilities and one-use instructions. `/connect` validates configuration before allocation and releases newly allocated sessions and voice profiles if setup fails.
 
-- Keep the existing backend's `/connect` POST and protobuf WebSocket contract. Gemini Live uses `bot_type=gemini-live`; Cascade uses `bot_type=tts-llm-stt` with separate STT, LLM and TTS model parameters.
-- The custom server does not emit the full `bot-ready` handshake. The adapter uses the public transport APIs and sends the repository's `start_trigger` greeting event.
-- Audio input is 16 kHz; assistant output is 24 kHz. Stop microphone tracks, queued audio, timers and transport connections when ending a session.
-- Blank Custom Agent instructions must omit `system_instruction` so the backend defaults survive. Editable overrides are limited to 1,000 characters because the existing backend only accepts complete prompts shorter than 1,500 characters.
-- Presets are Indian in context but respect the selected language and user preference. Keep the reservations/payment demos fictional; no real booking or payment is claimed.
-- Keep previews visibly labeled as scripted browser speech. They do not measure or simulate either model's response quality or latency.
-- Keep the compact animation and wider transcript. Respect reduced motion, retain accessible controls and prevent persona/engine changes during an active session.
-- Keep open-source dependency names and license notices in code; visible UI branding remains Voice Studio.
+## Integration constraints
 
-## Check before continuing
+Keep the observability icon, original UI shortcut, both session engines, custom instructions, compact animation, readable transcript and reduced-motion support. Stop microphone tracks, queued audio, timers and transport connections when a call ends.
+
+A custom clone key is credential text sent in the POST body only. It applies only to Custom-Key; male/female clones use configured server files. Missing keys fail explicitly. Cascade cloning requires Chirp 3 HD, and Gemini TTS has its own named-voice picker. Live text-to-Chirp still requires a provider/model that supports text output; this change does not assert support on native-audio-only models.
+
+Diagnostics require the call's `session_id` and in-memory `X-Session-Token`. Open the original standalone dashboard from an active call so it receives its capability. A bookmarked dashboard without that capability cannot read a call's data. Raw logs remain available, but numeric metrics never come from log parsing.
+
+Custom instructions retain the existing 4,000 estimated-token editor limit. Generated websocket URLs carry a one-use connection handle; prompt text is stored briefly on the server. API/list-price estimates are not Cloud Billing invoices. Transcribe Live usage scope, continuous STT turn correlation and caller-perceived playback latency remain explicit verification gates.
+
+`temp.md` remains tracked for agent coordination. Root and server Docker ignore files exclude it, including nested copies; `.gcloudignore` also excludes it from the documented Cloud Run source upload. Keep durable implementation contracts in `docs/`. Do not delete the coordination file as a packaging step.
+
+## Verification
 
 ```bash
-npm test
-npm run build
+# From the repository root, in your backend environment:
+PYTHONPATH=server python -m pytest -q server/tests
+# From each frontend directory:
+npm test       # Voice Studio
+npm run build  # Voice Studio and original client
 ```
 
-The build includes TypeScript checking. Contract checks verify both engines, every agent, custom prompt handling, backend defaults, URL validation and portrait assets. Real backend audio still needs an end-to-end check with your own running backend and credentials; a successful build is not proof of a completed Gemini call.
+The backend UI-contract test imports the real Voice Studio persona exports with Node.js 22.13+ and checks backend IDs, editor locks and phase cards. It skips explicitly if Node is absent; run the combined check with Node available before merging.
 
-## Scope
-
-This branch is an additive, standalone UI. It does not replace the original client's default page or deploy anything automatically. If you later integrate it into the original client or server, do that as a separate reviewed change so the existing app remains available.
+This checkpoint passed 176 backend tests plus 45 subtests, 100 Voice Studio tests and both production builds. Existing dependency deprecation and bundle-size warnings remain. Docker/gcloud are unavailable in the task environment, so packaging exclusions were inspected without a container build or deployment. The task browser could not open the local preview (`ERR_BLOCKED_BY_CLIENT`), so no full browser visual/microphone validation is claimed. Follow the real-call checklist in `docs/telemetry.md` before presenting the demo as production-verified.

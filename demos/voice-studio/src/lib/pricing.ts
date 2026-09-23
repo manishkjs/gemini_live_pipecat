@@ -4,11 +4,11 @@
  * - Gemini 2.5 Flash Native Audio: https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-native-audio
  * - Gemini 3.1 Flash Live Preview: https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-live-preview
  *
- * NOTE: Pricing data is strictly enabled ONLY for Gemini 2.5 Native Audio and Gemini 3.1 Live Preview.
- * 3.5 models and Cascade engine have NO pricing data.
+ * This module contains rates for Gemini 2.5 Native Audio and Gemini 3.1 Live Preview.
+ * Unsupported Live models show an unavailable rate; Cascade uses cascade-cost.ts.
  */
 
-export type LivePricingTier = "gemini-2.5" | "gemini-3.1";
+export type LivePricingTier = "gemini-2.5" | "gemini-3.1" | "gemini-3.8";
 
 export interface LiveRateCard {
   tier: LivePricingTier;
@@ -45,28 +45,50 @@ export const LIVE_RATE_CARDS: Record<LivePricingTier, LiveRateCard> = {
     estHourlyUSD: "$3.00/1M audio in · $12.00/1M audio out",
     description: "Paid Tier: $3.00/1M audio in ($0.005/min), $12.00/1M audio out ($0.018/min) · $0.75/1M text in, $4.50/1M text out",
   },
+  "gemini-3.8": {
+    tier: "gemini-3.8",
+    displayName: "Gemini 3.8 Live",
+    badge: "3.8 Live",
+    audioInPerMillion: 3.00,
+    audioOutPerMillion: 12.00,
+    textInPerMillion: 0.75,
+    textOutPerMillion: 4.50,
+    estHourlyUSD: "$3.00/1M audio in · $12.00/1M audio out",
+    description: "Paid Tier: $3.00/1M audio in ($0.005/min), $12.00/1M audio out ($0.018/min) · $0.75/1M text in, $4.50/1M text out",
+  },
 };
 
 /**
  * Resolves the rate card for a given Gemini Live model identifier.
- * Returns null if the model is 3.5 or any non-2.5/non-3.1 model.
+ * Returns null if the model is 3.5 or any non-2.5/non-3.1/non-3.8 model.
  */
 export function getLiveRateCard(model: string): LiveRateCard | null {
   if (!model) return null;
   const clean = model.toLowerCase().replace(/-aistudio$/, "");
 
-  // Explicitly reject 3.5 models per user requirement
+  // No verified 3.5 Live rate card is configured here.
   if (clean.includes("3.5")) {
     return null;
   }
 
-  // Gemini 2.5 Flash Native Audio / Live
-  if (clean.includes("2.5") || clean.includes("gemini-live-2.5")) {
+  // Gemini 3.8 Live (AI Studio & Vertex AI mirror)
+  if (
+    clean === "gemini-3.8-live" ||
+    clean === "gemini-3.8-live-extended-thinking" ||
+    clean === "gemini-3.8-live-preview" ||
+    clean === "gemini-3.8-live-extended-thinking-preview" ||
+    clean === "gemini-3.8-flash-live-preview"
+  ) {
+    return LIVE_RATE_CARDS["gemini-3.8"];
+  }
+
+  // Gemini 2.5 Flash Native Audio / Live (Vertex AI & AI Studio)
+  if (/^(gemini-live-2\.5-flash(?:-native-audio)?|gemini-2\.5-flash-native-audio(?:-latest|-preview(?:-\d{2}-\d{4})?)?)$/.test(clean)) {
     return LIVE_RATE_CARDS["gemini-2.5"];
   }
 
   // Gemini 3.1 Flash Live Preview
-  if (clean.includes("3.1") && (clean.includes("live") || clean.includes("flash"))) {
+  if (clean === "gemini-3.1-flash-live-preview") {
     return LIVE_RATE_CARDS["gemini-3.1"];
   }
 
@@ -74,9 +96,9 @@ export function getLiveRateCard(model: string): LiveRateCard | null {
 }
 
 /**
- * Strictly gates cost visibility.
- * Price is visible ONLY when engine is 'live' and model is Gemini 2.5 or 3.1 Live.
- * Returns false for Cascade engine, 3.5 models, or unsupported models.
+ * Whether a numeric Live cost can be calculated from a configured rate card.
+ * Unsupported Live models still display an unavailable-rate state in the UI.
+ * Cascade uses its own provider request ledger and cost display.
  */
 export function isLivePricingEligible(engine: string, model: string): boolean {
   if (engine !== "live") return false;
@@ -84,19 +106,25 @@ export function isLivePricingEligible(engine: string, model: string): boolean {
 }
 
 export interface UsageTokenData {
-  prompt_token_count?: number;
-  response_token_count?: number;
-  total_token_count?: number;
+  prompt_token_count?: number | null;
+  response_token_count?: number | null;
+  thoughts_token_count?: number | null;
+  total_token_count?: number | null;
   prompt_details?: { text?: number; audio?: number };
   response_details?: { text?: number; audio?: number };
 }
 
 export interface TurnCostResult {
   totalUSD: number;
+  minUSD: number;
+  maxUSD: number;
+  residualOutputTokens: number;
   audioInUSD: number;
   audioOutUSD: number;
   textInUSD: number;
   textOutUSD: number;
+  thoughtsTokens: number;
+  thoughtsUSD: number;
   /**
    * Prompt tokens that `prompt_token_count` bills but `prompt_tokens_details`
    * never attributes to a modality. Non-zero on `gemini-3.1-flash-live-preview`
@@ -115,82 +143,42 @@ export interface TurnCostResult {
 }
 
 /**
- * Computes exact turn cost based on model rate card and usage tokens.
+ * Estimates model cost, preserving uncertainty when modality detail is incomplete.
  */
 export function calculateTurnCost(model: string, usage?: UsageTokenData | null): TurnCostResult | null {
   if (!usage) return null;
   const card = getLiveRateCard(model);
   if (!card) return null;
 
-  let estimated = false;
-
-  const pd = (usage.prompt_details || {}) as Record<string, number>;
-  let audioInTokens = 0;
-  let textInTokens = 0;
-
-  for (const [key, val] of Object.entries(pd)) {
-    const k = key.toLowerCase();
-    const count = typeof val === "number" ? val : 0;
-    if (k.includes("audio")) {
-      audioInTokens += count;
-    } else if (k.includes("text")) {
-      textInTokens += count;
-    }
-  }
-
-  // If prompt details didn't specify modality, prompt tokens are predominantly text (system prompt + history)
-  if (audioInTokens === 0 && textInTokens === 0 && usage.prompt_token_count) {
-    textInTokens = usage.prompt_token_count;
-    estimated = true;
-  }
-
-  // Some models report a partial breakdown: the details are present but sum to
-  // less than prompt_token_count. Those tokens are still billed, so price them
-  // rather than dropping them. We cannot know their modality, so we charge the
-  // text rate — the conservative of the two — and flag the turn as estimated.
-  const attributedIn = audioInTokens + textInTokens;
-  const residualTokens = Math.max(0, (usage.prompt_token_count ?? attributedIn) - attributedIn);
-  if (residualTokens > 0) estimated = true;
-
-  const rd = (usage.response_details || {}) as Record<string, number>;
-  let audioOutTokens = 0;
-  let textOutTokens = 0;
-
-  for (const [key, val] of Object.entries(rd)) {
-    const k = key.toLowerCase();
-    const count = typeof val === "number" ? val : 0;
-    if (k.includes("audio")) {
-      audioOutTokens += count;
-    } else if (k.includes("text")) {
-      textOutTokens += count;
-    }
-  }
-
-  // In Gemini Live native audio flow, model response without explicit text detail is audio output
-  if (audioOutTokens === 0 && textOutTokens === 0 && usage.response_token_count) {
-    audioOutTokens = usage.response_token_count;
-    estimated = true;
-  }
-
-  const audioInUSD = (audioInTokens / 1_000_000) * card.audioInPerMillion;
-  const textInUSD = (textInTokens / 1_000_000) * card.textInPerMillion;
-  const audioOutUSD = (audioOutTokens / 1_000_000) * card.audioOutPerMillion;
-  const textOutUSD = (textOutTokens / 1_000_000) * card.textOutPerMillion;
-  const residualUSD = (residualTokens / 1_000_000) * card.textInPerMillion;
-
-  const totalUSD = audioInUSD + textInUSD + audioOutUSD + textOutUSD + residualUSD;
-
+  const counters = [usage.prompt_token_count, usage.response_token_count, usage.thoughts_token_count, usage.total_token_count];
+  const details = [...Object.values(usage.prompt_details ?? {}), ...Object.values(usage.response_details ?? {})];
+  if ([...counters, ...details].some(n => n != null && (!Number.isSafeInteger(n) || n < 0))) return null;
+  const split = accumulateSplit(EMPTY_TOKEN_SPLIT, usage);
+  const attributedIn = split.audioIn + split.textIn;
+  const attributedOut = split.audioOut + (split.textOut - split.thoughtsOut);
+  if ((usage.prompt_token_count != null && attributedIn > usage.prompt_token_count) ||
+      (usage.response_token_count != null && attributedOut > usage.response_token_count)) return null;
+  const audioInUSD = split.audioIn * card.audioInPerMillion / 1_000_000;
+  const textInUSD = split.textIn * card.textInPerMillion / 1_000_000;
+  const audioOutUSD = split.audioOut * card.audioOutPerMillion / 1_000_000;
+  const thoughtsUSD = split.thoughtsOut * card.textOutPerMillion / 1_000_000;
+  const textOutUSD = split.textOut * card.textOutPerMillion / 1_000_000;
+  const knownUSD = audioInUSD + textInUSD + audioOutUSD + textOutUSD;
+  const residualUSD = split.residualIn * card.textInPerMillion / 1_000_000;
+  // Unknown modalities have a range. Keep the historical point estimate for
+  // callers, but never present that assumption as a measured bill.
+  const minUSD = knownUSD + (split.residualIn * Math.min(card.textInPerMillion, card.audioInPerMillion)
+    + split.residualOut * Math.min(card.textOutPerMillion, card.audioOutPerMillion)) / 1_000_000;
+  const maxUSD = knownUSD + (split.residualIn * Math.max(card.textInPerMillion, card.audioInPerMillion)
+    + split.residualOut * Math.max(card.textOutPerMillion, card.audioOutPerMillion)) / 1_000_000;
   return {
-    totalUSD,
-    audioInUSD,
-    audioOutUSD,
-    textInUSD,
-    textOutUSD,
-    residualTokens,
-    residualUSD,
-    estimated,
-    tier: card.tier,
-    rateCard: card,
+    totalUSD: knownUSD + residualUSD + split.residualOut * card.audioOutPerMillion / 1_000_000,
+    minUSD, maxUSD, audioInUSD, textInUSD, audioOutUSD, textOutUSD,
+    thoughtsTokens: split.thoughtsOut, thoughtsUSD,
+    residualTokens: split.residualIn, residualOutputTokens: split.residualOut, residualUSD,
+    estimated: split.residualIn > 0 || split.residualOut > 0 ||
+      usage.prompt_token_count == null || usage.response_token_count == null,
+    tier: card.tier, rateCard: card,
   };
 }
 
@@ -201,6 +189,118 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
 export function formatCost(usd: number): string {
   if (!usd || usd <= 0) return "$0.0000";
   if (usd < 0.0001) return "<$0.0001";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
   if (usd < 1.0) return `$${usd.toFixed(4)}`;
   return `$${usd.toFixed(2)}`;
+}
+
+/**
+ * Estimates LLM token count for a text string.
+ *
+ * Script-aware, and mirrors `estimate_tokens()` in `server/agent_live.py` so
+ * the two halves of the app never disagree about the size of a prompt. Latin
+ * text runs ~3.8 characters per token; Devanagari runs closer to ~1.8, so a
+ * single divisor would let a Hindi instruction blow the budget while the
+ * counter still read comfortably under it.
+ */
+export function estimateTokens(text: string): number {
+  const t = text?.trim();
+  if (!t) return 0;
+  let nonAscii = 0;
+  for (const ch of t) {
+    const c = ch.codePointAt(0)!;
+    if (c > 0x007f) nonAscii++;
+  }
+  return Math.max(1, Math.round(nonAscii / 1.8 + (t.length - nonAscii) / 3.8));
+}
+
+/* ==========================================================================
+   SESSION TOKEN SPLIT
+   --------------------------------------------------------------------------
+   A single "Tokens: 16,562" figure is close to meaningless for a duplex voice
+   call, because the four buckets it merges are priced 24x apart end to end
+   ($0.50/M text-in vs $12.00/M audio-out). A session that is 80% audio costs
+   roughly six times one of the same token count that is 80% text.
+
+   These helpers keep the split honest in two ways the flat counter cannot:
+     - `residualIn` carries prompt tokens that `prompt_token_count` bills but
+       `prompt_tokens_details` never attributes (b/560037988). They are real
+       money and must not silently vanish into the text bucket.
+     - Accumulation is pure, so it can only ever be driven by the discrete
+       per-turn `usage` event, never by a streaming chunk callback.
+   ========================================================================== */
+
+export interface TokenSplit {
+  textIn: number;
+  audioIn: number;
+  /** Billed on input but unattributed to any modality by the server. */
+  residualIn: number;
+  textOut: number;
+  audioOut: number;
+  /** Thinking tokens (`thoughts_token_count`), also included in `textOut` at $4.50/1M. */
+  thoughtsOut: number;
+  /** Output tokens the server billed but left unattributed. */
+  residualOut: number;
+}
+
+export const EMPTY_TOKEN_SPLIT: TokenSplit = {
+  textIn: 0,
+  audioIn: 0,
+  residualIn: 0,
+  textOut: 0,
+  audioOut: 0,
+  thoughtsOut: 0,
+  residualOut: 0,
+};
+
+export function totalIn(s: TokenSplit): number {
+  return s.textIn + s.audioIn + s.residualIn;
+}
+
+export function totalOut(s: TokenSplit): number {
+  return s.textOut + s.audioOut + s.residualOut;
+}
+
+/**
+ * Folds one turn's `usage` payload into the running session split.
+ *
+ * Pure and total: an absent or malformed payload returns the accumulator
+ * untouched rather than poisoning the session counters with NaN.
+ */
+export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null): TokenSplit {
+  if (!usage) return acc;
+
+  const num = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0);
+
+  const pd = (usage.prompt_details || {}) as Record<string, number>;
+  const rd = (usage.response_details || {}) as Record<string, number>;
+
+  const modality = (details: Record<string, number>, name: string) => Object.entries(details)
+    .filter(([key]) => key.toLowerCase().replace(/^modality\./, "") === name)
+    .reduce((sum, [, value]) => sum + num(value), 0);
+  const textIn = modality(pd, "text");
+  const audioIn = modality(pd, "audio");
+  const textOut = modality(rd, "text");
+  const audioOut = modality(rd, "audio");
+  const thoughtsOut = num(usage.thoughts_token_count);
+
+  const promptTotal = num(usage.prompt_token_count);
+  const responseTotal = num(usage.response_token_count);
+
+  return {
+    textIn: acc.textIn + textIn,
+    audioIn: acc.audioIn + audioIn,
+    residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn),
+    // Per Google Gemini pricing, thoughts_token_count is billed at the Output Text rate ($4.50/1M)
+    textOut: acc.textOut + textOut + thoughtsOut,
+    audioOut: acc.audioOut + audioOut,
+    thoughtsOut: acc.thoughtsOut + thoughtsOut,
+    residualOut: acc.residualOut + Math.max(0, responseTotal - textOut - audioOut),
+  };
+}
+
+/** Compact token count for dense UI: 847, 1.2k, 16.6k. */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
 }

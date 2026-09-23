@@ -45,5 +45,14 @@
         "height": 1254
       }
     }
-  ]
+  ],
+  "delivery_optimization": {
+    "format": "WebP",
+    "dimensions": [
+      400,
+      400
+    ],
+    "quality": 85,
+    "note": "Original generated PNGs remain in git history; shipped files use the same basenames with .webp."
+  }
 }

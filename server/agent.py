@@ -4,6 +4,8 @@ import asyncio
 from typing import Optional, List
 import re
 from loguru import logger
+from diagnostic_buffer import current_session_id
+from response_identity import ResponseIdentity
 
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -20,7 +22,7 @@ from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   StartFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
+                                   StartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
                                    InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
@@ -35,6 +37,12 @@ from google import genai
 from google.genai import types
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
+import voice_profiles
+from turn_telemetry import TurnTracker
+from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
+from cascade_pricing import CascadeCostLedger
+from cascade_metering import publish_cost, observe_tokens, billed_duration
+
 
 VALID_STT_MODELS = {
     "gemini-3.5-transcribe-live-preview",
@@ -49,17 +57,70 @@ VALID_STT_MODELS = {
 
 VALID_LLM_MODELS = {
     "gemini-3.5-flash-lite",
+    "gemini-3.5-flash-lite-aistudio",
+    "gemini-3.8-flash",
+    "gemini-3.8-flash-aistudio",
     "gemini-3.7-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 }
 
 VALID_TTS_MODELS = {
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
     "gemini-3.1-flash-tts-preview",
     "gemini-2.5-flash-lite-preview-tts",
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
     "google-tts",
+}
+
+AI_STUDIO_TTS_MODELS = {
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
+}
+
+PERSONA_VOICE_DESIGN_DEFAULTS = {
+    "pragya": {
+        "voice": "Gacrux",
+        "style": "Warm & Friendly",
+        "pace": "Natural",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Poised, refined luxury automotive concierge. Warm, welcoming, confident Indian female voice.",
+    },
+    "debt-collector": {
+        "voice": "Gacrux",
+        "style": "Empathetic",
+        "pace": "Natural",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Calm, composed, empathetic yet firm financial collections advisor.",
+    },
+    "storyteller": {
+        "voice": "Gacrux",
+        "style": "Expressive / Dramatic",
+        "pace": "Conversational",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Immersive, expressive cinematic storyteller with engaging emotional range and suspenseful pauses.",
+    },
+    "mf-advisor": {
+        "voice": "Aoede",
+        "style": "Professional",
+        "pace": "Natural",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Clear, trustworthy, articulate wealth and mutual-fund financial advisor.",
+    },
+    "glass-buddy": {
+        "voice": "Aoede",
+        "style": "Cheerful",
+        "pace": "Conversational",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Friendly, upbeat smart-glasses AI companion.",
+    },
 }
 
 
@@ -78,10 +139,10 @@ def validate_llm_model(llm_model: Optional[str]) -> str:
 
 
 def validate_tts_model(tts_model: Optional[str]) -> str:
-    """Validates and sanitizes TTS model choice, defaulting to gemini-3.1-flash-tts-preview."""
+    """Validates and sanitizes TTS model choice, defaulting to gemini-3.8-flash-lite-tts."""
     if tts_model in VALID_TTS_MODELS:
         return tts_model
-    return "gemini-3.1-flash-tts-preview"
+    return "gemini-3.8-flash-lite-tts"
 
 
 class CustomProtobufSerializer(ProtobufFrameSerializer):
@@ -91,7 +152,7 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
         return await super().serialize(frame)
 
 
-class CustomGeminiTranscribeLiveService(STTService):
+class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
     """Speech-to-Text streaming service using Gemini 3.5 Transcribe Live.
     
     Supports both Vertex AI (Enterprise ADC) and Google AI Studio endpoints over WebSockets.
@@ -183,6 +244,12 @@ class CustomGeminiTranscribeLiveService(STTService):
             try:
                 async with self._client.aio.live.connect(model=self.model_name, config=config) as session:
                     logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
+                    meter = getattr(self, "_cascade_meter", None)
+                    cost_key = meter.begin(
+                        "stt", self.model_name, "gemini" if self.is_ai_studio else "vertex", self.location,
+                        issue="Transcribe Live usage scope needs runtime verification",
+                    ) if meter else None
+                    await publish_cost(self)
 
                     async def send_audio():
                         while True:
@@ -197,17 +264,74 @@ class CustomGeminiTranscribeLiveService(STTService):
                             self._audio_queue.task_done()
 
                     async def receive_transcripts():
+                        pending_text: Optional[str] = None
+                        last_emitted_final: Optional[str] = None
+                        flush_task: Optional[asyncio.Task] = None
+
+                        async def flush_final_transcript(delay: float = 0.0):
+                            nonlocal pending_text, last_emitted_final
+                            if delay > 0:
+                                await asyncio.sleep(delay)
+                            text_to_emit = (pending_text or "").strip()
+                            pending_text = None
+                            if not text_to_emit or text_to_emit == last_emitted_final:
+                                return
+                            last_emitted_final = text_to_emit
+
+                            now = time.time()
+                            stt_latency = None
+                            if self._user_stopped_speaking_time:
+                                elapsed = now - self._user_stopped_speaking_time
+                                if 0.03 <= elapsed <= 10.0:
+                                    stt_latency = elapsed
+                            elif self._last_audio_sent_time:
+                                elapsed = now - self._last_audio_sent_time
+                                if 0.03 <= elapsed <= 10.0:
+                                    stt_latency = elapsed
+
+                            if stt_latency is not None:
+                                logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
+                                await self.push_frame(OutputTransportMessageFrame(message={
+                                    "label": "rtvi-ai",
+                                    "type": "server-message",
+                                    "data": {
+                                        'type': 'metrics',
+                                        'payload': {'type': 'stt_latency', 'value': stt_latency}
+                                    }
+                                }))
+
+                            primary_lang = self.languages[0].value if self.languages else "en-US"
+                            await self.push_frame(TranscriptionFrame(
+                                text=text_to_emit,
+                                user_id=self._user_id,
+                                timestamp=time_now_iso8601(),
+                                language=primary_lang
+                            ))
+                            await self.stop_processing_metrics()
+                            if hasattr(self, "_handle_transcription"):
+                                await self._handle_transcription(
+                                    text_to_emit,
+                                    is_final=True,
+                                    language=primary_lang,
+                                )
+                            self._user_stopped_speaking_time = None
+                            self._user_started_speaking_time = None
+
                         async for response in session.receive():
+                            if meter and getattr(response, "usage_metadata", None):
+                                observe_tokens(meter, cost_key, response.usage_metadata)
+                                await publish_cost(self)
                             server_content = getattr(response, "server_content", None)
                             if not server_content:
                                 continue
-                            
+
+                            primary_lang = self.languages[0].value if self.languages else "en-US"
+
                             # 1. Real-time interim transcript for instantaneous UI streaming
                             interim = getattr(server_content, "interim_input_transcription", None)
                             if interim and interim.text:
                                 interim_text = interim.text.strip()
                                 if interim_text:
-                                    primary_lang = self.languages[0].value if self.languages else "en-US"
                                     await self.push_frame(InterimTranscriptionFrame(
                                         text=interim_text,
                                         user_id=self._user_id,
@@ -215,50 +339,35 @@ class CustomGeminiTranscribeLiveService(STTService):
                                         language=primary_lang
                                     ))
 
-                            # 2. Finalized speech turn transcript
+                            # 2. Progressive / finalized speech turn transcript from Gemini 3.5 Transcribe Live
                             input_transcription = getattr(server_content, "input_transcription", None)
                             if input_transcription and input_transcription.text:
                                 transcript_text = input_transcription.text.strip()
                                 if transcript_text:
-                                    now = time.time()
-                                    stt_latency = None
-                                    if self._user_stopped_speaking_time:
-                                        elapsed = now - self._user_stopped_speaking_time
-                                        if 0.03 <= elapsed <= 10.0:
-                                            stt_latency = elapsed
-                                    elif self._last_audio_sent_time:
-                                        elapsed = now - self._last_audio_sent_time
-                                        if 0.03 <= elapsed <= 10.0:
-                                            stt_latency = elapsed
-                                    
-                                    if stt_latency is None:
-                                        stt_latency = 0.12
-
-                                    logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
-                                    await self.push_frame(OutputTransportMessageFrame(message={
-                                        "label": "rtvi-ai",
-                                        "type": "server-message",
-                                        "data": {
-                                            'type': 'metrics',
-                                            'payload': {'type': 'stt_latency', 'value': stt_latency}
-                                        }
-                                    }))
-
-                                    primary_lang = self.languages[0].value if self.languages else "en-US"
-                                    await self.push_frame(TranscriptionFrame(
+                                    # If new speech starts after a finalized turn, clear dedup guard
+                                    if last_emitted_final and not transcript_text.startswith(last_emitted_final):
+                                        last_emitted_final = None
+                                    pending_text = transcript_text
+                                    # Always stream live preview to the single interim bubble immediately
+                                    await self.push_frame(InterimTranscriptionFrame(
                                         text=transcript_text,
                                         user_id=self._user_id,
                                         timestamp=time_now_iso8601(),
                                         language=primary_lang
                                     ))
-                                    await self.stop_processing_metrics()
-                                    await self._handle_transcription(
-                                        transcript_text,
-                                        is_final=True,
-                                        language=primary_lang,
+                                    if flush_task and not flush_task.done():
+                                        flush_task.cancel()
+                                    is_explicit_end = bool(
+                                        getattr(server_content, "turn_complete", False)
+                                        or getattr(input_transcription, "finished", False)
                                     )
-                                    self._user_stopped_speaking_time = None
-                                    self._user_started_speaking_time = None
+                                    flush_task = asyncio.create_task(
+                                        flush_final_transcript(0.05 if is_explicit_end else 0.48)
+                                    )
+                            elif getattr(server_content, "turn_complete", False) and pending_text:
+                                if flush_task and not flush_task.done():
+                                    flush_task.cancel()
+                                flush_task = asyncio.create_task(flush_final_transcript(0.0))
 
                     send_task = asyncio.create_task(send_audio())
                     receive_task = asyncio.create_task(receive_transcripts())
@@ -281,7 +390,7 @@ class CustomGeminiTranscribeLiveService(STTService):
 
 
 
-class CustomGoogleSTTService(GoogleSTTService):
+class CustomGoogleSTTService(TurnOriginMixin, GoogleSTTService):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._stream_start_wall_time = None
@@ -302,8 +411,18 @@ class CustomGoogleSTTService(GoogleSTTService):
             yield req
 
     async def _process_responses(self, streaming_recognize):
+        meter = getattr(self, "_cascade_meter", None)
+        cost_key = meter.begin("stt", self._settings.model, "cloud-speech-v2", self._location, in_flight=True) if meter else None
+        drained = False
+        await publish_cost(self)
         try:
             async for response in streaming_recognize:
+                if meter:
+                    seconds = billed_duration(getattr(response, "metadata", None))
+                    if seconds is not None:
+                        # Each stream has a separate key; repeated request totals replace.
+                        meter.update(cost_key, usage={"billed_seconds": seconds}, complete=True)
+                        await publish_cost(self)
                 if (int(time.time() * 1000) - self._stream_start_time) > self.STREAMING_LIMIT:
                     logger.debug("Stream timeout reached in response processing")
                     break
@@ -349,8 +468,6 @@ class CustomGoogleSTTService(GoogleSTTService):
                                     elapsed = now - self._last_audio_sent_time
                                     if 0.03 <= elapsed <= 10.0:
                                         stt_latency = elapsed
-                                else:
-                                    stt_latency = 0.18
                         except Exception as calc_err:
                             logger.warning(f"STT Latency calculation warning: {calc_err}")
 
@@ -392,48 +509,156 @@ class CustomGoogleSTTService(GoogleSTTService):
                                 result=result,
                             )
                         )
+            else:
+                drained = True
         except Exception as e:
             logger.debug(f"CustomGoogleSTTService response note: {e}")
             raise
+        finally:
+            if meter:
+                meter.update(cost_key, in_flight=False, pending_reason=None if drained else "Recognition ended before final billing was confirmed")
+                await publish_cost(self)
 
 
-class CustomVertexGeminiTTSService(GeminiTTSService):
-    def __init__(self, *, project_id: str, location: str, voice_id: str = "Puck", model: str = "gemini-2.5-flash-lite-preview-tts", voice_prompt: Optional[str] = None, language_code: Optional[str] = None, **kwargs):
-        # Pass a dummy API key since we're using Vertex.
+class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        location: str,
+        voice_id: str = "Puck",
+        model: str = "gemini-3.8-flash-lite-tts",
+        voice_prompt: Optional[str] = None,
+        language_code: Optional[str] = None,
+        tts_style: Optional[str] = None,
+        tts_accent: Optional[str] = None,
+        tts_pitch: Optional[str] = None,
+        tts_pace: Optional[float] = None,
+        tts_pace_label: Optional[str] = None,
+        **kwargs,
+    ):
+        if voice_id and voice_id.lower() == "callirhoe":
+            voice_id = "Aoede"
+        elif voice_id and "-Chirp3-HD-" in voice_id:
+            voice_id = voice_id.split("-Chirp3-HD-")[-1]
+        elif voice_id and "-" in voice_id and not voice_id.startswith("Custom"):
+            voice_id = voice_id.split("-")[-1]
+
+        self._is_aistudio = model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy"
+
         settings = GeminiTTSService.Settings(
             voice=voice_id,
             model=model,
             prompt=voice_prompt,
-            language=language_code or "en-US"
+            language=language_code or "en-US",
         )
-        super().__init__(api_key="dummy", settings=settings, **kwargs)
-        self._client = genai.Client(vertexai=True, project=project_id, location=location)
+        super().__init__(api_key=api_key, settings=settings, **kwargs)
+        if self._is_aistudio:
+            self._client = genai.Client(api_key=api_key)
+            self._cost_provider = "gemini"
+        else:
+            self._client = genai.Client(vertexai=True, project=project_id, location=location)
+            self._cost_provider = "vertex"
         self._voice_prompt = voice_prompt
         self._language_code = language_code
+        self._tts_style = tts_style
+        self._tts_accent = tts_accent
+        self._tts_pitch = tts_pitch
+        self._tts_pace = tts_pace
+        self._tts_pace_label = tts_pace_label
+        self._cost_region = "global" if self._is_aistudio else location
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
+            self._current_response_id = frame.response_id
+        await super().process_frame(frame, direction)
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"TTS Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'tts_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"TTS Latency: {latency:.3f}s")
+            payload = {'type': 'tts_latency', 'value': latency}
+            if getattr(self, '_current_response_id', None):
+                payload['response_id'] = self._current_response_id
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': payload,
+                }
+            }))
+
+    def _build_speech_metadata_style(self, lang_code: Optional[str]) -> str:
+        """Constructs the structured SpeechMetadata style string for Gemini 3.8 TTS.
+
+        Default output:
+        'Style: Empathetic. Pace: Natural. Accent: Indian. Pitch: Default.'
+        """
+        if self._voice_prompt and self._voice_prompt.strip().lower().startswith("style:"):
+            # Allow full manual override if user typed a raw "Style: ... Pace: ..." string
+            return self._voice_prompt.strip()
+
+        parts = []
+        style_val = (self._tts_style or "Empathetic").strip()
+        parts.append(f"Style: {style_val}.")
+
+        if self._tts_pace_label:
+            pace_val = self._tts_pace_label.strip()
+        elif self._tts_pace is not None:
+            if self._tts_pace < 0.9:
+                pace_val = "Slow"
+            elif self._tts_pace > 1.12:
+                pace_val = "Brisk"
+            else:
+                pace_val = "Natural"
+        else:
+            pace_val = "Natural"
+        parts.append(f"Pace: {pace_val}.")
+
+        if self._tts_accent and self._tts_accent.strip().lower() not in ("auto", "auto (from language)", ""):
+            accent_val = self._tts_accent.strip()
+        elif lang_code and "in" in lang_code.lower():
+            accent_val = "Indian"
+        elif lang_code and "gb" in lang_code.lower():
+            accent_val = "British"
+        elif lang_code and "au" in lang_code.lower():
+            accent_val = "Australian"
+        else:
+            accent_val = "Indian"
+        parts.append(f"Accent: {accent_val}.")
+
+        pitch_val = (self._tts_pitch or "Default").strip()
+        parts.append(f"Pitch: {pitch_val}.")
+
+        if self._voice_prompt and self._voice_prompt.strip():
+            parts.append(self._voice_prompt.strip())
+
+        return " ".join(parts)
 
     async def run_tts(self, text: str, context_id: str):
-        logger.debug(f"{self}: Generating TTS [{text}]")
+        # Strip any residual bracketed English tags ([warmly], [thoughtfully]) and repeated punctuation
+        clean_text = re.sub(r'\[.*?\]', '', text or "")
+        clean_text = re.sub(r'\.{2,}', '.', clean_text).strip()
+        # Skip standalone punctuation or empty fragments (e.g. ".") so TTS never hangs or speaks "dot"
+        if not clean_text or not any(ch.isalnum() for ch in clean_text):
+            logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}]")
+            return
+
+        logger.debug(f"{self}: Generating TTS [{clean_text}] with model={self._settings.model} aistudio={self._is_aistudio}")
+        meter = getattr(self, "_cascade_meter", None)
+        cost_key = meter.begin("tts", self._settings.model, self._cost_provider, self._cost_region) if meter else None
+        completed = False
+        last_usage_metadata = None
+        await publish_cost(self)
         try:
             await self.start_ttfb_metrics()
 
@@ -444,17 +669,41 @@ class CustomVertexGeminiTTSService(GeminiTTSService):
                 hi_lang = next((l for l in langs if "hi" in l.lower()), None)
                 lang_code = hi_lang if hi_lang else langs[0]
 
-            speech_config = types.SpeechConfig(
-                voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),
-                language_code=lang_code
-            )
-            generate_content_config = types.GenerateContentConfig(
-                response_modalities=["AUDIO"], 
-                speech_config=speech_config,
-                system_instruction=self._voice_prompt
-            )
+            if self._is_aistudio and hasattr(types, "SpeechMetadata"):
+                style_str = self._build_speech_metadata_style(lang_code)
+                speech_config = types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)
+                    )
+                )
+                generate_content_config = types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=speech_config,
+                )
+                # Pass ONLY clean_text (no "## Transcript:" header) so the model never reads English headers out loud
+                contents = [
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text=clean_text,
+                                speech_metadata=types.SpeechMetadata(style=style_str),
+                            )
+                        ],
+                    )
+                ]
+            else:
+                speech_config = types.SpeechConfig(
+                    voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),
+                    language_code=lang_code
+                )
+                generate_content_config = types.GenerateContentConfig(
+                    response_modalities=["AUDIO"], 
+                    speech_config=speech_config,
+                    system_instruction=self._voice_prompt
+                )
 
-            structured_prompt = f"""Synthesize speech for the performance defined below. The profile, scene,
+                contents = f"""Synthesize speech for the performance defined below. The profile, scene,
 performance notes, and context are direction only. Do NOT speak them.
 Speak ONLY the lines under #### TRANSCRIPT.
 
@@ -464,19 +713,24 @@ Speak ONLY the lines under #### TRANSCRIPT.
 ## SCENE: A warm, natural conversation in colloquial Hindi/English
 
 ### PERFORMANCE
-Style: Warm, expressive, natural voice.
-Pace: Conversational.
+Style: {self._tts_style or 'Warm, expressive, natural voice'}.
+Pace: {self._tts_pace_label or 'Conversational'}.
 
 #### TRANSCRIPT
-{text}
+{clean_text}
 """
 
             async for chunk in await self._client.aio.models.generate_content_stream(
-                model=self._settings.model, contents=structured_prompt, config=generate_content_config,
+                model=self._settings.model, contents=contents, config=generate_content_config,
             ):
-                if not chunk.candidates or not chunk.candidates[0].content or not chunk.candidates[0].content.parts:
+                if getattr(chunk, "usage_metadata", None):
+                    last_usage_metadata = chunk.usage_metadata
+                parts_list = getattr(chunk, "parts", None)
+                if not parts_list and chunk.candidates and chunk.candidates[0].content:
+                    parts_list = chunk.candidates[0].content.parts
+                if not parts_list:
                     continue
-                part = chunk.candidates[0].content.parts[0]
+                part = parts_list[0]
                 if part.inline_data and part.inline_data.data:
                     audio_data = part.inline_data.data
                     await self.stop_ttfb_metrics()
@@ -486,35 +740,135 @@ Pace: Conversational.
                         if not chunk_bytes: break
                         yield TTSAudioRawFrame(chunk_bytes, self.sample_rate or 24000, 1)
 
+            completed = True
             yield TTSStoppedFrame()
         except Exception as e:
             logger.exception(f"{self} error generating TTS: {e}")
             yield ErrorFrame(error=f"Gemini TTS generation error: {str(e)}")
+        finally:
+            if meter:
+                if last_usage_metadata is not None:
+                    observe_tokens(meter, cost_key, last_usage_metadata)
+                meter.update(cost_key, complete=completed,
+                             issue=None if completed else "TTS ended before final usage was confirmed")
+                await publish_cost(self)
 
 
-class CustomGoogleTTSService(GoogleTTSService):
+class CustomGoogleTTSService(TurnOriginMixin, GoogleTTSService):
+    async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
+            self._current_response_id = frame.response_id
+        await super().process_frame(frame, direction)
+
+    async def _stream_tts(self, streaming_config, text, context_id, prompt=None):
+        meter = getattr(self, "_cascade_meter", None)
+        voice = getattr(self._settings, "voice", "")
+        model = "chirp3-instant-custom-voice" if self._voice_cloning_key else (
+            "chirp3-hd" if "-Chirp3-HD-" in voice else voice or "unknown-cloud-voice"
+        )
+        cost_key = meter.begin("tts", model, "cloud-tts") if meter else None
+        completed = False
+        await publish_cost(self)
+        try:
+            async for frame in super()._stream_tts(streaming_config, text, context_id, prompt):
+                yield frame
+            completed = True
+        finally:
+            if meter:
+                # Count the exact post-filter synthesis text, including whitespace.
+                meter.update(cost_key, usage={"characters": len(text)}, complete=completed,
+                             issue=None if completed else "Synthesis interrupted; billed characters unconfirmed")
+                await publish_cost(self)
+
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"TTS Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'tts_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"TTS Latency: {latency:.3f}s")
+            payload = {'type': 'tts_latency', 'value': latency}
+            if getattr(self, '_current_response_id', None):
+                payload['response_id'] = self._current_response_id
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': payload,
+                }
+            }))
 
-class CustomGoogleVertexLLMService(GoogleVertexLLMService):
+
+class _MeteredGeminiLLMMixin:
+    """Shared metering, response_id stamping, and latency telemetry for Vertex & AI Studio LLMs."""
+    _cost_provider: str = "vertex"
+
+    async def _stream_content(self, context):
+        meter = getattr(self, "_cascade_meter", None)
+        if meter is None:
+            return await super()._stream_content(context)
+        region = getattr(self, "_location", "global") if self._cost_provider == "vertex" else "global"
+        key = meter.begin("llm", self._settings.model, self._cost_provider, region,
+                          input_mode=getattr(self, "_cost_input_mode", "unknown"))
+        await publish_cost(self)
+        try:
+            stream = await super()._stream_content(context)
+        except BaseException:
+            meter.update(key, issue="LLM request failed before final usage")
+            await publish_cost(self)
+            raise
+
+        async def metered_stream():
+            completed = False
+            last_usage = None
+            try:
+                async for chunk in stream:
+                    if getattr(chunk, "usage_metadata", None):
+                        last_usage = chunk.usage_metadata
+                    yield chunk
+                completed = True
+            finally:
+                if last_usage is not None:
+                    observe_tokens(meter, key, last_usage)
+                meter.update(key, complete=completed,
+                             issue=None if completed else "LLM stream interrupted; final usage unconfirmed")
+                await publish_cost(self)
+        return metered_stream()
+
+    @property
+    def response_identity(self):
+        if not hasattr(self, "_response_identity"):
+            self._response_identity = ResponseIdentity(current_session_id())
+        return self._response_identity
+
+    async def _process_context(self, context):
+        self.response_identity.begin()
+        try:
+            await super()._process_context(context)
+        finally:
+            self.response_identity.finish()
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        identity = self.response_identity.current
+        if isinstance(frame, TextFrame):
+            frame.response_id = identity
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            data = frame.message.get("data", {})
+            if data.get("type") == "metrics":
+                data = {**data, "payload": self.response_identity.stamp(data.get("payload", {}))}
+                frame.message = {**frame.message, "data": data}
+        await super().push_frame(frame, direction)
+        if isinstance(frame, LLMFullResponseEndFrame):
+            await super().push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai", "type": "server-message",
+                "data": {"type": "metrics", "payload": self.response_identity.stamp({"type": "turn_complete"})},
+            }), direction)
+
     def _maybe_unset_thinking_budget(self, generation_params: dict):
         try:
             model = self._settings.model or ""
@@ -522,31 +876,30 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
                 return
             if "gemini-3.7" in model or "gemini-2.5" in model:
                 generation_params["thinking_config"] = {"thinking_budget": 0}
-            elif "gemini-3.5-flash-lite" in model or "gemini-3.1" in model or "gemini-3-flash" in model:
+            elif any(k in model for k in ["gemini-3.8", "gemini-3.5-flash-lite", "gemini-3.1", "gemini-3-flash"]):
                 generation_params["thinking_config"] = {"thinking_level": "minimal"}
         except Exception as e:
             logger.error(f"Failed to unset thinking budget: {e}")
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
-            self._my_ttfb_start = time.time()
+            self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if getattr(self, '_my_ttfb_start', None):
-            latency = time.time() - self._my_ttfb_start
+            latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
-            if latency < 15.0:
-                logger.info(f"LLM Latency: {latency:.3f}s")
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'llm_latency', 'value': latency}
-                    }
-                }))
+            logger.info(f"LLM Latency: {latency:.3f}s")
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    'type': 'metrics',
+                    'payload': {'type': 'llm_latency', 'value': latency}
+                }
+            }))
 
     async def start_llm_usage_metrics(self, metrics):
         await super().start_llm_usage_metrics(metrics)
@@ -569,11 +922,23 @@ class CustomGoogleVertexLLMService(GoogleVertexLLMService):
                         "response_token_count": completion_tokens,
                         "total_token_count": total_tokens,
                         "prompt_details": {"text": prompt_tokens},
-                        "response_details": {"text": completion_tokens}
+                        "response_details": {"text": completion_tokens},
+                        "phase": "final", "service": "llm", "revision": 0,
+                        "model": self._settings.model,
+                        "cached_content_token_count": getattr(metrics, "cache_read_input_tokens", None),
+                        "thoughts_token_count": getattr(metrics, "reasoning_tokens", None),
                     }
                 }
             }
         }))
+
+
+class CustomGoogleVertexLLMService(_MeteredGeminiLLMMixin, TurnOriginMixin, GoogleVertexLLMService):
+    _cost_provider = "vertex"
+
+
+class CustomGoogleAIStudioLLMService(_MeteredGeminiLLMMixin, TurnOriginMixin, GoogleLLMService):
+    _cost_provider = "gemini"
 
 
 class TranscriptionBroadcaster(FrameProcessor):
@@ -598,6 +963,7 @@ class TranscriptionBroadcaster(FrameProcessor):
                         "data": {
                             'type': 'transcription',
                             'participant': self.participant,
+                            'response_id': getattr(frame, 'response_id', None),
                             'text': ui_text
                         }
                     }))
@@ -641,14 +1007,33 @@ async def run_agent(
     llm_model: str = "gemini-3.5-flash-lite",
     stt_model: str = "gemini-3.5-transcribe-live-aistudio",
     stt_language: str = "en-US",
-    tts_model: str = "gemini-3.1-flash-tts-preview",
+    tts_model: str = "gemini-3.8-flash-lite-tts",
     tts_voice_prompt: Optional[str] = None,
+    tts_style: Optional[str] = None,
+    tts_accent: Optional[str] = None,
+    tts_pitch: Optional[str] = None,
+    tts_pace_label: Optional[str] = None,
     system_instruction: Optional[str] = None,
     skip_stt: bool = False,
     vad: bool = True,
+    custom_voice_key: Optional[str] = None,
+    persona_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
+
+    # Automatically apply Persona Voice Design defaults if not explicitly overridden
+    persona_defaults = PERSONA_VOICE_DESIGN_DEFAULTS.get(persona_id or "", {})
+    if not tts_style:
+        tts_style = persona_defaults.get("style", "Empathetic")
+    if not tts_pace_label:
+        tts_pace_label = persona_defaults.get("pace", "Natural")
+    if not tts_accent:
+        tts_accent = persona_defaults.get("accent", "Indian")
+    if not tts_pitch:
+        tts_pitch = persona_defaults.get("pitch", "Default")
+    if not tts_voice_prompt and persona_defaults.get("prompt"):
+        tts_voice_prompt = persona_defaults["prompt"]
 
     # With VAD disabled the STT service's own endpointing decides turn
     # boundaries. That is a slower but sometimes steadier signal on noisy input,
@@ -722,6 +1107,18 @@ async def run_agent(
                 )
             )
 
+    persona_architecture = None
+    if persona_id:
+        from persona_registry import get_persona_architecture
+        persona_architecture = get_persona_architecture(persona_id)
+        logger.info(
+            f"[Cascade] Persona architecture: {persona_architecture.pattern.value} "
+            f"(persona_id={persona_id})"
+        )
+        arch_instruction = persona_architecture.compose_system_prompt(system_instruction, engine="cascade")
+        if arch_instruction:
+            system_instruction = arch_instruction
+
     neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
     if not system_instruction:
         neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
@@ -732,89 +1129,145 @@ async def run_agent(
     if skip_stt:
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current current user query. Do not bring up previous topics or simulate future turns."
 
-    llm_location = "global" if any(k in clean_llm_model for k in ["gemini-3", "3.7", "3.5"]) else location
+    is_aistudio_llm = "aistudio" in clean_llm_model
+    # Always pass the exact canonical model string ("gemini-3.8-flash", "gemini-3.5-flash-lite") to the SDK
+    actual_llm_model = clean_llm_model.replace("-aistudio", "")
+    llm_location = "global" if any(k in actual_llm_model for k in ["gemini-3", "3.8", "3.7", "3.5"]) else location
     
     thinking_config = None
-    if "gemini-3.7" in clean_llm_model:
+    if "gemini-3.7" in actual_llm_model:
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
-    elif any(k in clean_llm_model for k in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]):
+    elif any(k in actual_llm_model for k in ["gemini-3.8", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
-    elif any(k in clean_llm_model for k in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]):
+    elif any(k in actual_llm_model for k in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]):
         thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
 
-    llm = CustomGoogleVertexLLMService(
-        project_id=project_id,
-        location=llm_location,
-        settings=GoogleVertexLLMService.Settings(
-            model=clean_llm_model,
-            system_instruction=final_system_instruction,
-            max_tokens=1024 if thinking_config else 4096,
-            thinking=thinking_config
-        )
-    )
+    cascade_tools = None
+    if persona_architecture:
+        cascade_tools = persona_architecture.get_tool_schemas(engine="cascade")
+        if not cascade_tools:
+            cascade_tools = None
 
-    if clean_tts_model.startswith("gemini"):
-        # Use Gemini TTS (Vertex AI) requires 24kHz
+    tools_list = [{
+        "function_declarations": [schema.to_default_dict() for schema in cascade_tools],
+    }] if cascade_tools else None
+
+    if is_aistudio_llm:
+        gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+        aistudio_kwargs = {
+            "api_key": gemini_api_key,
+            "settings": GoogleLLMService.Settings(
+                model=actual_llm_model,
+                system_instruction=final_system_instruction,
+                max_tokens=1024 if thinking_config else 4096,
+                thinking=thinking_config,
+            ),
+        }
+        if tools_list:
+            aistudio_kwargs["tools"] = tools_list
+        llm = CustomGoogleAIStudioLLMService(**aistudio_kwargs)
+    else:
+        llm_kwargs = {
+            "project_id": project_id,
+            "location": llm_location,
+            "settings": GoogleVertexLLMService.Settings(
+                model=actual_llm_model,
+                system_instruction=final_system_instruction,
+                max_tokens=1024 if thinking_config else 4096,
+                thinking=thinking_config,
+            ),
+        }
+        if tools_list:
+            llm_kwargs["tools"] = tools_list
+        llm = CustomGoogleVertexLLMService(**llm_kwargs)
+
+    if persona_architecture:
+        async def broadcast_persona_event(payload: dict):
+            """Push a persona telemetry event to the client over RTVI."""
+            await llm.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": payload,
+            }))
+
+        persona_architecture.register_handlers(
+            llm, broadcast=broadcast_persona_event, engine="cascade"
+        )
+
+    is_clone = voice_profiles.is_custom_clone_voice(tts_voice)
+    if is_clone and clean_tts_model != "google-tts":
+        raise ValueError("Cloned voices require Google TTS (Chirp 3 HD). Select it before starting Cascade.")
+    cloned_key_content = voice_profiles.resolve_clone_key(tts_voice, custom_voice_key)
+    if is_clone:
+        tts_language = "hi-IN" if (stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"])) else "en-US"
+        tts = CustomGoogleTTSService(
+            voice_cloning_key=cloned_key_content,
+            params=GoogleTTSService.InputParams(
+                language=Language(tts_language),
+                speaking_rate=tts_pace,
+            ),
+            text_filters=[MarkdownTextFilter()],
+        )
+    elif clean_tts_model.startswith("gemini"):
         tts_location = "global" if "gemini-3" in clean_tts_model else location
-        
-        tts_lang = "hi-IN"
-        if stt_language:
-            langs = [l.strip() for l in stt_language.split(",")]
-            hi_lang = next((l for l in langs if "hi" in l.lower()), None)
-            tts_lang = hi_lang if hi_lang else langs[0]
+        langs = [lang.strip() for lang in (stt_language or "en-US").split(",") if lang.strip()]
+        tts_lang = next((lang for lang in langs if lang.lower().startswith("hi")), None) or (langs or ["en-US"])[0]
+
+        # Sanitize voice name for Gemini TTS
+        effective_voice = tts_voice
+        if "-Chirp3-HD-" in effective_voice:
+            effective_voice = effective_voice.split("-Chirp3-HD-")[-1]
+        elif "-" in effective_voice and not effective_voice.startswith("Custom"):
+            effective_voice = effective_voice.split("-")[-1]
+
+        if effective_voice.lower() == "callirhoe":
+            effective_voice = "Aoede"
 
         tts = CustomVertexGeminiTTSService(
             project_id=project_id,
             location=tts_location,
-            voice_id=tts_voice,
+            voice_id=effective_voice,
             model=clean_tts_model, # Use the sanitized model
             sample_rate=24000, 
             voice_prompt=tts_voice_prompt,
             language_code=tts_lang,
+            tts_style=tts_style,
+            tts_accent=tts_accent,
+            tts_pitch=tts_pitch,
+            tts_pace=tts_pace,
+            tts_pace_label=tts_pace_label,
             text_filters=[MarkdownTextFilter()]
         )
-    elif tts_voice in ["Custom-Male", "Custom-Female"]:
-        # For cloned voices, use en-US as the base language code
-        # The voice cloning will handle the accent/style
-        tts_language = "en-US"
-        if tts_voice == "Custom-Male":
-            voice_key_path = os.getenv("CLONE_TTS_VOICE_KEY_MALE")
-            if not voice_key_path:
-                raise ValueError("CLONE_TTS_VOICE_KEY_MALE environment variable not set")
-            with open(voice_key_path, "r") as f:
-                key = f.read()
-            tts = CustomGoogleTTSService(
-                voice_cloning_key=key,
-                params=GoogleTTSService.InputParams(
-                    language=Language(tts_language),
-                    speaking_rate=tts_pace
-                ),
-                text_filters=[MarkdownTextFilter()],
-            )
-        else:  # Custom-Female
-            voice_key_path = os.getenv("CLONE_TTS_VOICE_KEY_FEMALE")
-            if not voice_key_path:
-                raise ValueError("CLONE_TTS_VOICE_KEY_FEMALE environment variable not set")
-            with open(voice_key_path, "r") as f:
-                key = f.read()
-            tts = CustomGoogleTTSService(
-                voice_cloning_key=key,
-                params=GoogleTTSService.InputParams(
-                    language=Language(tts_language),
-                    speaking_rate=tts_pace
-                ),
-                text_filters=[MarkdownTextFilter()],
-            )
     else:
-        tts_language = "-".join(tts_voice.split("-")[:2])
+        effective_voice = tts_voice
+        langs = [lang.strip() for lang in (stt_language or "en-US").split(",") if lang.strip()]
+        tts_language = next((lang for lang in langs if lang.lower().startswith("hi")), None) or (langs or ["en-US"])[0]
+        if "-" not in effective_voice:
+            effective_voice = f"{tts_language}-Chirp3-HD-{effective_voice}"
+        else:
+            tts_language = "-".join(effective_voice.split("-")[:2])
+
         tts = CustomGoogleTTSService(
-            voice_id=tts_voice,
+            voice_id=effective_voice,
             params=GoogleTTSService.InputParams(
                 language=Language(tts_language),
                 speaking_rate=tts_pace
             ),
             text_filters=[MarkdownTextFilter()],
         )
+
+    # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
+    # still calls Cloud Speech for the displayed transcript. It is billable.
+    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
+    for service in (llm, tts, stt):
+        if service is not None:
+            service._turn_tracker = turn_tracker
+    cost_meter = CascadeCostLedger(current_session_id())
+    llm._cascade_meter = cost_meter
+    llm._cost_input_mode = "audio" if skip_stt else "text"
+    tts._cascade_meter = cost_meter
+    if stt is not None:
+        stt._cascade_meter = cost_meter
 
     is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
     initial_greeting = "नमस्ते!" if is_hindi else "Hello!"
@@ -832,6 +1285,7 @@ async def run_agent(
             context,
             project_id=project_id,
             stt_languages=stt_languages,
+            cost_meter=cost_meter,
         )
         context_aggregator = LLMContextAggregatorPair(context)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
@@ -839,11 +1293,14 @@ async def run_agent(
         pipeline_elements = [
             transport.input(),
             start_trigger,
+            *([vad_processor] if vad_processor else []),
+            TurnBoundaryProcessor(turn_tracker),
             accumulator,
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
             context_aggregator.assistant(),
+            ServerAudioTimingProcessor(),
             transport.output()
         ]
     else:
@@ -852,7 +1309,9 @@ async def run_agent(
             {"role": "user", "content": initial_greeting}
         ])
         user_params = LLMUserAggregatorParams(
-            vad_analyzer=vad_analyzer,
+            # VADProcessor above owns audio analysis and broadcasts VAD frames.
+            # Feeding the same analyzer here again would process each PCM twice.
+            vad_analyzer=None,
         )
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
@@ -861,6 +1320,7 @@ async def run_agent(
             transport.input(),
             start_trigger,
             *([vad_processor] if vad_processor else []),
+            TurnBoundaryProcessor(turn_tracker),
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),
@@ -868,6 +1328,7 @@ async def run_agent(
             TranscriptionBroadcaster(participant="Bot"),
             tts,
             context_aggregator.assistant(),
+            ServerAudioTimingProcessor(),
             transport.output()
         ]
 
@@ -889,4 +1350,7 @@ async def run_agent(
         # Defer greeting until start_trigger message is received when user clicks Start Listening
 
     runner = PipelineRunner(handle_sigint=False)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        turn_tracker.close()

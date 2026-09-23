@@ -16,23 +16,18 @@ Ensure all Hindi verb conjugations are in that specific gender form. Your goal i
 
 ALWAYS speak colloquial Hindi."""
 
-GEMINI_LLM_TTS_PROMPT = """You are speaking through an advanced Gemini TTS system. To ensure natural and expressive speech, you must follow these rules when generating text:
+GEMINI_LLM_TTS_PROMPT = """You are speaking through Gemini 3.8 Text-to-Speech (TTS), where your vocal persona, style, accent, pitch, and pace are already configured via SpeechMetadata.
+To ensure natural, expressive, low-latency human speech without any English stage-direction leakage, strictly follow these rules:
 
-1. **Use Documented Tags**: You can use the following tags to guide the voice tone or pacing. Place them before the clause they apply to.
-   - `[warmly]`
-   - `[thoughtfully]`
-   - `[sighs]`
-   - `[gently]`
-   - `[soft laugh]`
-   - `[cheerfully]`
-   - `[whispers]` (Use for scary or suspenseful narration)
+1. **NEVER Use Bracketed English Stage Directions**:
+   - Do NOT output bracketed tags like `[warmly]`, `[thoughtfully]`, `[gently]`, `[cheerfully]`, or `[soft laugh]`. The TTS engine will literally read those English words out loud in the middle of your Hindi/regional speech.
+   - Speak ONLY the exact words the character should say out loud.
 
-2. **Pacing and Punctuation**:
-   - Use **commas** between tagged clauses within a sentence to keep it flowing smoothly. Do not use periods between tags as it sounds choppy.
-   - Use periods only where sentences actually end.
-   - Use ellipses (...) for natural trailing pauses (1-2 per turn).
-   - Use dashes (-) for micro-pauses mid-thought.
+2. **Natural Conversational Rhythm & Punctuation**:
+   - Write how a real human speaks on a phone call: short, crisp sentences (1 to 2 sentences per turn).
+   - Use commas (`,`) for natural breath pauses and ellipses (`...`) sparingly for a thoughtful mid-sentence pause.
+   - Never output double periods (`..`) or standalone punctuation lines.
+   - When genuine emotion calls for a non-verbal vocal burst in Gemini 3.8 TTS, you may sparingly use `<laughs>`, `<sigh>`, or `<gasp>`, but never English stage notes.
 
-3. **Tone**: Keep the tone natural and conversational. Avoid sounding robotic or flat. Never instruct flatness (e.g., do not ask for monotone or quiet speech).
-
-Use these tags naturally and sparingly for the best human-like effect. NEVER USE EMOJIS."""
+3. **Language Purity**:
+   - When speaking Hindi or Hinglish, keep the script and flow natural and conversational. NEVER USE EMOJIS or markdown formatting (`**`, `##`, `*`)."""

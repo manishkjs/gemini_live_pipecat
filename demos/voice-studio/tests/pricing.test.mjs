@@ -12,6 +12,7 @@ test('rate card resolution matches 2.5 models correctly with official pricing', 
   const models = [
     'gemini-live-2.5-flash-native-audio',
     'gemini-live-2.5-flash',
+    'gemini-2.5-flash-native-audio-latest',
   ];
   for (const model of models) {
     const card = getLiveRateCard(model);
@@ -24,14 +25,30 @@ test('rate card resolution matches 2.5 models correctly with official pricing', 
   }
 });
 
-test('rate card resolution matches 3.1 models correctly with official pricing', () => {
-  const models = [
+test('rate card resolution matches 3.1 and 3.8 Live models (AI Studio & Vertex AI) with official pricing', () => {
+  const models31 = [
     'gemini-3.1-flash-live-preview',
   ];
-  for (const model of models) {
+  for (const model of models31) {
     const card = getLiveRateCard(model);
     assert.ok(card, `Should find rate card for ${model}`);
     assert.equal(card.tier, 'gemini-3.1');
+    assert.equal(card.audioInPerMillion, 3.00);
+    assert.equal(card.audioOutPerMillion, 12.00);
+    assert.equal(card.textInPerMillion, 0.75);
+    assert.equal(card.textOutPerMillion, 4.50);
+  }
+
+  const models38 = [
+    'gemini-3.8-live',
+    'gemini-3.8-live-extended-thinking',
+    'gemini-3.8-live-preview',
+    'gemini-3.8-live-extended-thinking-preview',
+  ];
+  for (const model of models38) {
+    const card = getLiveRateCard(model);
+    assert.ok(card, `Should find rate card for ${model}`);
+    assert.equal(card.tier, 'gemini-3.8');
     assert.equal(card.audioInPerMillion, 3.00);
     assert.equal(card.audioOutPerMillion, 12.00);
     assert.equal(card.textInPerMillion, 0.75);

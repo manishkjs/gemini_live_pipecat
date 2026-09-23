@@ -36,12 +36,56 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_llm_model("gemini-3.6-flash"), "gemini-3.5-flash-lite")
 
     def test_tts_model_validation(self):
+        self.assertEqual(validate_tts_model("gemini-3.8-flash-tts"), "gemini-3.8-flash-tts")
+        self.assertEqual(validate_tts_model("gemini-3.8-flash-lite-tts"), "gemini-3.8-flash-lite-tts")
         self.assertEqual(validate_tts_model("gemini-3.1-flash-tts-preview"), "gemini-3.1-flash-tts-preview")
         self.assertEqual(validate_tts_model("gemini-2.5-flash-lite-preview-tts"), "gemini-2.5-flash-lite-preview-tts")
         self.assertEqual(validate_tts_model("gemini-2.5-flash-preview-tts"), "gemini-2.5-flash-preview-tts")
         self.assertEqual(validate_tts_model("google-tts"), "google-tts")
-        self.assertEqual(validate_tts_model("unknown_tts"), "gemini-3.1-flash-tts-preview")
+        self.assertEqual(validate_tts_model("unknown_tts"), "gemini-3.8-flash-lite-tts")
+
+
+class TestVoiceCloningRouting(unittest.TestCase):
+    def test_voice_cloning_key_loading(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import voice_profiles
+        with tempfile.TemporaryDirectory() as folder:
+            for gender, env in (("male", "CLONE_TTS_VOICE_KEY_MALE"), ("female", "CLONE_TTS_VOICE_KEY_FEMALE")):
+                path = Path(folder) / f"{gender}.txt"
+                path.write_text(f"dummy-{gender}-credential\n")
+                with patch.dict(os.environ, {env: str(path)}):
+                    self.assertEqual(voice_profiles.get_voice_cloning_key_file(gender), str(path))
+                    self.assertEqual(voice_profiles.load_voice_cloning_key(gender), f"dummy-{gender}-credential")
+
+    def test_clone_voice_matchers(self):
+        import voice_profiles
+
+        # Male matchers
+        self.assertTrue(voice_profiles.is_male_clone_voice("Custom-Male"))
+        self.assertTrue(voice_profiles.is_male_clone_voice("Chirp3-HD-Clone-Male"))
+        self.assertTrue(voice_profiles.is_male_clone_voice("hi-IN-Chirp3-HD-Custom-Male"))
+        self.assertFalse(voice_profiles.is_male_clone_voice("Custom-Female"))
+        self.assertFalse(voice_profiles.is_male_clone_voice("Aoede"))
+        self.assertFalse(voice_profiles.is_male_clone_voice(None))
+
+        # Female matchers
+        self.assertTrue(voice_profiles.is_female_clone_voice("Custom-Female"))
+        self.assertTrue(voice_profiles.is_female_clone_voice("Chirp3-HD-Clone-Female"))
+        self.assertTrue(voice_profiles.is_female_clone_voice("hi-IN-Chirp3-HD-Custom-Female"))
+        self.assertFalse(voice_profiles.is_female_clone_voice("Custom-Male"))
+        self.assertFalse(voice_profiles.is_female_clone_voice("Puck"))
+        self.assertFalse(voice_profiles.is_female_clone_voice(None))
+
+        # Custom clone matchers
+        self.assertTrue(voice_profiles.is_custom_clone_voice("Custom-Male"))
+        self.assertTrue(voice_profiles.is_custom_clone_voice("Custom-Female"))
+        self.assertTrue(voice_profiles.is_custom_clone_voice("Custom-Key"))
+        self.assertFalse(voice_profiles.is_custom_clone_voice("Aoede"))
+        self.assertFalse(voice_profiles.is_custom_clone_voice(None))
 
 
 if __name__ == "__main__":
     unittest.main()
+

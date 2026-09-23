@@ -11,7 +11,10 @@ from datetime import datetime
 import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
-from diagnostic_buffer import append_diagnostic_log
+from diagnostic_buffer import append_diagnostic_log, current_session_id
+from turn_telemetry import TurnTracker
+from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
+from response_identity import ResponseIdentity
 from tracing import GLOBAL_LANGSMITH_TRACER
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -31,16 +34,23 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+import voice_profiles
+
+
+from collections import deque
+import numpy as np
 
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (
     EndTaskFrame,
     Frame,
+    InputAudioRawFrame,
     InterruptionFrame,
     CancelFrame,
     LLMMessagesAppendFrame,
     TextFrame,
+    TTSStoppedFrame,
     OutputTransportMessageFrame,
     InputTransportMessageFrame,
     StartFrame,
@@ -80,6 +90,25 @@ from google.genai.types import (
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
+
+def estimate_tokens(text: str) -> int:
+    """Approximate the token cost of a string.
+
+    Everything this system reports about prompt size is in tokens, because
+    tokens are what gets billed and what fills the context window. Characters
+    are an implementation detail of the encoding and mean nothing to the model.
+
+    The estimate is script-aware on purpose. Latin text runs about 3.8
+    characters per token, but Devanagari runs closer to 1.8 — a single divisor
+    would understate Pragya's Hindi cards by roughly half and make the injected
+    payloads look free when they are not.
+    """
+    if not text:
+        return 0
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return round(non_ascii / 1.8 + (len(text) - non_ascii) / 3.8)
+
+
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
@@ -93,19 +122,58 @@ async def get_current_time(params: FunctionCallParams):
     )
 
 
-class GeminiSessionLoggerMixin:
+class GeminiSessionLoggerMixin(TurnOriginMixin):
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
+
+    _live_telemetry = True
+
+    @property
+    def response_identity(self):
+        if not hasattr(self, "_response_identity"):
+            self._response_identity = ResponseIdentity(current_session_id())
+        return self._response_identity
+
+    async def broadcast_interruption(self, *args, **kwargs):
+        self._bot_is_responding = False
+        origin = getattr(self, "_live_output_turn", None)
+        if origin is not None:
+            origin.finish("interrupted")
+        try:
+            await super().broadcast_interruption(*args, **kwargs)
+        finally:
+            self._live_output_turn = None
+
+    async def _handle_msg_model_turn(self, message):
+        self._bot_is_responding = True
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
+        self.response_identity.begin()
+        await super()._handle_msg_model_turn(message)
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            data = frame.message.get("data", {})
+            if data.get("type") == "transcription" and data.get("participant", "").lower() != "user":
+                data = {**data, "response_id": self.response_identity.begin()}
+            elif data.get("type") == "metrics":
+                payload = data.get("payload", {})
+                response_id = self.response_identity.current
+                if payload.get("type") == "usage":
+                    response_id = self.response_identity.completed or response_id
+                data = {**data, "payload": self.response_identity.stamp(payload, response_id=response_id)}
+            frame.message = {**frame.message, "data": data}
+        await super().push_frame(frame, direction)
 
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics()
         
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
         if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-            self._current_turn_ttft = time.time() - self._my_ttfb_start
+            self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
             logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
             ttfb_ms = self._current_turn_ttft * 1000.0
             append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
@@ -222,11 +290,19 @@ class GeminiSessionLoggerMixin:
             if getattr(self, '_bot_turn_text_buffer', '').strip():
                 interrupted_text = self._bot_turn_text_buffer.strip()
                 append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                if not hasattr(self, '_dialogue_history'):
+                    self._dialogue_history = []
+                self._dialogue_history.append({
+                    "role": "Assistant",
+                    "text": f"{interrupted_text} [interrupted]",
+                    "timestamp": time.time()
+                })
+                logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
                 self._bot_turn_text_buffer = ""
 
             elapsed_ms = None
             if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-                elapsed_ms = round((time.time() - self._my_ttfb_start) * 1000.0, 1)
+                elapsed_ms = round((time.monotonic() - self._my_ttfb_start) * 1000.0, 1)
                 append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
                 self._my_ttfb_start = None
 
@@ -253,6 +329,15 @@ class GeminiSessionLoggerMixin:
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            if not self._dialogue_history or self._dialogue_history[-1].get("text") != clean_sentence or self._dialogue_history[-1].get("role") != "User":
+                self._dialogue_history.append({
+                    "role": "User",
+                    "text": clean_sentence,
+                    "timestamp": time.time()
+                })
+                logger.info(f"💬 [Transcript User (Turn {len(self._dialogue_history)})]: {clean_sentence}")
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -263,8 +348,25 @@ class GeminiSessionLoggerMixin:
                 }
             }))
 
+            # Optional transcript telemetry. Pragya inherits the no-op hook;
+            # Gemini's switch_phase tool owns her phase and collected fields.
+            architecture = getattr(self, "persona_architecture", None)
+            if architecture is not None:
+                try:
+                    await architecture.on_user_transcript(
+                        clean_sentence, getattr(self, "persona_broadcast", None)
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"[Persona] on_user_transcript failed: {exc}")
+
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
+        if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
+            # Short speech can be consent or a real answer ("आप बताइए").
+            # Let Gemini interpret it, without a regex/word-count repeat rule.
+            self._repeat_on_filler_pending = False
+            self._post_interruption_buffer = ""
+            return await super()._handle_msg_input_transcription(message)
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
@@ -295,11 +397,12 @@ class GeminiSessionLoggerMixin:
             user_stopped = not getattr(self, '_user_is_speaking', True)
 
             if has_sentence_end or user_stopped:
+                from processors.repeat_on_interruption import is_conversational_filler
                 filler_max_words = getattr(self, '_filler_max_words', 2)
                 clean = buffer.rstrip('।.!?\n').strip()
                 word_count = len(clean.split()) if clean else 0
 
-                if word_count <= filler_max_words:
+                if is_conversational_filler(clean, filler_max_words):
                     logger.info(
                         f"[RepeatOnFiller] Filler detected: '{buffer}' "
                         f"({word_count} word(s)). Sending repeat instruction."
@@ -316,6 +419,9 @@ class GeminiSessionLoggerMixin:
                     self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
+        self.response_identity.begin()
         await super()._handle_msg_output_transcription(message)
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
             text = message.server_content.output_transcription.text
@@ -327,7 +433,7 @@ class GeminiSessionLoggerMixin:
             
             # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
             if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
-                self._current_turn_ttft = time.time() - self._my_ttfb_start
+                self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
                 ttfb_ms = self._current_turn_ttft * 1000.0
                 append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
                 self._my_ttfb_start = None
@@ -359,6 +465,8 @@ class GeminiSessionLoggerMixin:
             }))
 
     async def _handle_msg_turn_complete(self, message):
+        self._bot_is_responding = False
+        self.response_identity.begin()
         await super()._handle_msg_turn_complete(message)
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
@@ -366,28 +474,104 @@ class GeminiSessionLoggerMixin:
             GLOBAL_LANGSMITH_TRACER.record_bot_turn(
                 full_bot_text,
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
-                token_usage=getattr(self, '_last_turn_usage', None)
+                # Usage arrives after turn_complete; never attach the previous response's usage.
+                token_usage=None
             )
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            self._dialogue_history.append({
+                "role": "Assistant",
+                "text": full_bot_text,
+                "timestamp": time.time()
+            })
+            logger.info(f"🤖 [Transcript Assistant (Turn {len(self._dialogue_history)})]: {full_bot_text}")
             self._bot_turn_text_buffer = ""
+
+        # Metric Streaming: Turn Complete
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'turn_complete'}
+            }
+        }))
+        self.response_identity.finish()
+        self._live_output_turn = None
+        pending = getattr(self, "_pending_directives", None)
+        if pending:
+            while pending:
+                deferred_text, deferred_tag = pending.pop(0)
+                try:
+                    await self.inject_directive(
+                        deferred_text, tag=deferred_tag, speak_now=False, at_tool_boundary=True
+                    )
+                except Exception as exc:
+                    logger.warning(f"[{deferred_tag}] Deferred directive flush failed: {exc}")
+        architecture = getattr(self, "persona_architecture", None)
+        flush = getattr(architecture, "flush_pending_card", None)
+        if flush is not None:
+            try:
+                await flush()
+            except Exception as exc:
+                logger.warning(f"[Persona] Deferred card failed: {exc}")
+        st = getattr(self, "start_trigger", None)
+        if st is not None:
+            st.open_gate("bot turn complete")
+
+    async def inject_directive(
+        self, text: str, tag: str = "Directive", speak_now: bool = True,
+        at_tool_boundary: bool = False,
+    ) -> bool:
+        """Send a directive using the selected Live model's text protocol.
+
+        A successful SDK write is reported as sent, not as proof of application
+        to a particular response. Quiet cards wait while generation is active:
+        client content can interrupt even with turn_complete=False. A blocking
+        tool boundary is different: the model is waiting for its function result,
+        so its requested card must be sent before that result. Gemini 3 uses
+        realtime text for mid-call updates, as in the pinned provider.
+        """
+        self._last_directive_status = "failed"
+        if self._disconnecting or not self._session:
+            logger.warning(f"[{tag}] Not delivered — session is not live.")
+            return False
+        if not speak_now and not at_tool_boundary and getattr(self, "_bot_is_responding", False):
+            self._last_directive_status = "pending"
+            if not hasattr(self, "_pending_directives"):
+                self._pending_directives = []
+            self._pending_directives.append((text, tag))
+            return False
+        try:
+            if speak_now:
+                await self._create_single_response([{"role": "user", "content": text}])
+            elif getattr(self, "_is_gemini_3", False):
+                await self._session.send_realtime_input(text=text)
+            else:
+                await self._session.send_client_content(
+                    turns=[Content(role="user", parts=[Part(text=text)])],
+                    turn_complete=False,
+                )
+            self._last_directive_status = "sent"
+            mode = "respond now" if speak_now else "briefing"
+            logger.info(f"[{tag}] Sent (~{estimate_tokens(text)} estimated tokens, {mode}).")
+            return True
+        except Exception as e:
+            logger.error(f"[{tag}] Injection failed: {e}")
+            return False
 
     async def _send_repeat_instruction(self, filler_text: str):
         """Send a user-role prompt telling the model to repeat itself."""
-        if self._disconnecting or not self._session:
-            return
-        try:
-            await self._create_single_response([{
-                "role": "user",
-                "content": (
-                    f"The user just said '{filler_text}' which is a short "
-                    f"filler/acknowledgment while you were speaking. They did NOT "
-                    f"ask a new question. Please REPEAT your previous response "
-                    f"from the beginning — resume exactly what you were saying "
-                    f"before the interruption."
-                ),
-            }])
-            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
-        except Exception as e:
-            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+        await self.inject_directive(
+            (
+                f"The user just said '{filler_text}' which is a short "
+                f"filler/acknowledgment while you were speaking. They did NOT "
+                f"ask a new question. Please REPEAT your previous response "
+                f"from the beginning — resume exactly what you were saying "
+                f"before the interruption."
+            ),
+            tag="RepeatOnFiller",
+        )
 
     # ── Session ID & token usage logging ──────────────────────────────
 
@@ -444,8 +628,15 @@ class GeminiSessionLoggerMixin:
             "response_token_count": getattr(usage, 'response_token_count', 0),
             "total_token_count": getattr(usage, 'total_token_count', 0),
             "prompt_details": prompt_details,
-            "response_details": response_details
+            "response_details": response_details,
+            "cached_content_token_count": getattr(usage, "cached_content_token_count", None),
+            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+            "tool_use_prompt_token_count": getattr(usage, "tool_use_prompt_token_count", None),
+            "phase": "final",
+            "service": "live",
+            "revision": 0,
         }
+        self._last_turn_usage = usage_dict
         
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
@@ -459,18 +650,115 @@ class GeminiSessionLoggerMixin:
             }
         }))
 
-    async def _handle_msg_turn_complete(self, message):
-        await super()._handle_msg_turn_complete(message)
-        
-        # Metric Streaming: Turn Complete
-        await self.push_frame(OutputTransportMessageFrame(message={
-            "label": "rtvi-ai",
-            "type": "server-message",
-            "data": {
-                'type': 'metrics',
-                'payload': {'type': 'turn_complete'}
-            }
-        }))
+        # Check for context compression trigger
+        if getattr(self, '_context_compression_enabled', False):
+            raw_threshold = getattr(self, '_context_compression_trigger_tokens', 5000) or 5000
+            threshold = max(5000, raw_threshold)
+            current_tot = getattr(usage, 'total_token_count', 0)
+            current_prompt = getattr(usage, 'prompt_token_count', 0)
+            last_prompt = getattr(self, '_last_prompt_tokens', 0)
+
+            # Detect compression:
+            # 1. Total tokens reached or exceeded the configured threshold
+            # 2. OR prompt tokens dropped significantly (>150 tokens) while turn count > 1 (signature of FIFO eviction compaction)
+            compression_detected = False
+            if current_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
+                compression_detected = True
+            elif last_prompt > 1000 and current_prompt < (last_prompt - 150):
+                compression_detected = True
+                logger.info(f"🗜️ [Context Compression] Compaction detected! Prompt tokens contracted from {last_prompt} to {current_prompt}")
+
+            if compression_detected:
+                self._context_compression_triggered = True
+                logger.info(f"🗜️ [Context Compression] Triggered! Token count {current_tot} (threshold: {threshold}, prompt: {current_prompt})")
+                append_diagnostic_log(
+                    "🗜️ Context Compression",
+                    f"Triggered at {current_tot} tokens (threshold: {threshold}, prompt: {current_prompt}) · Sliding window active"
+                )
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        "type": "context_compression",
+                        "payload": {
+                            "status": "triggered",
+                            "tokens": current_tot,
+                            "threshold": threshold,
+                            "message": f"Context window compressed at {current_tot} tokens",
+                            "timestamp": time.time(),
+                        }
+                    }
+                }))
+
+                # FactStore: Immediately inject verbatim dialogue transcription logs back into model context
+                await self._inject_transcription_logs()
+
+            self._last_prompt_tokens = current_prompt
+
+    async def _inject_transcription_logs(self):
+        """Inject verbatim dialogue transcription logs into Gemini Live context on compression."""
+        if not getattr(self, '_session', None) or self._disconnecting:
+            logger.warning("🗜️ [FactStore Injection] Cannot inject transcript logs: session not available or disconnecting.")
+            return
+
+        history = getattr(self, '_dialogue_history', [])
+        if not history:
+            logger.info("🗜️ [FactStore Injection] No dialogue history in FactStore to inject.")
+            return
+
+        # Cap injection to the last 5 turns to keep token overhead minimal
+        capped_history = history[-5:] if len(history) > 5 else history
+
+        # Format verbatim dialogue transcription logs for model injection (last 5 turns)
+        injected_lines = [f"{turn['role']}: {turn['text']}" for turn in capped_history]
+        injected_transcript = "\n".join(injected_lines)
+
+        # Full dialogue history across the entire session for backend logs
+        total_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+        total_transcript = "\n".join(total_lines)
+
+        turn_notice = f"last {len(capped_history)}" if len(history) > 5 else "all"
+        prompt_card = (
+            f"[CONVERSATION_TRANSCRIPT_LOG]\n"
+            f"The following is the verbatim transcript log of the {turn_notice} dialogue turns in this session:\n"
+            f"{injected_transcript}\n\n"
+            f"CRITICAL INSTRUCTIONS:\n"
+            f"• Seamlessly continue the conversation with the user from the latest turn.\n"
+            f"• Retain full awareness of all customer details, numbers, preferences, and agreements stated in this transcript.\n"
+            f"• DO NOT repeat greetings, do NOT re-introduce yourself, and do NOT verbally acknowledge this transcript update."
+        )
+
+        injected_tokens = estimate_tokens(injected_transcript)
+
+        logger.info(
+            f"🗜️ [FactStore Injection] Compression compaction triggered! Session turns: {len(history)}, Injecting: last {len(capped_history)} turns (~{injected_tokens} tok).\n"
+            f"==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+            f"{total_transcript}\n"
+            f"============================================================================================\n"
+            f"==================== INJECTED TRANSCRIPT PAYLOAD (Last {len(capped_history)} turns) ====================\n"
+            f"{injected_transcript}\n"
+            f"============================================================================================"
+        )
+
+        try:
+            content = Content(
+                role="user",
+                parts=[Part(text=prompt_card)]
+            )
+            await self._session.send_client_content(
+                turns=[content],
+                turn_complete=False
+            )
+            logger.info(
+                f"🗜️ [FactStore Injection] Successfully injected last {len(capped_history)} dialogue turns "
+                f"(~{injected_tokens} tok) into model context via send_client_content(turn_complete=False)."
+            )
+            append_diagnostic_log(
+                "🗜️ FactStore Injected",
+                f"Restored last {len(capped_history)} turns (~{injected_tokens} tok) of verbatim transcript into context."
+            )
+        except Exception as e:
+            logger.error(f"❌ [FactStore Injection] Error sending client_content: {e}")
 
     async def _handle_msg_tool_call(self, message):
         # Metric Streaming: Tool Call
@@ -498,6 +786,13 @@ class GeminiSessionLoggerMixin:
             config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
             config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
         
+        # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
+        if getattr(config, "context_window_compression", None):
+            trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 5000
+            target = int(trigger * 0.8)  # 4000 for 5000 trigger
+            config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
+            logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
+
         await super()._connection_task_handler(config)
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
@@ -594,13 +889,52 @@ class UserIdleProcessor(FrameProcessor):
 
 
 class StartTriggerProcessor(FrameProcessor):
-    def __init__(self, language: str = "en-US"):
+    """Handles client start_trigger and gates microphone audio during initial greeting.
+
+    For Gemini 3.1 Live Preview, open duplex microphone streaming before the user
+    speaks causes server-side audio metering to leak ~201 prompt tokens on Turn 1.
+    When `gate_mic_on_greeting` is active:
+      - Raw audio chunks during silence/ambient noise are dropped from downstream.
+      - If the user speaks (voice barge-in, RMS > 650 for >=2 frames), an interruption
+        is immediately broadcast to halt the bot greeting and the mic gate opens.
+      - If the bot finishes the greeting uninterrupted, BotStoppedSpeakingFrame or
+        TTSStoppedFrame opens the gate cleanly.
+      - A 12s safety watchdog auto-opens the gate if no signal arrives.
+    """
+
+    def __init__(
+        self,
+        language: str = "en-US",
+        gate_mic_on_greeting: bool = False,
+    ):
         super().__init__()
         self.language = language
         self.triggered = False
+        self.gate_mic_on_greeting = gate_mic_on_greeting
+        self._mic_gated = gate_mic_on_greeting
+        self._pre_buffer = deque(maxlen=10)  # ~200ms pre-speech buffer to prevent onset clipping
+        self._consecutive_speech_frames = 0
+        self._gate_start_time = time.monotonic()
+        self._max_gate_duration = 12.0  # Safety timeout
+        if self._mic_gated:
+            logger.info("[StartTriggerProcessor] Client mic gating enabled for initial greeting turn.")
+
+    def open_gate(self, reason: str = "manual"):
+        if self._mic_gated:
+            logger.info(f"[GreetingAudioGate] Opening client microphone gate (reason: {reason}).")
+            self._mic_gated = False
+            self._pre_buffer.clear()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         await super().process_frame(frame, direction)
+
+        # 1. Gate release on bot completion signals (travels upstream from output transport or downstream from LLM)
+        if isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
+            self.open_gate(f"{type(frame).__name__} received")
+            await self.push_frame(frame, direction)
+            return
+
+        # 2. Handle start_trigger message from client
         if isinstance(frame, InputTransportMessageFrame):
             message = frame.message
             if isinstance(message, dict) and message.get("type") == "start_trigger":
@@ -614,11 +948,62 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
+                    self._gate_start_time = time.monotonic()
                     greeting_text = "Hey!" if self.language == "hi-IN" else "Hello!"
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
                     await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
                     await self.push_frame(LLMRunFrame())
                 return
+
+        # 3. Audio input gating & user barge-in detection during initial greeting
+        if isinstance(frame, InputAudioRawFrame):
+            if not self._mic_gated:
+                await self.push_frame(frame, direction)
+                return
+
+            # Safety watchdog: auto-open if greeting exceeds max duration
+            if (time.monotonic() - self._gate_start_time) > self._max_gate_duration:
+                self.open_gate("watchdog timeout 12s expired")
+                await self.push_frame(frame, direction)
+                return
+
+            # Voice activity check on incoming PCM chunk (RMS energy)
+            audio_bytes = getattr(frame, "audio", None)
+            if not audio_bytes:
+                return
+
+            samples = np.frombuffer(audio_bytes, dtype=np.int16)
+            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) if len(samples) > 0 else 0.0
+
+            # Barge-in speech threshold:
+            # Silence/background room noise with open mic is RMS ~40 to 250.
+            # Human speech speaking into mic is typically RMS 1,200 to 10,000+.
+            # Requiring 2 consecutive frames (>40ms) with RMS > 650 prevents single click/breath false triggers.
+            if rms > 650.0:
+                self._consecutive_speech_frames += 1
+                if self._consecutive_speech_frames >= 2:
+                    logger.info(
+                        f"[GreetingAudioGate] User voice barge-in detected during initial greeting! "
+                        f"(RMS={rms:.1f}, frames={self._consecutive_speech_frames}). "
+                        "Broadcasting interruption and opening microphone gate."
+                    )
+                    self._mic_gated = False
+                    # Abort bot greeting playback immediately
+                    await self.broadcast_interruption()
+                    # Flush onset frames from pre_buffer so first syllable is preserved
+                    while self._pre_buffer:
+                        buffered_frame = self._pre_buffer.popleft()
+                        await self.push_frame(buffered_frame, direction)
+                    # Forward active speech frame downstream to model
+                    await self.push_frame(frame, direction)
+                    return
+            else:
+                self._consecutive_speech_frames = 0
+
+            # Ambient noise / silence during greeting: store in rolling pre_buffer and drop from downstream!
+            self._pre_buffer.append(frame)
+            return
+
         await self.push_frame(frame, direction)
 
 
@@ -677,6 +1062,9 @@ def build_live_vad_analyzer(vad: bool) -> Optional[SileroVADAnalyzer]:
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
 
 
+from persona_registry import get_persona_architecture
+
+
 async def run_agent_live(
     websocket: WebSocket,
     model: str,
@@ -692,6 +1080,10 @@ async def run_agent_live(
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     vad: bool = True,
+    # Selects the persona's execution architecture. This is the ONLY input that
+    # decides which persona tooling loads -- the system instruction is never
+    # inspected for that purpose. See server/persona_registry.py.
+    persona_id: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -699,7 +1091,23 @@ async def run_agent_live(
     gender = "male" if voice == "Custom-Male" else "female"
     logger.info(f"Starting agent with language: {language}")
 
-    prompt_text = compose_live_system_prompt(system_instruction, gender, language)
+    # Resolved before the prompt is composed: an architecture may own its system
+    # instruction outright. Routing is on persona_id alone -- the instruction text
+    # is never inspected to decide behaviour. See server/persona_registry.py.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
+    )
+    effective_instruction = persona_architecture.compose_system_prompt(system_instruction)
+    if effective_instruction is not system_instruction:
+        logger.info(
+            "System instruction supplied by architecture "
+            f"{persona_architecture.pattern.value}; client-provided text ignored."
+        )
+
+    prompt_text = compose_live_system_prompt(effective_instruction, gender, language)
+
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
@@ -727,24 +1135,40 @@ async def run_agent_live(
     )
 
     # Dynamic Tool & RAG / Memory Registration
-    standard_tools = [
-        FunctionSchema(
-            name="get_current_time",
-            description="Get the current time.",
-            properties={
-                "is_explicit_request": {
-                    "type": "boolean",
-                    "description": (
-                        "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                        "- Explaining schedules or timelines.\n"
-                        "- Mentioning time casually in conversation."
-                    )
-                }
-            },
-            required=["is_explicit_request"]
-        ),
-        search_knowledge_base_schema,
-    ]
+    # Persona tooling is resolved from the persona_id supplied at connect time.
+    # The system instruction is NEVER inspected to decide this: prompt text
+    # describes behaviour, it must not select infrastructure. Editing a prompt
+    # can no longer silently disable an engine, and a persona that happens to
+    # mention a car no longer inherits car tooling.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
+    )
+
+    if getattr(persona_architecture, "has_exclusive_tools", lambda: False)():
+        standard_tools = list(persona_architecture.get_tool_schemas())
+    else:
+        standard_tools = [
+            FunctionSchema(
+                name="get_current_time",
+                description="Get the current time.",
+                properties={
+                    "is_explicit_request": {
+                        "type": "boolean",
+                        "description": (
+                            "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                            "- Explaining schedules or timelines.\n"
+                            "- Mentioning time casually in conversation."
+                        )
+                    }
+                },
+                required=["is_explicit_request"]
+            ),
+            search_knowledge_base_schema,
+        ]
+        standard_tools.extend(persona_architecture.get_tool_schemas())
+
 
     if tools:
         try:
@@ -763,38 +1187,22 @@ async def run_agent_live(
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
-    is_custom_voice = (voice in ["Custom-Male", "Custom-Female", "Custom-Key"]) or bool(custom_voice_key)
+    is_custom_voice = voice_profiles.is_custom_clone_voice(voice)
     use_external_tts = tts or is_custom_voice
     tts_service = None
-    
     if use_external_tts:
-        cloned_key_content = None
-        if custom_voice_key:
-            if os.path.isfile(custom_voice_key):
-                try:
-                    with open(custom_voice_key, "r") as f: cloned_key_content = f.read().strip()
-                except Exception as e:
-                    logger.error(f"Failed to read custom_voice_key file: {e}")
-            else:
-                cloned_key_content = custom_voice_key.strip()
-        elif voice in ["Custom-Male", "Custom-Female"]:
-            voice_env = "CLONE_TTS_VOICE_KEY_MALE" if voice == "Custom-Male" else "CLONE_TTS_VOICE_KEY_FEMALE"
-            voice_key_path = os.getenv(voice_env)
-            if voice_key_path and os.path.isfile(voice_key_path):
-                try:
-                    with open(voice_key_path, "r") as f: cloned_key_content = f.read().strip()
-                except Exception as e:
-                    logger.error(f"Failed to read {voice_env}: {e}")
-        
+        from agent import CustomGoogleTTSService
+        cloned_key_content = voice_profiles.resolve_clone_key(voice, custom_voice_key)
         if cloned_key_content:
-            tts_service = GoogleTTSService(
+            clone_lang = Language.HI_IN if ("hi" in (language or "").lower()) else Language.EN_US
+            tts_service = CustomGoogleTTSService(
                 voice_cloning_key=cloned_key_content,
-                params=GoogleTTSService.InputParams(language=Language.EN_US, speaking_rate=tts_pace),
+                params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
             )
         else:
-            voice_id = voice if voice and not voice.startswith("Custom") else "Aoede"
-            tts_service = GoogleTTSService(
-                voice_id=f"{language}-Chirp3-HD-{voice_id}",
+            voice_id = voice if voice and not voice.startswith("Custom") and "clone" not in voice.lower() else "Aoede"
+            tts_service = CustomGoogleTTSService(
+                voice_id=voice_id if "-Chirp3-HD-" in voice_id else f"{language}-Chirp3-HD-{voice_id}",
                 params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
             )
 
@@ -804,13 +1212,29 @@ async def run_agent_live(
     if not voice_name and not use_external_tts:
         voice_name = "Aoede"
 
+    # Voice compatibility guard:
+    # Most Gemini Live models (including 2.5 and 3.5) support the full voice library (Aoede, Despina, Puck, etc.).
+    # If a voice like 'Callirhoe' is unmapped on the Vertex Live gateway, fallback gracefully to Aoede.
+    if voice_name and voice_name.lower() == "callirhoe":
+        logger.warning(f"⚠️ Voice '{voice_name}' is currently unmapped on the Vertex Live endpoint. Falling back to 'Aoede'.")
+        voice_name = "Aoede"
+
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
+        trigger = 5000
         if context_compression_trigger_tokens is not None:
-            cwc["trigger_tokens"] = context_compression_trigger_tokens
+            # Google GenAI / Vertex Live API strictly validates trigger_tokens in [5000, 128000]
+            # (throws "1007 None. Context window trigger tokens must be within [5000, 128000]").
+            trigger = max(5000, min(128000, int(context_compression_trigger_tokens)))
+        cwc["trigger_tokens"] = trigger
+        cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
     AI_STUDIO_MODELS = {
+        "gemini-3.8-live",
+        "gemini-3.8-live-extended-thinking",
+        "gemini-3.5-live-preview",
+        "gemini-3.5-live-extended-thinking-preview",
         "gemini-3.1-flash-live-preview",
         "gemini-3.5-live-translate-preview",
         "gemini-2.5-flash-native-audio-latest",
@@ -818,19 +1242,40 @@ async def run_agent_live(
         "gemini-2.5-flash-native-audio-preview-12-2025",
     }
     VERTEX_LIVE_MODELS = {
+        "gemini-3.8-live-preview",
+        "gemini-3.8-live-extended-thinking-preview",
         "gemini-3.5-flash-live-preview",
         "gemini-3.5-flash-lite-live-preview",
-        "gemini-3.5-live-preview",
-        "gemini-3.5-live-extended-thinking-preview",
+        "gemini-3.8-flash-live-preview",
         "gemini-live-2.5-flash-native-audio",
         "gemini-live-2.5-flash",
+    }
+    # Normalize renamed model strings per gateway:
+    # - On AI Studio, `gemini-3.5-live-preview` was renamed to `gemini-3.8-live`
+    #   and `gemini-3.5-live-extended-thinking-preview` to `gemini-3.8-live-extended-thinking`.
+    # - On Vertex AI us-central1, `gemini-3.8-live-preview` and `gemini-3.8-live-extended-thinking-preview`
+    #   are the active 3.8 publisher IDs (alongside `gemini-3.5-flash-live-preview`).
+    AI_STUDIO_RENAME_MAP = {
+        "gemini-3.5-live-preview": "gemini-3.8-live",
+        "gemini-3.5-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+        "gemini-3.8-live-preview": "gemini-3.8-live",
+        "gemini-3.8-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+    }
+    VERTEX_RENAME_MAP = {
+        "gemini-3.8-flash-live-preview": "gemini-3.8-live-preview",
+        "gemini-3.8-live": "gemini-3.8-live-preview",
+        "gemini-3.8-live-extended-thinking": "gemini-3.8-live-extended-thinking-preview",
     }
 
     clean_model = model[:-9] if model.endswith("-aistudio") else model
     if clean_model in AI_STUDIO_MODELS or (model.endswith("-aistudio") and clean_model not in VERTEX_LIVE_MODELS):
         is_ai_studio = True
+        clean_model = AI_STUDIO_RENAME_MAP.get(clean_model, clean_model)
+        model = clean_model
     else:
         is_ai_studio = False
+        clean_model = VERTEX_RENAME_MAP.get(clean_model, clean_model)
+        model = clean_model
 
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
@@ -895,11 +1340,39 @@ async def run_agent_live(
             vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
+    # Context compression tracking and notification flags
+    effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None
+    llm._context_compression_enabled = context_compression
+    llm._context_compression_trigger_tokens = effective_trigger
+    llm._context_compression_triggered = False
+    llm._last_prompt_tokens = 0
+
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    built_in_tools = {"get_current_time", "search_knowledge_base"}
+
+    # Persona-specific tools are owned by the architecture strategy resolved from
+    # persona_id. Adding a new persona architecture therefore never requires an
+    # edit here -- see server/persona_registry.py.
+    async def broadcast_persona_event(payload: dict):
+        """Push a persona telemetry event to the client over RTVI."""
+        await llm.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": payload,
+        }))
+
+    built_in_tools.update(
+        persona_architecture.register_handlers(llm, broadcast=broadcast_persona_event)
+    )
+
+    # Give the service the architecture and a channel to the client, so a
+    # completed user transcript can update persona telemetry without a tool.
+    llm.persona_architecture = persona_architecture
+    llm.persona_broadcast = broadcast_persona_event
+
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
@@ -929,18 +1402,34 @@ async def run_agent_live(
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
+    gate_mic_on_greeting = "3.1" in (model or "")
+    start_trigger = StartTriggerProcessor(
+        language=language,
+        gate_mic_on_greeting=gate_mic_on_greeting,
+    )
+    llm.start_trigger = start_trigger
+
+    turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if vad else None)
+    llm._turn_tracker = turn_tracker
+    llm._last_input_turn = turn_tracker.current
+    llm._live_output_turn = turn_tracker.current
+    if tts_service is not None:
+        tts_service._turn_tracker = turn_tracker
+
     pipeline = Pipeline([
         transport.input(),
-        StartTriggerProcessor(language=language),
+        start_trigger,
+        TurnBoundaryProcessor(turn_tracker),
         UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
+        ServerAudioTimingProcessor(),
         transport.output(),
         context_aggregator.assistant(),
     ])
 
-    session_id = f"session_{int(time.time()*1000)}"
+    session_id = current_session_id()
     trace_url = GLOBAL_LANGSMITH_TRACER.start_session(session_id, model=model, voice=voice, language=language)
 
     task = PipelineTask(pipeline, params=PipelineParams(
@@ -962,8 +1451,24 @@ async def run_agent_live(
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        turn_tracker.close()
         logger.info("Pipecat Client disconnected")
+        history = getattr(llm, '_dialogue_history', [])
+        if history:
+            transcript_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+            full_transcript = "\n".join(transcript_lines)
+            logger.info(
+                f"\n==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+                f"{full_transcript}\n"
+                f"============================================================================================\n"
+            )
+        else:
+            logger.info("Pipecat Client disconnected (no dialogue history recorded).")
         GLOBAL_LANGSMITH_TRACER.end_session()
         await task.cancel()
 
-    await PipelineRunner(handle_sigint=False).run(task)
+    try:
+        await PipelineRunner(handle_sigint=False).run(task)
+    finally:
+        turn_tracker.close()
+        GLOBAL_LANGSMITH_TRACER.end_session()

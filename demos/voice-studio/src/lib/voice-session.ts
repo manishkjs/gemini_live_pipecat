@@ -1,4 +1,5 @@
 import { getPersona, getPersonaPrompt, type PersonaId, type PersonaTone } from "./personas.ts";
+import { estimateTokens } from "./pricing.ts";
 
 export type Engine = "live" | "cascade";
 
@@ -33,6 +34,11 @@ export type SessionSettings = {
   llmModel: string;
   ttsModel: string;
   ttsPace?: number;
+  ttsStyle?: string;
+  ttsAccent?: string;
+  ttsPitch?: string;
+  ttsPaceLabel?: string;
+  ttsVoicePrompt?: string;
   tts?: boolean;
   skipStt?: boolean;
   vad?: boolean;
@@ -54,7 +60,7 @@ export type SessionSettings = {
 /** A short, non-secret id used only to partition diagnostics by demoer. */
 export function newSessionId(): string {
   const random = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID().slice(0, 8)
+    ? crypto.randomUUID()
     : Math.random().toString(36).slice(2, 10);
   return `s_${random}`;
 }
@@ -78,24 +84,87 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   engine: "live",
   personaId: "debt-collector",
   tone: "professional",
-  model: "gemini-3.5-flash-live-preview",
-  voice: "Aoede",
+  model: "gemini-3.8-live-preview",
+  voice: "Gacrux",
   language: "hi-IN",
   instructions: "",
   sttModel: "gemini-3.5-transcribe-live-aistudio",
   llmModel: "gemini-3.5-flash-lite",
-  ttsModel: "gemini-3.1-flash-tts-preview",
+  ttsModel: "gemini-3.8-flash-lite-tts",
   ttsPace: 1.0,
+  ttsStyle: "Empathetic",
+  ttsAccent: "Indian",
+  ttsPitch: "Default",
+  ttsPaceLabel: "Natural",
+  ttsVoicePrompt: "Empathetic yet firm collections specialist. Calm, reassuring Indian English cadence.",
   tts: false,
   skipStt: false,
   vad: true,
   contextCompression: false,
-  contextCompressionTokens: 20000,
+  contextCompressionTokens: 5000,
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
   sessionId: "",
 };
+
+export type PersonaVoiceDesign = {
+  ttsStyle: string;
+  ttsPaceLabel: string;
+  ttsAccent: string;
+  ttsPitch: string;
+  ttsVoicePrompt: string;
+};
+
+export const PERSONA_VOICE_DESIGN_MAP: Record<string, PersonaVoiceDesign> = {
+  pragya: {
+    ttsStyle: "Warm & Friendly",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Warm, confident luxury automotive concierge from Mumbai. Speak with a welcoming smile.",
+  },
+  "debt-collector": {
+    ttsStyle: "Empathetic",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Empathetic yet firm collections specialist. Calm, reassuring Indian English cadence.",
+  },
+  storyteller: {
+    ttsStyle: "Expressive / Dramatic",
+    ttsPaceLabel: "Conversational",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Expressive Indian storyteller. Rich theatrical modulation and warm emotional pacing.",
+  },
+  "mf-advisor": {
+    ttsStyle: "Professional",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Trusted wealth & mutual fund advisor. Articulate, reassuring, and clear with financial numbers.",
+  },
+  "glass-buddy": {
+    ttsStyle: "Conversational",
+    ttsPaceLabel: "Brisk",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Friendly smart-glasses AI companion. Crisp, upbeat, and helpful.",
+  },
+};
+
+export function getPersonaVoiceDesign(personaId: string): PersonaVoiceDesign {
+  return (
+    PERSONA_VOICE_DESIGN_MAP[personaId] ?? {
+      ttsStyle: "Empathetic",
+      ttsPaceLabel: "Natural",
+      ttsAccent: "Indian",
+      ttsPitch: "Default",
+      ttsVoicePrompt: "Warm, natural conversational tone.",
+    }
+  );
+}
 
 export const LANGUAGE_MAP: Record<string, string> = {
   "hi-IN": "Hindi",
@@ -135,15 +204,28 @@ export const LANGUAGE_OPTIONS: [string, string][] = [
   ["ja-JP", "Japanese"],
 ];
 
-export const LIVE_MODELS: [string, string][] = [
-  ["gemini-3.5-flash-live-preview", "gemini-3.5-flash-live-preview (Vertex AI Live - Default)"],
-  ["gemini-3.5-flash-lite-live-preview", "gemini-3.5-flash-lite-live-preview (Vertex AI Live Lite)"],
-  ["gemini-live-2.5-flash-native-audio", "gemini-live-2.5-flash-native-audio (Vertex AI)"],
-  ["gemini-live-2.5-flash", "gemini-live-2.5-flash (Vertex AI Cascaded)"],
-  ["gemini-3.5-live-preview", "gemini-3.5-live-preview (AI Studio)"],
-  ["gemini-3.5-live-extended-thinking-preview", "gemini-3.5-live-extended-thinking-preview (AI Studio)"],
-  ["gemini-3.1-flash-live-preview", "gemini-3.1-flash-live-preview (AI Studio)"],
+export const LIVE_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
+  {
+    label: "Vertex AI (Gemini Live)",
+    options: [
+      ["gemini-3.8-live-preview", "gemini-3.8-live-preview (Vertex AI Live - Default)"],
+      ["gemini-3.8-live-extended-thinking-preview", "gemini-3.8-live-extended-thinking-preview (Vertex AI Thinking)"],
+      ["gemini-live-2.5-flash-native-audio", "gemini-live-2.5-flash-native-audio (Vertex AI)"],
+      ["gemini-live-2.5-flash", "gemini-live-2.5-flash (Vertex AI Cascaded)"],
+    ],
+  },
+  {
+    label: "AI Studio (Gemini Live)",
+    options: [
+      ["gemini-3.8-live", "gemini-3.8-live (AI Studio)"],
+      ["gemini-3.8-live-extended-thinking", "gemini-3.8-live-extended-thinking (AI Studio Thinking)"],
+      ["gemini-3.1-flash-live-preview", "gemini-3.1-flash-live-preview (AI Studio)"],
+      ["gemini-2.5-flash-native-audio-latest", "gemini-2.5-flash-native-audio-latest (AI Studio)"],
+    ],
+  },
 ];
+
+export const LIVE_MODELS: [string, string][] = LIVE_MODEL_GROUPS.flatMap((group) => group.options);
 
 export const CASCADE_STT_MODELS: [string, string][] = [
   ["gemini-3.5-transcribe-live-aistudio", "gemini-3.5-transcribe-live-aistudio (AI Studio Live STT - Default)"],
@@ -155,21 +237,59 @@ export const CASCADE_STT_MODELS: [string, string][] = [
 ];
 
 export const CASCADE_LLM_MODELS: [string, string][] = [
-  ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite (Default)"],
-  ["gemini-3.7-flash", "gemini-3.7-flash"],
-  ["gemini-2.5-flash", "gemini-2.5-flash"],
-  ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
+  ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite (Vertex AI - Default)"],
+  ["gemini-3.5-flash-lite-aistudio", "gemini-3.5-flash-lite (AI Studio)"],
+  ["gemini-3.8-flash", "gemini-3.8-flash (Vertex AI)"],
+  ["gemini-3.8-flash-aistudio", "gemini-3.8-flash (AI Studio)"],
+  ["gemini-3.7-flash", "gemini-3.7-flash (Vertex AI)"],
+  ["gemini-2.5-flash", "gemini-2.5-flash (Vertex AI)"],
+  ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite (Vertex AI)"],
 ];
 
 export const CASCADE_TTS_MODELS: [string, string][] = [
-  ["gemini-3.1-flash-tts-preview", "gemini-3.1-flash-tts-preview (Gemini 3.1 Flash TTS - Default)"],
+  ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (Gemini 3.8 Flash Lite TTS - $0.50/$6.00 - Default)"],
+  ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (Gemini 3.8 Flash TTS - Voice Design - $0.50/$9.00)"],
+  ["gemini-3.1-flash-tts-preview", "gemini-3.1-flash-tts-preview (Vertex Gemini 3.1 Flash TTS)"],
   ["gemini-2.5-flash-lite-preview-tts", "gemini-2.5-flash-lite-preview-tts (Gemini 2.5)"],
   ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-preview-tts (Gemini 2.5)"],
   ["gemini-2.5-pro-preview-tts", "gemini-2.5-pro-preview-tts (Gemini 2.5)"],
   ["google-tts", "Google TTS (Chirp 3 HD Indian Voices)"],
 ];
 
+export const TTS_STYLE_OPTIONS: [string, string][] = [
+  ["Empathetic", "Empathetic (Warm & understanding)"],
+  ["Conversational", "Conversational (Natural everyday tone)"],
+  ["Warm & Friendly", "Warm & Friendly (Approachable & kind)"],
+  ["Professional", "Professional (Crisp & authoritative)"],
+  ["Cheerful", "Cheerful (Upbeat & enthusiastic)"],
+  ["Calm & Soothing", "Calm & Soothing (Gentle & reassuring)"],
+  ["Expressive / Dramatic", "Expressive / Dramatic (Storytelling & theatrical)"],
+];
+
+export const TTS_ACCENT_OPTIONS: [string, string][] = [
+  ["Indian", "Indian"],
+  ["American (Gen)", "American (Gen)"],
+  ["British", "British"],
+  ["Australian", "Australian"],
+  ["Auto", "Auto (from language)"],
+];
+
+export const TTS_PITCH_OPTIONS: [string, string][] = [
+  ["Default", "Default"],
+  ["Low", "Low"],
+  ["Medium", "Medium"],
+  ["High", "High"],
+];
+
+export const TTS_PACE_OPTIONS: [string, string][] = [
+  ["Natural", "Natural"],
+  ["Conversational", "Conversational"],
+  ["Brisk", "Brisk / Energetic"],
+  ["Slow", "Slow / Calm"],
+];
+
 export const GEMINI_VOICES: [string, string][] = [
+  ["Gacrux", "Gacrux (Female - Gemini 3.8 Default)"],
   ["Aoede", "Aoede (Female)"],
   ["Puck", "Puck (Male)"],
   ["Charon", "Charon (Male)"],
@@ -182,7 +302,6 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Achird", "Achird (Male)"],
   ["Vindemiatrix", "Vindemiatrix (Female)"],
   ["Rasalgethi", "Rasalgethi (Male)"],
-  ["Callirhoe", "Callirhoe (Female)"],
   ["Autonoe", "Autonoe (Female)"],
   ["Enceladus", "Enceladus (Male)"],
   ["Iapetus", "Iapetus (Male)"],
@@ -195,17 +314,18 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Achernar", "Achernar (Female)"],
   ["Alnilam", "Alnilam (Male)"],
   ["Schedar", "Schedar (Male)"],
-  ["Gacrux", "Gacrux (Female)"],
   ["Pulcherrima", "Pulcherrima (Female)"],
   ["Zubenelgenubi", "Zubenelgenubi (Male)"],
   ["Sadachbia", "Sadachbia (Male)"],
   ["Sadaltager", "Sadaltager (Male)"],
-  ["Custom-Male", "Custom Clone Voice (Male)"],
-  ["Custom-Female", "Custom Clone Voice (Female)"],
+  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
+  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
   ["Custom-Key", "Custom Voice Cloning Key"],
 ];
 
 export const CHIRP_HD_VOICES: [string, string][] = [
+  ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
+  ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
   ["hi-IN-Chirp3-HD-Sulafat", "hi-IN-Chirp3-HD-Sulafat (Hindi Female)"],
   ["hi-IN-Chirp3-HD-Achird", "hi-IN-Chirp3-HD-Achird (Hindi Male)"],
   ["hi-IN-Chirp3-HD-Vindemiatrix", "hi-IN-Chirp3-HD-Vindemiatrix (Hindi Female)"],
@@ -218,8 +338,6 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["en-US-Chirp3-HD-Gacrux", "en-US-Chirp3-HD-Gacrux (US Female)"],
   ["en-US-Chirp3-HD-Leda", "en-US-Chirp3-HD-Leda (US Female)"],
   ["en-US-Chirp3-HD-Puck", "en-US-Chirp3-HD-Puck (US Male)"],
-  ["Custom-Male", "Custom Clone Voice (Male)"],
-  ["Custom-Female", "Custom Clone Voice (Female)"],
 ];
 
 /** Cloned-voice selections are backed by a voice cloning key rather than a named Gemini voice. */
@@ -245,7 +363,7 @@ export function buildSessionInstructions(settings: SessionSettings): string {
   const persona = getPersona(settings.personaId);
   const language = LANGUAGE_MAP[settings.language] || LANGUAGE_OPTIONS.find(([value]) => value === settings.language)?.[1];
   if (!language) throw new Error("Choose one of the supported session languages.");
-  if (settings.instructions.length > 1000) throw new Error("Keep custom persona instructions under 1,000 characters.");
+  if (estimateTokens(settings.instructions) > 4000) throw new Error("Keep custom persona instructions under 4,000 tokens.");
   const prompt = settings.instructions.trim() || getPersonaPrompt(persona, settings.tone);
   if (!prompt) return ""; // Leave the backend’s existing instructions intact in custom mode.
   return `${prompt} Speak in ${language}, unless the user requests another language.`;
@@ -267,6 +385,32 @@ export function buildBackendPageUrl(backendUrl: string, page: "original" | "diag
   return url.href;
 }
 
+/**
+ * Where to read the prompt the backend will actually run for a persona.
+ *
+ * Architecture-managed personas have their prompt composed server-side, so the
+ * studio has to ask for it rather than display its own local copy.
+ */
+export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string): string {
+  const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
+  const url = validatedBackendUrl(targetUrl);
+  const base = url.pathname.replace(/\/$/, "");
+  url.pathname = `${base}/persona-prompt/${encodeURIComponent(settings.personaId)}`;
+  const searchParams = new URLSearchParams();
+  if (settings.engine) {
+    searchParams.set("engine", settings.engine);
+  }
+  if (phase && settings.engine !== "cascade") {
+    searchParams.set("phase", phase);
+  }
+  searchParams.set("tone", settings.tone);
+  searchParams.set("language", settings.language);
+  url.search = searchParams.toString();
+  return url.href;
+}
+
+
+
 export function buildConnectUrl(settings: SessionSettings): URL {
   buildSessionInstructions(settings);
   const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
@@ -284,6 +428,10 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       // endpointing to Gemini's own server-side turn detection.
       vad: settings.vad === false ? "false" : "true",
       context_compression: settings.contextCompression ? "true" : "false",
+      // Selects the persona's execution architecture server-side. The backend
+      // routes on this id alone and never inspects prompt text, so editing a
+      // prompt can no longer silently disable a persona's engine.
+      persona_id: settings.personaId,
     };
     if (settings.sessionId) params.session_id = settings.sessionId;
     // Native audio has no pace parameter, so only send one when a TTS service
@@ -298,7 +446,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
     }
     url.search = new URLSearchParams(params).toString();
   } else if (settings.engine === "cascade") {
-    url.search = new URLSearchParams({
+    const cascadeParams: Record<string, string> = {
       bot_type: "tts-llm-stt",
       stt_model: settings.sttModel,
       llm_model: settings.llmModel,
@@ -308,8 +456,15 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: settings.vad === false ? "false" : "true",
       skip_stt: settings.skipStt ? "true" : "false",
-      ...(settings.sessionId ? { session_id: settings.sessionId } : {}),
-    }).toString();
+      persona_id: settings.personaId,
+    };
+    if (settings.sessionId) cascadeParams.session_id = settings.sessionId;
+    if (settings.ttsStyle) cascadeParams.tts_style = settings.ttsStyle;
+    if (settings.ttsAccent) cascadeParams.tts_accent = settings.ttsAccent;
+    if (settings.ttsPitch) cascadeParams.tts_pitch = settings.ttsPitch;
+    if (settings.ttsPaceLabel) cascadeParams.tts_pace_label = settings.ttsPaceLabel;
+    if (settings.ttsVoicePrompt?.trim()) cascadeParams.tts_voice_prompt = settings.ttsVoicePrompt.trim();
+    url.search = new URLSearchParams(cascadeParams).toString();
   } else throw new Error("Choose Gemini Live or Cascade.");
   return url;
 }
@@ -318,6 +473,10 @@ export function buildConnectRequest(settings: SessionSettings) {
   const instructions = buildSessionInstructions(settings);
   const body: Record<string, unknown> = {};
   if (instructions) body.system_instruction = instructions;
+  if (!settings.instructions.trim() && settings.personaId !== "custom") {
+    body.prompt_source = "preset";
+    body.persona_tone = settings.tone;
+  }
   if (settings.toolsJson?.trim()) {
     try {
       body.tools = JSON.parse(settings.toolsJson);
@@ -326,16 +485,20 @@ export function buildConnectRequest(settings: SessionSettings) {
     }
   }
   if (settings.contextCompression) {
-    body.context_compression = true;
-    if (settings.contextCompressionTokens) {
-      body.context_compression_trigger_tokens = settings.contextCompressionTokens;
-    }
+    const rawTokens = settings.contextCompressionTokens ?? 5000;
+    body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
   }
   // A voice cloning key is a credential. It travels in the POST body only, and
   // the server exchanges it for an opaque, short-lived voice_profile_id before
   // any WebSocket URL is minted — so it never reaches browser history, access
   // logs, or the in-app diagnostics buffer.
-  if (settings.customVoiceKey?.trim()) {
+  if (isClonedVoice(settings.voice) && settings.engine === "cascade" && settings.ttsModel !== "google-tts") {
+    throw new Error("Select Chirp 3 HD to use a cloned voice in Cascade.");
+  }
+  if (settings.voice === "Custom-Key" && !settings.customVoiceKey?.trim()) {
+    throw new Error("Enter your voice cloning key or select another voice.");
+  }
+  if (settings.voice === "Custom-Key" && settings.customVoiceKey?.trim()) {
     body.custom_voice_key = settings.customVoiceKey.trim();
   }
   // NOTE: thinking_level intentionally travels only in the query string (see

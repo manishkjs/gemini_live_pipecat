@@ -1,21 +1,20 @@
+import { createDiagnosticAccess, diagnosticHeaders } from "./session-diagnostics";
 import { buildConnectRequest, validateSocketUrl, type SessionSettings } from "./voice-session";
-import { calculateTurnCost } from "./pricing";
+import { calculateTurnCost, type UsageTokenData } from "./pricing";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
 export type MessageMetrics = {
+  responseId?: string;
+  costEstimated?: boolean;
+  costMinUSD?: number;
+  costMaxUSD?: number;
   sttLatency?: number; // In seconds
   llmLatency?: number; // In seconds (TTFB)
   ttsLatency?: number; // In seconds
   interruptedMs?: number;
   turnCostUSD?: number;
-  usage?: {
-    total_token_count?: number;
-    prompt_token_count?: number;
-    response_token_count?: number;
-    prompt_details?: { text?: number; audio?: number };
-    response_details?: { text?: number; audio?: number };
-  };
+  usage?: UsageTokenData;
 };
 
 export type SessionEvents = {
@@ -42,6 +41,7 @@ export type LiveSession = {
  */
 export async function createLiveSession(settings: SessionSettings, events: SessionEvents): Promise<LiveSession> {
   const request = buildConnectRequest(settings);
+  if (settings.sessionId) createDiagnosticAccess(settings.sessionId);
   const endpoint = request.url;
   if (window.location.protocol === "https:" && endpoint.protocol !== "https:") {
     throw new Error("Use an HTTPS backend for this hosted demo. Run the demo locally to connect to localhost over HTTP.");
@@ -61,7 +61,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let lastTurnSTTLatency: number | null = null;
   let pendingLLMLatency: number | null = null;
   let pendingTTSLatency: number | null = null;
-  let lastTurnUsage: any = null;
+
 
   const controller = new AbortController();
   const sources = new Set<AudioBufferSourceNode>();
@@ -131,14 +131,19 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     if (!body || typeof body !== "object") return;
     const data = body as {
       type?: string;
+      response_id?: string;
       participant?: string;
       text?: string;
       ttft?: number;
       stt_latency?: number;
-      payload?: { type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
+      payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
-    if (data.type === "transcription" && typeof data.text === "string" && data.text) {
+    if (data.type === "transcription" && typeof data.text === "string") {
+      if (!data.text) {
+        events.onPartialUser("");
+        return;
+      }
       if (data.participant?.toLowerCase() === "user") {
         turnStarted = false;
         lastUserAt = performance.now();
@@ -148,21 +153,18 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         events.onMessage("user", data.text, false, { sttLatency: effStt });
         events.onPhase("thinking");
       } else {
-        const effLlm = data.ttft !== undefined ? data.ttft : (pendingLLMLatency !== null ? pendingLLMLatency : undefined);
+        const effLlm = data.ttft !== undefined ? data.ttft : (!data.response_id && pendingLLMLatency !== null ? pendingLLMLatency : undefined);
         pendingLLMLatency = null;
-        const effTts = pendingTTSLatency !== null ? pendingTTSLatency : undefined;
+        const effTts = !data.response_id && pendingTTSLatency !== null ? pendingTTSLatency : undefined;
         pendingTTSLatency = null;
         const effStt = settings.engine === "cascade" ? (lastTurnSTTLatency ?? undefined) : undefined;
         lastTurnSTTLatency = null;
-        const effUsage = lastTurnUsage ?? undefined;
-        const turnCost = (settings.engine === "live" && effUsage) ? calculateTurnCost(settings.model, effUsage) : null;
 
         events.onMessage("assistant", data.text, turnStarted, {
           llmLatency: effLlm,
           ttsLatency: effTts,
           sttLatency: effStt,
-          usage: effUsage,
-          turnCostUSD: turnCost?.totalUSD,
+          responseId: data.response_id,
         });
         turnStarted = true;
       }
@@ -180,6 +182,9 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       if (!p) return;
       if (p.type === "turn_complete") {
         turnStarted = false;
+        pendingLLMLatency = null;
+        pendingTTSLatency = null;
+        lastTurnSTTLatency = null;
         events.onMetricUpdate?.("turn_complete", p);
       } else if (p.type === "interruption") {
         turnStarted = false;
@@ -189,23 +194,38 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       } else if (p.type === "stt_latency") {
         pendingSTTLatency = p.value ?? null;
         lastTurnSTTLatency = p.value ?? null;
-        events.onMetricUpdate?.("stt_latency", p.value);
+        events.onMetricUpdate?.("stt_latency", p);
       } else if (p.type === "llm_latency") {
         pendingLLMLatency = p.value ?? null;
-        events.onMetricUpdate?.("llm_latency", p.value);
+        events.onMetricUpdate?.("llm_latency", p);
       } else if (p.type === "tts_latency") {
         pendingTTSLatency = p.value ?? null;
-        events.onMetricUpdate?.("tts_latency", p.value);
+        events.onMetricUpdate?.("tts_latency", p);
+      } else if (p.type === "cascade_cost") {
+        events.onMetricUpdate?.("cascade_cost", p);
       } else if (p.type === "usage") {
-        lastTurnUsage = p.usage ?? null;
         const turnCost = settings.engine === "live" ? calculateTurnCost(settings.model, p.usage) : null;
         events.onMetricUpdate?.("usage", {
           ...p.usage,
+          response_id: p.response_id ?? p.usage?.response_id,
+          event_id: p.event_id ?? p.usage?.event_id,
+          session_id: p.session_id ?? p.usage?.session_id,
           turnCostUSD: turnCost?.totalUSD,
+          costEstimated: turnCost?.estimated,
+          costMinUSD: turnCost?.minUSD,
+          costMaxUSD: turnCost?.maxUSD,
         });
       } else if (p.type === "tool_call") {
         events.onMetricUpdate?.("tool_call", p);
       }
+    } else if (data.type === "phase_transition") {
+      events.onMetricUpdate?.("phase_transition", data);
+    } else if (data.type === "call_state") {
+      events.onMetricUpdate?.("call_state", data);
+    } else if (data.type === "booking_confirmed") {
+      events.onMetricUpdate?.("booking_confirmed", data);
+    } else if (data.type === "context_compression") {
+      events.onMetricUpdate?.("context_compression", data.payload);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
     }
@@ -218,7 +238,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       try {
         response = await fetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...diagnosticHeaders(settings.sessionId) },
           credentials: "include",
           body: JSON.stringify(request.body),
           signal: controller.signal,

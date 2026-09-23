@@ -1,52 +1,137 @@
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRight, Check, Copy, Edit3, MessageSquare, Mic, RotateCcw, Zap, DollarSign } from "lucide-react";
+import { ArrowRight, Check, Copy, Edit3, Lock, Mic, RotateCcw, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { isLivePricingEligible, formatCost } from "@/lib/pricing";
+import { isLivePricingEligible, formatCost, estimateTokens, formatTokens, totalIn, totalOut } from "@/lib/pricing";
+import { getPersonaPrompt } from "@/lib/personas";
+import { buildPersonaPromptUrl } from "@/lib/voice-session";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 import PersonaAvatar from "./persona-avatar";
+import CascadeCostPanel from "./cascade-cost-panel";
 
 /** Live transcript, per-turn telemetry badges and the empty-state briefing. */
 export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
   const {
-    active, complete, copied, copyTranscript, custom, duration, engineName, followTranscript,
-    lastSTT, lastTTFB, latency, messages, partialUser, persona, phase, reduced, sessionCostUSD,
-    settings, setShowInlineEditor, showInlineEditor, source, tokenCount, transcript, turnCount,
-    update,
+    active, copied, copyTranscript, custom, duration, engineName, followTranscript,
+    latency, messages, partialUser, persona, phase, reduced, sessionCostUSD, sessionCostBounds,
+    settings, setShowInlineEditor, showInlineEditor, tokenCount, tokenSplit, transcript,
+    update, currentPhase, visitedPhases, phaseDelivery,
   } = studio;
+
+  const livePricingAvailable = isLivePricingEligible(settings.engine, settings.model);
+
+  // Resolve against the selected tone. Reading `persona.prompt` directly showed
+  // the professional register even when Signature was selected, so the preview
+  // disagreed with what the session actually ran.
+  const presetPrompt = getPersonaPrompt(persona, settings.tone);
+  const effectivePrompt = settings.instructions.trim() || presetPrompt;
+
+  // Some personas' prompts are load-bearing for a server-side state machine. The
+  // backend regenerates them regardless of what the client sends, so offering an
+  // editor here would be a lie.
+  const promptLocked = Boolean(persona.architectureLocked);
+  const serverPreset = promptLocked || (!custom && !settings.instructions.trim());
+
+  // Gemini selects the phase through switch_phase. The backend emits these
+  // canonical identifiers after sending the requested card; retained milestones
+  // and booking details remain separate from the current conversation topic.
+  const activeSopIndex = persona.phaseIds?.indexOf(currentPhase) ?? -1;
+
+  // ...and so would previewing our local copy. Ask the backend for the prompt it
+  // will actually run. A stale preview is worse than a visibly pending one: it
+  // teaches the demo audience the wrong thing about the architecture.
+  const { personaId, backendUrl } = settings;
+  const [serverPrompt, setServerPrompt] = useState<string | null>(null);
+  const [serverPromptFailed, setServerPromptFailed] = useState(false);
+
+  useEffect(() => {
+    if (!serverPreset) {
+      setServerPrompt(null);
+      setServerPromptFailed(false);
+      return;
+    }
+    let cancelled = false;
+    setServerPrompt(null);
+    setServerPromptFailed(false);
+    fetch(buildPersonaPromptUrl(settings, currentPhase))
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data: { prompt?: string }) => {
+        if (cancelled) return;
+        const text = data.prompt?.trim();
+        if (text) setServerPrompt(text);
+        else setServerPromptFailed(true);
+      })
+      .catch(() => {
+        if (!cancelled) setServerPromptFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetch when persona, backendUrl, active phase card, or engine changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverPreset, personaId, backendUrl, currentPhase, settings.engine, settings.tone, settings.language]);
+
+  const previewPrompt = serverPreset
+    ? serverPrompt
+      ?? (serverPromptFailed
+        ? "Backend unreachable — this persona's prompt is composed server-side and cannot be shown right now."
+        : "Loading the prompt from the backend…")
+    : effectivePrompt;
+
 
   return (
     <section className="transcript-panel" aria-labelledby="transcript-heading">
-      <div className="transcript-heading">
-        <div className="transcript-title-row">
-          <MessageSquare size={18} />
-          <h2 id="transcript-heading">Conversation</h2>
-          <span className="transcript-badge">{source === "preview" ? "SCRIPTED PREVIEW" : engineName.toUpperCase()}</span>
-          {active && (
-            <div className="live-metrics-ticker">
-              <span className="ticker-pill">Turns: <strong>{turnCount}</strong></span>
-              {lastSTT !== null && <span className="ticker-pill">STT: <strong>{lastSTT}ms</strong></span>}
-              {lastTTFB !== null && <span className="ticker-pill">TTFB: <strong>{lastTTFB}ms</strong></span>}
-              {tokenCount > 0 && <span className="ticker-pill">Tokens: <strong>{tokenCount}</strong></span>}
-              {isLivePricingEligible(settings.engine, settings.model) && sessionCostUSD > 0 && (
-                <span className="ticker-pill cost-pill" title="Estimated live session token spend">
-                  <DollarSign size={10} />
-                  <span>{formatCost(sessionCostUSD)}</span>
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => void copyTranscript()}
-          disabled={!messages.length}
-          aria-label={copied ? "Transcript copied" : "Copy transcript"}
+      <h2 id="transcript-heading" className="sr-only">Conversation</h2>
+
+
+      {/* Live SOP Phase Engine / DEMO FOCUS tracker: stays mounted during calls */}
+      {persona.journey && persona.journey.length > 0 && (
+        <div
+          className={`transcript-sop-bar ${settings.engine === "cascade" ? "is-cascade-static" : ""}`}
+          aria-label="SOP journey tracker"
         >
-          {copied ? <Check size={17} /> : <Copy size={17} />}
-        </Button>
-      </div>
+          <div className="sop-bar-header">
+            <span className="eyebrow">{promptLocked ? "Current topic:" : "Demo focus:"}</span>
+            {settings.engine === "cascade" && persona.phaseIds ? (
+              <span
+                className="cascade-sop-badge"
+                title="This persona currently loads all phases at session start in Cascade. Live loads cards on demand."
+              >
+                All phases loaded · Cascade
+              </span>
+            ) : (
+              active && persona.phaseIds && phaseDelivery && (
+                <span className="eyebrow" role="status" title={
+                  phaseDelivery === "sent" ? "Brief sent to the session; this does not confirm which reply used it."
+                    : phaseDelivery === "pending" ? "Waiting for the current response to finish before sending the brief."
+                      : "The brief was not sent. The model can retry switch_phase; the current topic is unchanged."
+                }>
+                  {phaseDelivery === "sent" ? "Brief sent" : phaseDelivery === "pending" ? "Brief pending" : "Brief failed"}
+                </span>
+              )
+            )}
+          </div>
+          <ol className="phase-track">
+            {persona.journey.map((step, i) => {
+              const isCascade = settings.engine === "cascade";
+              const isActive = !isCascade && i === activeSopIndex;
+              const isVisited = !isCascade && Boolean(persona.phaseIds?.[i] && visitedPhases.includes(persona.phaseIds[i]));
+              return (
+                <li
+                  key={step}
+                  aria-current={isActive ? "step" : undefined}
+                  className={`phase-step ${isActive ? "is-active" : isVisited ? "is-visited" : ""} ${isCascade ? "is-cascade-step" : ""}`}
+                >
+                  <span className="step-num">{i + 1}</span>
+                  <span className="step-text">{step}</span>
+                  {i < persona.journey.length - 1 && <ArrowRight size={12} className="phase-arrow" />}
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
 
       <div
         className="transcript-scroll"
@@ -69,7 +154,6 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <PersonaAvatar key={persona.id} persona={persona} className="empty-portrait" />
               {custom ? (
                 <>
                   <h3>Start with your own instructions.</h3>
@@ -84,12 +168,12 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                       onChange={(e) => update("instructions", e.target.value)}
                       disabled={active}
                       placeholder="You are a helpful voice assistant. Keep replies brief, ask one question at a time, and…"
-                      maxLength={1000}
+                      maxLength={16000}
                       rows={5}
                     />
                     <p className="field-hint">
                       {settings.instructions
-                        ? `${settings.instructions.length}/1000 characters`
+                        ? `${estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens`
                         : "Leave blank to use your backend’s existing system instructions."}
                     </p>
                   </div>
@@ -100,7 +184,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                   <p>
                     {phase === "connecting"
                       ? `Connecting you with ${persona.agentName}…`
-                      : `Select Gemini Live or Cascade on the left to start talking directly with ${persona.agentName}.`}
+                      : `Pick an engine, then press Start to talk directly with ${persona.agentName}.`}
                   </p>
                   <div className="opening-cue">
                     <span className="eyebrow">TRY SAYING</span>
@@ -116,44 +200,53 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                         )}
                       </div>
                       <div className="instruction-header-right">
-                        <button
-                          type="button"
-                          className="edit-prompt-btn-pill"
-                          disabled={active}
-                          onClick={() => {
-                            if (!settings.instructions) {
-                              update("instructions", persona.prompt);
-                            }
-                            setShowInlineEditor((prev) => !prev);
-                          }}
-                        >
-                          <Edit3 size={12} />
-                          <span>{showInlineEditor ? "Close Editor" : (settings.instructions ? "Edit Custom Prompt" : "Edit / Customize")}</span>
-                        </button>
-                        {settings.instructions && (
-                          <button
-                            type="button"
-                            className="reset-prompt-btn-pill"
-                            disabled={active}
-                            onClick={() => {
-                              update("instructions", "");
-                              setShowInlineEditor(false);
-                            }}
-                          >
-                            <RotateCcw size={12} />
-                            <span>Reset</span>
-                          </button>
+                        {promptLocked ? (
+                          <span className="architecture-lock-pill" title="This prompt is generated by the backend phase engine. Edits here would be discarded on connect.">
+                            <Lock size={12} />
+                            <span>Architecture managed</span>
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="edit-prompt-btn-pill"
+                              disabled={active}
+                              onClick={() => {
+                                if (!settings.instructions) {
+                                  update("instructions", presetPrompt);
+                                }
+                                setShowInlineEditor((prev) => !prev);
+                              }}
+                            >
+                              <Edit3 size={12} />
+                              <span>{showInlineEditor ? "Close Editor" : (settings.instructions ? "Edit Custom Prompt" : "Edit / Customize")}</span>
+                            </button>
+                            {settings.instructions && (
+                              <button
+                                type="button"
+                                className="reset-prompt-btn-pill"
+                                disabled={active}
+                                onClick={() => {
+                                  update("instructions", "");
+                                  setShowInlineEditor(false);
+                                }}
+                              >
+                                <RotateCcw size={12} />
+                                <span>Reset</span>
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
 
-                    {showInlineEditor ? (
+                    {showInlineEditor && !promptLocked ? (
                       <div className="main-prompt-editor">
                         <Textarea
                           value={settings.instructions}
                           onChange={(e) => update("instructions", e.target.value)}
                           disabled={active}
-                          maxLength={1000}
+                          maxLength={16000}
                           rows={4}
                           className="main-prompt-textarea"
                           placeholder="Enter custom persona prompt..."
@@ -161,54 +254,66 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                         />
                         <div className="main-prompt-footer">
                           <span className="field-hint">
-                            {settings.instructions.length}/1000 characters · Replaces default preset in Gemini Live and Cascade
+                            {estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens · Replaces default preset in Gemini Live and Cascade
                           </span>
                         </div>
                       </div>
                     ) : (
-                      <p className="persona-prompt-preview">
-                        {settings.instructions || persona.prompt}
-                      </p>
+                      <>
+                        <p className="persona-prompt-preview">
+                          {previewPrompt}
+                        </p>
+                        {promptLocked && persona.architectureNote && (
+                          <p className="architecture-note">
+                            <Zap size={11} />
+                            <span>{persona.architectureNote}</span>
+                          </p>
+                        )}
+                      </>
                     )}
-                  </div>
-                  <div className="journey">
-                    <span className="eyebrow">DEMO FOCUS</span>
-                    <ol>
-                      {persona.journey.map((step, i) => (
-                        <li key={step}>
-                          <span>{i + 1}</span>
-                          {step}
-                          {i < persona.journey.length - 1 && <ArrowRight size={13} className="journey-arrow" />}
-                        </li>
-                      ))}
-                    </ol>
+
                   </div>
                 </>
               )}
             </motion.div>
           ) : (
             <div className="message-list" key="messages">
-              {messages.map((message) => (
-                <motion.article
-                  layout={!reduced}
-                  initial={{ opacity: 0, y: reduced ? 0 : 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  key={message.id}
-                  className={`message message-${message.role}`}
-                >
-                  <span className="message-avatar">
-                    {message.role === "assistant" ? (
-                      <PersonaAvatar key={persona.id} persona={persona} className="transcript-portrait" />
-                    ) : (
-                      <Mic size={15} />
-                    )}
-                  </span>
-                  <div className="message-content">
-                    <div className="message-meta">
-                      <strong>{message.role === "assistant" ? persona.agentName : "You"}</strong>
-                      <time>{message.time}</time>
-                    </div>
-                    <p>{message.text}</p>
+              {messages.map((message, idx) => {
+                const isFirstInGroup = idx === 0 || messages[idx - 1].role !== message.role;
+                const firstCreatedAt = messages[0]?.createdAt;
+                const relativeTime = firstCreatedAt && message.createdAt
+                  ? `+${String(Math.floor((message.createdAt - firstCreatedAt) / 60000)).padStart(2, "0")}:${String(
+                      Math.floor(((message.createdAt - firstCreatedAt) % 60000) / 1000)
+                    ).padStart(2, "0")}`
+                  : message.time;
+
+                return (
+                  <motion.article
+                    layout={!reduced}
+                    initial={{ opacity: 0, y: reduced ? 0 : 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    key={message.id}
+                    className={`message message-${message.role} ${!isFirstInGroup ? "is-grouped" : ""}`}
+                  >
+                    <span className="message-avatar">
+                      {isFirstInGroup ? (
+                        message.role === "assistant" ? (
+                          <PersonaAvatar key={persona.id} persona={persona} className="transcript-portrait" />
+                        ) : (
+                          <Mic size={15} />
+                        )
+                      ) : (
+                        <span className="message-avatar-spacer" />
+                      )}
+                    </span>
+                    <div className="message-content">
+                      {isFirstInGroup && (
+                        <div className="message-meta">
+                          <strong>{message.role === "assistant" ? persona.agentName : "You"}</strong>
+                          <time>{relativeTime}</time>
+                        </div>
+                      )}
+                      <p>{message.text}</p>
 
                     {/* Latency & Telemetry Badges */}
                     {message.role === "user" && message.metrics?.sttLatency !== undefined && (
@@ -232,7 +337,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                                 message.metrics?.turnCostUSD !== undefined &&
                                 message.metrics.turnCostUSD > 0 && (
                                   <span className="cost-tag" title="Turn cost (audio/text tokens)">
-                                    {formatCost(message.metrics.turnCostUSD)}
+                                    {message.metrics.costEstimated ? "≈ " : ""}{formatCost(message.metrics.turnCostUSD)}
                                   </span>
                                 )}
                             </div>
@@ -271,7 +376,8 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                     )}
                   </div>
                 </motion.article>
-              ))}
+              );
+            })}
               {partialUser && (
                 <div className="partial-message">
                   <span className="partial-pulse" />
@@ -286,33 +392,74 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                   <span className="sr-only">{persona.agentName} is thinking</span>
                 </div>
               )}
-              {complete && (
-                <div className="preview-complete">
-                  <Check size={16} />
-                  <span>Session complete. Ready to talk again?</span>
-                </div>
-              )}
             </div>
           )}
         </AnimatePresence>
       </div>
 
+      {settings.engine === "cascade" && <CascadeCostPanel cost={studio.cascadeCost} />}
       <div className="transcript-footer">
         <span>
-          <span className={`status-dot ${active ? "is-active" : ""}`} />
-          {source === "preview"
-            ? "Scripted persona preview · no API calls"
-            : active
-            ? `Live transcript · ${engineName}`
-            : "Your conversation will appear here"}
+          {active && <span className="status-dot is-active" />}
+          {active ? `Live transcript · ${engineName}` : ""}
         </span>
         <div>
-          <span className="session-clock">{duration}</span>
+          <span className="session-clock">Total time: {duration}</span>
+          <span
+            title={
+              `Input ${totalIn(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioIn.toLocaleString()}` +
+              ` + text ${tokenSplit.textIn.toLocaleString()}` +
+              (tokenSplit.residualIn ? ` + ${tokenSplit.residualIn.toLocaleString()} unattributed by the server` : "") +
+              `\nOutput ${totalOut(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioOut.toLocaleString()}` +
+              ` + text ${tokenSplit.textOut.toLocaleString()}` +
+              (tokenSplit.residualOut ? ` + ${tokenSplit.residualOut.toLocaleString()} unattributed` : "")
+            }
+          >
+            {settings.engine === "cascade" ? "LLM tokens" : "Call tokens"}: {tokenCount.toLocaleString()}
+            {tokenCount > 0 && (
+              <span className="token-split">
+                {" ("}
+                <span className="tok-dir">in {formatTokens(totalIn(tokenSplit))}</span>
+                <span className="tok-modality">
+                  {" "}aud {formatTokens(tokenSplit.audioIn)} · txt {formatTokens(tokenSplit.textIn)}
+                  {tokenSplit.residualIn > 0 && <> · ?{formatTokens(tokenSplit.residualIn)}</>}
+                </span>
+                {" | "}
+                <span className="tok-dir">out {formatTokens(totalOut(tokenSplit))}</span>
+                <span className="tok-modality">
+                  {" "}aud {formatTokens(tokenSplit.audioOut)} · txt {formatTokens(tokenSplit.textOut)}
+                  {tokenSplit.residualOut > 0 && <> · ?{formatTokens(tokenSplit.residualOut)}</>}
+                </span>
+                {")"}
+              </span>
+            )}
+          </span>
+          {settings.engine === "live" && (
+            <span title={livePricingAvailable
+              ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported."
+              : `No verified rate card is configured for ${settings.model || "the selected model"}. Token usage is still tracked; an unavailable rate does not mean the call is free.`}>
+              Model cost: {!livePricingAvailable ? "Rate unavailable" : !sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
+                ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
+                : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
+            </span>
+          )}
           {latency !== null && (
             <span title="Measured from user transcript arrival to first response audio">
               Response {(latency / 1000).toFixed(2)}s
             </span>
           )}
+          {/* Lives here since the heading row was removed — this is now the only
+              place session-wide controls and readouts belong. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="footer-copy"
+            onClick={() => void copyTranscript()}
+            disabled={!messages.length}
+            aria-label={copied ? "Transcript copied" : "Copy transcript"}
+          >
+            {copied ? <Check size={15} /> : <Copy size={15} />}
+          </Button>
         </div>
       </div>
     </section>

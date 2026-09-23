@@ -223,6 +223,7 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.db = diagnostic_buffer
         self.db.DIAGNOSTIC_LOG_BUFFER.clear()
         self.db.TURN_LATENCY_RECORDS.clear()
+        self.db._LAST_LATENCY_TIME.clear()
         self.db.bind_session(None)
         self.client = TestClient(app)
 
@@ -230,6 +231,7 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.db.bind_session(None)
         self.db.DIAGNOSTIC_LOG_BUFFER.clear()
         self.db.TURN_LATENCY_RECORDS.clear()
+        self.db._LAST_LATENCY_TIME.clear()
 
     def _log_as(self, session_id, message):
         self.db.bind_session(session_id)
