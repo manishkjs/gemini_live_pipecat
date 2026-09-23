@@ -1,0 +1,440 @@
+---
+/**
+ * Animated comparison: 32k Default Context vs 5k Context Window Compression.
+ *
+ * Demonstrates the "Blessing in Disguise" of 5k context compression:
+ * Caller raw PCM audio streams at ~25 tokens/s (~1,500 tokens/min) and is billed
+ * at $3.00/1M tokens on EVERY subsequent turn.
+ * Setting trigger_tokens: 5000 aggressively flushes the accumulating raw audio
+ * cache back to 3,500 tokens, halting quadratic prompt re-billing and preserving fast TTFB.
+ *
+ * Pure CSS/SVG on a smooth 6s looping timeline. Zero JS runtime dependencies.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "5k context compression is a blessing in disguise: it evicts the expensive $3.00/1M raw caller audio cache before quadratic re-billing compounds.",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 840 330" role="img" aria-labelledby="ccf-title ccf-desc" class="ccf-svg">
+    <title id="ccf-title">Context Window Compression: 5k Compaction vs 32k Default</title>
+    <desc id="ccf-desc">
+      A comparison between 32k default context where raw audio cache accumulates unchecked,
+      and 5k compression which flushes older $3.00/M raw audio tokens back to 3,500 tokens,
+      halting quadratic re-billing and keeping TTFB fast.
+    </desc>
+
+    <!-- Outer Card Surface -->
+    <rect x="12" y="12" width="816" height="306" rx="14" class="card-bg" />
+
+    <!-- Header Section -->
+    <g class="header-group">
+      <text x="36" y="44" class="main-title">Context Compression: The Audio Cache Flusher</text>
+      <text x="36" y="64" class="main-subtitle">
+        Raw caller audio costs $3.00/1M tokens. Aggressive 5k compaction flushes stale audio cache early vs. 32k compounding.
+      </text>
+    </g>
+
+    <!-- Lane 1: 32k Default Window (Compounding Tax) -->
+    <g class="lane-group default-group">
+      <!-- Lane Label -->
+      <text x="36" y="112" class="lane-title def-title">32k Default</text>
+      <text x="36" y="129" class="lane-sub">Unchecked audio growth</text>
+
+      <!-- Track Background -->
+      <rect x="180" y="94" width="430" height="52" rx="8" class="meter-bg" />
+
+      <!-- Pinned System Instructions Block (1,500t) -->
+      <rect x="184" y="98" width="80" height="44" rx="6" class="block-pinned" />
+      <text x="224" y="121" class="block-text">Pinned SOP</text>
+      <text x="224" y="133" class="block-sub">1.5k tokens</text>
+
+      <!-- Compounding Audio Token Bar (Animated creep) -->
+      <rect x="268" y="98" width="338" height="44" rx="6" class="bar-audio-growing" />
+      <text x="437" y="121" class="growing-title">Accumulating Caller Audio Cache (~25 tok/s)</text>
+      <text x="437" y="133" class="growing-sub">Turn 1 → Turn 10: 10,900+ tokens @ $3.00/M re-billed each turn</text>
+
+      <!-- Lane 1 Result Badge -->
+      <rect x="630" y="94" width="176" height="52" rx="8" class="badge-bg red-badge" />
+      <text x="718" y="116" class="badge-value red-txt">12,400 TOKENS</text>
+      <text x="718" y="134" class="badge-sub red-sub">$3.00/M Quadratic Tax</text>
+    </g>
+
+    <!-- Lane 2: 5k Compression (Blessing in Disguise) -->
+    <g class="lane-group compress-group">
+      <!-- Lane Label -->
+      <text x="36" y="210" class="lane-title compress-title">5k Compaction</text>
+      <text x="36" y="227" class="lane-sub">Blessing in disguise</text>
+
+      <!-- Track Background -->
+      <rect x="180" y="192" width="430" height="74" rx="8" class="meter-bg" />
+
+      <!-- Pinned System Instructions Block (1,500t) -->
+      <rect x="184" y="196" width="80" height="66" rx="6" class="block-pinned" />
+      <text x="224" y="227" class="block-text">Pinned SOP</text>
+      <text x="224" y="240" class="block-sub">1.5k tokens</text>
+
+      <!-- Preserved Recent Turns Block (2,000t) -->
+      <rect x="268" y="196" width="120" height="66" rx="6" class="block-active-dialog" />
+      <text x="328" y="227" class="block-text-green">Active Turns</text>
+      <text x="328" y="240" class="block-sub-green">2.0k recent</text>
+
+      <!-- 5k Threshold Trigger Line -->
+      <line x1="472" y1="184" x2="472" y2="274" class="trigger-line" />
+      <rect x="424" y="174" width="96" height="18" rx="4" class="trigger-pill" />
+      <text x="472" y="186" class="trigger-text">5,000t TRIGGER ⚡</text>
+
+      <!-- Flushed Audio Segment (Animated eviction sweep) -->
+      <g class="flushed-segment">
+        <rect x="392" y="196" width="80" height="66" rx="6" class="block-flushed" />
+        <text x="432" y="225" class="flushed-title">Old Audio</text>
+        <text x="432" y="238" class="flushed-tag">FLUSHED ✂️</text>
+      </g>
+
+      <!-- Safe Context Level Marker at 3,500 tokens -->
+      <text x="328" y="280" class="target-label">Target: 3,500 tokens (Older 1.5k audio evicted)</text>
+
+      <!-- Lane 2 Result Badge -->
+      <rect x="630" y="203" width="176" height="52" rx="8" class="badge-bg green-badge" />
+      <text x="718" y="225" class="badge-value green-txt">3,500 TOKENS</text>
+      <text x="718" y="243" class="badge-sub green-sub">65% CACHE FLUSHED · FAST TTFB</text>
+    </g>
+  </svg>
+
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 2rem 0;
+    padding: 0;
+  }
+
+  .ccf-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
+    overflow: visible;
+  }
+
+  .diagram-caption {
+    margin-top: 0.75rem;
+    text-align: center;
+    font-size: 0.8125rem;
+    color: var(--sl-color-gray-3);
+    font-style: italic;
+    line-height: 1.4;
+  }
+
+  /* Frame */
+  .card-bg {
+    fill: #13151b;
+    stroke: #232734;
+    stroke-width: 1.5;
+  }
+
+  /* Header */
+  .main-title {
+    fill: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .main-subtitle {
+    fill: #9aa0a6;
+    font-size: 11.5px;
+  }
+
+  /* Lane Labels */
+  .lane-title {
+    font-size: 13.5px;
+    font-weight: 700;
+  }
+
+  .lane-sub {
+    fill: #80868b;
+    font-size: 10.5px;
+  }
+
+  .def-title {
+    fill: #f28b82;
+  }
+
+  .compress-title {
+    fill: #81c995;
+  }
+
+  /* Meter Track Background */
+  .meter-bg {
+    fill: #191c24;
+    stroke: #2e3444;
+    stroke-width: 1;
+  }
+
+  /* Pinned System Prompt Block */
+  .block-pinned {
+    fill: #202634;
+    stroke: #3c4458;
+    stroke-width: 1;
+  }
+
+  .block-text {
+    fill: #c4c7c5;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .block-sub {
+    fill: #80868b;
+    font-size: 9px;
+    text-anchor: middle;
+  }
+
+  /* 32k Growing Audio Bar */
+  .bar-audio-growing {
+    fill: rgba(234, 67, 53, 0.16);
+    stroke: rgba(234, 67, 53, 0.5);
+    stroke-width: 1;
+  }
+
+  .growing-title {
+    fill: #f28b82;
+    font-size: 10px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .growing-sub {
+    fill: #ea868f;
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+
+  /* 5k Active Turns Block */
+  .block-active-dialog {
+    fill: rgba(52, 168, 83, 0.14);
+    stroke: rgba(52, 168, 83, 0.45);
+    stroke-width: 1;
+  }
+
+  .block-text-green {
+    fill: #81c995;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .block-sub-green {
+    fill: #a8dab5;
+    font-size: 9px;
+    text-anchor: middle;
+  }
+
+  /* 5k Trigger Marker */
+  .trigger-line {
+    stroke: #fbbc04;
+    stroke-width: 1.8;
+    stroke-dasharray: 4 3;
+  }
+
+  .trigger-pill {
+    fill: #292211;
+    stroke: #fbbc04;
+    stroke-width: 1;
+  }
+
+  .trigger-text {
+    fill: #fdd663;
+    font-size: 9px;
+    font-weight: 700;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+
+  /* Flushed Segment */
+  .block-flushed {
+    fill: rgba(234, 67, 53, 0.08);
+    stroke: rgba(234, 67, 53, 0.35);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+  }
+
+  .flushed-title {
+    fill: #f28b82;
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  .flushed-tag {
+    fill: #ea4335;
+    font-size: 8.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+
+  .target-label {
+    fill: #81c995;
+    font-size: 9px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
+  /* Result Badges */
+  .badge-bg {
+    stroke-width: 1;
+  }
+
+  .red-badge {
+    fill: rgba(234, 67, 53, 0.07);
+    stroke: rgba(234, 67, 53, 0.35);
+  }
+
+  .green-badge {
+    fill: rgba(52, 168, 83, 0.08);
+    stroke: rgba(52, 168, 83, 0.4);
+  }
+
+  .badge-value {
+    font-size: 13px;
+    font-weight: 800;
+    text-anchor: middle;
+    letter-spacing: 0.04em;
+  }
+
+  .badge-sub {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+    letter-spacing: 0.03em;
+  }
+
+  .red-txt {
+    fill: #f28b82;
+  }
+
+  .red-sub {
+    fill: #f6aea9;
+  }
+
+  .green-txt {
+    fill: #81c995;
+  }
+
+  .green-sub {
+    fill: #a8dab5;
+  }
+
+  /* ============================================================
+   * Animation: 6s Loop
+   * 0.0s - 2.5s: Meter fills with user audio
+   * 2.5s - 3.8s: 5k Compaction triggers; flushed segment is evicted
+   * 3.8s - 5.5s: Lean 3.5k state confirmed, fast TTFB
+   * 5.5s - 6.0s: Reset loop
+   * ============================================================ */
+  .bar-audio-growing {
+    animation: growAudioCache 6s ease-in-out infinite;
+  }
+
+  @keyframes growAudioCache {
+    0% {
+      opacity: 0.5;
+      stroke-opacity: 0.4;
+    }
+    45% {
+      opacity: 0.95;
+      stroke-opacity: 0.9;
+    }
+    85% {
+      opacity: 1;
+      stroke-opacity: 1;
+    }
+    100% {
+      opacity: 0.5;
+      stroke-opacity: 0.4;
+    }
+  }
+
+  .flushed-segment {
+    animation: evictSegment 6s ease-in-out infinite;
+    transform-origin: 432px 225px;
+  }
+
+  @keyframes evictSegment {
+    0%, 35% {
+      opacity: 0.9;
+      transform: scale(1);
+    }
+    50%, 85% {
+      opacity: 0.15;
+      transform: scale(0.92);
+      stroke-dashoffset: 8;
+    }
+    95%, 100% {
+      opacity: 0.9;
+      transform: scale(1);
+    }
+  }
+
+  .trigger-line, .trigger-pill {
+    animation: pulseTrigger 6s ease-in-out infinite;
+  }
+
+  @keyframes pulseTrigger {
+    0%, 30% {
+      opacity: 0.4;
+    }
+    45%, 60% {
+      opacity: 1;
+      filter: drop-shadow(0 0 4px rgba(251, 188, 4, 0.6));
+    }
+    80%, 100% {
+      opacity: 0.4;
+      filter: none;
+    }
+  }
+
+  .green-badge {
+    animation: highlightSavings 6s ease-in-out infinite;
+  }
+
+  @keyframes highlightSavings {
+    0%, 40% {
+      filter: none;
+    }
+    55%, 85% {
+      filter: drop-shadow(0 0 6px rgba(52, 168, 83, 0.45));
+    }
+    100% {
+      filter: none;
+    }
+  }
+
+  /* High-Contrast & Accessibility */
+  @media (prefers-contrast: more) {
+    .card-bg {
+      stroke: #5f6368;
+    }
+    .red-txt {
+      fill: #ff6b6b;
+    }
+    .green-txt {
+      fill: #4ade80;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar-audio-growing,
+    .flushed-segment,
+    .trigger-line,
+    .trigger-pill,
+    .green-badge {
+      animation: none !important;
+    }
+  }
+</style>

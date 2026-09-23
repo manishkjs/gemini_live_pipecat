@@ -1,15 +1,13 @@
 ---
 title: Getting started
-description: From zero to a working Gemini Live voice turn — the real endpoints, the real code, and the six things that will break first.
+description: "From zero to a working Gemini Live voice turn: endpoints, code, and six common failure modes."
 ---
 
 import { Steps, Aside, Badge } from '@astrojs/starlight/components';
 import HandshakeSequence from '../../components/HandshakeSequence.astro';
 
 You can have a Gemini Live agent talking back to you in about fifteen minutes.
-Most of that time is authentication. Almost all of the pain that follows comes
-from six specific mistakes — so this page front-loads them instead of leaving
-them for you to discover at 2am.
+Most of that time is authentication. Most early friction comes from six specific mistakes. This guide covers them upfront before they cause issues in production.
 
 <Aside type="tip" title="The one-sentence version">
 Open a WebSocket, send **`setup`** and nothing else, wait for **`setupComplete`**,
@@ -20,26 +18,39 @@ then stream 16 kHz PCM in and play 24 kHz PCM out.
 
 This is the first decision, and getting it wrong costs you an afternoon.
 
-| | **Vertex AI** <Badge text="production" variant="success" /> | **AI Studio** <Badge text="prototyping" variant="note" /> |
+Both Google AI Studio and Vertex AI run on Google's unified infrastructure stack and Cloud Billing. Choose based on your organization's compliance and governance boundaries.
+
+| | **Google AI Studio** <Badge text="production" variant="success" /> | **Vertex AI** <Badge text="enterprise compliance" variant="note" /> |
 | --- | --- | --- |
-| **Host** | `us-central1-aiplatform.googleapis.com` | `generativelanguage.googleapis.com` |
-| **API version** | `v1beta1` | `v1alpha` / `v1beta` |
-| **WebSocket path** | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` |
-| **Auth** | OAuth bearer (ADC / service account) | `?key=$GEMINI_API_KEY` |
-| **Model form** | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` | `models/<model>` |
-| **Org policy, VPC-SC, CMEK** | Yes | No |
+| **Target Workload** | Production deployments where regulatory compliance certifications are not an obstacle | Enterprise deployments requiring HIPAA, SOC 2, VPC-SC, CMEK, or custom Cloud ToS |
+| **Host** | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **API version** | `v1alpha` / `v1beta` | `v1beta1` |
+| **WebSocket path** | `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
+| **Auth** | API key (`?key=$GEMINI_API_KEY`) with Cloud Billing tiers | OAuth bearer (Application Default Credentials / service account) |
+| **Model form** | `models/<model>` | `projects/<ID>/locations/us-central1/publishers/google/models/<model>` |
+| **Data residency & VPC-SC** | Global endpoint, standard Google APIs terms | Regional endpoints, VPC Service Controls, CMEK |
+| **Compliance (HIPAA / SOC 2)** | Not in compliance audit scope | Fully certified under Google Cloud enterprise terms |
 
-<Aside type="danger" title="Newest Live models are gated on public AI Studio">
-The current-generation Live preview models are **experiment-gated** on the public
-AI Studio gateway. Connecting there returns close code **`1008` Policy
-Violation** — which looks exactly like an auth failure and sends people down the
-wrong rabbit hole for hours.
+<Aside type="note" title="Production on AI Studio vs. Vertex AI">
+Google AI Studio is built for production at scale. It handles millions of active API developers and high-volume production traffic backed by Google Cloud Billing and tiered rate limits.
 
-**If you are building anything real, use Vertex AI.** Use AI Studio only for
-throwaway prototypes on a generally-available Live model.
+- **Deploy on Google AI Studio** when you want lightweight API key provisioning, faster setup, and high-throughput production usage without enterprise compliance friction.
+- **Deploy on Vertex AI** when you require enterprise compliance boundaries: VPC Service Controls data perimeters, customer-managed encryption keys (CMEK), HIPAA Business Associate Agreements (BAAs), SOC 2 compliance reports, regional data residency, or negotiated enterprise Master Services Agreements.
 </Aside>
 
-## 2. Authenticate (Vertex path)
+## 2. Authenticate
+
+### Path A: Google AI Studio (Production API key)
+
+For production deployments where enterprise compliance boundaries are not required, create an API key in [Google AI Studio](https://aistudio.google.com/apikey) linked to your Google Cloud Billing project:
+
+```bash
+export GEMINI_API_KEY="your-gemini-api-key"
+```
+
+### Path B: Vertex AI (Enterprise IAM / ADC)
+
+For workloads requiring VPC Service Controls, CMEK, or HIPAA/SOC 2 compliance:
 
 <Steps>
 
@@ -62,10 +73,10 @@ throwaway prototypes on a generally-available Live model.
      --role="roles/aiplatform.user"
    ```
 
-   Building a cascade (STT → LLM → TTS) instead? Add `roles/speech.client` and
+   Building a cascade (STT -> LLM -> TTS) instead? Add `roles/speech.client` and
    `roles/texttospeech.client`.
 
-3. **Set up Application Default Credentials — including the quota project.**
+3. **Set up Application Default Credentials, including the quota project.**
 
    ```bash
    gcloud auth application-default login
@@ -73,7 +84,7 @@ throwaway prototypes on a generally-available Live model.
    ```
 
    <Aside type="caution">
-   Skipping `set-quota-project` is the single most common setup failure. Your
+   Skipping `set-quota-project` is the single most common setup failure on Vertex AI. Your
    token authenticates fine, then every call fails with a quota or permission
    error that never mentions the real cause.
    </Aside>
@@ -95,16 +106,21 @@ import asyncio, os, wave
 from google import genai
 from google.genai import types
 
-MODEL = "gemini-live-2.5-flash"  # use a Live model available to your project
+# Modern Gemini Live model
+MODEL = "gemini-3.1-flash-live-preview"
 
+# Option A: Vertex AI (Enterprise ADC / Service Account)
 client = genai.Client(
     vertexai=True,
     project=os.environ["PROJECT_ID"],
     location=os.environ.get("LOCATION", "us-central1"),
 )
 
+# Option B: Google AI Studio (Production API key)
+# client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
 config = types.LiveConnectConfig(
-    # AUDIO only. Never ["AUDIO", "TEXT"] — see the gotchas below.
+    # AUDIO only. Never ["AUDIO", "TEXT"] (see gotchas below).
     response_modalities=["AUDIO"],
     system_instruction="You are a warm, concise voice assistant. Keep replies short.",
     speech_config=types.SpeechConfig(
@@ -154,7 +170,7 @@ asyncio.run(main())
 
 ```bash
 PROJECT_ID="$PROJECT_ID" python first_turn.py
-# then play reply.wav — macOS: `open reply.wav` · Linux: `xdg-open reply.wav`
+# Play reply.wav (macOS: `open reply.wav`, Linux: `xdg-open reply.wav`)
 ```
 
 If you hear a voice, your plumbing is correct and everything from here is
@@ -162,9 +178,7 @@ refinement.
 
 ## 4. What the raw protocol looks like
 
-The SDK hides the handshake. When you write your own client — and for a
-production voice backend you probably will — this is the shape you are
-implementing:
+The SDK hides the handshake. When you build your own production backend, this is the protocol flow you implement:
 
 <HandshakeSequence />
 
@@ -173,7 +187,7 @@ A minimal `setup` frame:
 ```json
 {
   "setup": {
-    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/MODEL",
+    "model": "projects/PROJECT_ID/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview",
     "systemInstruction": {
       "parts": [{ "text": "You are a warm, concise voice assistant." }]
     },
@@ -197,9 +211,7 @@ A minimal `setup` frame:
 }
 ```
 
-The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log that
-session ID — it is the stable key that survives every reconnect, and the only
-sane thing to index your traces by.
+The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log that session ID: it is the stable key that survives reconnects, and the most reliable index for traces.
 
 <Aside type="tip" title="Why those VAD numbers">
 `LOW` sensitivity on both ends plus a **1200 ms** silence window is the setting
@@ -211,26 +223,24 @@ and room noise; a shorter silence window guillotines people mid-thought.
 
 | Direction | Format |
 | --- | --- |
-| **Input** (you → model) | 16 kHz, 16-bit little-endian, **mono** PCM — `audio/pcm;rate=16000` |
-| **Output** (model → you) | 24 kHz, 16-bit, **mono** PCM — `audio/pcm;rate=24000` |
+| **Input** (you → model) | 16 kHz, 16-bit little-endian, **mono** PCM (`audio/pcm;rate=16000`) |
+| **Output** (model → you) | 24 kHz, 16-bit, **mono** PCM (`audio/pcm;rate=24000`) |
 
 These are not negotiable, and they are **different rates in each direction**.
 Resample on the client if your capture device disagrees.
 
 <Aside type="caution" title="The chipmunk test">
-Playback too fast and high-pitched? You are playing 24 kHz audio at 16 kHz — or
-some other rate mismatch. Slow and demonic? The reverse. Before debugging
+If playback is fast and high-pitched, you are playing 24 kHz audio at 16 kHz or have an equivalent sample rate mismatch. Slow and demonic? The reverse. Before debugging
 anything else, confirm both rates independently.
 </Aside>
 
-Capture audio with the two constraints that matter most — the full set is in
-[Audio engineering](/gemini_live_pipecat/audio-engineering/#clean-the-signal-at-the-source):
+Capture audio with these core constraints (see the full set in [Audio engineering](/gemini_live_pipecat/audio-engineering/#clean-the-signal-at-the-source)):
 
 ```javascript
 const stream = await navigator.mediaDevices.getUserMedia({
   audio: {
     sampleRate: 16000,
-    echoCancellation: true,   // critical — stops the model hearing itself
+    echoCancellation: true,   // stops the model hearing its own speaker output
     // plus noiseSuppression, autoGainControl, channelCount: 1
   },
 });
@@ -243,8 +253,7 @@ itself in a loop. This looks like a mysterious model bug. It is an audio-routing
 bug.
 </Aside>
 
-Do the PCM capture and resampling in an **`AudioWorklet`**, not on the main
-thread — DOM rendering will otherwise stutter your audio. See
+Do the PCM capture and resampling in an **`AudioWorklet`**, not on the main thread, where DOM rendering and layout can cause audio jitter. See
 [Audio engineering](/gemini_live_pipecat/audio-engineering/).
 
 ## 6. The six things that will break first
@@ -257,7 +266,7 @@ thread — DOM rendering will otherwise stutter your audio. See
    send behind a "handshake done" flag.
 
 2. **You asked for `["AUDIO", "TEXT"]`.**
-   A session returns audio **or** text — never both as response modalities.
+   A session returns audio **or** text, never both as response modalities.
    Requesting both closes the connection with **`1007`**. If you want a
    transcript alongside speech, that is `outputAudioTranscription`, not a second
    modality.
@@ -299,14 +308,12 @@ The three you will hit first:
 | --- | --- |
 | **`1006`** | Abnormal close, no handshake. Proxy blocked the upgrade, TLS failed, or the network dropped. |
 | **`1007`** | Invalid payload. Usually `["AUDIO","TEXT"]`, a bad voice name, or malformed `setup`. |
-| **`1008`** | Policy violation. Either normal session rotation, or a model gated on your surface. |
+| **`1008`** | Policy violation. Either normal session rotation, or an unauthorized or misspelled model name. |
 
-The full table — `1000`, `1011`, and how to tell rotation from a real policy block
-— lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
+The full table (including codes `1000`, `1011`, and how to distinguish rotation from policy blocks) lives in [Troubleshooting](/gemini_live_pipecat/troubleshooting/#websocket-close-codes).
 
 <Aside type="note">
-Voice names are **case-sensitive**. `aoede` fails; `Aoede` works — and the
-failure surfaces at setup time as a generic close, not a helpful message.
+Voice names are **case-sensitive**. `aoede` fails, whereas `Aoede` succeeds. Invalid voice names close the socket during setup without detailed error payloads.
 </Aside>
 
 ## 8. Verify before you build
@@ -316,25 +323,17 @@ Run through this once. Every item catches a bug that is far more expensive later
 - [ ] `setupComplete` arrives and you logged the `sessionId`.
 - [ ] You hear speech, at natural pitch, from `reply.wav`.
 - [ ] Output transcription matches what you hear.
-- [ ] Talking over the agent produces an `interrupted` signal — and playback
-      actually stops.
+- [ ] Talking over the agent produces an `interrupted` signal, and playback stops immediately.
 - [ ] A call left running for 20 minutes survives at least one reconnect.
 - [ ] `usageMetadata` is being recorded so you can reason about cost.
 - [ ] Time from end-of-speech to first audio chunk is measured, not guessed.
 
 ## Next steps
 
-- [Architecture](/gemini_live_pipecat/architecture/) — turns, interruptions, and
-  the resumption state machine you now know you need.
-- [Audio engineering](/gemini_live_pipecat/audio-engineering/) — worklets, jitter
-  buffers, backpressure, and client-side VAD.
-- [Configuration reference](/gemini_live_pipecat/gemini-live-configuration/) —
-  every `setup` option and wire envelope in one place.
-- [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/) — measure
-  the number your users actually feel.
-- [Optimization patterns](/gemini_live_pipecat/optimization/) — keep long
-  sessions cheap without dropping the conversation.
-- [Tools & function calling](/gemini_live_pipecat/tools/) — keep the conversation
-  alive while your backend works.
-- [Deployment](/gemini_live_pipecat/deployment/) — ship the WebSocket backend to
-  Cloud Run or GKE without the session-affinity and timeout traps.
+- [Architecture](/gemini_live_pipecat/architecture/): Turns, interruptions, and the resumption state machine.
+- [Audio engineering](/gemini_live_pipecat/audio-engineering/): AudioWorklets, jitter buffers, backpressure, and client-side VAD.
+- [Configuration reference](/gemini_live_pipecat/gemini-live-configuration/): Wire envelopes and setup options reference.
+- [Latency & telemetry](/gemini_live_pipecat/latency-and-telemetry/): Accurate latency metrics and diagnostic logging.
+- [Optimization patterns](/gemini_live_pipecat/optimization/): Context compression, prompt cards, and audio pruning.
+- [Tools & function calling](/gemini_live_pipecat/tools/): Non-blocking tools and async execution patterns.
+- [Deployment](/gemini_live_pipecat/deployment/): Production container setup on Cloud Run and GKE.

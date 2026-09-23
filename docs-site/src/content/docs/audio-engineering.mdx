@@ -1,13 +1,13 @@
 ---
 title: Audio engineering
-description: Worklets, jitter buffers, backpressure, and client-side VAD — the client-side work that decides whether your agent sounds human.
+description: "Worklets, jitter buffers, backpressure, and client-side VAD: client-side engineering for production voice quality."
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 
 The model is rarely what makes a voice agent feel bad. The **client audio path**
 is. Choppy playback, the agent talking over itself, a barge-in that takes 400 ms
-to register — all of these are engineering problems on your side of the socket.
+to register: all of these are engineering problems on your side of the socket.
 
 Fix audio at the source, keep it off the main thread, and buffer it adaptively.
 
@@ -30,8 +30,7 @@ const stream = await navigator.mediaDevices.getUserMedia({
 
 <Aside type="danger" title="Echo cancellation prevents self-interruption">
 Without `echoCancellation`, speaker output leaks into the microphone. Server-side
-VAD hears speech the instant the agent starts talking and fires `interrupted` —
-so the agent cuts itself off, over and over. Everyone's first instinct is to
+VAD hears speech the instant the agent starts talking and fires `interrupted`, cutting the agent off repeatedly. Everyone's first instinct is to
 blame VAD tuning. It is almost always the echo path.
 </Aside>
 
@@ -47,8 +46,7 @@ cannot stutter your capture.
 
 <Aside type="caution">
 `ScriptProcessorNode` runs on the **main thread**. It is deprecated, and under UI
-load it drops frames — which sounds like network trouble and gets debugged as
-network trouble. Keep it only as a fallback for legacy browsers.
+load it drops frames, causing audio dropouts that look like network issues. Keep it only as a fallback for legacy browsers.
 </Aside>
 
 ```javascript
@@ -56,6 +54,25 @@ await audioContext.audioWorklet.addModule('/pcm-capture-worklet.js');
 const capture = new AudioWorkletNode(audioContext, 'pcm-capture');
 capture.port.onmessage = (e) => sendPcmChunk(e.data); // Int16Array, 16 kHz
 source.connect(capture);
+```
+
+A minimal `/pcm-capture-worklet.js` converts Float32 Web Audio samples into 16-bit little-endian PCM without clipping distortion:
+
+```javascript title="pcm-capture-worklet.js"
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const channel = inputs[0]?.[0];
+    if (!channel) return true;
+    const pcm16 = new Int16Array(channel.length);
+    for (let i = 0; i < channel.length; i++) {
+      const s = Math.max(-1, Math.min(1, channel[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor);
 ```
 
 ## Buffer adaptively in both directions
@@ -71,11 +88,9 @@ Both should be **adaptive**. A fixed buffer is either too shallow on bad network
 (choppy) or too deep on good ones (laggy). Scale depth from observed
 inter-arrival jitter.
 
-<Aside type="tip" title="The jitter-buffer tradeoff">
+<Aside type="tip" title="The jitter-buffer tradeoff and compliance guardrail">
 Playing the first chunk the instant it arrives gives the lowest possible latency
-and the worst possible smoothness. Queuing 3–5 chunks costs you a few tens of
-milliseconds and removes most audible choppiness. Tune deliberately — do not
-leave it at whatever you wrote first.
+and the worst possible smoothness. Queuing 150 to 200 ms of audio removes audible choppiness and doubles as a **pre-speech compliance guardrail**: because `outputTranscription` text frames arrive ahead of audio playout, your backend can inspect text against policy regexes and flush the 200 ms playout buffer before a prohibited phrase reaches the caller's speaker. See [Optimization patterns](/gemini_live_pipecat/optimization/#pre-speech-compliance-guardrail-200ms-jitter-buffer).
 </Aside>
 
 ## Respect WebSocket backpressure
@@ -108,7 +123,7 @@ worse.
 <Steps>
 
 1. Count consecutive transmission errors.
-2. Above a threshold, **trip** — stop sending and surface a "reconnecting" state.
+2. Above a threshold, **trip**: Stop sending and surface a "reconnecting" state.
 3. Wait with exponential backoff, then send a probe.
 4. On success, **close** the breaker and resume.
 
@@ -141,7 +156,7 @@ hears:
 
 | Setting | Behavior | Use when |
 | --- | --- | --- |
-| **`TURN_INCLUDES_ALL_INPUT`** | All audio counts toward the turn, including while the model speaks | **Default for barge-in** — the model keeps full context when interrupted |
+| **`TURN_INCLUDES_ALL_INPUT`** | All audio counts toward the turn, including while the model speaks | **Default for barge-in**: The model retains full context when interrupted |
 | `TURN_INCLUDES_ONLY_ACTIVITY` | Only active speech segments | Very noisy rooms where cleaner transcripts matter more than interrupt context |
 
 Prefer `TURN_INCLUDES_ALL_INPUT` unless you have measured a reason not to.

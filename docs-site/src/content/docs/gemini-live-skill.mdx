@@ -1,0 +1,268 @@
+---
+title: Gemini Live Skill Reference
+description: "Complete single-tab engineering skill & architectural playbook for building, optimizing, and auditing production Gemini Live voice agents."
+---
+
+import { Steps, Aside, Badge, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This page consolidates the complete **Gemini Live Engineering Skill** into a single reference tab. Use it as both a human architectural playbook and a drop-in `SKILL.md` reference for coding agents building or auditing real-time duplex voice applications on **Gemini Live** and **Pipecat**.
+
+<Aside type="tip" title="What is covered in this single-tab skill">
+1. **Protocol, Endpoints & Model Matrix** (`2.5 Native Audio`, `3.1 Flash Live`, `3.5 Flash Live`, `3.8 Live Preview`)
+2. **Model-Generation Reasoning Config** (`thinking_budget=0` on 2.5 vs. `ThinkingLevel.MINIMAL` on 3.x)
+3. **The `CallSlots` Server-State Tool Handler Pattern** (cutting tool tokens by 92%–96% and collapsing multi-tool chains into 1 Python call)
+4. **Header + Directive + Footer (`PhaseCard`) Architecture** (stopping multi-turn language drift and consonant garbling)
+5. **Pipecat WebSocket & Context Compression Invariants** (independent `if` dispatch for `turn_complete`, `SlidingWindow` wiring, and Turn-1 mic gating)
+6. **Cost Reconciliation & Production Audit Protocol** (`other_input_token` accounting and the Step-0 Before/After raw trace rule)
+</Aside>
+
+---
+
+## 1. Protocol, Endpoints & Model Matrix
+
+| Parameter | Google AI Studio (`GEMINI_API_KEY`) <Badge text="production" variant="success" /> | Vertex AI (`us-central1`, ADC) <Badge text="enterprise compliance" variant="note" /> |
+| --- | --- | --- |
+| **Base Host** | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **API Version** | `v1alpha` or `v1beta` | `v1beta1` *(never use `v1` for Live WebSockets)* |
+| **WebSocket Path** | `/ws/google.ai.generativelanguage.{ver}.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
+| **Authentication** | `?key=$GEMINI_API_KEY` | `Authorization: Bearer $(gcloud auth print-access-token)` + `set-quota-project` |
+| **Gemini 2.5 Native Audio** | `models/gemini-2.5-flash-native-audio-preview-09-2025` | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-2.5-flash-native-audio` |
+| **Gemini 3.1 Flash Live** | `models/gemini-3.1-flash-live-preview` | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-3.1-flash-live-preview` |
+| **Gemini 3.5 Flash Live** | — | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-3.5-flash-live-preview` |
+| **Gemini 3.8 Live Preview** | `models/gemini-3.8-live`<br />`models/gemini-3.8-live-extended-thinking` (`v1alpha`) | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-3.8-live-preview`<br />`.../models/gemini-3.8-live-extended-thinking-preview` (`v1beta1`) |
+
+### Core Protocol Invariants
+- **Vertex AI 3.8 Naming & Version Rule**: On Vertex AI (`us-central1`), always use `api_version="v1beta1"` and include the `-preview` suffix (`gemini-3.8-live-preview` or `gemini-3.8-live-extended-thinking-preview`). Passing `api_version="v1"` or omitting `-preview` fails on Vertex AI.
+- **Single Output Modality**: Always set `response_modalities=["AUDIO"]`. Passing `["AUDIO", "TEXT"]` terminates the WebSocket with close code `1007`.
+- **Audio Framing**: Input stream must be **16 kHz, 16-bit, mono little-endian PCM** (`audio/pcm;rate=16000`). Output stream is **24 kHz, 16-bit, mono PCM** (`audio/pcm;rate=24000`).
+- **Session Rotation (`10–15 min`)**: Live WebSockets rotate periodically after emitting `session_resumption_update`. Store the latest `new_handle` and reconnect seamlessly on `go_away` or close code `1008`.
+
+---
+
+## 2. Reasoning Config: `thinking_budget=0` (2.5) vs. `ThinkingLevel.MINIMAL` (3.x)
+
+One of the most damaging production mistakes when upgrading from Gemini 2.5 to Gemini 3.1 / 3.5 / 3.8 Live is carrying over `ThinkingConfig(thinking_budget=0)`.
+
+<Aside type="caution" title="Why thinking_budget=0 drops conversion on Gemini 3.x Live">
+- **Gemini 2.5** uses a numeric `thinking_budget` (`thinking_budget=0` cleanly disables reasoning latency).
+- **Gemini 3.x (`3.1`, `3.5`, `3.8`)** uses discrete `ThinkingLevel` (`MINIMAL`, `LOW`, `MEDIUM`, `HIGH`). Passing `thinking_budget=0` to Gemini 3.8 Live degrades multi-step tool parameter copying and slot accuracy (causing conversion drops such as `3.30% -> 1.40%` in multi-tool booking flows).
+</Aside>
+
+```python title="thinking_config_helper.py"
+from google.genai import types
+
+def build_live_thinking_config(model_name: str, disable_reasoning: bool = True) -> types.ThinkingConfig:
+    model_lower = (model_name or "").lower()
+    if "gemini-3" in model_lower:
+        level = getattr(types.ThinkingLevel, "MINIMAL", "minimal")
+        return types.ThinkingConfig(
+            thinking_level=level,
+            include_thoughts=False,
+        )
+    return types.ThinkingConfig(
+        thinking_budget=0 if disable_reasoning else 256,
+        include_thoughts=False,
+    )
+```
+
+---
+
+## 3. The `CallSlots` Server-State Tool Handler Pattern
+
+On Gemini 3.1, 3.5, and 3.8 Live, `LiveConnectConfig.tools` schemas and tool responses stored in session history are **re-billed on every subsequent turn** (`cached_content_token_count = 0`).
+
+### The 3-Part Tool Token Tax to Eliminate
+1. **Never Duplicate Tool Lists in `system_instruction` (`+650 to 800 tok/turn`)**:
+   Per the [Official Gemini Live API Tools Guide](https://ai.google.dev/gemini-api/docs/live-api/tools), tool declarations belong in `LiveConnectConfig.tools`. Frameworks that auto-append an `"Available Live API Tools"` directory (`live_tool_names`) into `system_instruction` pay for tool definitions twice on every turn. Always set `live_tool_names=None` (and only inject RAG metadata if the agent actively uses RAG grounding).
+2. **Never Leak Transport Headers or Constant Parameters into `FunctionDeclaration`**:
+   Strip HTTP `method`, `url`, `headers` (`X-ADMIN-KEY`, `Authorization`), and static/session fields before constructing `FunctionDeclaration` objects. Never mark a constant value (such as a fixed WhatsApp image URL or template ID) as an `ai_generated` tool parameter.
+3. **Never Return Raw `~800-Token` JSON Arrays into the Live Context Window**:
+   If a lookup tool (`get_exp_center`) returns `~800 tokens` of raw JSON on Turn 4 of a 10-turn call, that JSON stays in the conversation history and is re-billed 6 more times (`800 tok × 6 turns = ~4,800 tokens/call`).
+
+### Reference Implementation: `CallSlots` Python Tool Handler
+Instead of exposing 4 heavy tools (`1,106 to 2,387 tokens/turn`) and requiring 3 sequential LLM tool turns to book an appointment, send WhatsApp details, and fetch store contact info:
+- Expose only **2 compact tools** (`~85 tokens/turn` total): `get_exp_center(pincode)` and `create_appointment_booking(centre_id, visit_date, visit_time)`.
+- Cache full lookup dictionaries in server memory under **monotonic query-scoped short IDs (`EC-1`, `EC-2`, `EC-3`)** and return a **`~25-token` speakable summary** to Gemini.
+- Execute deterministic follow-up calls (`send_whatsapp_details` + `get_store_contact`) **inside `handle_create_appointment_booking()` in Python**, collapsing **3 LLM tool turns into 1 Python round-trip**.
+
+```python title="call_slots_handler.py"
+class CallSlots:
+    def __init__(self, user_phone: str, user_name: str):
+        self.user_phone = user_phone
+        self.user_name = user_name
+        self.centres: dict[str, dict] = {}
+        self._next_idx = 1
+
+    async def handle_get_exp_center(self, pincode: str) -> dict:
+        raw_stores = await backend_api.fetch_centres(pincode=pincode)
+        if not raw_stores:
+            return {"centres_summary": f"No centres found near pincode {pincode}."}
+
+        lines = []
+        for store in raw_stores[:3]:
+            # Monotonic IDs (EC-1..EC-3 for query 1, EC-4..EC-6 for query 2) prevent index collisions
+            cid = f"EC-{self._next_idx}"
+            self._next_idx += 1
+            self.centres[cid] = store
+            lines.append(f"{cid}: {store['name']} ({store['distance_km']} km)")
+
+        # Returns ~25 tokens to Gemini instead of ~800 tokens of raw JSON (saves ~4,650 tok over 6 turns)
+        return {"centres_summary": " | ".join(lines)}
+
+    async def handle_create_appointment_booking(
+        self,
+        centre_id: str,
+        visit_date: str,
+        visit_time: str,
+    ) -> dict:
+        # Guard against hallucinated centre_id (never raise KeyError into the audio pipeline)
+        store = self.centres.get(centre_id)
+        if not store:
+            valid = ", ".join(self.centres.keys()) or "none fetched yet (call get_exp_center first)"
+            return {
+                "status": "error",
+                "message": f"Unknown centre_id '{centre_id}'. Available IDs: {valid}. Please confirm with the caller.",
+            }
+
+        # 1. Book appointment using cached store fields (LLM never copies UUIDs or city codes)
+        booking = await backend_api.create_booking(
+            phone=self.user_phone,
+            name=self.user_name,
+            city_code=store["city_code"],
+            centre_name=store["name"],
+            centre_uuid=store["uuid"],
+            pincode=store["pincode"],
+            visit_date=visit_date,
+            visit_time=visit_time,
+        )
+
+        # 2. Unconditionally trigger WhatsApp confirmation in Python (saves 232 tok/turn schema + 1 LLM turn)
+        await backend_api.send_whatsapp_confirmation(
+            phone=self.user_phone,
+            template_id="BOOKING_CONFIRMED",
+            media_url="https://cdn.example.com/assets/brochure.jpg",
+        )
+
+        # 3. Resolve store phone contact in Python (saves 183 tok/turn schema + 1 LLM turn)
+        store_phone = store.get("phone") or await backend_api.get_store_contact(store["uuid"])
+
+        return {
+            "status": "booked",
+            "booking_id": booking["id"],
+            "centre_name": store["name"],
+            "store_phone": store_phone,
+            "whatsapp_sent": True,
+        }
+```
+
+---
+
+## 4. Header + Directive + Footer (`PhaseCard`) Prompt Architecture
+
+In multi-turn duplex audio conversations, native audio models exhibit two recurring failure modes:
+1. **Language Recency Drift**: After 3+ turns in Hindi, if the user switches to English, the accumulated prior audio history biases the model into replying in Hindi despite top-of-prompt instructions.
+2. **Consonant-Cluster Audio Garbling**: Words with heavy consonant clusters (such as `"logged"` in `"Meal logged"`) can be slurred or mis-rendered (`"globbed"`) by native audio decoders.
+
+### The 5-Layer `PhaseCard` Sandwich
+Wrap every dynamic phase card and tool response with a **Top Header** and a **Post-History Footer** (the very last tokens in the context window before audio generation):
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. HEADER (<system_header> + <system_profile_metadata>)                     │
+│    • Locks Persona Identity, Indian English Accent, Feminine Hindi Grammar  │
+│      ('मैं कर रही हूँ', 'बताती हूँ'), 3-sentence turn cap, and user profile.│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. PHASE DIRECTIVE ([CURRENT PHASE: ...])                                   │
+│    • "Disregard instructions in earlier phase cards." + phase tool rules.   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. LIVE SESSION STATE (render_state_summary)                                │
+│    • "Collected details: model Urus SE, pincode 400001. Still needed: date."│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4. ALWAYS-ACTIVE INVARIANTS (always_block)                                  │
+│    • Concise guardrails that hold across all phases; keep tool names silent.│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 5. POST-HISTORY FOOTER (<system_footer> — Recency Anchor)                   │
+│    • 1) RESPOND IN THE EXACT SAME LANGUAGE AS THE USER'S LATEST UTTERANCE   │
+│         (English -> English, Hindi -> Hindi, Hinglish -> Hinglish).         │
+│    • 2) DO NOT RE-ASK ANY SLOT ALREADY LISTED IN `Collected details`.       │
+│    • 3) PHONETIC CLARITY: Prefer clean verbs ("Meal saved", "Recorded")     │
+│         over consonant clusters ("logged").                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+<Aside type="note" title="Cardless Turn-0 Opening Rule">
+Keep Phase 1 (`SOP_01_OPENING`) strictly cardless and instruct the model in the root prompt: *"Speak the opening greeting first without calling any tools."* Allowing autonomous `switch_phase()` tool calls on Turn 0 before the caller speaks prematurely injects phase cards and inflates cold-start Turn 1 tokens from `~490` to `1,250+`.
+</Aside>
+
+---
+
+## 5. Pipecat Duplex Pipeline & Receive Loop Invariants
+
+<Tabs>
+  <TabItem label="1. Independent if Dispatch (turn_complete)">
+    In `google-genai` `AsyncSession.receive()`, Gemini Live (`3.1`, `3.5`, `3.8`) frequently sends a terminal `server_content` frame that contains **both** `model_turn` (final audio chunk) **and** `turn_complete=True` (or `output_transcription`) in the same WebSocket packet.
+
+    **Never chain `server_content` fields with `elif`**, or `_handle_msg_turn_complete` will be bypassed whenever `model_turn` is present on the final packet—preventing Pipecat from emitting `LLMFullResponseEndFrame` and stalling `LLMAssistantResponseAggregator`.
+
+    ```python title="receive_loop_dispatch.py"
+    sc = message.server_content
+    if sc:
+        if sc.interrupted:
+            await host.broadcast_interruption()
+        if sc.model_turn:
+            await host._handle_msg_model_turn(message)
+        if sc.input_transcription:
+            await host._handle_msg_input_transcription(message)
+        if sc.output_transcription:
+            await host._handle_msg_output_transcription(message)
+        if sc.grounding_metadata:
+            await host._handle_msg_grounding_metadata(message)
+        # MUST be an independent `if` running last so turn_complete is never skipped!
+        if sc.turn_complete:
+            await host._handle_msg_turn_complete(message)
+    if message.tool_call:
+        await host._handle_msg_tool_call(message)
+    ```
+  </TabItem>
+
+  <TabItem label="2. SlidingWindow Context Compression">
+    Passing a plain dict or storing `target_tokens` inside `kwargs["extra"]` on `GeminiLiveInputParams` is a silent no-op in Pipecat. Always pass a typed `types.ContextWindowCompressionConfig` with `types.SlidingWindow`:
+
+    ```python title="context_compression.py"
+    from google.genai import types
+
+    if compression_enabled and trigger_tokens:
+        target = target_tokens or int(trigger_tokens * 0.8)
+        kwargs["context_window_compression"] = types.ContextWindowCompressionConfig(
+            trigger_tokens=trigger_tokens,
+            sliding_window=types.SlidingWindow(target_tokens=target),
+        )
+    ```
+  </TabItem>
+
+  <TabItem label="3. Turn-1 Greeting Mic Gate">
+    On Gemini 3.1 and 3.8 Live, leaving the client duplex microphone open while the bot plays its initial greeting meters **201 to 222 `AUDIO` input tokens** before the user says a word. Gate inbound audio frames until `TTSStoppedFrame` / greeting playback completes (or client VAD confirms caller speech).
+  </TabItem>
+</Tabs>
+
+---
+
+## 6. Four-Model Production Decision Matrix & Cost Reconciliation
+
+| Model | Best Fit | Key Strength | Watch Out For |
+| --- | --- | --- | --- |
+| **Gemini 2.5 Flash Native Audio** | **High-Volume Enterprise Call Centers** | Lowest unit rates (`$0.50` text in, `$3.00` audio in), `0` model scaffolding overhead, exact token reconciliation. | Often dispatches tools silently without speaking a verbal filler acknowledgment first. |
+| **Gemini 3.1 Flash Live Preview** | **Rapid Prototyping & AI Studio Pilots** | Strong multilingual instruction following; `+112 TEXT` model scaffolding overhead. | Open-mic greeting leak (`~201 AUDIO` tok) and `~157 tok/turn` unattributed `other_input_token` residual on AI Studio. |
+| **Gemini 3.5 Flash Live Preview** | **High-Touch Executive Concierges** | Reliable `~500ms` spoken verbal ACKs before every tool call; `20%` lower audio rates (`$2.40/$9.60`). | Full attention tool accounting; prune declared tools to `1–2` using `CallSlots`. |
+| **Gemini 3.8 Live Preview** (`Vertex AI us-central1`, `v1beta1`) | **Latest 3.x Enterprise Production** | **Zero Gateway Residual on Vertex AI**: `gemini-3.8-live-preview` on Vertex AI `us-central1` (`v1beta1`) meters `SI + tools` purely in `TEXT` with **`0` `other_input_token` residual gap**. | Must use `ThinkingLevel.MINIMAL` (never `thinking_budget=0`); carries `+291 TEXT` scaffolding overhead. On AI Studio (`gemini-3.8-live`), exhibits a `~229 tok/turn` residual. |
+
+### Cost Reconciliation & Audit Rules
+1. **Always Price `other_input_token` in Billing Calculators**:
+   On AI Studio endpoints (`3.1-flash-live-preview` and `3.8-live`), `prompt_token_count` exceeds `sum(prompt_tokens_details)` (`TEXT + AUDIO + IMAGE + VIDEO + CACHE`) by **`157 to 229 tokens/turn`** (~5% of total call spend). Always compute:
+   ```python
+   accounted_in = text_in + audio_in + image_in + video_in + cache_in
+   other_input_token = max(0, prompt_token_count - accounted_in)
+   ```
+   and map `other_input_token` to the `text_input` rate so unlabelled prompt tokens are never omitted from cost dashboards.
+2. **Step-0 Before/After Raw `usage_metadata` Trace Protocol**:
+   Rolled-up session CSVs cannot isolate per-turn tool-call rounds, open-mic greeting audio, or scaffolding deltas. Before deploying any prompt or config change (`live_tool_names=None`, `ThinkingLevel.MINIMAL`, `CallSlots`), **Step 0 must always be capturing one raw turn-by-turn `usage_metadata` JSON log** (`prompt_token_count`, `prompt_tokens_details`, `candidates_token_count`, `thoughts_token_count`) from a live call, followed by an identical trace immediately after deployment.

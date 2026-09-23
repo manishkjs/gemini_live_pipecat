@@ -1,0 +1,63 @@
+---
+title: Pricing calculator
+description: Interactive tokenomics simulator comparing single-pass streaming, unmanaged multi-turn duplex, and optimized Gemini Live against human contact center labor.
+---
+
+import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
+import TelephonyCostCalculator from '../../components/TelephonyCostCalculator.astro';
+
+Enterprise contact center economics are governed by a hard commercial ceiling: **human BPO labor in India costs $1.20 to $1.80 per hour ($0.02 to $0.03 per minute)**. Any voice AI pipeline that costs $0.08 to $0.20 per minute in production will fail procurement review, regardless of how natural its prosody sounds.
+
+Use the interactive simulator below to model your call duration, system prompt size, turn frequency, and monthly call volume. Compare the single-pass rate card baseline, an unmanaged multi-turn session, and an optimized Gemini Live pipeline side by side.
+
+---
+
+## 1. Interactive multi-turn duplex simulator
+
+Select a preset profile or drag the sliders to simulate real-world billing across your telephony fleet:
+
+<TelephonyCostCalculator />
+
+---
+
+## 2. Monthly fleet volume comparison
+
+For a typical 3-minute contact center interaction (6 turns per minute, 4,500-token full SOP), unmanaged sessions compound rapidly because historical audio ($3.00/1M tokens) and full system prompts ($0.75/1M tokens) are re-evaluated on every turn without a caching discount.
+
+| Monthly Call Volume | Total Minutes | Indian BPO Human Labor ($0.025/min) | Unmanaged Gemini Live ($0.082/min) | Optimized Gemini Live ($0.031/min) | Monthly Savings (Optimized vs. Unmanaged) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1,000 calls** | 3,000 mins | $75 | $246 | $93 | **$153 / mo** |
+| **10,000 calls** | 30,000 mins | $750 | $2,460 | $930 | **$1,530 / mo** |
+| **100,000 calls** | 300,000 mins | $7,500 | $24,600 | $9,300 | **$15,300 / mo** |
+| **500,000 calls** | 1,500,000 mins | $37,500 | $123,000 | $46,500 | **$76,500 / mo** |
+
+<Aside type="tip" title="Why longer calls widen the gap">
+In an unmanaged session, turn $N$ re-bills the audio from turns $1 \dots N-1$. A 10-minute support call at 6 turns per minute executes 60 turns, causing quadratic token accumulation. Capping the context window at 5,000 tokens flattens this curve into a linear cost per minute.
+</Aside>
+
+---
+
+## 3. The three levers that flatten the cost curve
+
+You do not need to sacrifice native duplex latency or fall back to a high-latency three-model cascade to hit your target budget. Three configuration changes bring Gemini Live down to **$0.028–$0.035 per minute**:
+
+<CardGrid>
+  <Card title="1. Ephemeral audio window (5k compaction)" icon="setting">
+    Configure `contextWindowCompression` with `trigger_tokens: 5000`. Older raw audio turns ($3.00/1M tokens) are automatically evicted once the window fills, preventing quadratic re-billing while preserving the pinned system instruction and recent dialogue.
+  </Card>
+
+  <Card title="2. Just-in-Time (JIT) prompt cards" icon="rocket">
+    Keep the initial `systemInstruction` under 500 tokens (`&lt;$0.001` connection cost). Inject domain-specific SOP cards and tool schemas via server-side transcript hooks only after caller intent is verified, avoiding upfront token burn on 0–5 second dropped calls.
+  </Card>
+
+  <Card title="3. Minimal thinking budget" icon="approve-check">
+    Set `thinkingLevel: "minimal"` in `generationConfig.thinkingConfig` on `gemini-3.1-flash-live-preview`. This trims reasoning token overhead ($4.50/1M output tokens) and shaves 150–250 ms off Time-to-First-Audio-Byte (TTFB).
+  </Card>
+</CardGrid>
+
+---
+
+## 4. Next steps
+
+- **[Telephony pricing & tokenomics](/gemini_live_pipecat/pricing/)**: Understand the exact token math behind raw PCM audio rates (27.8 tokens/sec input, 25 tokens/sec output) and why WebSocket sessions have zero default prompt caching.
+- **[Optimization patterns](/gemini_live_pipecat/optimization/)**: Copy-paste production Python and JSON implementations for 5,000-token sliding windows, JIT prompt cards, and 200ms playout compliance guardrails.

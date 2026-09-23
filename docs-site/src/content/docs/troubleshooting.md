@@ -9,11 +9,11 @@ The most common production issues and how to read them.
 
 | Code | Meaning | Resumable? |
 | --- | --- | --- |
-| `1000` | Normal closure | Yes — reconnect with your resumption handle |
-| `1006` | Abnormal closure — no clean handshake | Yes — reconnect and replay |
-| `1007` | Invalid frame payload (modality violation, bad voice name) | No — fix your config |
-| `1008` | Policy violation **or routine session rotation** | **It depends — read below** |
-| `1011` | Server-side error | Yes — retry with backoff |
+| `1000` | Normal closure | Yes: Reconnect with your resumption handle |
+| `1006` | Abnormal closure (no clean handshake) | Yes: Reconnect and replay unconfirmed messages |
+| `1007` | Invalid frame payload (modality violation, bad voice name) | No: Fix payload schema or configuration |
+| `1008` | Policy violation **or routine session rotation** | **Context dependent (see below)** |
+| `1011` | Server-side error | Yes: Retry with exponential backoff |
 
 :::caution[`1008` means two completely different things]
 - **Routine rotation.** The server ends sessions roughly every **10–15 minutes**.
@@ -32,11 +32,11 @@ gating as transient produces an infinite reconnect loop.
 
 Almost always an invalid `setup` frame. Check, in this order:
 
-- **Voice name** — case-sensitive. `Aoede` works; `aoede` closes the socket.
-- **Response modalities** — `["AUDIO", "TEXT"]` is invalid and returns `1007`.
+- **Voice name**: Case-sensitive. `Aoede` works; `aoede` closes the socket.
+- **Response modalities**: `["AUDIO", "TEXT"]` is invalid and returns `1007`.
   Use `["AUDIO"]` plus output transcription.
-- **Model name** — a typo, or a model not available in your project or region.
-- **Model path form** — Vertex requires the full
+- **Model name**: A typo, or a model not available in your project or region.
+- **Model path form**: Vertex requires the full
   `projects/…/locations/…/publishers/google/models/…` path, not a bare name.
 
 ## `1006` immediately, with no server response
@@ -51,9 +51,9 @@ The WebSocket **upgrade** never completed. The model never saw you.
   ssh -L 7860:localhost:7860 user@your-dev-vm
   ```
 
-- **Mixed content** — an HTTPS page cannot open a `ws://` socket. It must be
+- **Mixed content**: An HTTPS page cannot open a `ws://` socket. It must be
   `wss://`.
-- **Missing auth header** — a bearer token in a query string where the server
+- **Missing auth header**: A bearer token in a query string where the server
   expects a header fails at upgrade time.
 
 ## The agent interrupts itself in a loop
@@ -63,7 +63,7 @@ the moment the agent speaks.
 
 1. Enable **`echoCancellation: true`** in `getUserMedia`. This fixes it the vast
    majority of the time.
-2. Test with headphones — if the loop disappears, it is confirmed acoustic echo.
+2. Test with headphones: If the loop disappears, acoustic echo is confirmed.
 3. Lower VAD sensitivity to `LOW` on both start and end of speech.
 
 See [Audio engineering](/gemini_live_pipecat/audio-engineering/).
@@ -72,7 +72,7 @@ See [Audio engineering](/gemini_live_pipecat/audio-engineering/).
 
 You are emitting the opening turn twice. In frameworks with a context aggregator,
 pushing **both** a context frame and a run frame produces two parallel
-generations — the aggregator already emits context when the run frame arrives.
+generations, because the aggregator already emits context when the run frame arrives.
 
 Push **only** the run frame to trigger the greeting.
 
@@ -93,7 +93,7 @@ cumulative_output_text = ""
    today"*), set `introduction_complete = True`.
 2. On `interrupted`, if the introduction never completed and you have not already
    injected a restart, send a hidden context turn asking the model to deliver the
-   full introduction again — then set the latch.
+   full introduction again, then set the latch.
 3. Never inject more than once. Without the latch, a user who interrupts twice
    traps the agent in a greeting loop.
 
@@ -103,8 +103,11 @@ Some backends **silently fall back** to a default model when you request one tha
 is not on their allowlist. Log the **effective** model the server used, not the
 one you asked for.
 
-Related: if you are on public AI Studio and the newest Live models close with
-`1008`, they are experiment-gated there. Move to Vertex AI.
+If a connection closes with `1008` during setup, verify that your model name
+matches the provider format (`gemini-3.1-flash-live-preview` or
+`projects/…/locations/…/publishers/google/models/gemini-3.1-flash-live-preview`),
+that the API is enabled on your Cloud project, and that your quota tier or
+service account has access to the requested model.
 
 ## Audio sounds sped up or slowed down
 
@@ -115,8 +118,7 @@ verify each direction independently.
 ## The agent talks over the user
 
 Your client is not honoring **`interrupted`**. On that signal, immediately flush
-all buffered-but-unplayed audio. Note that `generationComplete` is *not* the same
-signal — the model has stopped generating, but your queue may still hold seconds
+all buffered-but-unplayed audio. Note that `generationComplete` is *not* the same signal. The model has stopped generating, but your playback queue may still hold seconds
 of audio.
 
 ## Nothing happens after connecting
@@ -140,4 +142,4 @@ trap](/gemini_live_pipecat/latency-and-telemetry/#the-2-ms-trap).
 
 Enable **context window compression**. Without it, a long call eventually
 overflows the context window. Also confirm session resumption is actually
-implemented — not just enabled in `setup`.
+implemented, not just declared in `setup`.

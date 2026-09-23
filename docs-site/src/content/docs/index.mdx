@@ -3,7 +3,7 @@ title: Gemini Live for Developers
 description: Build production-grade, low-latency, interruptible voice agents on the Gemini Live API.
 template: splash
 hero:
-  tagline: Real-time, bidirectional voice agents on Google's Gemini Live API — from your first WebSocket frame to production.
+  tagline: Real-time, bidirectional voice agents on Google's Gemini Live API, from your first WebSocket frame to production.
   actions:
     - text: Get started
       link: /gemini_live_pipecat/getting-started/
@@ -17,15 +17,11 @@ hero:
 
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-## Speech in, speech out — in real time
+## Speech in, speech out in real time
 
-The **Gemini Live API** is a stateful, bidirectional streaming API. You open a
-single WebSocket, stream microphone audio in, and receive generated audio (and
-transcripts, tool calls, and events) back as it is produced — with natural
-turn-taking and barge-in interruption.
+The **Gemini Live API** is a stateful, bidirectional streaming API. You open a single WebSocket, stream microphone audio in, and receive generated speech back as it is produced, with natural turn-taking and barge-in interruption.
 
-This site is the practical field guide: the wire protocol, the failure modes,
-and the operational patterns that separate a demo from a production voice agent.
+This documentation is a practical engineering guide covering the wire protocol, failure modes, and production patterns needed to run voice agents reliably.
 
 <CardGrid stagger>
   <LinkCard
@@ -36,7 +32,7 @@ and the operational patterns that separate a demo from a production voice agent.
   <LinkCard
     title="Voice Studio"
     href="/gemini_live_pipecat/voice-playground/"
-    description="Talk to a live agent in your browser and compare native vs cascade — no code."
+    description="Talk to a live agent in your browser and compare native vs. cascade with zero code."
   />
   <LinkCard
     title="Architecture"
@@ -46,37 +42,47 @@ and the operational patterns that separate a demo from a production voice agent.
   <LinkCard
     title="Configuration reference"
     href="/gemini_live_pipecat/gemini-live-configuration/"
-    description="Every wire envelope and setup option, in one page to bookmark."
+    description="Every wire envelope and setup option in one reference page."
   />
   <LinkCard
     title="Audio engineering"
     href="/gemini_live_pipecat/audio-engineering/"
-    description="Worklets, jitter buffers, backpressure, and instant barge-in."
+    description="AudioWorklets, jitter buffers, backpressure, and instant barge-in."
   />
   <LinkCard
     title="Tools & function calling"
     href="/gemini_live_pipecat/tools/"
-    description="Non-blocking tools and the five failure modes that freeze an agent."
+    description="Non-blocking tool execution and the five failure modes that freeze an agent."
   />
   <LinkCard
     title="Choosing a framework"
     href="/gemini_live_pipecat/frameworks/"
-    description="Raw WebSocket, Pipecat, or LiveKit — and when to add a media server."
+    description="Compare raw WebSockets, Pipecat, and LiveKit, and when to add a media server."
+  />
+  <LinkCard
+    title="Telephony pricing & tokenomics"
+    href="/gemini_live_pipecat/pricing/"
+    description="How per-minute rates map to token bills, and how to verify costs on your traffic."
+  />
+  <LinkCard
+    title="Pricing calculator"
+    href="/gemini_live_pipecat/pricing-calculator/"
+    description="Interactive multi-turn duplex simulator comparing uncompacted vs. optimized call costs."
   />
   <LinkCard
     title="Latency & telemetry"
     href="/gemini_live_pipecat/latency-and-telemetry/"
-    description="Measure the number users feel — and avoid the traps that fake it."
+    description="Measure what callers actually feel, and avoid the metric traps that hide delay."
   />
   <LinkCard
     title="Optimization patterns"
     href="/gemini_live_pipecat/optimization/"
-    description="Keep long sessions cheap and alive without silently dropping the conversation."
+    description="Keep long sessions cheap and responsive using context compression and JIT cards."
   />
   <LinkCard
     title="Deployment"
     href="/gemini_live_pipecat/deployment/"
-    description="Ship a WebSocket voice backend to Cloud Run or GKE, with WSS and CORS."
+    description="Ship a WebSocket voice backend to Cloud Run or GKE with WSS and CORS."
   />
   <LinkCard
     title="Troubleshooting"
@@ -85,8 +91,8 @@ and the operational patterns that separate a demo from a production voice agent.
   />
 </CardGrid>
 
-:::tip[Two ways to do speech]
-Gemini Live offers **native audio** (one model does speech-to-speech) and a
-**cascade** (Speech-to-Text -> LLM -> Text-to-Speech). This guide covers both.
+:::tip[Two ways to run speech]
+Gemini Live supports **native audio** (one model performs speech-to-speech) and a
+**cascade** pipeline (Speech-to-Text -> LLM -> Text-to-Speech). This guide covers both.
 See [Architecture](/gemini_live_pipecat/architecture/) for how to choose.
 :::

@@ -1,0 +1,306 @@
+---
+/**
+ * TurnSnowballDiagram.astro
+ * Pure Tokenomics & Billing Physics diagram for the Concepts (/pricing/) page.
+ * Compares Theoretical Continuous Single-Pass Streaming ($0.023/min) against
+ * Real Multi-Turn Duplex Compounding ("The Photocopier Effect") across 6 turns in 1 minute.
+ * Zero architecture spoilers.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Why real-world calls diverge from the $0.023/min streaming rate card: Every turn completion or caller barge-in triggers a fresh inference pass that re-bills the active prompt and accumulated raw caller audio.",
+} = Astro.props;
+---
+
+<figure class="snowball-wrapper">
+  <svg viewBox="0 0 860 390" role="img" aria-labelledby="snow-title snow-desc" class="snow-svg">
+    <title id="snow-title">Theoretical Single-Pass Streaming vs. Multi-Turn Duplex Compounding</title>
+    <desc id="snow-desc">
+      Left panel shows Theoretical Continuous Streaming where 60 seconds of audio is billed once (~$0.023/min). Right panel shows a Real Multi-Turn Duplex Session with 6 turns in 1 minute, where each turn re-bills the 4,500-token system prompt and accumulating $3.00/M caller audio history, compounding to 38,700 tokens/min.
+    </desc>
+
+    <!-- Background Card -->
+    <rect x="10" y="10" width="840" height="370" rx="14" class="card-bg" />
+
+    <!-- Top Header -->
+    <text x="34" y="42" class="header-title">The Rate Card Gap: Single-Pass Streaming vs. Multi-Turn Duplex</text>
+    <text x="34" y="62" class="header-sub">
+      Why a 60-second phone call with 6 conversational turns bills 10&times; more tokens than 60 seconds of continuous audio.
+    </text>
+
+    <!-- Divider Line -->
+    <line x1="380" y1="82" x2="380" y2="356" class="panel-divider" />
+
+    <!-- ================= LEFT PANEL: THEORETICAL CONTINUOUS STREAMING ================= -->
+    <g class="panel-left">
+      <rect x="28" y="80" width="334" height="38" rx="8" class="panel-header-blue" />
+      <text x="44" y="104" class="panel-title-blue">1. Continuous Single-Pass</text>
+      <text x="346" y="104" class="panel-badge-blue" text-anchor="end">~$0.023 / min</text>
+
+      <!-- Y-axis grid lines -->
+      <line x1="68" y1="300" x2="346" y2="300" class="grid-line" />
+      <line x1="68" y1="245" x2="346" y2="245" class="grid-line" />
+      <line x1="68" y1="190" x2="346" y2="190" class="grid-line" />
+      <line x1="68" y1="140" x2="346" y2="140" class="grid-line" />
+
+      <text x="60" y="304" class="axis-lbl" text-anchor="end">0</text>
+      <text x="60" y="249" class="axis-lbl" text-anchor="end">3k</text>
+      <text x="60" y="194" class="axis-lbl" text-anchor="end">6k</text>
+      <text x="60" y="144" class="axis-lbl" text-anchor="end">9k</text>
+
+      <!-- Single Continuous Stream Bar (3,167 tokens total: 1,667 in + 1,500 out) -->
+      <rect x="115" y="244" width="180" height="56" rx="6" class="bar-stream-blue" />
+      <text x="205" y="268" class="stream-bar-title" text-anchor="middle">Single Continuous Pass</text>
+      <text x="205" y="286" class="stream-bar-sub" text-anchor="middle">1.6k Audio In + 1.5k Audio Out</text>
+
+      <text x="205" y="232" class="bar-val-blue" text-anchor="middle">3,167 tokens total</text>
+      <text x="205" y="320" class="turn-lbl" text-anchor="middle">60s Uninterrupted Stream</text>
+
+      <!-- Annotation Box -->
+      <rect x="44" y="142" width="302" height="68" rx="8" class="note-box-blue" />
+      <text x="58" y="163" class="note-title-blue">How the Rate Card Slide Calculates CPM:</text>
+      <text x="58" y="181" class="note-body">Assumes zero turn-taking and zero prompt</text>
+      <text x="58" y="197" class="note-body">re-evaluation ($0.005 in + $0.018 out = $0.023).</text>
+
+      <!-- Legend Left -->
+      <rect x="44" y="338" width="12" height="12" rx="3" class="bar-stream-blue" />
+      <text x="62" y="348" class="legend-txt">Pure Audio Stream (Metered Once)</text>
+    </g>
+
+    <!-- ================= RIGHT PANEL: REAL MULTI-TURN DUPLEX SESSION ================= -->
+    <g class="panel-right">
+      <rect x="398" y="80" width="434" height="38" rx="8" class="panel-header-red" />
+      <text x="414" y="104" class="panel-title-red">2. Real Multi-Turn Duplex Session (6 Turns/Min)</text>
+      <text x="816" y="104" class="panel-badge-red" text-anchor="end">38,700 tok / min</text>
+
+      <!-- Y-axis grid lines -->
+      <line x1="438" y1="300" x2="818" y2="300" class="grid-line" />
+      <line x1="438" y1="245" x2="818" y2="245" class="grid-line" />
+      <line x1="438" y1="190" x2="818" y2="190" class="grid-line" />
+      <line x1="438" y1="140" x2="818" y2="140" class="grid-line" />
+
+      <text x="430" y="304" class="axis-lbl" text-anchor="end">0</text>
+      <text x="430" y="249" class="axis-lbl" text-anchor="end">3k</text>
+      <text x="430" y="194" class="axis-lbl" text-anchor="end">6k</text>
+      <text x="430" y="144" class="axis-lbl" text-anchor="end">9k</text>
+
+      <!-- Bars for Turns 1 to 6 -->
+      <!-- Turn 1: 4.5k prompt + 0.2k audio = 4.7k -->
+      <g class="turn-bar">
+        <rect x="454" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="454" y="215" width="42" height="5" rx="2" class="bar-audio-orange" />
+        <text x="475" y="208" class="bar-val-red" text-anchor="middle">4.7k</text>
+        <text x="475" y="318" class="turn-lbl" text-anchor="middle">Turn 1</text>
+      </g>
+
+      <!-- Turn 2: 4.5k prompt + 0.9k history = 5.4k -->
+      <g class="turn-bar">
+        <rect x="514" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="514" y="204" width="42" height="16" rx="2" class="bar-audio-orange" />
+        <text x="535" y="197" class="bar-val-red" text-anchor="middle">5.4k</text>
+        <text x="535" y="318" class="turn-lbl" text-anchor="middle">Turn 2</text>
+      </g>
+
+      <!-- Turn 3: 4.5k prompt + 1.6k history = 6.1k -->
+      <g class="turn-bar">
+        <rect x="574" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="574" y="192" width="42" height="28" rx="2" class="bar-audio-orange" />
+        <text x="595" y="185" class="bar-val-red" text-anchor="middle">6.1k</text>
+        <text x="595" y="318" class="turn-lbl" text-anchor="middle">Turn 3</text>
+      </g>
+
+      <!-- Turn 4 (Caller Barge-In): 4.5k prompt + 2.3k history = 6.8k -->
+      <g class="turn-bar">
+        <rect x="634" y="220" width="42" height="80" rx="3" class="bar-prompt-red pulse-bar" />
+        <rect x="634" y="179" width="42" height="41" rx="2" class="bar-audio-orange pulse-bar" />
+        <text x="655" y="172" class="bar-val-red" text-anchor="middle">6.8k⚡</text>
+        <text x="655" y="318" class="turn-lbl-alert" text-anchor="middle">Barge-In</text>
+      </g>
+
+      <!-- Turn 5: 4.5k prompt + 3.0k history = 7.5k -->
+      <g class="turn-bar">
+        <rect x="694" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="694" y="167" width="42" height="53" rx="2" class="bar-audio-orange" />
+        <text x="715" y="160" class="bar-val-red" text-anchor="middle">7.5k</text>
+        <text x="715" y="318" class="turn-lbl" text-anchor="middle">Turn 5</text>
+      </g>
+
+      <!-- Turn 6: 4.5k prompt + 3.7k history = 8.2k -->
+      <g class="turn-bar">
+        <rect x="754" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
+        <rect x="754" y="154" width="42" height="66" rx="2" class="bar-audio-orange" />
+        <text x="775" y="147" class="bar-val-red" text-anchor="middle">8.2k</text>
+        <text x="775" y="318" class="turn-lbl" text-anchor="middle">Turn 6</text>
+      </g>
+
+      <!-- Legend Right -->
+      <rect x="414" y="338" width="12" height="12" rx="3" class="bar-prompt-red" />
+      <text x="432" y="348" class="legend-txt">System Prompt + Scaffolding (Re-billed 6&times;)</text>
+      <rect x="656" y="338" width="12" height="12" rx="3" class="bar-audio-orange" />
+      <text x="674" y="348" class="legend-txt">Carried Audio History ($3.00/M)</text>
+    </g>
+  </svg>
+  {caption && <figcaption class="snowball-caption">{caption}</figcaption>}
+</figure>
+
+<style>
+  .snowball-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .snow-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 14px;
+    box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.25);
+  }
+  .card-bg {
+    fill: var(--sl-color-gray-6, #14171c);
+    stroke: var(--sl-color-gray-5, #2a2e37);
+    stroke-width: 1.5;
+  }
+  .header-title {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 16px;
+    font-weight: 700;
+    fill: var(--sl-color-white, #ffffff);
+  }
+  .header-sub {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 12.5px;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .panel-divider {
+    stroke: var(--sl-color-gray-5, #2a2e37);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+  }
+  .panel-header-blue {
+    fill: rgba(59, 130, 246, 0.12);
+    stroke: rgba(59, 130, 246, 0.35);
+    stroke-width: 1;
+  }
+  .panel-title-blue {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 13px;
+    font-weight: 700;
+    fill: #93c5fd;
+  }
+  .panel-badge-blue {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 12px;
+    font-weight: 700;
+    fill: #60a5fa;
+  }
+  .panel-header-red {
+    fill: rgba(239, 68, 68, 0.12);
+    stroke: rgba(239, 68, 68, 0.35);
+    stroke-width: 1;
+  }
+  .panel-title-red {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 13px;
+    font-weight: 700;
+    fill: #fca5a5;
+  }
+  .panel-badge-red {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 12px;
+    font-weight: 700;
+    fill: #ef4444;
+  }
+  .note-box-blue {
+    fill: rgba(59, 130, 246, 0.06);
+    stroke: rgba(59, 130, 246, 0.25);
+    stroke-width: 1;
+  }
+  .note-title-blue {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: #93c5fd;
+  }
+  .note-body {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11px;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .grid-line {
+    stroke: var(--sl-color-gray-5, #262932);
+    stroke-width: 1;
+  }
+  .axis-lbl {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10.5px;
+    fill: var(--sl-color-gray-3, #8b949e);
+  }
+  .bar-stream-blue {
+    fill: #2563eb;
+    opacity: 0.85;
+  }
+  .stream-bar-title {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 12px;
+    font-weight: 700;
+    fill: #ffffff;
+  }
+  .stream-bar-sub {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10px;
+    fill: #dbeafe;
+  }
+  .bar-val-blue {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    font-weight: 700;
+    fill: #93c5fd;
+  }
+  .bar-prompt-red {
+    fill: #dc2626;
+    opacity: 0.88;
+  }
+  .bar-audio-orange {
+    fill: #f97316;
+    opacity: 0.92;
+  }
+  .bar-val-red {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #fca5a5;
+  }
+  .turn-lbl {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .turn-lbl-alert {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 10.5px;
+    font-weight: 700;
+    fill: #f87171;
+  }
+  .legend-txt {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11px;
+    fill: var(--sl-color-gray-2, #d1d5db);
+  }
+  .pulse-bar {
+    animation: barPulse 2.4s ease-in-out infinite;
+  }
+  @keyframes barPulse {
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(1.3); }
+  }
+  .snowball-caption {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3, #9ca3af);
+    text-align: center;
+    line-height: 1.45;
+  }
+</style>

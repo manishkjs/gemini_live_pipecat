@@ -36,6 +36,7 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Getting started', slug: 'getting-started' },
+            { label: 'Gemini Live Skill', slug: 'gemini-live-skill' },
             { label: 'Voice Studio', slug: 'voice-playground' },
           ],
         },
@@ -50,10 +51,17 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Economics & Optimization',
+          items: [
+            { label: 'Telephony pricing & tokenomics', slug: 'pricing' },
+            { label: 'Pricing calculator', slug: 'pricing-calculator' },
+            { label: 'Optimization patterns', slug: 'optimization' },
+          ],
+        },
+        {
           label: 'Operate',
           items: [
             { label: 'Latency & telemetry', slug: 'latency-and-telemetry' },
-            { label: 'Optimization patterns', slug: 'optimization' },
             { label: 'Deployment', slug: 'deployment' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],

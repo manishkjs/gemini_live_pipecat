@@ -1,0 +1,220 @@
+---
+/**
+ * CallLifecycleTimeline.astro
+ * Visualizes when each of the 3 Optimization Pillars activates across a live telephony call timeline.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "How the 3 Pillars work in concert across a single call: Pillar 2 protects the 0–5s bounce zone, Pillar 3 slashes turn-by-turn memory cost by converting audio to text, and Pillar 1 caps long-call compounding at 5,000 tokens.",
+} = Astro.props;
+---
+
+<figure class="timeline-wrapper">
+  <svg viewBox="0 0 860 280" role="img" aria-labelledby="clt-title clt-desc" class="clt-svg">
+    <title id="clt-title">Call Lifecycle Cheat Sheet: When Each Optimization Pillar Fires</title>
+    <desc id="clt-desc">
+      Horizontal timeline divided into three zones: 0 to 5 seconds (Pillar 2 JIT Prompt Cards), Turn 1 to Turn 3 (Pillar 3 Audio-to-Text Pruning), and Minute 2+ at 5,000 tokens (Pillar 1 Server-Side FIFO Compression).
+    </desc>
+
+    <!-- Outer Container -->
+    <rect x="10" y="10" width="840" height="260" rx="14" class="card-bg" />
+
+    <!-- Header -->
+    <text x="34" y="42" class="header-title">Call Lifecycle Cheat Sheet: When Each Pillar Fires</text>
+    <text x="34" y="62" class="header-sub">
+      You don't choose between the three optimizations—each one defends a specific phase of the phone call.
+    </text>
+
+    <!-- Progress Arrow Bar -->
+    <line x1="50" y1="96" x2="810" y2="96" class="timeline-track" />
+    <polygon points="815,96 803,90 803,102" class="timeline-arrow" />
+
+    <!-- Time Nodes -->
+    <circle cx="155" cy="96" r="6" class="node-amber" />
+    <text x="155" y="84" class="node-time" text-anchor="middle">0s — 5s</text>
+
+    <circle cx="430" cy="96" r="6" class="node-blue" />
+    <text x="430" y="84" class="node-time" text-anchor="middle">Turn 1 — Turn 3 (15s–90s)</text>
+
+    <circle cx="705" cy="96" r="6" class="node-emerald" />
+    <text x="705" y="84" class="node-time" text-anchor="middle">Minute 2+ (5,000 Tokens)</text>
+
+    <!-- ================= STAGE 1: 0-5s BOUNCE ZONE ================= -->
+    <g class="stage-card">
+      <rect x="34" y="116" width="248" height="134" rx="10" class="stage-box-amber" />
+      <rect x="48" y="128" width="110" height="22" rx="5" class="pill-amber" />
+      <text x="103" y="143" class="pill-txt-amber" text-anchor="middle">PILLAR 2: JIT CARDS</text>
+
+      <text x="48" y="168" class="stage-heading">1. The Bounce Shield</text>
+      <text x="48" y="187" class="stage-body">30%–50% of calls drop in &lt;5s.</text>
+      <text x="48" y="204" class="stage-body">Load only Card 1 (~120 tok + base</text>
+      <text x="48" y="221" class="stage-body">scaffolding). Downstream SOPs</text>
+      <text x="48" y="238" class="stage-highlight-amber">never billed on dropped calls.</text>
+    </g>
+
+    <!-- ================= STAGE 2: TURN 1 - TURN 3 ================= -->
+    <g class="stage-card">
+      <rect x="306" y="116" width="248" height="134" rx="10" class="stage-box-blue" />
+      <rect x="320" y="128" width="136" height="22" rx="5" class="pill-blue" />
+      <text x="388" y="143" class="pill-txt-blue" text-anchor="middle">PILLAR 3: AUDIO PRUNING</text>
+
+      <text x="320" y="168" class="stage-heading">2. Voice Memo &rarr; Text Note</text>
+      <text x="320" y="187" class="stage-body">Keep active prompt at ~1k tok/turn.</text>
+      <text x="320" y="204" class="stage-body">Convert older caller audio ($3/M)</text>
+      <text x="320" y="221" class="stage-body">into text ($0.75/M) + pin facts to</text>
+      <text x="320" y="238" class="stage-highlight-blue">&lt;60 tok FactStore (-75% memory tax).</text>
+    </g>
+
+    <!-- ================= STAGE 3: MINUTE 2+ ================= -->
+    <g class="stage-card">
+      <rect x="578" y="116" width="248" height="134" rx="10" class="stage-box-emerald" />
+      <rect x="592" y="128" width="138" height="22" rx="5" class="pill-emerald" />
+      <text x="661" y="143" class="pill-txt-emerald" text-anchor="middle">PILLAR 1: 5K AUTO-FLUSH</text>
+
+      <text x="592" y="168" class="stage-heading">3. Sticky Note on Shredder</text>
+      <text x="592" y="187" class="stage-body">At 5,000 tokens, FIFO sliding</text>
+      <text x="592" y="204" class="stage-body">window evicts oldest turns automatically.</text>
+      <text x="592" y="221" class="stage-body">FactStore survives eviction; cost</text>
+      <text x="592" y="238" class="stage-highlight-emerald">stays flat (~$0.03/min) forever.</text>
+    </g>
+  </svg>
+  {caption && <figcaption class="clt-caption">{caption}</figcaption>}
+</figure>
+
+<style>
+  .timeline-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .clt-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 14px;
+    box-shadow: 0 8px 28px -6px rgba(0, 0, 0, 0.25);
+  }
+  .card-bg {
+    fill: var(--sl-color-gray-6, #14171c);
+    stroke: var(--sl-color-gray-5, #2a2e37);
+    stroke-width: 1.5;
+  }
+  .header-title {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 16px;
+    font-weight: 700;
+    fill: var(--sl-color-white, #ffffff);
+  }
+  .header-sub {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 12.5px;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .timeline-track {
+    stroke: var(--sl-color-gray-4, #4b5563);
+    stroke-width: 3;
+  }
+  .timeline-arrow {
+    fill: var(--sl-color-gray-4, #4b5563);
+  }
+  .node-amber {
+    fill: #f59e0b;
+    stroke: #14171c;
+    stroke-width: 2;
+  }
+  .node-blue {
+    fill: #3b82f6;
+    stroke: #14171c;
+    stroke-width: 2;
+  }
+  .node-emerald {
+    fill: #10b981;
+    stroke: #14171c;
+    stroke-width: 2;
+  }
+  .node-time {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    font-weight: 700;
+    fill: var(--sl-color-gray-2, #e5e7eb);
+  }
+  .stage-box-amber {
+    fill: rgba(245, 158, 11, 0.07);
+    stroke: rgba(245, 158, 11, 0.35);
+    stroke-width: 1.2;
+  }
+  .stage-box-blue {
+    fill: rgba(59, 130, 246, 0.07);
+    stroke: rgba(59, 130, 246, 0.35);
+    stroke-width: 1.2;
+  }
+  .stage-box-emerald {
+    fill: rgba(16, 185, 129, 0.07);
+    stroke: rgba(16, 185, 129, 0.35);
+    stroke-width: 1.2;
+  }
+  .pill-amber {
+    fill: rgba(245, 158, 11, 0.2);
+  }
+  .pill-txt-amber {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10px;
+    font-weight: 700;
+    fill: #fbbf24;
+  }
+  .pill-blue {
+    fill: rgba(59, 130, 246, 0.2);
+  }
+  .pill-txt-blue {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10px;
+    font-weight: 700;
+    fill: #60a5fa;
+  }
+  .pill-emerald {
+    fill: rgba(16, 185, 129, 0.2);
+  }
+  .pill-txt-emerald {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10px;
+    font-weight: 700;
+    fill: #34d399;
+  }
+  .stage-heading {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 13.5px;
+    font-weight: 700;
+    fill: var(--sl-color-white, #ffffff);
+  }
+  .stage-body {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11.5px;
+    fill: var(--sl-color-gray-3, #9ca3af);
+  }
+  .stage-highlight-amber {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: #fbbf24;
+  }
+  .stage-highlight-blue {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: #60a5fa;
+  }
+  .stage-highlight-emerald {
+    font-family: var(--sl-font, system-ui, sans-serif);
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: #34d399;
+  }
+  .clt-caption {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    color: var(--sl-color-gray-3, #9ca3af);
+    text-align: center;
+    line-height: 1.45;
+  }
+</style>

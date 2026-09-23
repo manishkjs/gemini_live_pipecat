@@ -1,6 +1,6 @@
 ---
 title: Latency & telemetry
-description: Measure the number users actually feel — and avoid the measurement traps that produce confident, wrong numbers.
+description: Measure the number users actually feel, and avoid the measurement traps that produce confident, wrong numbers.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -27,8 +27,7 @@ it down when it is too high.
 
 <Aside type="caution" title="Never mix the two label sets">
 A native Live session has **no STT or TTS stage**. Showing "STT: 0 ms" for a
-native session is not a zero — it is a category error, and it teaches your team
-to distrust the dashboard. Bind labels to the pipeline type explicitly:
+native session is a category error that leads to misleading dashboards. Bind labels to the pipeline type explicitly:
 
 ```javascript
 const isCascade = connectedBotType === 'stt-llm-tts';
@@ -39,8 +38,7 @@ const isCascade = connectedBotType === 'stt-llm-tts';
 
 ## First-packet TTFB for native audio
 
-Whichever arrives first — a transcription fragment or an audio chunk — stops the
-clock. Latch it once per turn:
+Whichever arrives first (a transcription fragment or an audio chunk) stops the clock. Latch it once per turn:
 
 ```python
 if self._current_turn_ttft is None and self._ttfb_start is not None:
@@ -52,16 +50,14 @@ Start `_ttfb_start` when the server signals end of user speech, not when you
 finish sending audio. Those differ by however deep your input buffer is.
 
 <Aside type="note" title="Client time is not server time">
-The number above is *client-observed* — end of user speech to first packet
-**received**. It is not the same as server time-to-first-byte, which excludes the
+The number above is *client-observed*: from end of user speech to the first packet received. It is not the same as server time-to-first-byte, which excludes the
 network path back to you. Both are valid; just label every metric with which one
 it is, or you will compare numbers that never measured the same thing.
 </Aside>
 
 ## The 2 ms trap
 
-This one produces beautiful, completely fictional numbers — and almost everyone
-hits it once.
+This mistake produces artificially low numbers and is easy to overlook.
 
 <Aside type="danger" title="Do not measure STT latency from the last audio frame">
 Audio frames flow continuously, roughly every 20 ms, **including during
@@ -94,7 +90,7 @@ class CustomGoogleSTTService(GoogleSTTService):
                 offset = getattr(result, "result_end_offset", None)
                 if offset is not None and self._stream_start_wall_time:
                     # Speech v2 returns a native timedelta, NOT a protobuf
-                    # Duration — there is no .nanos attribute here.
+                    # Duration (there is no .nanos attribute here).
                     secs = offset.total_seconds() if hasattr(offset, "total_seconds") else float(offset)
                     speech_ended_wall = self._stream_start_wall_time + secs
                     elapsed = time.time() - speech_ended_wall
@@ -109,8 +105,7 @@ class CustomGoogleSTTService(GoogleSTTService):
 
 <Aside type="note" title="SDK gotcha">
 In the Google Cloud Speech v2 Python SDK, `result_end_offset` is a native
-`datetime.timedelta`. Code written against the protobuf `Duration` API — reaching
-for `.seconds` and `.nanos` — throws or silently misreads. Call
+`datetime.timedelta`. Code written against the protobuf `Duration` API throws or silently fails if accessing `.seconds` and `.nanos`. Call
 `.total_seconds()`.
 </Aside>
 
@@ -125,9 +120,7 @@ Real-world streams produce absurd values. Two guards remove nearly all of them:
 
 ## Bind metrics to the right turn
 
-Latency events often arrive **before** the UI bubble they describe exists. Attach
-them naively and each number lands on the *previous* turn — an off-by-one that
-makes every dashboard subtly wrong.
+Latency events often arrive **before** the UI bubble they describe exists. Attach them naively and each number lands on the previous turn, causing an off-by-one error that makes dashboards inaccurate.
 
 Buffer early arrivals and bind at creation time:
 
@@ -158,8 +151,8 @@ from collections import deque
 diagnostic_buffer = deque(maxlen=1500)   # bounded: never touches disk
 ```
 
-- `GET /api/logs` — dump the buffer.
-- `POST /api/logs/clear` — reset between test runs.
+- `GET /api/logs`: Read recent events from the in-memory buffer.
+- `POST /api/logs/clear`: Reset the buffer between runs.
 - Poll every ~1.5 s from a debug pane.
 
 ### Log turns, not tokens
@@ -171,8 +164,7 @@ Streaming produces one event per fragment. Logging each one buries the signal.
 - **Model speech:** accumulate into a turn buffer; flush on `turnComplete` or
   `interrupted`.
 
-That way one conversational turn produces one log line — which is what you
-actually want to read at 3am.
+That way one conversational turn produces one log line, keeping incident logs clear and readable.
 
 ## Watch in production
 
@@ -181,5 +173,4 @@ actually want to read at 3am.
 - **Reconnect frequency.** Beyond the expected 10–15 minute rotation, rising
   reconnects mean network or config trouble.
 - **Tool latency.** Slow tools are the usual cause of dead air.
-- **`usageMetadata` per turn.** Token and duration accounting — your cost model
-  and your early warning for runaway context growth.
+- **`usageMetadata` per turn.** Token and duration accounting: essential for tracking token cost and spotting context growth.
