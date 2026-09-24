@@ -17,13 +17,15 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor, RTVI
-from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrategy
+import pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy as _turn_stop_mod
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
 from pipecat.services.stt_service import STTService, STTSettings
 
-TurnAnalyzerUserTurnStopStrategy._stop_secs_warned = True
+# Cascade uses VAD stop_secs=0.4 and passes a ttfs_p99_latency measured at that setting,
+# which is what Pipecat's advisory warning asks for. This constant is only read by that warning.
+_turn_stop_mod.VAD_STOP_SECS = 0.4
 _orig_rtvi_handle_client_ready = RTVIProcessor._handle_client_ready
 async def _compat_rtvi_handle_client_ready(self, request_id: str, data):
     if data is not None and getattr(data, "version", None):

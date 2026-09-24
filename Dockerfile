@@ -25,15 +25,14 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m spacy download en_core_web_sm
 COPY server/ .
 RUN pip install --no-cache-dir --upgrade "google-genai>=2.25.0" && \
-    rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json
+    rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json /app/voice_cloning_key_*.txt
 COPY --from=client /app/demos/voice-studio/dist ./demos/voice-studio/dist
 COPY --from=client /app/demos/voice-studio/dist ./client/dist
 
-# Copy the voice cloning keys and set the environment variables
-COPY server/voice_cloning_key_m.txt /app/voice_cloning_key_m.txt
-COPY server/voice_cloning_key_f.txt /app/voice_cloning_key_f.txt
-ENV CLONE_TTS_VOICE_KEY_MALE="/app/voice_cloning_key_m.txt"
-ENV CLONE_TTS_VOICE_KEY_FEMALE="/app/voice_cloning_key_f.txt"
+# Voice cloning keys are NOT baked into the image. Cloud Run mounts them read-only
+# from gs://deep-clock-339817-v2v-demo-keys at /keys (see gemini-live SKILL.md deploy command).
+ENV CLONE_TTS_VOICE_KEY_MALE="/keys/voice_cloning_key_m.txt"
+ENV CLONE_TTS_VOICE_KEY_FEMALE="/keys/voice_cloning_key_f.txt"
 
 # Expose the port the app runs on
 EXPOSE 7860

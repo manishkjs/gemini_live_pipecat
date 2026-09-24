@@ -48,3 +48,6 @@ temp.md
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
+
+# Voice cloning keys live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
+**/voice_cloning_key_*.txt

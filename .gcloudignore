@@ -48,3 +48,6 @@ docs-site/
 # Keep agent coordination out of Cloud Run source uploads as well.
 temp.md
 **/temp.md
+
+# Voice cloning keys live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
+**/voice_cloning_key_*.txt
