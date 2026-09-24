@@ -272,22 +272,20 @@ export const CASCADE_LLM_MODELS: [string, string][] = CASCADE_LLM_MODEL_GROUPS.f
 
 export const CASCADE_TTS_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
   {
+    label: "AI Studio (Gemini 3.8 TTS)",
+    options: [
+      ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (AI Studio - $0.50/$6.00 - Default)"],
+      ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (AI Studio Voice Design - $0.50/$9.00)"],
+    ],
+  },
+  {
     label: "Vertex AI (Gemini TTS & Cloud TTS)",
     options: [
-      ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (Vertex AI - $0.50/$6.00 - Default)"],
-      ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (Vertex AI Voice Design - $0.50/$9.00)"],
       ["gemini-3.1-flash-tts-preview", "gemini-3.1-flash-tts-preview (Vertex AI)"],
       ["gemini-2.5-flash-lite-preview-tts", "gemini-2.5-flash-lite-preview-tts (Vertex AI)"],
       ["gemini-2.5-flash-preview-tts", "gemini-2.5-flash-preview-tts (Vertex AI)"],
       ["gemini-2.5-pro-preview-tts", "gemini-2.5-pro-preview-tts (Vertex AI)"],
       ["google-tts", "Google Cloud TTS (Chirp 3 HD Indian Voices)"],
-    ],
-  },
-  {
-    label: "AI Studio (Gemini TTS)",
-    options: [
-      ["gemini-3.8-flash-lite-tts-aistudio", "gemini-3.8-flash-lite-tts (AI Studio - $0.50/$6.00)"],
-      ["gemini-3.8-flash-tts-aistudio", "gemini-3.8-flash-tts (AI Studio Voice Design - $0.50/$9.00)"],
     ],
   },
 ];
