@@ -1,6 +1,6 @@
 import asyncio
 import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*grpcio < 1.83.0.*", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
 import os
 import argparse

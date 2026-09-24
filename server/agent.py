@@ -1,6 +1,6 @@
 import os
 import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*grpcio < 1.83.0.*", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
 import time
 import asyncio
@@ -199,7 +199,9 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         primary_lang = self.languages[0] if self.languages else Language("en-US")
         super().__init__(
             sample_rate=sample_rate,
-            ttfs_p99_latency=0.35,
+            # Drives TurnAnalyzerUserTurnStopStrategy's transcript wait (ttfs - VAD stop_secs).
+            # Measured Transcribe Live speech-end -> final transcript is ~1.2-1.7s in prod logs.
+            ttfs_p99_latency=1.8,
             settings=STTSettings(model=self.model_name, language=primary_lang),
             **kwargs,
         )
@@ -274,10 +276,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             input_audio_transcription=tx_config
         )
         
+        consecutive_failures = 0
         while not self._stopping:
             try:
                 async with self._client.aio.live.connect(model=self.model_name, config=config) as session:
                     logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
+                    consecutive_failures = 0
                     meter = getattr(self, "_cascade_meter", None)
                     cost_key = meter.begin(
                         "stt", self.model_name, "gemini" if self.is_ai_studio else "vertex", self.location,
@@ -420,13 +424,16 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             except Exception as e:
                 if self._stopping:
                     break
+                consecutive_failures += 1
                 err_str = str(e)
-                if any(code in err_str for code in ("1008", "1000", "1001", "operation was aborted", "ConnectionClosed")):
-                    logger.debug(f"Gemini 3.5 Transcribe Live stream rotated ({err_str}); reconnecting immediately...")
-                    await asyncio.sleep(0.1)
+                is_rotation = any(code in err_str for code in ("1008", "1000", "1001", "operation was aborted", "ConnectionClosed"))
+                if is_rotation and consecutive_failures == 1:
+                    logger.debug(f"Gemini 3.5 Transcribe Live stream rotated ({err_str}); reconnecting")
+                elif consecutive_failures >= 5:
+                    logger.error(f"Gemini 3.5 Transcribe Live failing repeatedly ({consecutive_failures}x): {e}")
                 else:
-                    logger.warning(f"Gemini 3.5 Transcribe Live transient reconnect: {e}")
-                    await asyncio.sleep(0.5)
+                    logger.warning(f"Gemini 3.5 Transcribe Live reconnect #{consecutive_failures}: {e}")
+                await asyncio.sleep(min(0.1 * (2 ** (consecutive_failures - 1)), 5.0))
 
 
 
