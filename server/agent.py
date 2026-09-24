@@ -333,20 +333,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                             self._audio_queue.task_done()
 
                     async def receive_transcripts():
-                        pending_text: Optional[str] = None
-                        last_emitted_final: Optional[str] = None
-                        flush_task: Optional[asyncio.Task] = None
-
-                        async def flush_final_transcript(delay: float = 0.0):
-                            nonlocal pending_text, last_emitted_final
-                            if delay > 0:
-                                await asyncio.sleep(delay)
-                            text_to_emit = (pending_text or "").strip()
-                            pending_text = None
-                            if not text_to_emit or text_to_emit == last_emitted_final:
-                                return
-                            last_emitted_final = text_to_emit
-
+                        # `input_transcription` is one FINAL per utterance (verified live
+                        # 2026-09-24), not a growing prefix, and the server never sets
+                        # `finished`/`turn_complete`. Each final is therefore emitted as-is,
+                        # immediately: debouncing only adds latency and overwrote back-to-back
+                        # finals, and prefix de-duplication dropped repeated answers ("Yes.").
+                        async def emit_final(text_to_emit: str):
                             final_latency = self._latency_clock.final_latency(time.time())
                             if final_latency is not None:
                                 logger.info(f"STT final transcript (speech end -> final): {int(final_latency * 1000)}ms")
@@ -398,45 +390,29 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                             language=primary_lang
                                         ))
 
-                                # 2. Progressive / finalized speech turn transcript from Gemini 3.5 Transcribe Live
+                                # 2. Final transcript of one utterance
                                 input_transcription = getattr(server_content, "input_transcription", None)
                                 if input_transcription and input_transcription.text:
                                     transcript_text = input_transcription.text.strip()
                                     if transcript_text:
-                                        if last_emitted_final and not transcript_text.startswith(last_emitted_final):
-                                            last_emitted_final = None
-                                        pending_text = transcript_text
-                                        await self.push_frame(InterimTranscriptionFrame(
-                                            text=transcript_text,
-                                            user_id=self._user_id,
-                                            timestamp=time_now_iso8601(),
-                                            language=primary_lang
-                                        ))
-                                        if flush_task and not flush_task.done():
-                                            flush_task.cancel()
-                                        is_explicit_end = bool(
-                                            getattr(server_content, "turn_complete", False)
-                                            or getattr(input_transcription, "finished", False)
-                                        )
-                                        flush_task = asyncio.create_task(
-                                            flush_final_transcript(0.05 if is_explicit_end else 0.35)
-                                        )
-                                elif getattr(server_content, "turn_complete", False) and pending_text:
-                                    if flush_task and not flush_task.done():
-                                        flush_task.cancel()
-                                    flush_task = asyncio.create_task(flush_final_transcript(0.0))
+                                        await emit_final(transcript_text)
 
                     send_task = asyncio.create_task(send_audio())
                     receive_task = asyncio.create_task(receive_transcripts())
-                    
-                    done, pending = await asyncio.wait(
-                        [send_task, receive_task],
-                        return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in pending:
-                        task.cancel()
+                    try:
+                        done, _ = await asyncio.wait(
+                            [send_task, receive_task],
+                            return_when=asyncio.FIRST_COMPLETED
+                        )
+                    finally:
+                        # asyncio.wait never cancels its tasks, including when this worker
+                        # itself is cancelled; without this the send loop stays parked on
+                        # the audio queue forever.
+                        for task in (send_task, receive_task):
+                            task.cancel()
+                        await asyncio.gather(send_task, receive_task, return_exceptions=True)
                     for task in done:
-                        if task.exception():
+                        if not task.cancelled() and task.exception():
                             raise task.exception()
 
             except asyncio.CancelledError:
