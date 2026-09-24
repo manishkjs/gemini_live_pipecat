@@ -17,11 +17,13 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor, RTVI
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrategy
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
 from pipecat.services.stt_service import STTService, STTSettings
 
+TurnAnalyzerUserTurnStopStrategy._stop_secs_warned = True
 _orig_rtvi_handle_client_ready = RTVIProcessor._handle_client_ready
 async def _compat_rtvi_handle_client_ready(self, request_id: str, data):
     if data is not None and getattr(data, "version", None):
@@ -199,9 +201,9 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         primary_lang = self.languages[0] if self.languages else Language("en-US")
         super().__init__(
             sample_rate=sample_rate,
-            # Drives TurnAnalyzerUserTurnStopStrategy's transcript wait (ttfs - VAD stop_secs).
+            # Drives TurnAnalyzerUserTurnStopStrategy's transcript wait (ttfs - VAD stop_secs = 2.0 - 0.4 = 1.6s).
             # Measured Transcribe Live speech-end -> final transcript is ~1.2-1.7s in prod logs.
-            ttfs_p99_latency=1.8,
+            ttfs_p99_latency=2.0,
             settings=STTSettings(model=self.model_name, language=primary_lang),
             **kwargs,
         )
@@ -1116,7 +1118,7 @@ async def run_agent(
         params=VADParams(
             confidence=0.7,
             start_secs=0.2,
-            stop_secs=0.2,
+            stop_secs=0.4,
             min_volume=0.6,
         )
     ) if vad else None
@@ -1331,7 +1333,7 @@ async def run_agent(
 
     # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
     # still calls Cloud Speech for the displayed transcript. It is billable.
-    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=200 if vad else None)
+    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
     for service in (llm, tts, stt):
         if service is not None:
             service._turn_tracker = turn_tracker
