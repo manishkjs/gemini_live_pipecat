@@ -1,4 +1,7 @@
 import asyncio
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
 import os
 import argparse
 from contextlib import asynccontextmanager

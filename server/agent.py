@@ -1,4 +1,7 @@
 import os
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
 import time
 import asyncio
 from typing import Optional, List
@@ -13,10 +16,18 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor, RTVI
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.google.vertex.llm import GoogleVertexLLMService
 
-from pipecat.services.stt_service import STTService
+from pipecat.services.stt_service import STTService, STTSettings
+
+_orig_rtvi_handle_client_ready = RTVIProcessor._handle_client_ready
+async def _compat_rtvi_handle_client_ready(self, request_id: str, data):
+    if data is not None and getattr(data, "version", None):
+        data.version = RTVI.PROTOCOL_VERSION
+    return await _orig_rtvi_handle_client_ready(self, request_id, data)
+RTVIProcessor._handle_client_ready = _compat_rtvi_handle_client_ready
 from pipecat.services.google.stt import GoogleSTTService, language_to_google_stt_language
 from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
@@ -173,7 +184,6 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         sample_rate: int = 16000,
         **kwargs
     ):
-        super().__init__(sample_rate=sample_rate, **kwargs)
         self.is_ai_studio = is_ai_studio
         self.project_id = project_id
         self.location = location
@@ -183,13 +193,24 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         clean_model = model.replace("-aistudio", "").strip()
         if is_ai_studio:
             self.model_name = clean_model
-            self._client = genai.Client(api_key=api_key)
         else:
             self.model_name = clean_model if clean_model.endswith("-preview") else f"{clean_model}-preview"
+
+        primary_lang = self.languages[0] if self.languages else Language("en-US")
+        super().__init__(
+            sample_rate=sample_rate,
+            ttfs_p99_latency=0.35,
+            settings=STTSettings(model=self.model_name, language=primary_lang),
+            **kwargs,
+        )
+        if is_ai_studio:
+            self._client = genai.Client(api_key=api_key)
+        else:
             self._client = genai.Client(vertexai=True, project=project_id, location=location)
 
         self._audio_queue = asyncio.Queue()
         self._streaming_task = None
+        self._stopping = False
         self._stream_start_wall_time = None
         self._user_started_speaking_time = None
         self._user_stopped_speaking_time = None
@@ -205,16 +226,19 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
+        self._stopping = False
         self._stream_start_wall_time = time.time()
         self._streaming_task = self.create_task(self._streaming_worker())
 
     async def stop(self, frame: Frame):
+        self._stopping = True
         await super().stop(frame)
         if self._streaming_task:
             await self.cancel_task(self._streaming_task)
             self._streaming_task = None
 
     async def cancel(self, frame: CancelFrame):
+        self._stopping = True
         await super().cancel(frame)
         if self._streaming_task:
             await self.cancel_task(self._streaming_task)
@@ -250,7 +274,7 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             input_audio_transcription=tx_config
         )
         
-        while True:
+        while not self._stopping:
             try:
                 async with self._client.aio.live.connect(model=self.model_name, config=config) as session:
                     logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
@@ -262,7 +286,7 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                     await publish_cost(self)
 
                     async def send_audio():
-                        while True:
+                        while not self._stopping:
                             audio_frame = await self._audio_queue.get()
                             if audio_frame and audio_frame.audio:
                                 await session.send_realtime_input(
@@ -327,7 +351,7 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                             self._user_stopped_speaking_time = None
                             self._user_started_speaking_time = None
 
-                        while True:
+                        while not self._stopping:
                             async for response in session.receive():
                                 if meter and getattr(response, "usage_metadata", None):
                                     observe_tokens(meter, cost_key, response.usage_metadata)
@@ -394,8 +418,15 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Gemini 3.5 Transcribe Live connection exception: {e}")
-                await asyncio.sleep(1.0)
+                if self._stopping:
+                    break
+                err_str = str(e)
+                if any(code in err_str for code in ("1008", "1000", "1001", "operation was aborted", "ConnectionClosed")):
+                    logger.debug(f"Gemini 3.5 Transcribe Live stream rotated ({err_str}); reconnecting immediately...")
+                    await asyncio.sleep(0.1)
+                else:
+                    logger.warning(f"Gemini 3.5 Transcribe Live transient reconnect: {e}")
+                    await asyncio.sleep(0.5)
 
 
 
@@ -1078,7 +1109,7 @@ async def run_agent(
         params=VADParams(
             confidence=0.7,
             start_secs=0.2,
-            stop_secs=0.4,
+            stop_secs=0.2,
             min_volume=0.6,
         )
     ) if vad else None
@@ -1293,7 +1324,7 @@ async def run_agent(
 
     # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
     # still calls Cloud Speech for the displayed transcript. It is billable.
-    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
+    turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=200 if vad else None)
     for service in (llm, tts, stt):
         if service is not None:
             service._turn_tracker = turn_tracker
@@ -1312,7 +1343,6 @@ async def run_agent(
         from processors.audio_accumulator import AudioAccumulator
         context = GoogleLLMContext()
         context.set_messages([
-            {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
         ])
         stt_languages = [lang.strip() for lang in stt_language.split(',')] if stt_language else ["en-US"]
@@ -1340,7 +1370,6 @@ async def run_agent(
         ]
     else:
         context = LLMContext(messages=[
-            {"role": "system", "content": final_system_instruction},
             {"role": "user", "content": initial_greeting}
         ])
         user_params = LLMUserAggregatorParams(
