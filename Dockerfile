@@ -8,11 +8,11 @@ RUN npm run build
 
 
 # Stage 2: Build the server
-FROM python:3.12 as server
+FROM python:3.12-slim as server
 WORKDIR /app
 
-# Install all required system-level build dependencies
-RUN apt-get update && apt-get install -y \
+# Apply security patches and install required system-level dependencies
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     libjpeg-dev \
     zlib1g-dev \
@@ -20,8 +20,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && python -m spacy download en_core_web_sm
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt && \
+    python -m spacy download en_core_web_sm
 COPY server/ .
+RUN rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json
 COPY --from=client /app/demos/voice-studio/dist ./demos/voice-studio/dist
 COPY --from=client /app/demos/voice-studio/dist ./client/dist
 

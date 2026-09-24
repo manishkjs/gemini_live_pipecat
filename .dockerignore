@@ -5,9 +5,32 @@
 **/dist
 **/build
 
-# Ignore .env files
+# Ignore .env files and all cleartext credentials/keys
 .env
 **/.env
+.env.*
+**/.env.*
+!**/.env.example
+*sa_key*.json
+**/*sa_key*.json
+**/service-account*.json
+**/*credentials*.json
+*.pem
+**/*.pem
+*.key
+**/*.key
+
+# Ignore virtual environments, worktrees, and docs-site
+.venv
+**/.venv
+venv
+**/venv
+.worktrees
+docs-site
+.agents
+__pycache__
+**/__pycache__
+.pytest_cache
 
 # Ignore logs
 *.log
