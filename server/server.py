@@ -2,7 +2,9 @@ import asyncio
 import warnings
 warnings.filterwarnings("ignore", message=".*grpcio < 1.83.0.*", category=FutureWarning)
 warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
+import importlib
 import os
+import time
 import argparse
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
@@ -34,12 +36,35 @@ def load_pipeline(bot_type):
     return run_agent
 
 
+def warm_media_pipelines():
+    """Pay the one-time media SDK import cost (~25s on Cloud Run) before the first call.
+
+    Without this, the first WebSocket on a fresh instance waits for pipecat, google-genai and
+    transformers (pulled in by Smart Turn v3) to import, which outlasts client timeouts.
+    """
+    for bot_type in ("tts-llm-stt", "gemini-live"):
+        load_pipeline(bot_type)
+    importlib.import_module("pipecat.audio.turn.smart_turn.local_smart_turn_v3")
+
+
+async def _warm_in_background():
+    started = time.monotonic()
+    try:
+        await asyncio.to_thread(warm_media_pipelines)
+        print(f"Media pipelines warmed in {time.monotonic() - started:.1f}s", flush=True)
+    except Exception as exc:  # Warmup is an optimization; a call will retry the import.
+        print(f"Media pipeline warmup failed (will load on first call): {exc!r}", flush=True)
+
+
 from system_prompt import SYSTEM_PROMPT, tts_prompt
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handles FastAPI startup and shutdown."""
+    warmup = asyncio.create_task(_warm_in_background())
     yield  # Run app
+    if not warmup.done():
+        warmup.cancel()
 
 # Initialize FastAPI app with lifespan manager
 app = FastAPI(lifespan=lifespan)
