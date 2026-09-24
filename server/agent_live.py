@@ -1348,8 +1348,14 @@ async def run_agent_live(
             "transcribe_model_audio": True,
             "settings": settings,
         }
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        creds_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if creds_file and os.path.isfile(creds_file):
+            try:
+                with open(creds_file, "r", encoding="utf-8") as cf:
+                    if json.load(cf).get("type") == "service_account":
+                        vertex_params["credentials_path"] = creds_file
+            except Exception:
+                pass
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     # Context compression tracking and notification flags
