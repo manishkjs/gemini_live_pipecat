@@ -44,6 +44,44 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_tts_model("google-tts"), "google-tts")
         self.assertEqual(validate_tts_model("unknown_tts"), "gemini-3.8-flash-lite-tts")
 
+    def test_live_model_gateway_routing(self):
+        from agent_live import resolve_live_model_gateway, build_thinking_config
+
+        # Vertex AI GA 3.8 Live (default) and legacy preview alias
+        self.assertEqual(resolve_live_model_gateway("gemini-3.8-live"), (False, "gemini-3.8-live"))
+        self.assertEqual(resolve_live_model_gateway("gemini-3.8-live-preview"), (False, "gemini-3.8-live"))
+        self.assertEqual(resolve_live_model_gateway("gemini-3.8-flash-live-preview"), (False, "gemini-3.8-live"))
+
+        # Vertex AI Extended Thinking remains -preview
+        self.assertEqual(
+            resolve_live_model_gateway("gemini-3.8-live-extended-thinking-preview"),
+            (False, "gemini-3.8-live-extended-thinking-preview"),
+        )
+
+        # AI Studio 3.8 Live via -aistudio suffix and Extended Thinking
+        self.assertEqual(resolve_live_model_gateway("gemini-3.8-live-aistudio"), (True, "gemini-3.8-live"))
+        self.assertEqual(
+            resolve_live_model_gateway("gemini-3.8-live-extended-thinking"),
+            (True, "gemini-3.8-live-extended-thinking"),
+        )
+
+        # Vertex AI 2.5 Native Audio vs AI Studio 2.5 Native Audio
+        self.assertEqual(
+            resolve_live_model_gateway("gemini-live-2.5-flash-native-audio"),
+            (False, "gemini-live-2.5-flash-native-audio"),
+        )
+        self.assertEqual(
+            resolve_live_model_gateway("gemini-2.5-flash-native-audio-latest"),
+            (True, "gemini-2.5-flash-native-audio-latest"),
+        )
+
+        # Base gemini-3.8-live never emits thinking_level; extended-thinking does
+        self.assertEqual(build_thinking_config("gemini-3.8-live", True, "medium"), {})
+        self.assertEqual(
+            build_thinking_config("gemini-3.8-live-extended-thinking-preview", False, None),
+            {"thinking_level": "medium"},
+        )
+
 
 class TestVoiceCloningRouting(unittest.TestCase):
     def test_voice_cloning_key_loading(self):

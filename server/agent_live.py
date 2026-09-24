@@ -1009,6 +1009,55 @@ class StartTriggerProcessor(FrameProcessor):
 
 VALID_THINKING_LEVELS = ("minimal", "low", "medium", "high")
 
+AI_STUDIO_LIVE_MODELS = {
+    "gemini-3.8-live-extended-thinking",
+    "gemini-3.5-live-preview",
+    "gemini-3.5-live-extended-thinking-preview",
+    "gemini-3.1-flash-live-preview",
+    "gemini-3.5-live-translate-preview",
+    "gemini-2.5-flash-native-audio-latest",
+    "gemini-2.5-flash-native-audio-preview-09-2025",
+    "gemini-2.5-flash-native-audio-preview-12-2025",
+}
+VERTEX_LIVE_MODELS = {
+    "gemini-3.8-live",
+    "gemini-3.8-live-preview",
+    "gemini-3.8-live-extended-thinking-preview",
+    "gemini-3.5-flash-live-preview",
+    "gemini-3.5-flash-lite-live-preview",
+    "gemini-3.8-flash-live-preview",
+    "gemini-live-2.5-flash-native-audio",
+    "gemini-live-2.5-flash",
+}
+AI_STUDIO_RENAME_MAP = {
+    "gemini-3.5-live-preview": "gemini-3.8-live",
+    "gemini-3.5-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+    "gemini-3.8-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+}
+VERTEX_RENAME_MAP = {
+    "gemini-3.8-flash-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-extended-thinking": "gemini-3.8-live-extended-thinking-preview",
+}
+
+
+def resolve_live_model_gateway(model: str) -> tuple[bool, str]:
+    """Resolve whether a Live model string targets AI Studio or Vertex AI, and its normalized model ID.
+
+    - On Vertex AI (`us-central1`), `gemini-3.8-live` is GA (default), while
+      `gemini-3.8-live-extended-thinking-preview` remains in preview.
+    - Legacy `gemini-3.8-live-preview` and `gemini-3.8-flash-live-preview` normalize
+      to `gemini-3.8-live` on Vertex AI.
+    - On AI Studio, `gemini-3.8-live-aistudio` strips `-aistudio` and sends `gemini-3.8-live`.
+    """
+    clean_model = model[:-9] if model.endswith("-aistudio") else model
+    if model.endswith("-aistudio") or clean_model in AI_STUDIO_LIVE_MODELS:
+        clean_model = AI_STUDIO_RENAME_MAP.get(clean_model, clean_model)
+        return True, clean_model
+    clean_model = VERTEX_RENAME_MAP.get(clean_model, clean_model)
+    return False, clean_model
+
 
 def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[str]) -> dict:
     """Build the Gemini reasoning config for a Live session.
@@ -1019,6 +1068,13 @@ def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[s
     model apply its own default tier.
     See https://ai.google.dev/gemini-api/docs/thinking
     """
+    # Base Gemini 3.8 Live (`gemini-3.8-live` / `gemini-3.8-live-preview`) does not
+    # support `thinking_level` (reasoning is served by the dedicated
+    # `gemini-3.8-live-extended-thinking*` models). Never emit `thinking_level`
+    # for the non-thinking 3.8 Live endpoint even if the UI toggle remained set.
+    if "3.8" in model and "thinking" not in model.lower():
+        return {}
+
     # Models with "thinking" in the name reason by default; honour that even if
     # the client did not explicitly opt in.
     if not thinking and "thinking" not in model.lower():
@@ -1230,52 +1286,8 @@ async def run_agent_live(
         cwc["trigger_tokens"] = trigger
         cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
-    AI_STUDIO_MODELS = {
-        "gemini-3.8-live",
-        "gemini-3.8-live-extended-thinking",
-        "gemini-3.5-live-preview",
-        "gemini-3.5-live-extended-thinking-preview",
-        "gemini-3.1-flash-live-preview",
-        "gemini-3.5-live-translate-preview",
-        "gemini-2.5-flash-native-audio-latest",
-        "gemini-2.5-flash-native-audio-preview-09-2025",
-        "gemini-2.5-flash-native-audio-preview-12-2025",
-    }
-    VERTEX_LIVE_MODELS = {
-        "gemini-3.8-live-preview",
-        "gemini-3.8-live-extended-thinking-preview",
-        "gemini-3.5-flash-live-preview",
-        "gemini-3.5-flash-lite-live-preview",
-        "gemini-3.8-flash-live-preview",
-        "gemini-live-2.5-flash-native-audio",
-        "gemini-live-2.5-flash",
-    }
-    # Normalize renamed model strings per gateway:
-    # - On AI Studio, `gemini-3.5-live-preview` was renamed to `gemini-3.8-live`
-    #   and `gemini-3.5-live-extended-thinking-preview` to `gemini-3.8-live-extended-thinking`.
-    # - On Vertex AI us-central1, `gemini-3.8-live-preview` and `gemini-3.8-live-extended-thinking-preview`
-    #   are the active 3.8 publisher IDs (alongside `gemini-3.5-flash-live-preview`).
-    AI_STUDIO_RENAME_MAP = {
-        "gemini-3.5-live-preview": "gemini-3.8-live",
-        "gemini-3.5-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
-        "gemini-3.8-live-preview": "gemini-3.8-live",
-        "gemini-3.8-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
-    }
-    VERTEX_RENAME_MAP = {
-        "gemini-3.8-flash-live-preview": "gemini-3.8-live-preview",
-        "gemini-3.8-live": "gemini-3.8-live-preview",
-        "gemini-3.8-live-extended-thinking": "gemini-3.8-live-extended-thinking-preview",
-    }
-
-    clean_model = model[:-9] if model.endswith("-aistudio") else model
-    if clean_model in AI_STUDIO_MODELS or (model.endswith("-aistudio") and clean_model not in VERTEX_LIVE_MODELS):
-        is_ai_studio = True
-        clean_model = AI_STUDIO_RENAME_MAP.get(clean_model, clean_model)
-        model = clean_model
-    else:
-        is_ai_studio = False
-        clean_model = VERTEX_RENAME_MAP.get(clean_model, clean_model)
-        model = clean_model
+    is_ai_studio, clean_model = resolve_live_model_gateway(model)
+    model = clean_model
 
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager

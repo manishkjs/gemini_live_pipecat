@@ -98,7 +98,7 @@ async def check_sni_mismatch_middleware(request: Request, call_next):
 async def websocket_endpoint(
     websocket: WebSocket,
     bot_type: str = "tts-llm-stt",
-    model: str = "gemini-3.8-live-preview",
+    model: str = "gemini-3.8-live",
     voice: Optional[str] = "Puck",
     language: str = "en-US",
     system_instruction: Optional[str] = None,

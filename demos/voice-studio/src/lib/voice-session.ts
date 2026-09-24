@@ -84,7 +84,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   engine: "live",
   personaId: "debt-collector",
   tone: "professional",
-  model: "gemini-3.8-live-preview",
+  model: "gemini-3.8-live",
   voice: "Gacrux",
   language: "hi-IN",
   instructions: "",
@@ -208,7 +208,7 @@ export const LIVE_MODEL_GROUPS: { label: string; options: [string, string][] }[]
   {
     label: "Vertex AI (Gemini Live)",
     options: [
-      ["gemini-3.8-live-preview", "gemini-3.8-live-preview (Vertex AI Live - Default)"],
+      ["gemini-3.8-live", "gemini-3.8-live (Vertex AI Live - Default)"],
       ["gemini-3.8-live-extended-thinking-preview", "gemini-3.8-live-extended-thinking-preview (Vertex AI Thinking)"],
       ["gemini-live-2.5-flash-native-audio", "gemini-live-2.5-flash-native-audio (Vertex AI)"],
       ["gemini-live-2.5-flash", "gemini-live-2.5-flash (Vertex AI Cascaded)"],
@@ -217,7 +217,7 @@ export const LIVE_MODEL_GROUPS: { label: string; options: [string, string][] }[]
   {
     label: "AI Studio (Gemini Live)",
     options: [
-      ["gemini-3.8-live", "gemini-3.8-live (AI Studio)"],
+      ["gemini-3.8-live-aistudio", "gemini-3.8-live (AI Studio)"],
       ["gemini-3.8-live-extended-thinking", "gemini-3.8-live-extended-thinking (AI Studio Thinking)"],
       ["gemini-3.1-flash-live-preview", "gemini-3.1-flash-live-preview (AI Studio)"],
       ["gemini-2.5-flash-native-audio-latest", "gemini-2.5-flash-native-audio-latest (AI Studio)"],
