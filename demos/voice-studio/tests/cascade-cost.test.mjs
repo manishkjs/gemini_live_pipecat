@@ -26,3 +26,14 @@ test('Cascade rejects invalid amounts and false complete claims', () => {
   const duplicate = snapshot(); duplicate.stages[2].stage = 'llm';
   assert.equal(readCascadeCost(duplicate, 'call'), null);
 });
+
+test('Stage label always shows the known amount; partial stages say so instead of hiding it', async () => {
+  const { stageLabel } = await import('../src/lib/cascade-cost.ts');
+  const row = (o) => ({ stage: 'llm', known_usd: '0.0040', complete: true, disabled: false, requests: 2, issues: [], rates: [], ...o });
+  assert.equal(stageLabel(row({})), '$0.0040');
+  assert.equal(stageLabel(row({ complete: false, issues: ['Awaiting final provider usage'] })), '$0.0040 + in flight');
+  assert.equal(stageLabel(row({ known_usd: '0', complete: false, issues: ['x'] })), 'pending');
+  assert.equal(stageLabel(row({ estimated: true, known_usd: '0.0021' })), '~$0.0021');
+  assert.equal(stageLabel(row({ disabled: true })), 'off');
+  assert.equal(stageLabel(undefined), 'pending');
+});

@@ -91,11 +91,31 @@ def modality_counts(details):
     return result
 
 
+# Transcribe Live returns no usage_metadata (probed 2026-09-24), so its cost is estimated:
+# Google's published audio tokenization (25 tokens / second of streamed audio) and ~3
+# transcript characters per output token (Devanagari/Latin mix). Shown as "~" in the UI.
+TRANSCRIBE_AUDIO_TOKENS_PER_SEC = Decimal(25)
+TRANSCRIBE_CHARS_PER_TOKEN = 3
+
+
+def estimate_transcribe_live(usage, card):
+    seconds, chars = usage.get("audio_seconds"), usage.get("transcript_chars", 0)
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+        return None, "Missing streamed audio duration", card
+    if count(chars) is None:
+        return None, "Invalid transcript length", card
+    audio_tokens = math.ceil(Decimal(str(seconds)) * TRANSCRIBE_AUDIO_TOKENS_PER_SEC)
+    text_tokens = math.ceil(chars / TRANSCRIBE_CHARS_PER_TOKEN)
+    return (Decimal(audio_tokens) * Decimal(card["audio_in"]) + Decimal(text_tokens) * Decimal(card["text_out"])) / MILLION, None, card
+
+
 def quote(record):
     """Return a price only when all required units for this request reconcile."""
     card = rate_card(record["stage"], record["model"], record["provider"], record.get("region", "global"), record.get("date"))
     if not card:
         return None, "No verified rate for this model/provider", None
+    if record.get("estimated") and record["stage"] == "stt" and "audio_in" in card:
+        return estimate_transcribe_live(record.get("usage", {}), card)
     if record.get("issue"):
         return None, record["issue"], card
     if not record.get("complete"):
@@ -200,6 +220,7 @@ class CascadeCostLedger:
                     rates[(card["model"], card["provider"], card["region"])] = card
             stages.append({"stage": stage, "known_usd": str(amount), "complete": not missing,
                            "disabled": disabled, "requests": len(records), "issues": sorted(missing),
+                           "estimated": any(r.get("estimated") for r in records),
                            "rates": list(rates.values())})
         return {"type": "cascade_cost", "session_id": self.session_id, "revision": self.revision,
                 "currency": "USD", "basis": "public-list-price", "reviewed_at": REVIEWED_AT,

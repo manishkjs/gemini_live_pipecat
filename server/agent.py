@@ -54,6 +54,7 @@ from google.genai import types
 from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
 import voice_profiles
 from turn_telemetry import TurnTracker
+from stt_latency import FirstByteAfterSpeechEnd
 from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
 from cascade_pricing import CascadeCostLedger
 from cascade_metering import publish_cost, observe_tokens, billed_duration
@@ -218,12 +219,22 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         self._streaming_task = None
         self._stopping = False
         self._stream_start_wall_time = None
-        self._user_started_speaking_time = None
-        self._user_stopped_speaking_time = None
-        self._last_audio_sent_time = None
+        self._latency_clock = FirstByteAfterSpeechEnd()
+        self._vad_stop_secs = 0.4
 
     def can_generate_metrics(self) -> bool:
         return True
+
+    async def _emit_stt_latency(self, latency: Optional[float]):
+        """STT latency = true end of user speech -> first transcript byte from Transcribe Live."""
+        if latency is None:
+            return
+        logger.info(f"STT Latency (Gemini 3.5 Transcribe Live, speech end -> first byte): {int(latency * 1000)}ms")
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {"type": "metrics", "payload": {"type": "stt_latency", "value": latency}},
+        }))
 
     async def run_stt(self, audio: bytes):
         """Streaming STT processing handled in bidirectional _streaming_worker task."""
@@ -251,14 +262,16 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             self._streaming_task = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
-            self._user_started_speaking_time = time.time()
-            self._user_stopped_speaking_time = None
-            self._last_audio_sent_time = time.time()
-        elif isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
-            self._user_stopped_speaking_time = time.time()
+        # Only raw VAD frames carry the real timing (decision time + stop_secs); the
+        # turn-strategy User*SpeakingFrames arrive later and would skew the clock.
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._latency_clock.speech_started(time.time())
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            await self._emit_stt_latency(self._latency_clock.speech_stopped(
+                decided_at=frame.timestamp or time.time(),
+                stop_secs=frame.stop_secs or self._vad_stop_secs,
+            ))
         elif isinstance(frame, AudioRawFrame):
-            self._last_audio_sent_time = time.time()
             await self._audio_queue.put(frame)
             if self._audio_passthrough:
                 await self.push_frame(frame, direction)
@@ -287,13 +300,21 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                     logger.info(f"Gemini 3.5 Transcribe Live session connected ({'AI Studio' if self.is_ai_studio else 'Vertex AI'} - {self.model_name})")
                     consecutive_failures = 0
                     meter = getattr(self, "_cascade_meter", None)
+                    # Transcribe Live returns no usage_metadata, so the cost is estimated from
+                    # the audio actually streamed on this connection (see cascade_pricing).
+                    stream_usage = {"audio_seconds": 0.0, "transcript_chars": 0}
                     cost_key = meter.begin(
                         "stt", self.model_name, "gemini" if self.is_ai_studio else "vertex", self.location,
-                        issue="Transcribe Live usage scope needs runtime verification",
+                        complete=True, estimated=True, usage=dict(stream_usage),
                     ) if meter else None
                     await publish_cost(self)
 
+                    def record_stt_usage():
+                        if meter:
+                            meter.update(cost_key, usage=dict(stream_usage))
+
                     async def send_audio():
+                        last_recorded = 0.0
                         while not self._stopping:
                             audio_frame = await self._audio_queue.get()
                             if audio_frame and audio_frame.audio:
@@ -303,6 +324,11 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                         mime_type=f"audio/pcm;rate={audio_frame.sample_rate}"
                                     )
                                 )
+                                stream_usage["audio_seconds"] += len(audio_frame.audio) / (
+                                    2 * audio_frame.sample_rate * max(audio_frame.num_channels, 1))
+                                if stream_usage["audio_seconds"] - last_recorded >= 1.0:
+                                    last_recorded = stream_usage["audio_seconds"]
+                                    record_stt_usage()
                             self._audio_queue.task_done()
 
                     async def receive_transcripts():
@@ -320,27 +346,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                 return
                             last_emitted_final = text_to_emit
 
-                            now = time.time()
-                            stt_latency = None
-                            if self._user_stopped_speaking_time:
-                                elapsed = now - self._user_stopped_speaking_time
-                                if 0.03 <= elapsed <= 10.0:
-                                    stt_latency = elapsed
-                            elif self._last_audio_sent_time:
-                                elapsed = now - self._last_audio_sent_time
-                                if 0.03 <= elapsed <= 10.0:
-                                    stt_latency = elapsed
-
-                            if stt_latency is not None:
-                                logger.info(f"STT Latency (Gemini 3.5 Transcribe Live): {stt_latency:.3f}s ({int(stt_latency*1000)}ms)")
-                                await self.push_frame(OutputTransportMessageFrame(message={
-                                    "label": "rtvi-ai",
-                                    "type": "server-message",
-                                    "data": {
-                                        'type': 'metrics',
-                                        'payload': {'type': 'stt_latency', 'value': stt_latency}
-                                    }
-                                }))
+                            final_latency = self._latency_clock.final_latency(time.time())
+                            if final_latency is not None:
+                                logger.info(f"STT final transcript (speech end -> final): {int(final_latency * 1000)}ms")
+                            stream_usage["transcript_chars"] += len(text_to_emit)
+                            record_stt_usage()
+                            await publish_cost(self)
 
                             primary_lang = self.languages[0].value if self.languages else "en-US"
                             await self.push_frame(TranscriptionFrame(
@@ -356,8 +367,6 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                     is_final=True,
                                     language=primary_lang,
                                 )
-                            self._user_stopped_speaking_time = None
-                            self._user_started_speaking_time = None
 
                         while not self._stopping:
                             async for response in session.receive():
@@ -369,6 +378,12 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                     continue
 
                                 primary_lang = self.languages[0].value if self.languages else "en-US"
+                                has_text = any(
+                                    getattr(getattr(server_content, field, None), "text", None)
+                                    for field in ("interim_input_transcription", "input_transcription")
+                                )
+                                if has_text:
+                                    await self._emit_stt_latency(self._latency_clock.transcript_arrived(time.time()))
 
                                 # 1. Real-time interim transcript for instantaneous UI streaming
                                 interim = getattr(server_content, "interim_input_transcription", None)

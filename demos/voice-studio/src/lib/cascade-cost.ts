@@ -1,3 +1,5 @@
+import { formatCost } from "./pricing.ts";
+
 /** Server-authoritative, revisioned public-rate estimates for a single call. */
 export type CascadeStageCost = {
   stage: "stt" | "llm" | "tts";
@@ -7,6 +9,8 @@ export type CascadeStageCost = {
   requests: number;
   issues: string[];
   rates: Record<string, string>[];
+  /** Priced from measured inputs (e.g. streamed audio seconds) because the provider returns no usage. */
+  estimated?: boolean;
 };
 export type CascadeCost = {
   session_id: string;
@@ -40,4 +44,14 @@ export function readCascadeCost(value: unknown, sessionId: string, previousRevis
   if (v.complete !== v.stages.every(s => s.complete) ||
       Math.abs(v.stages.reduce((sum, s) => sum + Number(s.known_usd), 0) - Number(v.known_usd)) > 1e-8) return null;
   return v;
+}
+
+/** Per-stage summary: never hide money already known just because a request is still in flight. */
+export function stageLabel(row: CascadeStageCost | undefined): string {
+  if (!row) return "pending";
+  if (row.disabled) return "off";
+  const known = Number(row.known_usd);
+  if (!(known > 0) && !row.complete) return "pending";
+  const amount = `${row.estimated ? "~" : ""}${formatCost(known)}`;
+  return row.complete ? amount : `${amount} + in flight`;
 }
