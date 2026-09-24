@@ -681,7 +681,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 hi_lang = next((l for l in langs if "hi" in l.lower()), None)
                 lang_code = hi_lang if hi_lang else langs[0]
 
-            if self._is_aistudio and hasattr(types, "SpeechMetadata"):
+            if self._is_aistudio:
                 style_str = self._build_speech_metadata_style(lang_code)
                 speech_config = types.SpeechConfig(
                     voice_config=types.VoiceConfig(
@@ -692,18 +692,31 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                     response_modalities=["AUDIO"],
                     speech_config=speech_config,
                 )
-                # Pass ONLY clean_text (no "## Transcript:" header) so the model never reads English headers out loud
-                contents = [
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                text=clean_text,
-                                speech_metadata=types.SpeechMetadata(style=style_str),
-                            )
-                        ],
-                    )
-                ]
+                # Pass ONLY clean_text (no "## Transcript:" header and NO system_instruction)
+                if hasattr(types, "SpeechMetadata"):
+                    contents = [
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(
+                                    text=clean_text,
+                                    speech_metadata=types.SpeechMetadata(style=style_str),
+                                )
+                            ],
+                        )
+                    ]
+                else:
+                    contents = [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": clean_text,
+                                    "speech_metadata": {"style": style_str},
+                                }
+                            ],
+                        }
+                    ]
             else:
                 speech_config = types.SpeechConfig(
                     voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),

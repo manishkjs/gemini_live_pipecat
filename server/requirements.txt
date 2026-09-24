@@ -26,7 +26,7 @@ google-cloud-aiplatform
 google-cloud-secret-manager>=2.30.0
 google-cloud-speech==2.39.0
 google-cloud-texttospeech==2.36.0
-google-genai==2.4.0
+google-genai>=2.25.0
 googleapis-common-protos==1.75.0
 grpcio==1.80.0
 grpcio-status==1.80.0
