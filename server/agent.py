@@ -230,11 +230,14 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
         if latency is None:
             return
         logger.info(f"STT Latency (Gemini 3.5 Transcribe Live, speech end -> first byte): {int(latency * 1000)}ms")
-        await self.push_frame(OutputTransportMessageFrame(message={
+        msg = OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
             "data": {"type": "metrics", "payload": {"type": "stt_latency", "value": latency}},
-        }))
+        })
+        if getattr(self, "_last_input_turn", None) is not None:
+            msg.metadata["_telemetry_turn"] = self._last_input_turn
+        await self.push_frame(msg)
 
     async def run_stt(self, audio: bytes):
         """Streaming STT processing handled in bidirectional _streaming_worker task."""
@@ -262,8 +265,13 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             self._streaming_task = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        # Only raw VAD frames carry the real timing (decision time + stop_secs); the
-        # turn-strategy User*SpeakingFrames arrive later and would skew the clock.
+        if isinstance(frame, AudioRawFrame):
+            await self._audio_queue.put(frame)
+            if self._audio_passthrough:
+                await self.push_frame(frame, direction)
+            return
+        # Run TurnOriginMixin first so _last_input_turn is bound before _emit_stt_latency pushes.
+        await super().process_frame(frame, direction)
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._latency_clock.speech_started(time.time())
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
@@ -271,13 +279,6 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                 decided_at=frame.timestamp or time.time(),
                 stop_secs=frame.stop_secs or self._vad_stop_secs,
             ))
-        elif isinstance(frame, AudioRawFrame):
-            await self._audio_queue.put(frame)
-            if self._audio_passthrough:
-                await self.push_frame(frame, direction)
-            return
-
-        await super().process_frame(frame, direction)
 
     async def _streaming_worker(self):
         if self.is_ai_studio:
