@@ -29,7 +29,7 @@ try:
     from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 except ImportError:
     from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, GeminiVADParams, InputParams, GeminiModalities
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -1106,16 +1106,42 @@ def compose_live_system_prompt(
     return f"{base}\n\nIMPORTANT: You must converse in {language} language."
 
 
-def build_live_vad_analyzer(vad: bool) -> Optional[SileroVADAnalyzer]:
+def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:
+    """Resolve VAD mode into (mode_name, use_silero_vad, disable_gemini_internal_vad).
+
+    Supported modes:
+    - "both": Local Silero VAD on WebSocket transport + Gemini Live internal server-side VAD enabled.
+    - "gemini": Local Silero VAD disabled; Gemini Live internal server-side VAD enabled.
+    - "silero": Local Silero VAD on WebSocket transport; Gemini Live internal server-side VAD disabled
+      (AutomaticActivityDetection(disabled=True) so Pipecat sends explicit ActivityStart/ActivityEnd).
+    """
+    normalized = (vad_mode or "").strip().lower()
+    if normalized == "silero":
+        return ("silero", True, True)
+    if normalized == "gemini" or (not normalized and not vad):
+        return ("gemini", False, False)
+    return ("both", True, False)
+
+
+def build_live_vad_analyzer(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[SileroVADAnalyzer]:
     """Client-side turn detection for the Live pipeline.
 
     Returning ``None`` hands endpointing to Gemini's own server-side turn
     detection. That is a legitimate configuration for native audio, not a
     degraded one, but it changes interruption behaviour — so it stays opt-in.
     """
-    if not vad:
+    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode)
+    if not use_silero:
         return None
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
+
+
+def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[GeminiVADParams]:
+    """Server-side AutomaticActivityDetection configuration for Gemini Live."""
+    _, _, disable_gemini_internal = resolve_live_vad_mode(vad, vad_mode)
+    if disable_gemini_internal:
+        return GeminiVADParams(disabled=True)
+    return None
 
 
 from persona_registry import get_persona_architecture
@@ -1136,6 +1162,7 @@ async def run_agent_live(
     thinking_level: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     vad: bool = True,
+    vad_mode: Optional[str] = None,
     # Selects the persona's execution architecture. This is the ONLY input that
     # decides which persona tooling loads -- the system instruction is never
     # inspected for that purpose. See server/persona_registry.py.
@@ -1180,12 +1207,17 @@ async def run_agent_live(
     }
     pipecat_language = language_map.get(language, Language.EN_US)
 
-    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (server-side turn detection)'}")
+    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(vad, vad_mode)
+    logger.info(
+        f"Live VAD mode: {effective_vad_mode} "
+        f"(Silero={'enabled' if use_silero else 'disabled'}, "
+        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'})"
+    )
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=build_live_vad_analyzer(vad), serializer=CustomProtobufSerializer(),
+            vad_analyzer=build_live_vad_analyzer(vad, vad_mode), serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
@@ -1306,6 +1338,7 @@ async def run_agent_live(
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
+        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
 
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
@@ -1315,6 +1348,7 @@ async def run_agent_live(
             modalities=llm_modalities,
             context_window_compression=cwc,
             thinking=thinking_config,
+            vad=gemini_vad_params,
         )
         ai_studio_params = {
             "api_key": gemini_api_key,
@@ -1331,6 +1365,7 @@ async def run_agent_live(
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
+        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
 
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
@@ -1340,6 +1375,7 @@ async def run_agent_live(
             modalities=llm_modalities,
             context_window_compression=cwc,
             thinking=thinking_config,
+            vad=gemini_vad_params,
         )
         vertex_params = {
             "project_id": project_id,

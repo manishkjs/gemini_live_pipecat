@@ -165,6 +165,20 @@ def validate_tts_model(tts_model: Optional[str]) -> str:
     return "gemini-3.8-flash-lite-tts"
 
 
+def build_cascade_thinking_config(actual_llm_model: str):
+    """Build low-latency ThinkingConfig for Cascade LLMs.
+
+    gemini-3.8-flash and gemini-3.7-flash reject THINKING_LEVEL_MINIMAL with
+    400 INVALID_ARGUMENT on both Vertex AI and AI Studio, and require
+    thinking_budget=0 to suppress reasoning tokens in real-time voice turns.
+    """
+    if any(k in actual_llm_model for k in ["gemini-3.8", "gemini-3.7", "gemini-2.5-flash", "gemini-2.5-flash-lite"]):
+        return GoogleLLMService.ThinkingConfig(thinking_budget=0)
+    if any(k in actual_llm_model for k in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]):
+        return GoogleLLMService.ThinkingConfig(thinking_level="minimal")
+    return None
+
+
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
@@ -1085,6 +1099,7 @@ async def run_agent(
     system_instruction: Optional[str] = None,
     skip_stt: bool = False,
     vad: bool = True,
+    vad_mode: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     persona_id: Optional[str] = None,
 ):
@@ -1104,10 +1119,13 @@ async def run_agent(
     if not tts_voice_prompt and persona_defaults.get("prompt"):
         tts_voice_prompt = persona_defaults["prompt"]
 
+    if vad_mode:
+        vad = vad_mode.strip().lower() in ("both", "silero")
+
     # With VAD disabled the STT service's own endpointing decides turn
     # boundaries. That is a slower but sometimes steadier signal on noisy input,
     # so it is offered as a choice rather than silently forced on.
-    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'}")
+    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'} (vad_mode={vad_mode or 'default'})")
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
             confidence=0.7,
@@ -1203,13 +1221,7 @@ async def run_agent(
     actual_llm_model = clean_llm_model.replace("-aistudio", "")
     llm_location = "global" if any(k in actual_llm_model for k in ["gemini-3", "3.8", "3.7", "3.5"]) else location
     
-    thinking_config = None
-    if "gemini-3.7" in actual_llm_model:
-        thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
-    elif any(k in actual_llm_model for k in ["gemini-3.8", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]):
-        thinking_config = GoogleLLMService.ThinkingConfig(thinking_level="minimal")
-    elif any(k in actual_llm_model for k in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]):
-        thinking_config = GoogleLLMService.ThinkingConfig(thinking_budget=0)
+    thinking_config = build_cascade_thinking_config(actual_llm_model)
 
     cascade_tools = None
     if persona_architecture:

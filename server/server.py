@@ -121,6 +121,7 @@ async def websocket_endpoint(
     context_compression_trigger_tokens: Optional[int] = 5000,
     thinking: bool = False,
     thinking_level: Optional[str] = None,
+    vad_mode: Optional[str] = None,
     # Opaque, single-use handle minted by /connect. Raw cloning keys are
     # deliberately not accepted here: this URL is logged in several places.
     voice_profile_id: Optional[str] = None,
@@ -163,6 +164,7 @@ async def websocket_endpoint(
                 tts_pace=tts_pace,
                 tools=tools,
                 vad=vad,
+                vad_mode=vad_mode,
                 context_compression=context_compression,
                 context_compression_trigger_tokens=max(5000, context_compression_trigger_tokens) if context_compression_trigger_tokens is not None else 5000,
                 thinking=thinking,
@@ -188,6 +190,7 @@ async def websocket_endpoint(
                 system_instruction=system_instruction,
                 skip_stt=skip_stt,
                 vad=vad,
+                vad_mode=vad_mode,
                 custom_voice_key=custom_voice_key,
                 persona_id=persona_id,
             )
@@ -313,6 +316,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             "prompt_source",
             "persona_tone",
             "thinking_level",
+            "vad_mode",
             "tts_style",
             "tts_accent",
             "tts_pitch",
@@ -357,6 +361,8 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                 params_dict["context_compression_trigger_tokens"] = "5000"
         if "thinking_level" in body:
             params_dict["thinking_level"] = body["thinking_level"]
+        if "vad_mode" in body and body["vad_mode"]:
+            params_dict["vad_mode"] = body["vad_mode"]
         for field in ("tts_style", "tts_accent", "tts_pitch", "tts_pace_label", "tts_voice_prompt"):
             if field in body and body[field]:
                 params_dict[field] = body[field]

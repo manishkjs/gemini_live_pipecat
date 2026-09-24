@@ -22,8 +22,12 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_stt_model("unknown_stt"), "gemini-3.5-transcribe-live-aistudio")
 
     def test_llm_model_validation(self):
+        from agent import build_cascade_thinking_config
+
         # Gemini tiers
         self.assertEqual(validate_llm_model("gemini-3.5-flash-lite"), "gemini-3.5-flash-lite")
+        self.assertEqual(validate_llm_model("gemini-3.8-flash"), "gemini-3.8-flash")
+        self.assertEqual(validate_llm_model("gemini-3.8-flash-aistudio"), "gemini-3.8-flash-aistudio")
         self.assertEqual(validate_llm_model("gemini-3.7-flash"), "gemini-3.7-flash")
         self.assertEqual(validate_llm_model("gemini-2.5-flash"), "gemini-2.5-flash")
         self.assertEqual(validate_llm_model("gemini-2.5-flash-lite"), "gemini-2.5-flash-lite")
@@ -34,6 +38,17 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_llm_model("gemini-2.0-flash-lite"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-3.5-flash"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-3.6-flash"), "gemini-3.5-flash-lite")
+
+        # gemini-3.8-flash rejects THINKING_LEVEL_MINIMAL on both Vertex AI and AI Studio;
+        # must use thinking_budget=0 (never thinking_level='minimal').
+        cfg_38 = build_cascade_thinking_config("gemini-3.8-flash")
+        self.assertIsNotNone(cfg_38)
+        self.assertEqual(getattr(cfg_38, "thinking_budget", None), 0)
+        self.assertIsNone(getattr(cfg_38, "thinking_level", None))
+
+        cfg_35_lite = build_cascade_thinking_config("gemini-3.5-flash-lite")
+        self.assertIsNotNone(cfg_35_lite)
+        self.assertEqual(getattr(cfg_35_lite, "thinking_level", None), "minimal")
 
     def test_tts_model_validation(self):
         self.assertEqual(validate_tts_model("gemini-3.8-flash-tts"), "gemini-3.8-flash-tts")
@@ -81,6 +96,30 @@ class TestModelRouting(unittest.TestCase):
             build_thinking_config("gemini-3.8-live-extended-thinking-preview", False, None),
             {"thinking_level": "medium"},
         )
+
+    def test_live_vad_modes(self):
+        from agent_live import (
+            resolve_live_vad_mode,
+            build_live_vad_analyzer,
+            build_gemini_live_vad_params,
+        )
+
+        # 1. 'both' (default): Silero VAD enabled + Gemini Internal VAD enabled (disabled=None)
+        self.assertEqual(resolve_live_vad_mode(True, "both"), ("both", True, False))
+        self.assertIsNotNone(build_live_vad_analyzer(True, "both"))
+        self.assertIsNone(build_gemini_live_vad_params(True, "both"))
+
+        # 2. 'gemini': Silero VAD disabled + Gemini Internal VAD enabled
+        self.assertEqual(resolve_live_vad_mode(False, "gemini"), ("gemini", False, False))
+        self.assertIsNone(build_live_vad_analyzer(False, "gemini"))
+        self.assertIsNone(build_gemini_live_vad_params(False, "gemini"))
+
+        # 3. 'silero': Silero VAD enabled + Gemini Internal VAD disabled (disabled=True)
+        self.assertEqual(resolve_live_vad_mode(True, "silero"), ("silero", True, True))
+        self.assertIsNotNone(build_live_vad_analyzer(True, "silero"))
+        silero_only_params = build_gemini_live_vad_params(True, "silero")
+        self.assertIsNotNone(silero_only_params)
+        self.assertTrue(silero_only_params.disabled)
 
 
 class TestVoiceCloningRouting(unittest.TestCase):

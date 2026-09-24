@@ -22,6 +22,8 @@ import {
   GEMINI_VOICES,
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
+  VAD_MODES,
+  type VadMode,
   usesExternalTts,
   buildPersonaPromptUrl,
 } from "@/lib/voice-session";
@@ -687,24 +689,35 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
           <div className="settings-group">
             <h3 className="settings-section-title">Advanced Configuration</h3>
 
-            {/* VAD Toggle */}
-            <div className="advanced-toggles">
-              <label className="toggle-label">
-                <input
-                  type="checkbox"
-                  checked={settings.vad ?? true}
-                  disabled={active}
-                  onChange={(e) => updateBool("vad", e.target.checked)}
-                />
-                <span>Voice Activity Detection (VAD)</span>
-              </label>
+            {/* VAD Mode Selector */}
+            <div className="field" style={{ marginBottom: "10px" }}>
+              <Picker
+                label="Voice Activity Detection (VAD) Mode"
+                value={settings.vadMode ?? (settings.vad === false ? "gemini" : "both")}
+                disabled={active}
+                onChange={(value) => {
+                  const nextMode = value as VadMode;
+                  update("vadMode", nextMode);
+                  updateBool("vad", nextMode !== "gemini");
+                }}
+                options={VAD_MODES}
+              />
               <p className="field-hint">
-                {settings.vad === false
+                {(settings.vadMode ?? (settings.vad === false ? "gemini" : "both")) === "gemini"
                   ? isLive
-                    ? "Off — Gemini's server-side turn detection decides when you have finished speaking."
-                    : "Off — the STT service's own endpointing decides when your turn ends."
-                  : "On — Silero gates audio locally and marks conversational turn boundaries."}
+                    ? "Gemini Internal VAD Only — Local Silero VAD is disabled; Gemini's server-side AutomaticActivityDetection decides turn boundaries."
+                    : "Server Endpointing Only — Local Silero VAD is disabled; the STT service's server-side endpointing decides turn boundaries."
+                  : (settings.vadMode ?? "both") === "silero"
+                    ? isLive
+                      ? "Silero VAD Only — Local Pipecat Silero VAD drives explicit ActivityStart/ActivityEnd signals; Gemini's internal VAD is disabled."
+                      : "Silero VAD Only — Local Pipecat Silero VAD marks conversational turn boundaries."
+                    : isLive
+                      ? "Both Active — Local Silero VAD handles immediate barge-in and speech-end telemetry alongside Gemini's server-side AutomaticActivityDetection."
+                      : "Both Active — Local Silero VAD runs alongside STT server-side endpointing."}
               </p>
+            </div>
+
+            <div className="advanced-toggles">
 
               {/* Gemini Live specific advanced options */}
               {isLive && (

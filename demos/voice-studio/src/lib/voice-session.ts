@@ -20,6 +20,14 @@ export const THINKING_LEVELS: [ThinkingLevel, string][] = [
   ["high", "High (deep reasoning)"],
 ];
 
+export type VadMode = "both" | "gemini" | "silero";
+
+export const VAD_MODES: [VadMode, string][] = [
+  ["both", "Both (Silero VAD + Gemini Internal VAD)"],
+  ["gemini", "Gemini Internal VAD Only (Server-Side)"],
+  ["silero", "Silero VAD Only (Pipecat Local VAD)"],
+];
+
 export type SessionSettings = {
   backendUrl: string;
   engine: Engine;
@@ -42,6 +50,7 @@ export type SessionSettings = {
   tts?: boolean;
   skipStt?: boolean;
   vad?: boolean;
+  vadMode?: VadMode;
   contextCompression?: boolean;
   contextCompressionTokens?: number;
   toolsJson?: string;
@@ -100,6 +109,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   tts: false,
   skipStt: false,
   vad: true,
+  vadMode: "both",
   contextCompression: false,
   contextCompressionTokens: 5000,
   toolsJson: "",
@@ -452,6 +462,11 @@ export function buildConnectUrl(settings: SessionSettings): URL {
   const targetUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
   const url = validatedBackendUrl(targetUrl);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/connect`;
+  const effectiveVadMode: VadMode =
+    settings.vad === false && (!settings.vadMode || settings.vadMode === "both")
+      ? "gemini"
+      : (settings.vadMode ?? "both");
+  const effectiveVadStr = effectiveVadMode === "gemini" ? "false" : "true";
   if (settings.engine === "live") {
     const params: Record<string, string> = {
       bot_type: "gemini-live",
@@ -459,10 +474,8 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       voice: settings.voice,
       language: settings.language,
       tts: settings.tts ? "true" : "false",
-      // Turn detection defaults on: the interruption handling in the Live
-      // pipeline depends on client-side VAD frames. Switching it off hands
-      // endpointing to Gemini's own server-side turn detection.
-      vad: settings.vad === false ? "false" : "true",
+      vad: effectiveVadStr,
+      vad_mode: effectiveVadMode,
       context_compression: settings.contextCompression ? "true" : "false",
       // Selects the persona's execution architecture server-side. The backend
       // routes on this id alone and never inspects prompt text, so editing a
@@ -490,7 +503,8 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_voice: settings.voice,
       stt_language: settings.language,
       tts_pace: String(settings.ttsPace ?? 1.0),
-      vad: settings.vad === false ? "false" : "true",
+      vad: effectiveVadStr,
+      vad_mode: effectiveVadMode,
       skip_stt: settings.skipStt ? "true" : "false",
       persona_id: settings.personaId,
     };
