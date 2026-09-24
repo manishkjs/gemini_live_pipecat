@@ -29,9 +29,9 @@ class TestTranscribeLiveEstimate(unittest.TestCase):
 
     def test_snapshot_marks_stage_estimated_and_complete(self):
         ledger = CascadeCostLedger("call")
-        key = ledger.begin("stt", "gemini-3.5-transcribe-live", "gemini", "us-central1")
-        ledger.update(key, complete=True, estimated=True,
-                      usage={"audio_seconds": 60.0, "transcript_chars": 300})
+        key = ledger.begin("stt", "gemini-3.5-transcribe-live", "gemini", "us-central1",
+                           complete=True, estimated=True,
+                           usage={"audio_seconds": 60.0, "transcript_chars": 300})
         stt = ledger.snapshot()["stages"][0]
         self.assertEqual(stt["known_usd"], "0.00735")
         self.assertTrue(stt["complete"])

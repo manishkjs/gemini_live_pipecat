@@ -190,8 +190,9 @@ class CascadeCostLedger:
 
     def begin(self, stage, model, provider, region="global", **extra):
         key = str(uuid4())
-        self.update(key, stage=stage, model=model, provider=provider, region=region,
-                    date=datetime.now(timezone.utc).date().isoformat(), complete=False, usage={}, **extra)
+        self.update(key, **{"stage": stage, "model": model, "provider": provider, "region": region,
+                            "date": datetime.now(timezone.utc).date().isoformat(),
+                            "complete": False, "usage": {}, **extra})
         return key
 
     def update(self, key, **values):
