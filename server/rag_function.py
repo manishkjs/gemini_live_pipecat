@@ -4,9 +4,12 @@ import re
 from loguru import logger
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
+import warnings
 try:
-    import vertexai
-    from vertexai.preview import rag
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import vertexai
+        from vertexai.preview import rag
 except ImportError:
     vertexai = None
     rag = None

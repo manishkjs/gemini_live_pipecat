@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+**/node_modules/
 .pnp
 .pnp.js
 
@@ -11,19 +12,45 @@ build/
 dist/
 .DS_Store
 
-# Misc
+# Misc & Cleartext Keys/Secrets
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+**/.env
+.env.*
+**/.env.*
+!**/.env.example
+*sa_key*.json
+**/*sa_key*.json
+**/service-account*.json
+**/*credentials*.json
+*.pem
+**/*.pem
+*.key
+**/*.key
 
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Python
+# Python & Workspaces
+.venv/
+**/.venv/
 venv/
+**/venv/
 __pycache__/
+**/__pycache__/
+.pytest_cache/
 *.pyc
 .git
+.worktrees/
+.agents/
+docs-site/
+
+# Keep agent coordination out of Cloud Run source uploads as well.
+temp.md
+**/temp.md
+
+# Voice cloning keys live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
+**/voice_cloning_key_*.txt
+# Gemini 3.8 TTS cloned voice keys (voicekey_...) are credentials
+**/gemini_*_voicekey_*.txt
+**/*voicekey*.txt

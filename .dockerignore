@@ -5,9 +5,32 @@
 **/dist
 **/build
 
-# Ignore .env files
+# Ignore .env files and all cleartext credentials/keys
 .env
 **/.env
+.env.*
+**/.env.*
+!**/.env.example
+*sa_key*.json
+**/*sa_key*.json
+**/service-account*.json
+**/*credentials*.json
+*.pem
+**/*.pem
+*.key
+**/*.key
+
+# Ignore virtual environments, worktrees, and docs-site
+.venv
+**/.venv
+venv
+**/venv
+.worktrees
+docs-site
+.agents
+__pycache__
+**/__pycache__
+.pytest_cache
 
 # Ignore logs
 *.log
@@ -18,6 +41,16 @@ logs
 .git
 .gitignore
 
+# Agent coordination stays in git, outside every Docker build context.
+temp.md
+**/temp.md
+
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
+
+# Voice cloning keys live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
+**/voice_cloning_key_*.txt
+# Gemini 3.8 TTS cloned voice keys (voicekey_...) are credentials
+**/gemini_*_voicekey_*.txt
+**/*voicekey*.txt
