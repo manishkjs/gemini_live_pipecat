@@ -11,38 +11,58 @@ from server import app
 from tracing import GLOBAL_LANGSMITH_TRACER
 
 class TestDiagnosticsAndTracing(unittest.TestCase):
+    """Diagnostics routes are scoped to one session and gated by its capability token."""
+
+    SESSION = "s_diag"
+
     def setUp(self):
+        import diagnostic_buffer
+        import session_access
+        self.db = diagnostic_buffer
+        self.access = session_access
+        self.access._sessions.clear()
+        self.db.DIAGNOSTIC_LOG_BUFFER.clear()
+        self.db.TURN_LATENCY_RECORDS.clear()
+        _, token, _ = self.access.issue(self.SESSION)
+        self.headers = {"X-Session-Token": token}
         self.client = TestClient(app)
 
+    def tearDown(self):
+        self.db.bind_session(None)
+        self.db.DIAGNOSTIC_LOG_BUFFER.clear()
+        self.db.TURN_LATENCY_RECORDS.clear()
+        self.access._sessions.clear()
+
     def test_diagnostics_route(self):
+        # The standalone telemetry page was retired with the Voice Studio
+        # redesign; /diagnostics now serves the studio (whose observability
+        # drawer reads /api/logs) and must never be cached.
         r = self.client.get("/diagnostics")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("Gemini Live Telemetry & LangSmith Traces", r.text)
+        self.assertIn("text/html", r.headers["content-type"])
+        self.assertIn("no-store", r.headers["cache-control"])
 
     def test_logs_endpoint(self):
-        from diagnostic_buffer import append_raw_log_entry, record_turn_latency
-        record_turn_latency("live_ttfb", 380.0, "Test Turn 1")
-        append_raw_log_entry("LLM Latency: 0.450s")
-        r = self.client.get("/api/logs")
+        self.db.bind_session(self.SESSION)
+        self.db.record_metric(self.SESSION, 1, "gemini-live", "live_ttfb", 380.0)
+        self.db.append_raw_log_entry("LLM Latency: 0.450s")
+        self.db.bind_session(None)
+        r = self.client.get(f"/api/logs?session_id={self.SESSION}", headers=self.headers)
         self.assertEqual(r.status_code, 200)
         data = r.json()
-        self.assertIn("logs", data)
-        self.assertIn("latency_summary", data)
-        self.assertIn("live_ttfb", data["latency_summary"])
-        self.assertIn("p50", data["latency_summary"]["live_ttfb"])
+        self.assertEqual(data["session_id"], self.SESSION)
+        self.assertIn("LLM Latency: 0.450s", [entry["message"] for entry in data["logs"]])
+        self.assertEqual(data["latency_summary"]["live_ttfb"]["p50"], 380.0)
 
     def test_latency_metrics_endpoint(self):
-        r = self.client.get("/api/metrics/latency")
+        r = self.client.get(f"/api/metrics/latency?session_id={self.SESSION}", headers=self.headers)
         self.assertEqual(r.status_code, 200)
         data = r.json()
-        self.assertIn("live_ttfb", data)
-        self.assertIn("llm", data)
-        self.assertIn("stt", data)
-        self.assertIn("tts", data)
-        self.assertIn("total_turnaround", data)
+        for key in ("live_ttfb", "llm", "stt", "tts", "total_turnaround", "vad_stop_to_first_server_audio"):
+            self.assertIn(key, data)
 
     def test_trace_endpoint(self):
-        r = self.client.get("/api/trace/current")
+        r = self.client.get(f"/api/trace/current?session_id={self.SESSION}", headers=self.headers)
         self.assertEqual(r.status_code, 200)
         self.assertIn("trace_url", r.json())
 
@@ -220,10 +240,12 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
 
     def setUp(self):
         import diagnostic_buffer
+        import session_access
         self.db = diagnostic_buffer
+        self.access = session_access
+        self.access._sessions.clear()
         self.db.DIAGNOSTIC_LOG_BUFFER.clear()
         self.db.TURN_LATENCY_RECORDS.clear()
-        self.db._LAST_LATENCY_TIME.clear()
         self.db.bind_session(None)
         self.client = TestClient(app)
 
@@ -231,7 +253,7 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.db.bind_session(None)
         self.db.DIAGNOSTIC_LOG_BUFFER.clear()
         self.db.TURN_LATENCY_RECORDS.clear()
-        self.db._LAST_LATENCY_TIME.clear()
+        self.access._sessions.clear()
 
     def _log_as(self, session_id, message):
         self.db.bind_session(session_id)
@@ -239,7 +261,7 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
 
     def test_records_carry_the_session_that_produced_them(self):
         self._log_as("s_alice", "alice speaking")
-        self.db.record_turn_latency("llm", 120.0)
+        self.db.record_metric("s_alice", 1, "tts-llm-stt", "llm", 120.0)
         entry = self.db.DIAGNOSTIC_LOG_BUFFER[-1]
         self.assertEqual(entry["session_id"], "s_alice")
         self.assertEqual(self.db.TURN_LATENCY_RECORDS[-1]["session_id"], "s_alice")
@@ -253,21 +275,20 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.assertNotIn("bob speaking", messages)
 
     def test_latency_percentiles_are_computed_per_session(self):
-        self.db.bind_session("s_alice")
-        self.db.record_turn_latency("llm", 100.0)
-        self.db.bind_session("s_bob")
-        self.db.record_turn_latency("llm", 900.0)
+        self.db.record_metric("s_alice", 1, "tts-llm-stt", "llm", 100.0)
+        self.db.record_metric("s_bob", 1, "tts-llm-stt", "llm", 900.0)
         alice = self.db.get_latency_summary(session_id="s_alice")
         self.assertEqual(alice["llm"]["count"], 1)
         self.assertEqual(alice["llm"]["max"], 100.0)
 
-    def test_process_level_noise_stays_visible_to_everyone(self):
-        # Startup and framework logs predate any session; hiding them would
-        # make the drawer useless for diagnosing connection failures.
+    def test_unscoped_process_logs_never_leak_into_a_session(self):
+        # Since cd553ad, logs emitted outside any session are retained as
+        # __unscoped__ and excluded from every session's view.
         self.db.append_raw_log_entry("uvicorn started")
         self._log_as("s_alice", "alice speaking")
+        self.assertEqual(self.db.DIAGNOSTIC_LOG_BUFFER[0]["session_id"], self.db.UNSCOPED)
         bob = [r["message"] for r in self.db.get_recent_diagnostic_logs(session_id="s_bob")]
-        self.assertIn("uvicorn started", bob)
+        self.assertNotIn("uvicorn started", bob)
         self.assertNotIn("alice speaking", bob)
 
     def test_clearing_one_session_leaves_the_others_intact(self):
@@ -278,15 +299,20 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.assertNotIn("alice speaking", remaining)
         self.assertIn("bob speaking", remaining)
 
-    def test_unscoped_clear_still_wipes_everything(self):
+    def test_clearing_requires_an_explicit_session(self):
+        # An unscoped clear would let one demoer wipe everyone's telemetry.
         self._log_as("s_alice", "alice speaking")
-        self.db.clear_diagnostic_logs()
-        self.assertEqual(len(self.db.DIAGNOSTIC_LOG_BUFFER), 0)
+        with self.assertRaises(ValueError):
+            self.db.clear_diagnostic_logs()
+        self.assertEqual(len(self.db.DIAGNOSTIC_LOG_BUFFER), 1)
 
     def test_logs_endpoint_filters_and_echoes_the_scope(self):
+        _, token, _ = self.access.issue("s_bob")
         self._log_as("s_alice", "alice speaking")
         self._log_as("s_bob", "bob speaking")
-        payload = self.client.get("/api/logs?session_id=s_bob").json()
+        response = self.client.get("/api/logs?session_id=s_bob", headers={"X-Session-Token": token})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
         self.assertEqual(payload["session_id"], "s_bob")
         messages = [r["message"] for r in payload["logs"]]
         self.assertIn("bob speaking", messages)

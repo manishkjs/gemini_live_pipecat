@@ -208,7 +208,8 @@ class TestResponseEvents(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(service.response_identity.current, first)
 
     async def test_cascade_text_and_usage_are_stamped_before_they_are_queued(self):
-        mixin = adapter_class("agent.py", "CustomGoogleVertexLLMService", {
+        # Vertex and AI Studio LLM services share these methods via the mixin.
+        mixin = adapter_class("agent.py", "_MeteredGeminiLLMMixin", {
             "response_identity", "push_frame", "_process_context",
         })
         class Service(mixin, ProviderBase):
