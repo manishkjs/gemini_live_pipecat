@@ -7,7 +7,7 @@ async def publish_cost(service):
     if meter is None:
         return
     from loguru import logger
-    from pipecat.frames.frames import OutputTransportMessageFrame
+    from pipecat.frames.frames import OutputTransportMessageUrgentFrame as OutputTransportMessageFrame
     try:
         await service.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai", "type": "server-message",

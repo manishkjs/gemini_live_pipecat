@@ -3,7 +3,7 @@ from contextvars import ContextVar
 from diagnostic_buffer import record_provider_usage, record_metric
 from pipecat.frames.frames import (
     CancelFrame, EndFrame, InterruptionFrame, LLMContextFrame,
-    LLMFullResponseEndFrame, OutputTransportMessageFrame, TTSAudioRawFrame,
+    LLMFullResponseEndFrame, OutputTransportMessageFrame, OutputTransportMessageUrgentFrame, TTSAudioRawFrame,
     UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
 )
@@ -28,6 +28,15 @@ class TurnBoundaryProcessor(FrameProcessor):
                 not local_vad and isinstance(frame, UserStartedSpeakingFrame)
             ):
                 self.tracker.start()
+                if getattr(self.tracker, "bot_type", None) == "tts-llm-stt":
+                    await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                        "label": "rtvi-ai",
+                        "type": "server-message",
+                        "data": {
+                            "type": "metrics",
+                            "payload": {"type": "interruption", "count": 1},
+                        },
+                    }))
             elif isinstance(frame, VADUserStoppedSpeakingFrame) or (
                 not local_vad and isinstance(frame, UserStoppedSpeakingFrame)
             ):
@@ -36,6 +45,15 @@ class TurnBoundaryProcessor(FrameProcessor):
                 origin = frame.metadata.get(ORIGIN_KEY)
                 if origin is not None:
                     origin.finish("interrupted")
+                if getattr(self.tracker, "bot_type", None) == "tts-llm-stt":
+                    await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                        "label": "rtvi-ai",
+                        "type": "server-message",
+                        "data": {
+                            "type": "metrics",
+                            "payload": {"type": "interruption", "count": 1},
+                        },
+                    }))
             elif isinstance(frame, (EndFrame, CancelFrame)):
                 self.tracker.close()
             frame.metadata["_turn_boundary_seen"] = True
@@ -79,7 +97,7 @@ class TurnOriginMixin:
             frame.metadata[ORIGIN_KEY] = origin
         if origin is not None:
             frame.metadata["turn_id"] = origin.turn_id
-        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+        if isinstance(frame, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame)) and isinstance(frame.message, dict):
             data = frame.message.get("data", {})
             payload = data.get("payload", {}) if data.get("type") == "metrics" else {}
             if payload.get("type") == "usage" and not frame.metadata.get("_usage_recorded"):

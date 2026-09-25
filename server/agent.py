@@ -37,7 +37,7 @@ from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   StartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageFrame, LLMRunFrame,
+                                   StartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageUrgentFrame as OutputTransportMessageFrame, LLMRunFrame,
                                    InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
@@ -630,6 +630,9 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         self._tts_pace_label = tts_pace_label
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, OutputTransportMessageFrame):
+            await self.push_frame(frame, direction)
+            return
         if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
             self._current_response_id = frame.response_id
         await super().process_frame(frame, direction)
@@ -814,11 +817,13 @@ Pace: {self._tts_pace_label or 'Conversational'}.
                         yield TTSAudioRawFrame(chunk_bytes, self.sample_rate or 24000, 1)
 
             completed = True
-            yield TTSStoppedFrame()
+            yield TTSStoppedFrame(context_id=context_id)
         except Exception as e:
             logger.exception(f"{self} error generating TTS: {e}")
             yield ErrorFrame(error=f"Gemini TTS generation error: {str(e)}")
         finally:
+            if context_id and self.audio_context_available(context_id):
+                await self.remove_audio_context(context_id)
             if meter:
                 if last_usage_metadata is not None:
                     observe_tokens(meter, cost_key, last_usage_metadata)
@@ -829,6 +834,9 @@ Pace: {self._tts_pace_label or 'Conversational'}.
 
 class CustomGoogleTTSService(TurnOriginMixin, GoogleTTSService):
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        if isinstance(frame, OutputTransportMessageFrame):
+            await self.push_frame(frame, direction)
+            return
         if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
             self._current_response_id = frame.response_id
         await super().process_frame(frame, direction)
@@ -947,9 +955,9 @@ class _MeteredGeminiLLMMixin:
             model = self._settings.model or ""
             if "thinking_config" in generation_params:
                 return
-            if "gemini-3.7" in model or "gemini-2.5" in model:
+            if any(k in model for k in ["gemini-3.8", "gemini-3.7", "gemini-2.5"]):
                 generation_params["thinking_config"] = {"thinking_budget": 0}
-            elif any(k in model for k in ["gemini-3.8", "gemini-3.5-flash-lite", "gemini-3.1", "gemini-3-flash"]):
+            elif any(k in model for k in ["gemini-3.5-flash-lite", "gemini-3.1", "gemini-3-flash"]):
                 generation_params["thinking_config"] = {"thinking_level": "minimal"}
         except Exception as e:
             logger.error(f"Failed to unset thinking budget: {e}")
@@ -1119,19 +1127,21 @@ async def run_agent(
     if not tts_voice_prompt and persona_defaults.get("prompt"):
         tts_voice_prompt = persona_defaults["prompt"]
 
-    if vad_mode:
+    if skip_stt:
+        vad = True
+    elif vad_mode:
         vad = vad_mode.strip().lower() in ("both", "silero")
 
     # With VAD disabled the STT service's own endpointing decides turn
     # boundaries. That is a slower but sometimes steadier signal on noisy input,
     # so it is offered as a choice rather than silently forced on.
-    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'} (vad_mode={vad_mode or 'default'})")
+    logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'} (vad_mode={vad_mode or 'default'}, skip_stt={skip_stt})")
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
-            confidence=0.7,
-            start_secs=0.2,
-            stop_secs=0.4,
-            min_volume=0.6,
+            confidence=0.55 if skip_stt else 0.7,
+            start_secs=0.15 if skip_stt else 0.2,
+            stop_secs=0.7 if skip_stt else 0.4,
+            min_volume=0.45 if skip_stt else 0.6,
         )
     ) if vad else None
     vad_processor = VADProcessor(vad_analyzer=vad_analyzer) if vad_analyzer else None
