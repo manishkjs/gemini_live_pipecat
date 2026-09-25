@@ -237,12 +237,26 @@ export type PersonaVoiceDesign = {
 };
 
 export const PERSONA_VOICE_DESIGN_MAP: Record<string, PersonaVoiceDesign> = {
+  "lamborghini-concierge": {
+    ttsStyle: "Warm & Friendly",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Warm, confident luxury automotive concierge from Mumbai. Speak with a welcoming smile.",
+  },
   pragya: {
     ttsStyle: "Warm & Friendly",
     ttsPaceLabel: "Natural",
     ttsAccent: "Indian",
     ttsPitch: "Default",
     ttsVoicePrompt: "Warm, confident luxury automotive concierge from Mumbai. Speak with a welcoming smile.",
+  },
+  "car-negotiator": {
+    ttsStyle: "Expressive / Dramatic",
+    ttsPaceLabel: "Conversational",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Sharp, witty Delhi car dealer with lively pitch modulation, playful sarcasm, and punchy emphasis.",
   },
   "debt-collector": {
     ttsStyle: "Empathetic",
@@ -258,12 +272,33 @@ export const PERSONA_VOICE_DESIGN_MAP: Record<string, PersonaVoiceDesign> = {
     ttsPitch: "Default",
     ttsVoicePrompt: "Expressive Indian storyteller. Rich theatrical modulation and warm emotional pacing.",
   },
+  "ai-companion": {
+    ttsStyle: "Warm & Friendly",
+    ttsPaceLabel: "Conversational",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Warm, witty, affectionate companion with playful modulation and natural conversational flow.",
+  },
+  "groww-advisor": {
+    ttsStyle: "Professional",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Trusted wealth & mutual fund advisor. Articulate, reassuring, and clear with financial numbers.",
+  },
   "mf-advisor": {
     ttsStyle: "Professional",
     ttsPaceLabel: "Natural",
     ttsAccent: "Indian",
     ttsPitch: "Default",
     ttsVoicePrompt: "Trusted wealth & mutual fund advisor. Articulate, reassuring, and clear with financial numbers.",
+  },
+  "reservation-agent": {
+    ttsStyle: "Conversational",
+    ttsPaceLabel: "Brisk",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Friendly smart-glasses AI companion. Crisp, upbeat, and helpful.",
   },
   "glass-buddy": {
     ttsStyle: "Conversational",
@@ -544,6 +579,23 @@ export function reconcileVoiceForEngine(
   }
   return settings.voice;
 }
+
+/**
+ * When switching between persona cards, preserve an explicitly chosen cloned or
+ * Chirp voice (e.g. `Gemini-Clone-Male`, `Custom-Male`) so clicking another
+ * persona does not silently reset the user back to a stock Gemini voice.
+ */
+export function reconcileVoiceForPersona(currentVoice: string, nextPersonaId: string): string {
+  if (
+    isGeminiClonedVoice(currentVoice) ||
+    isClonedVoice(currentVoice) ||
+    currentVoice.includes("Chirp")
+  ) {
+    return currentVoice;
+  }
+  return getPersona(nextPersonaId).defaultVoice || currentVoice;
+}
+
 
 /**
  * Gemini 3.8 TTS performs inline <vocal tags> and |pipe| backchannels; they are

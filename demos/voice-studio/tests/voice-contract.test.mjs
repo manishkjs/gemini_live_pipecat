@@ -363,3 +363,27 @@ test('parameters are not duplicated across the query string and the body', () =>
   }
 });
 
+test('every built-in persona has a tailored Voice Design entry and Abhay uses Expressive / Dramatic + Conversational', async () => {
+  const { getPersonaVoiceDesign, PERSONA_VOICE_DESIGN_MAP, reconcileVoiceForPersona } = await import('../src/lib/voice-session.ts');
+  for (const persona of PERSONAS) {
+    if (persona.id === 'custom') continue;
+    assert.ok(PERSONA_VOICE_DESIGN_MAP[persona.id], `missing PERSONA_VOICE_DESIGN_MAP entry for ${persona.id}`);
+    const vd = getPersonaVoiceDesign(persona.id);
+    assert.notEqual(vd.ttsVoicePrompt, 'Warm, natural conversational tone.', `${persona.id} should not fall back to generic voice prompt`);
+  }
+
+  const abhay = getPersonaVoiceDesign('car-negotiator');
+  assert.equal(abhay.ttsStyle, 'Expressive / Dramatic');
+  assert.equal(abhay.ttsPaceLabel, 'Conversational');
+  assert.equal(abhay.ttsAccent, 'Indian');
+  assert.match(abhay.ttsVoicePrompt, /dealer/i);
+
+  // Switching personas preserves cloned or Chirp voices, while stock Gemini voices follow persona defaults
+  assert.equal(reconcileVoiceForPersona('Gemini-Clone-Male', 'car-negotiator'), 'Gemini-Clone-Male');
+  assert.equal(reconcileVoiceForPersona('Custom-Male', 'storyteller'), 'Custom-Male');
+  assert.equal(reconcileVoiceForPersona('hi-IN-Chirp3-HD-Sulafat', 'car-negotiator'), 'hi-IN-Chirp3-HD-Sulafat');
+  assert.equal(reconcileVoiceForPersona('Puck', 'car-negotiator'), 'Fenrir');
+  assert.equal(reconcileVoiceForPersona('Fenrir', 'storyteller'), 'Puck');
+});
+
+

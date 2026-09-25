@@ -7,6 +7,7 @@ import {
   getPersonaVoiceDesign,
   isGeminiClonedVoice,
   reconcileVoiceForEngine,
+  reconcileVoiceForPersona,
   supportsGeminiClone,
   newSessionId,
   type Engine,
@@ -231,14 +232,14 @@ export function useVoiceSession() {
 
   const choosePersona = (value: string) => {
     if (active) return;
-    const p = getPersona(value);
+    getPersona(value);
     const vd = getPersonaVoiceDesign(value);
     if (settings.personaId === "custom") customInstructions.current = settings.instructions;
     setShowInlineEditor(false);
     setSettings((current) => ({
       ...current,
       personaId: value as PersonaId,
-      voice: p.defaultVoice || current.voice,
+      voice: reconcileVoiceForPersona(current.voice, value),
       ttsStyle: vd.ttsStyle,
       ttsPaceLabel: vd.ttsPaceLabel,
       ttsAccent: vd.ttsAccent,

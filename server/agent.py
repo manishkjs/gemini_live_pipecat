@@ -101,48 +101,8 @@ AI_STUDIO_TTS_MODELS = {
     "gemini-3.8-flash-lite-tts-aistudio",
 }
 
-PERSONA_VOICE_DESIGN_DEFAULTS = {
-    "pragya": {
-        "voice": "Gacrux",
-        "style": "Warm & Friendly",
-        "pace": "Natural",
-        "accent": "Indian",
-        "pitch": "Default",
-        "prompt": "Poised, refined luxury automotive concierge. Warm, welcoming, confident Indian female voice.",
-    },
-    "debt-collector": {
-        "voice": "Gacrux",
-        "style": "Empathetic",
-        "pace": "Natural",
-        "accent": "Indian",
-        "pitch": "Default",
-        "prompt": "Calm, composed, empathetic yet firm financial collections advisor.",
-    },
-    "storyteller": {
-        "voice": "Gacrux",
-        "style": "Expressive / Dramatic",
-        "pace": "Conversational",
-        "accent": "Indian",
-        "pitch": "Default",
-        "prompt": "Immersive, expressive cinematic storyteller with engaging emotional range and suspenseful pauses.",
-    },
-    "mf-advisor": {
-        "voice": "Aoede",
-        "style": "Professional",
-        "pace": "Natural",
-        "accent": "Indian",
-        "pitch": "Default",
-        "prompt": "Clear, trustworthy, articulate wealth and mutual-fund financial advisor.",
-    },
-    "glass-buddy": {
-        "voice": "Aoede",
-        "style": "Cheerful",
-        "pace": "Conversational",
-        "accent": "Indian",
-        "pitch": "Default",
-        "prompt": "Friendly, upbeat smart-glasses AI companion.",
-    },
-}
+from persona_identity import PERSONA_VOICE_DESIGN_DEFAULTS, resolve_persona_voice_design
+
 
 
 def validate_stt_model(stt_model: Optional[str]) -> str:
@@ -1143,17 +1103,20 @@ async def run_agent(
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
     # Automatically apply Persona Voice Design defaults if not explicitly overridden
-    persona_defaults = PERSONA_VOICE_DESIGN_DEFAULTS.get(persona_id or "", {})
-    if not tts_style:
-        tts_style = persona_defaults.get("style", "Empathetic")
-    if not tts_pace_label:
-        tts_pace_label = persona_defaults.get("pace", "Natural")
-    if not tts_accent:
-        tts_accent = persona_defaults.get("accent", "Indian")
-    if not tts_pitch:
-        tts_pitch = persona_defaults.get("pitch", "Default")
-    if not tts_voice_prompt and persona_defaults.get("prompt"):
-        tts_voice_prompt = persona_defaults["prompt"]
+    resolved_vd = resolve_persona_voice_design(
+        persona_id,
+        tts_style=tts_style,
+        tts_pace_label=tts_pace_label,
+        tts_accent=tts_accent,
+        tts_pitch=tts_pitch,
+        tts_voice_prompt=tts_voice_prompt,
+    )
+    tts_style = resolved_vd["style"]
+    tts_pace_label = resolved_vd["pace"]
+    tts_accent = resolved_vd["accent"]
+    tts_pitch = resolved_vd["pitch"]
+    if resolved_vd["prompt"]:
+        tts_voice_prompt = resolved_vd["prompt"]
 
     if skip_stt:
         vad = True

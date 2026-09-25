@@ -249,5 +249,48 @@ class TestProseGuard(unittest.TestCase):
         self.assertEqual(self.flagged("Sirf 8,000 km chali hai."), [])
 
 
+class TestAbhayVoiceOptimization(unittest.TestCase):
+    def test_prompts_instruct_phonetic_hindi_numbers_in_hinglish(self):
+        from persona_prompt_cards.abhay_cards import (
+            ABHAY_SIGNATURE_INSTRUCTION,
+            ABHAY_SYSTEM_INSTRUCTION,
+        )
+        for prompt in (ABHAY_SYSTEM_INSTRUCTION, ABHAY_SIGNATURE_INSTRUCTION):
+            self.assertIn("bees lakh", prompt)
+            self.assertIn("saadhe chaudah lakh", prompt)
+
+    def test_car_negotiator_voice_design_defaults_to_expressive_dramatic(self):
+        from persona_identity import resolve_persona_voice_design
+
+        vd = resolve_persona_voice_design("car-negotiator")
+        self.assertEqual(vd["style"], "Expressive / Dramatic")
+        self.assertEqual(vd["pace"], "Conversational")
+        self.assertEqual(vd["accent"], "Indian")
+
+        # Generic frontend fallback ("Empathetic" + "Warm, natural conversational tone.")
+        # is automatically upgraded to the persona's tailored Voice Design.
+        upgraded = resolve_persona_voice_design(
+            "car-negotiator",
+            tts_style="Empathetic",
+            tts_pace_label="Natural",
+            tts_voice_prompt="Warm, natural conversational tone.",
+        )
+        self.assertEqual(upgraded["style"], "Expressive / Dramatic")
+        self.assertEqual(upgraded["pace"], "Conversational")
+        self.assertIn("dealer", upgraded["prompt"].lower())
+
+        # Explicit user customization is preserved.
+        custom = resolve_persona_voice_design(
+            "car-negotiator",
+            tts_style="Calm",
+            tts_pace_label="Slow",
+            tts_voice_prompt="Custom calm dealer voice.",
+        )
+        self.assertEqual(custom["style"], "Calm")
+        self.assertEqual(custom["pace"], "Slow")
+        self.assertEqual(custom["prompt"], "Custom calm dealer voice.")
+
+
 if __name__ == "__main__":
     unittest.main()
+
