@@ -79,6 +79,55 @@ test('Live Avatar is Live-only: Cascade never carries avatar state even if the s
   assert.equal(url.searchParams.has('avatar_name'), false);
   assert.equal(body.avatar_custom_image, undefined, 'Cascade must never upload the avatar portrait');
 });
+
+test('Gemini 3.8 cloned voice: Cascade + 3.8 TTS only, selected by name, key never leaves the server', async () => {
+  const { isGeminiClonedVoice, supportsGeminiClone, isClonedVoice } = await import('../src/lib/voice-session.ts');
+  assert.equal(isGeminiClonedVoice('Gemini-Clone-Male'), true);
+  assert.equal(isClonedVoice('Gemini-Clone-Male'), false, 'must not be treated as a Chirp clone (which forces google-tts)');
+  for (const m of ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']) assert.equal(supportsGeminiClone(m), true, m);
+  for (const m of ['google-tts', 'gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview']) assert.equal(supportsGeminiClone(m), false, m);
+
+  for (const ttsModel of ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']) {
+    const { url, body } = buildConnectRequest({ ...settings, engine: 'cascade', ttsModel, voice: 'Gemini-Clone-Male' });
+    assert.equal(url.searchParams.get('tts_voice'), 'Gemini-Clone-Male');
+    assert.equal(url.searchParams.get('tts_model'), ttsModel);
+    assert.equal(JSON.stringify(body).includes('voicekey_'), false);
+    assert.equal(body.custom_voice_key, undefined);
+  }
+  assert.throws(() => buildConnectRequest({ ...settings, engine: 'cascade', ttsModel: 'google-tts', voice: 'Gemini-Clone-Male' }), /gemini-3\.8/);
+  assert.throws(() => buildConnectRequest({ ...settings, engine: 'live', voice: 'Gemini-Clone-Male' }), /Cascade/);
+
+  const { reconcileVoiceForEngine } = await import('../src/lib/voice-session.ts');
+  assert.equal(
+    reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Gemini-Clone-Male', ttsModel: 'gemini-3.8-flash-lite-tts' }, 'live'),
+    'Aoede',
+    'switching from Cascade (Gemini-Clone-Male) to Live falls back to the persona default voice so starting Live never errors',
+  );
+  assert.equal(
+    reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Gemini-Clone-Male', ttsModel: 'gemini-3.1-flash-tts-preview' }, 'cascade'),
+    'Aoede',
+    'switching TTS model away from 3.8 falls back to the persona default voice',
+  );
+  assert.equal(
+    reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Gemini-Clone-Male', ttsModel: 'google-tts' }, 'cascade'),
+    'hi-IN-Chirp3-HD-Sulafat',
+    'switching TTS model to google-tts switches to Chirp default voice',
+  );
+  assert.equal(
+    reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Custom-Male', ttsModel: 'gemini-3.8-flash-lite-tts' }, 'cascade'),
+    'Aoede',
+    'switching from Live (Chirp Custom-Male) to Cascade on Gemini 3.8 TTS falls back to a Gemini voice',
+  );
+});
+test('3.8 TTS performance markup is hidden from the transcript but words are kept', async () => {
+  const { displaySpokenText } = await import('../src/lib/voice-session.ts');
+  assert.equal(displaySpokenText('Arre wah! <laugh> Bahut badhiya.'), 'Arre wah! Bahut badhiya.');
+  assert.equal(displaySpokenText(' answer'), ' answer', 'streamed chunk edge spaces are preserved');
+  assert.equal(displaySpokenText('Hmm... <short pause> theek hai, SACH mein.'), 'Hmm... theek hai, SACH mein.');
+  assert.equal(displaySpokenText('Main |haan| sun raha hoon'), 'Main sun raha hoon');
+  assert.equal(displaySpokenText('<sigh> theek hai'), ' theek hai');
+  assert.equal(displaySpokenText('2 < 3 and 5 > 4'), '2 < 3 and 5 > 4', 'real comparisons are not tags');
+});
 test('custom instructions replace any persona preset and are sent in the body for both engines', () => {
   for (const persona of PERSONAS) for (const engine of ['live', 'cascade']) {
     const { url, body } = buildConnectRequest({ ...settings, personaId: persona.id, engine, instructions: '  Say नमस्ते & ask a question?  ' });

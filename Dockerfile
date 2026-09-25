@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m spacy download en_core_web_sm
 COPY server/ .
 RUN pip install --no-cache-dir --upgrade "google-genai>=2.25.0" && \
-    rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json /app/voice_cloning_key_*.txt
+    rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json /app/voice_cloning_key_*.txt /app/*voicekey*.txt
 COPY --from=client /app/demos/voice-studio/dist ./demos/voice-studio/dist
 COPY --from=client /app/demos/voice-studio/dist ./client/dist
 
@@ -33,6 +33,7 @@ COPY --from=client /app/demos/voice-studio/dist ./client/dist
 # from gs://deep-clock-339817-v2v-demo-keys at /keys (see gemini-live SKILL.md deploy command).
 ENV CLONE_TTS_VOICE_KEY_MALE="/keys/voice_cloning_key_m.txt"
 ENV CLONE_TTS_VOICE_KEY_FEMALE="/keys/voice_cloning_key_f.txt"
+ENV GEMINI_TTS_VOICE_KEY_MALE="/keys/gemini_3_8_voicekey_m.txt"
 
 # Expose the port the app runs on
 EXPOSE 7860

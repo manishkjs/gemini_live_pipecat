@@ -5,6 +5,9 @@ import {
   DEFAULT_SETTINGS,
   getDefaultBackendUrl,
   getPersonaVoiceDesign,
+  isGeminiClonedVoice,
+  reconcileVoiceForEngine,
+  supportsGeminiClone,
   newSessionId,
   type Engine,
   type SessionSettings,
@@ -252,24 +255,33 @@ export function useVoiceSession() {
 
   const chooseEngine = (value: string) => {
     if (active) return;
-    setSettings((current) => ({ ...current, engine: value as Engine }));
+    const nextEngine = value as Engine;
+    setSettings((current) => ({
+      ...current,
+      engine: nextEngine,
+      voice: reconcileVoiceForEngine(current, nextEngine),
+    }));
     resetConversation();
   };
 
   const startBackend = async (engineOverride?: Engine) => {
     if (starting.current || session.current) return;
     const targetEngine = engineOverride || settings.engine;
+    const targetVoice = reconcileVoiceForEngine(settings, targetEngine);
     const targetBackendUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
     const activeSettings: SessionSettings = {
       ...settings,
       engine: targetEngine,
+      voice: targetVoice,
       backendUrl: targetBackendUrl,
       sessionId: newSessionId(),
     };
-    setSettings((current) => ({ ...current, sessionId: activeSettings.sessionId }));
-    if (engineOverride && engineOverride !== settings.engine) {
-      setSettings((current) => ({ ...current, engine: engineOverride }));
-    }
+    setSettings((current) => ({
+      ...current,
+      engine: targetEngine,
+      voice: targetVoice,
+      sessionId: activeSettings.sessionId,
+    }));
     setSettingsOpen(false);
     resetConversation();
     starting.current = true;
@@ -483,9 +495,14 @@ export function useVoiceSession() {
   };
 
   const update = (key: keyof SessionSettings, value: string) =>
-    setSettings((current) => ({ ...current, [key]: value,
-      ...((key === "voice" && value !== "Custom-Key") || (key === "ttsModel" && value !== "google-tts") ? { customVoiceKey: "" } : {}),
-    }));
+    setSettings((current) => {
+      const next = { ...current, [key]: value };
+      return {
+        ...next,
+        ...((key === "voice" && value !== "Custom-Key") || (key === "ttsModel" && value !== "google-tts") ? { customVoiceKey: "" } : {}),
+        ...(key === "ttsModel" ? { voice: reconcileVoiceForEngine(next, current.engine) } : {}),
+      };
+    });
 
   const updateBool = (key: keyof SessionSettings, value: boolean) =>
     setSettings((current) => ({ ...current, [key]: value }));

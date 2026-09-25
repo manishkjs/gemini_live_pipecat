@@ -51,7 +51,8 @@ from fastapi import WebSocket
 from google import genai
 from google.genai import types
 
-from system_prompt import SYSTEM_PROMPT, tts_prompt, GEMINI_LLM_TTS_PROMPT
+from system_prompt import SYSTEM_PROMPT, tts_prompt
+import tts_script
 import voice_profiles
 from turn_telemetry import TurnTracker
 from stt_latency import FirstByteAfterSpeechEnd
@@ -594,16 +595,21 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         tts_pitch: Optional[str] = None,
         tts_pace: Optional[float] = None,
         tts_pace_label: Optional[str] = None,
+        voice_key: Optional[str] = None,
         **kwargs,
     ):
+        # Gemini 3.8 cloned voice (voicekey_...). Held privately, never in
+        # self._settings (which is loggable), and always sent via AI Studio:
+        # the key is bound to the GEMINI_API_KEY project.
+        self._voice_key = voice_key if voice_key and voice_key.startswith("voicekey_") else None
         if voice_id and voice_id.lower() == "callirhoe":
             voice_id = "Aoede"
         elif voice_id and "-Chirp3-HD-" in voice_id:
             voice_id = voice_id.split("-Chirp3-HD-")[-1]
-        elif voice_id and "-" in voice_id and not voice_id.startswith("Custom"):
+        elif voice_id and "-" in voice_id and not voice_id.startswith("Custom") and not self._voice_key:
             voice_id = voice_id.split("-")[-1]
 
-        self._is_aistudio = model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
+        self._is_aistudio = bool(self._voice_key) or model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
         clean_tts_model = (model or "gemini-3.8-flash-lite-tts").replace("-aistudio", "")
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy"
 
@@ -667,6 +673,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 }
             }))
 
+    def _voice_config(self) -> "types.VoiceConfig":
+        """Cloned voicekeys go in VoiceConfig(voice=...). PrebuiltVoiceConfig only
+        accepts named voices and 400s on a voicekey ("No matching speaker voice")."""
+        if self._voice_key:
+            return types.VoiceConfig(voice=self._voice_key)
+        return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
+
     def _build_speech_metadata_style(self, lang_code: Optional[str]) -> str:
         """Constructs the structured SpeechMetadata style string for Gemini 3.8 TTS.
 
@@ -715,9 +728,9 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         return " ".join(parts)
 
     async def run_tts(self, text: str, context_id: str):
-        # Strip any residual bracketed English tags ([warmly], [thoughtfully]) and repeated punctuation
-        clean_text = re.sub(r'\[.*?\]', '', text or "")
-        clean_text = re.sub(r'\.{2,}', '.', clean_text).strip()
+        # Drop bracketed stage directions ([warmly]); keep a deliberate "..." (a
+        # real pause in 3.8 TTS) and <vocal tags>, which the filter preserved.
+        clean_text = tts_script.normalize_spoken_text(text)
         # Skip standalone punctuation or empty fragments (e.g. ".") so TTS never hangs or speaks "dot"
         if not clean_text or not any(ch.isalnum() for ch in clean_text):
             logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}]")
@@ -741,11 +754,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
 
             if self._is_aistudio:
                 style_str = self._build_speech_metadata_style(lang_code)
-                speech_config = types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)
-                    )
-                )
+                speech_config = types.SpeechConfig(voice_config=self._voice_config())
                 generate_content_config = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=speech_config,
@@ -777,7 +786,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                     ]
             else:
                 speech_config = types.SpeechConfig(
-                    voice_config=types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice)),
+                    voice_config=self._voice_config(),
                     language_code=lang_code
                 )
                 generate_content_config = types.GenerateContentConfig(
@@ -1239,8 +1248,12 @@ async def run_agent(
     if not system_instruction:
         neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
     final_system_instruction = (system_instruction or SYSTEM_PROMPT) + neutrality_instruction
-    if tts_model.startswith("gemini"):
-        final_system_instruction += "\n\n" + GEMINI_LLM_TTS_PROMPT
+    speech_prompt = tts_script.speech_prompt_for(clean_tts_model)
+    if speech_prompt:
+        final_system_instruction += "\n\n" + speech_prompt
+    gender_rule = tts_script.voice_gender_rule(tts_voice)
+    if gender_rule:
+        final_system_instruction += "\n\n" + gender_rule
 
     if skip_stt:
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current current user query. Do not bring up previous topics or simulate future turns."
@@ -1315,6 +1328,9 @@ async def run_agent(
             llm, broadcast=broadcast_persona_event, engine="cascade"
         )
 
+    gemini_voice_key = voice_profiles.resolve_gemini_voice_key(tts_voice)
+    if gemini_voice_key and not voice_profiles.supports_gemini_clone(clean_tts_model):
+        raise ValueError("The Gemini 3.8 cloned voice requires gemini-3.8-flash-tts or gemini-3.8-flash-lite-tts.")
     is_clone = voice_profiles.is_custom_clone_voice(tts_voice)
     if is_clone and clean_tts_model != "google-tts":
         raise ValueError("Cloned voices require Google TTS (Chirp 3 HD). Select it before starting Cascade.")
@@ -1343,6 +1359,8 @@ async def run_agent(
 
         if effective_voice.lower() == "callirhoe":
             effective_voice = "Aoede"
+        if gemini_voice_key:
+            effective_voice = tts_voice  # display label only; the key travels separately
 
         tts = CustomVertexGeminiTTSService(
             project_id=project_id,
@@ -1357,7 +1375,8 @@ async def run_agent(
             tts_pitch=tts_pitch,
             tts_pace=tts_pace,
             tts_pace_label=tts_pace_label,
-            text_filters=[MarkdownTextFilter()]
+            voice_key=gemini_voice_key,
+            text_filters=[tts_script.Gemini38TextFilter() if tts_script.is_gemini_38_tts(clean_tts_model) else MarkdownTextFilter()]
         )
     else:
         effective_voice = tts_voice

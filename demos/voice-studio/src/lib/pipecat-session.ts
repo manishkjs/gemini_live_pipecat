@@ -1,5 +1,5 @@
 import { createDiagnosticAccess, diagnosticHeaders } from "./session-diagnostics";
-import { buildConnectRequest, isAvatarActive, validateSocketUrl, type SessionSettings } from "./voice-session";
+import { buildConnectRequest, displaySpokenText, isAvatarActive, validateSocketUrl, type SessionSettings } from "./voice-session";
 import { calculateTurnCost, type UsageTokenData } from "./pricing";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -193,7 +193,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
           }
         }
 
-        events.onMessage("assistant", data.text, turnStarted, {
+        events.onMessage("assistant", displaySpokenText(data.text), turnStarted, {
           llmLatency: effLlm,
           ttsLatency: effTts,
           sttLatency: effStt,
@@ -204,7 +204,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     } else if (data.type === "transcription_replace" && typeof data.text === "string") {
       const role = data.participant?.toLowerCase() === "user" ? "user" : "assistant";
       if (events.onReplaceMessage) {
-        events.onReplaceMessage(role, data.text);
+        events.onReplaceMessage(role, role === "assistant" ? displaySpokenText(data.text) : data.text);
       }
     } else if (data.type === "interim_transcription" || data.type === "interim_input_transcription") {
       if (typeof data.text === "string") {

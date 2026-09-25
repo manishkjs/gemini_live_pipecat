@@ -36,3 +36,6 @@ server/rag_last_result.txt
 server/data/
 *.key
 *sa_key*.json
+# Gemini 3.8 TTS cloned voice keys (voicekey_...) are credentials
+**/gemini_*_voicekey_*.txt
+**/*voicekey*.txt

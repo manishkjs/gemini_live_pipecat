@@ -20,6 +20,8 @@ import {
   TTS_PITCH_OPTIONS,
   TTS_PACE_OPTIONS,
   GEMINI_VOICES,
+  GEMINI_CLONE_VOICES,
+  supportsGeminiClone,
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
   VAD_MODES,
@@ -571,14 +573,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   label="3. Voice Model (TTS)"
                   value={settings.ttsModel}
                   disabled={active}
-                  onChange={(value) => {
-                    update("ttsModel", value);
-                    if (value === "google-tts" && !settings.voice.includes("Chirp") && !settings.voice.startsWith("Custom")) {
-                      update("voice", "hi-IN-Chirp3-HD-Sulafat");
-                    } else if (value !== "google-tts" && (settings.voice.includes("Chirp") || settings.voice.startsWith("Custom"))) {
-                      update("voice", "Gacrux");
-                    }
-                  }}
+                  onChange={(value) => update("ttsModel", value)}
                   options={CASCADE_TTS_MODELS}
                   groups={CASCADE_TTS_MODEL_GROUPS}
                 />
@@ -591,7 +586,10 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         value={settings.voice}
                         disabled={active}
                         onChange={(value) => update("voice", value)}
-                        options={GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom"))}
+                        options={[
+                          ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_CLONE_VOICES : []),
+                          ...GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom")),
+                        ]}
                       />
                       <Picker
                         label="Language"

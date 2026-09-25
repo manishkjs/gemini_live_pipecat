@@ -68,7 +68,7 @@ def load_voice_cloning_key(gender: str) -> Optional[str]:
 
 
 def is_male_clone_voice(voice: Optional[str]) -> bool:
-    if not voice:
+    if not voice or is_gemini_clone_voice(voice):
         return False
     v = str(voice).strip()
     v_lower = v.lower()
@@ -78,7 +78,7 @@ def is_male_clone_voice(voice: Optional[str]) -> bool:
 
 
 def is_female_clone_voice(voice: Optional[str]) -> bool:
-    if not voice:
+    if not voice or is_gemini_clone_voice(voice):
         return False
     v = str(voice).strip()
     v_lower = v.lower()
@@ -88,9 +88,67 @@ def is_female_clone_voice(voice: Optional[str]) -> bool:
 
 
 def is_custom_clone_voice(voice: Optional[str]) -> bool:
+    """Chirp 3 HD clones only. Gemini 3.8 voicekey clones are a separate product."""
     if not voice:
         return False
     return is_male_clone_voice(voice) or is_female_clone_voice(voice) or (str(voice).strip() == "Custom-Key")
+
+
+# ---------------------------------------------------------------------------
+# Gemini 3.8 TTS cloned voices (voicekey_...)
+#
+# A different credential from the Chirp clones above: it is passed as
+# `types.VoiceConfig(voice=<voicekey>)` to gemini-3.8-flash(-lite)-tts and is
+# bound to the AI Studio GEMINI_API_KEY project. It is server-managed: the
+# browser selects it by name and never sees or sends the key.
+# ---------------------------------------------------------------------------
+GEMINI_CLONE_VOICES: Dict[str, str] = {"Gemini-Clone-Male": "male"}
+GEMINI_CLONE_TTS_MODELS = frozenset({"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"})
+_GEMINI_KEY_FILES = {"male": "gemini_3_8_voicekey_m.txt", "female": "gemini_3_8_voicekey_f.txt"}
+
+
+def is_gemini_clone_voice(voice: Optional[str]) -> bool:
+    return bool(voice) and str(voice).strip() in GEMINI_CLONE_VOICES
+
+
+def supports_gemini_clone(tts_model: Optional[str]) -> bool:
+    return (tts_model or "").replace("-aistudio", "") in GEMINI_CLONE_TTS_MODELS
+
+
+def get_gemini_voice_key_file(gender: str) -> Optional[str]:
+    env_path = os.getenv("GEMINI_TTS_VOICE_KEY_MALE" if gender == "male" else "GEMINI_TTS_VOICE_KEY_FEMALE")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    name = _GEMINI_KEY_FILES[gender]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for c in (os.path.join(base_dir, name), os.path.join(os.getcwd(), "server", name), f"/keys/{name}"):
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def load_gemini_voice_key(gender: str) -> Optional[str]:
+    path = get_gemini_voice_key_file(gender)
+    if not path:
+        return None
+    try:
+        with open(path, "r") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def resolve_gemini_voice_key(voice: Optional[str]) -> Optional[str]:
+    """Return the voicekey for a Gemini clone selection, None for any other voice."""
+    if not is_gemini_clone_voice(voice):
+        return None
+    gender = GEMINI_CLONE_VOICES[str(voice).strip()]
+    key = load_gemini_voice_key(gender)
+    if not key:
+        raise ValueError(f"The Gemini 3.8 cloned voice ({gender}) has no configured voice key.")
+    if not key.startswith("voicekey_"):
+        raise ValueError("The Gemini 3.8 cloned voice key must start with voicekey_.")
+    return key
 
 
 

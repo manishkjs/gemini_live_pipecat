@@ -496,7 +496,71 @@ export const CHIRP_HD_VOICES: [string, string][] = [
   ["en-US-Chirp3-HD-Puck", "en-US-Chirp3-HD-Puck (US Male)"],
 ];
 
-/** Cloned-voice selections are backed by a voice cloning key rather than a named Gemini voice. */
+/**
+ * Gemini 3.8 TTS cloned voices. Server-managed `voicekey_...` credentials sent as
+ * `VoiceConfig(voice=...)` to gemini-3.8-flash(-lite)-tts. The browser selects
+ * them by name only; the key never leaves the server.
+ */
+export const GEMINI_CLONE_VOICES: [string, string][] = [
+  ["Gemini-Clone-Male", "Manish · Gemini 3.8 Voice Clone (Male)"],
+];
+export const GEMINI_CLONE_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"];
+
+export function isGeminiClonedVoice(voice: string): boolean {
+  return GEMINI_CLONE_VOICES.some(([id]) => id === voice);
+}
+
+export function supportsGeminiClone(ttsModel: string): boolean {
+  return GEMINI_CLONE_TTS_MODELS.includes((ttsModel || "").replace(/-aistudio$/, ""));
+}
+
+/**
+ * When the user switches between Gemini Live and Cascade, keep their chosen
+ * voice if the target engine can actually speak it; otherwise fall back to the
+ * active persona's default voice (or Chirp's default when Cascade is on Chirp).
+ */
+export function reconcileVoiceForEngine(
+  settings: Pick<SessionSettings, "voice" | "personaId" | "ttsModel">,
+  nextEngine: Engine,
+): string {
+  const fallback = getPersona(settings.personaId).defaultVoice || DEFAULT_SETTINGS.voice;
+  if (nextEngine === "live") {
+    if (isGeminiClonedVoice(settings.voice) || settings.voice.includes("Chirp")) {
+      return fallback;
+    }
+    return settings.voice;
+  }
+  if (settings.ttsModel === "google-tts") {
+    if (!isClonedVoice(settings.voice) && !settings.voice.includes("Chirp")) {
+      return "hi-IN-Chirp3-HD-Sulafat";
+    }
+    return settings.voice;
+  }
+  if (isClonedVoice(settings.voice) || settings.voice.includes("Chirp")) {
+    return fallback;
+  }
+  if (isGeminiClonedVoice(settings.voice) && !supportsGeminiClone(settings.ttsModel)) {
+    return fallback;
+  }
+  return settings.voice;
+}
+
+/**
+ * Gemini 3.8 TTS performs inline <vocal tags> and |pipe| backchannels; they are
+ * direction for the voice, not words for the reader. Mirrors
+ * `tts_script.display_text` on the server.
+ */
+export function displaySpokenText(text: string): string {
+  // Transcripts stream in chunks whose edge spaces are meaningful ("Second" +
+  // " answer"), so leave any text without markup exactly as it arrived.
+  if (!text || !/[<|]/.test(text)) return text;
+  return text
+    .replace(/\|[^|\n]{1,40}\|/g, " ")
+    .replace(/<\s*[a-zA-Z][a-zA-Z \-]{0,30}?\s*>/g, " ")
+    .replace(/[ \t]{2,}/g, " ");
+}
+
+/** Chirp 3 HD cloned voices, backed by a voice cloning key rather than a named Gemini voice. */
 export function isClonedVoice(voice: string): boolean {
   return voice === "Custom-Male" || voice === "Custom-Female" || voice === "Custom-Key";
 }
@@ -659,6 +723,12 @@ export function buildConnectRequest(settings: SessionSettings) {
   // the server exchanges it for an opaque, short-lived voice_profile_id before
   // any WebSocket URL is minted — so it never reaches browser history, access
   // logs, or the in-app diagnostics buffer.
+  if (isGeminiClonedVoice(settings.voice)) {
+    if (settings.engine !== "cascade") throw new Error("The Gemini 3.8 cloned voice is available in Cascade only.");
+    if (!supportsGeminiClone(settings.ttsModel)) {
+      throw new Error("Select gemini-3.8-flash-tts or gemini-3.8-flash-lite-tts to use the Gemini 3.8 cloned voice.");
+    }
+  }
   if (isClonedVoice(settings.voice) && settings.engine === "cascade" && settings.ttsModel !== "google-tts") {
     throw new Error("Select Chirp 3 HD to use a cloned voice in Cascade.");
   }
