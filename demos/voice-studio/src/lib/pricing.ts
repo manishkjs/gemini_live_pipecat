@@ -261,7 +261,7 @@ export function totalIn(s: TokenSplit): number {
 }
 
 export function totalOut(s: TokenSplit): number {
-  return s.textOut + s.audioOut + s.residualOut;
+  return s.textOut + s.audioOut + s.videoOut + s.residualOut;
 }
 
 /**

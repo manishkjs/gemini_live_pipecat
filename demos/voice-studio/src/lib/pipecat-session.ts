@@ -1,5 +1,5 @@
 import { createDiagnosticAccess, diagnosticHeaders } from "./session-diagnostics";
-import { buildConnectRequest, validateSocketUrl, type SessionSettings } from "./voice-session";
+import { buildConnectRequest, isAvatarActive, validateSocketUrl, type SessionSettings } from "./voice-session";
 import { calculateTurnCost, type UsageTokenData } from "./pricing";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -185,7 +185,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         const effStt = settings.engine === "cascade" ? (lastTurnSTTLatency ?? undefined) : undefined;
         lastTurnSTTLatency = null;
 
-        if (settings.avatarEnabled) {
+        if (isAvatarActive(settings)) {
           events.onPhase("speaking");
           if (lastUserAt !== null) {
             events.onLatency(performance.now() - lastUserAt);
@@ -218,7 +218,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         pendingLLMLatency = null;
         pendingTTSLatency = null;
         lastTurnSTTLatency = null;
-        if (settings.avatarEnabled) {
+        if (isAvatarActive(settings)) {
           events.onPhase("listening");
         }
         events.onMetricUpdate?.("turn_complete", p);

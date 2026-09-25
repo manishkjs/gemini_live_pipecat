@@ -3,7 +3,7 @@ import { Mic, MicOff, Square, Volume2, VolumeX, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { WaveProps } from "@/lib/studio-types";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
-import { AVATAR_CHARACTERS } from "@/lib/voice-session";
+import { AVATAR_CHARACTERS, isAvatarActive } from "@/lib/voice-session";
 import PersonaAvatar from "./persona-avatar";
 
 /** The agent's stage: waveform, call controls and persona role. */
@@ -20,7 +20,7 @@ export default function ConversationStage({
     toggleSound, track, settings, updateBool, update, chooseEngine,
   } = studio;
 
-  const isAvatarMode = Boolean(settings.avatarEnabled && settings.engine === "live");
+  const isAvatarMode = isAvatarActive(settings);
   const activeAvatarChar =
     AVATAR_CHARACTERS.find((c) => c.id === (settings.avatarName || "auto")) ?? AVATAR_CHARACTERS[0];
 
@@ -66,14 +66,13 @@ export default function ConversationStage({
         <div className="agent-title-row">
           <h2 id="agent-heading">{custom ? "Your agent. Your rules." : `Meet ${persona.agentName}.`}</h2>
           <span className="agent-role-pill">{custom ? "Custom Agent" : persona.name}</span>
-          <button
+          {settings.engine === "live" && <button
             type="button"
             disabled={active}
             onClick={() => {
               const next = !settings.avatarEnabled;
               updateBool("avatarEnabled", next);
               if (next) {
-                if (settings.engine !== "live") chooseEngine("live");
                 update("model", "gemini-3.8-live");
               }
             }}
@@ -90,7 +89,7 @@ export default function ConversationStage({
                 ? `3.8 Avatar: ON (${activeAvatarChar.id === "auto" ? "Auto" : activeAvatarChar.name})`
                 : "3.8 Avatar: Off"}
             </span>
-          </button>
+          </button>}
         </div>
         <div className="your-role">
           <span className="eyebrow">{custom ? "CUSTOM SESSION" : "YOUR ROLE"}</span>

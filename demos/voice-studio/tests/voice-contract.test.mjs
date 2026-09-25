@@ -68,6 +68,17 @@ test('Gemini 3.8 Live Avatar passes avatar_enabled, avatar_name, and avatar_cust
   assert.equal(urlCustom.searchParams.get('avatar_name'), 'custom');
   assert.equal(bodyCustom.avatar_custom_image, 'data:image/png;base64,iVBORw0KGgo=');
 });
+
+test('Live Avatar is Live-only: Cascade never carries avatar state even if the stored toggle is on', async () => {
+  const { isAvatarActive } = await import('../src/lib/voice-session.ts');
+  const stale = { ...settings, engine: 'cascade', avatarEnabled: true, avatarName: 'custom', avatarCustomImage: 'data:image/png;base64,iVBORw0KGgo=' };
+  assert.equal(isAvatarActive(stale), false);
+  assert.equal(isAvatarActive({ ...stale, engine: 'live' }), true);
+  const { url, body } = buildConnectRequest(stale);
+  assert.equal(url.searchParams.has('avatar_enabled'), false);
+  assert.equal(url.searchParams.has('avatar_name'), false);
+  assert.equal(body.avatar_custom_image, undefined, 'Cascade must never upload the avatar portrait');
+});
 test('custom instructions replace any persona preset and are sent in the body for both engines', () => {
   for (const persona of PERSONAS) for (const engine of ['live', 'cascade']) {
     const { url, body } = buildConnectRequest({ ...settings, personaId: persona.id, engine, instructions: '  Say नमस्ते & ask a question?  ' });

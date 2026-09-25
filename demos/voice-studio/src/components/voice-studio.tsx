@@ -4,7 +4,7 @@ import { useEffect, useState, type ComponentType, type CSSProperties } from "rea
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, AudioLines, ChartLine, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getDefaultBackendUrl } from "@/lib/voice-session";
+import { getDefaultBackendUrl, isAvatarActive } from "@/lib/voice-session";
 import type { WaveProps } from "@/lib/studio-types";
 import { useVoiceSession } from "@/hooks/use-voice-session";
 import ObservabilityDrawer from "./observability-drawer";
@@ -110,8 +110,8 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           </div>
 
           <ConversationStage studio={studio} Wave={Wave} />
-          <div className={`lower-stage-split ${settings.avatarEnabled && settings.engine === "live" ? "has-avatar-half" : ""}`}>
-            {settings.avatarEnabled && settings.engine === "live" && <AvatarStagePanel studio={studio} />}
+          <div className={`lower-stage-split ${isAvatarActive(settings) ? "has-avatar-half" : ""}`}>
+            {isAvatarActive(settings) && <AvatarStagePanel studio={studio} />}
             <TranscriptPanel studio={studio} />
           </div>
         </section>

@@ -399,52 +399,67 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
 
       {settings.engine === "cascade" && <CascadeCostPanel cost={studio.cascadeCost} />}
       <div className="transcript-footer">
-        <span>
+        <span className={active ? "footer-status is-active" : "footer-status is-idle"}>
           {active && <span className="status-dot is-active" />}
           {active ? `Live transcript · ${engineName}` : ""}
         </span>
-        <div>
-          <span className="session-clock">Total time: {duration}</span>
+        <div className="footer-metrics">
+          <span className="footer-metric session-clock">Total time: {duration}</span>
           <span
+            className={`footer-metric footer-tokens${tokenCount > 0 ? " has-token-split" : ""}`}
             title={
               `Input ${totalIn(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioIn.toLocaleString()}` +
               ` + text ${tokenSplit.textIn.toLocaleString()}` +
               (tokenSplit.residualIn ? ` + ${tokenSplit.residualIn.toLocaleString()} unattributed by the server` : "") +
               `\nOutput ${totalOut(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioOut.toLocaleString()}` +
               ` + text ${tokenSplit.textOut.toLocaleString()}` +
+              (tokenSplit.videoOut ? ` + video ${tokenSplit.videoOut.toLocaleString()}` : "") +
               (tokenSplit.residualOut ? ` + ${tokenSplit.residualOut.toLocaleString()} unattributed` : "")
             }
           >
-            {settings.engine === "cascade" ? "LLM tokens" : "Call tokens"}: {tokenCount.toLocaleString()}
+            <span className="tok-summary">
+              {settings.engine === "cascade" ? "LLM tokens" : "Call tokens"}: {tokenCount.toLocaleString()}
+            </span>
             {tokenCount > 0 && (
               <span className="token-split">
                 {" ("}
-                <span className="tok-dir">in {formatTokens(totalIn(tokenSplit))}</span>
-                <span className="tok-modality">
-                  {" "}aud {formatTokens(tokenSplit.audioIn)} · txt {formatTokens(tokenSplit.textIn)}
-                  {tokenSplit.residualIn > 0 && <> · ?{formatTokens(tokenSplit.residualIn)}</>}
+                <span className="tok-group">
+                  <span className="tok-dir">in {formatTokens(totalIn(tokenSplit))}</span>
+                  <span className="tok-modality">
+                    {" "}aud {formatTokens(tokenSplit.audioIn)} · txt {formatTokens(tokenSplit.textIn)}
+                    {tokenSplit.residualIn > 0 && <> · ?{formatTokens(tokenSplit.residualIn)}</>}
+                  </span>
                 </span>
-                {" | "}
-                <span className="tok-dir">out {formatTokens(totalOut(tokenSplit))}</span>
-                <span className="tok-modality">
-                  {" "}aud {formatTokens(tokenSplit.audioOut)} · txt {formatTokens(tokenSplit.textOut)}
-                  {tokenSplit.residualOut > 0 && <> · ?{formatTokens(tokenSplit.residualOut)}</>}
+                <span className="tok-sep">{" | "}</span>
+                <span className="tok-group">
+                  <span className="tok-dir">out {formatTokens(totalOut(tokenSplit))}</span>
+                  <span className="tok-modality">
+                    {" "}aud {formatTokens(tokenSplit.audioOut)} · txt {formatTokens(tokenSplit.textOut)}
+                    {tokenSplit.videoOut > 0 && <> · vid {formatTokens(tokenSplit.videoOut)}</>}
+                    {tokenSplit.residualOut > 0 && <> · ?{formatTokens(tokenSplit.residualOut)}</>}
+                  </span>
                 </span>
                 {")"}
               </span>
             )}
           </span>
           {settings.engine === "live" && (
-            <span title={livePricingAvailable
-              ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported."
-              : `No verified rate card is configured for ${settings.model || "the selected model"}. Token usage is still tracked; an unavailable rate does not mean the call is free.`}>
+            <span
+              className="footer-metric footer-cost"
+              title={livePricingAvailable
+                ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported."
+                : `No verified rate card is configured for ${settings.model || "the selected model"}. Token usage is still tracked; an unavailable rate does not mean the call is free.`}
+            >
               Model cost: {!livePricingAvailable ? "Rate unavailable" : !sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
                 ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
                 : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
             </span>
           )}
           {latency !== null && (
-            <span title="Measured from user transcript arrival to first response audio">
+            <span
+              className="footer-metric footer-latency"
+              title="Measured from user transcript arrival to first response audio"
+            >
               Response {(latency / 1000).toFixed(2)}s
             </span>
           )}

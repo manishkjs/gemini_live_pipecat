@@ -219,6 +219,15 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   sessionId: "",
 };
 
+/**
+ * The Live Avatar is a Gemini 3.8 Live feature. Cascade has no video path, so a
+ * stored `avatarEnabled` flag is inert there: every UI surface, request
+ * builder and event handler asks this one predicate instead of the raw flag.
+ */
+export function isAvatarActive(settings: Pick<SessionSettings, "engine" | "avatarEnabled">): boolean {
+  return Boolean(settings.avatarEnabled) && settings.engine === "live";
+}
+
 export type PersonaVoiceDesign = {
   ttsStyle: string;
   ttsPaceLabel: string;
@@ -584,13 +593,13 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       persona_id: settings.personaId,
     };
     if (settings.sessionId) params.session_id = settings.sessionId;
-    if (settings.avatarEnabled) {
+    if (isAvatarActive(settings)) {
       params.avatar_enabled = "true";
       params.avatar_name = settings.avatarName || "auto";
     }
     // Native audio has no pace parameter, so only send one when a TTS service
     // is actually rendering the audio and can apply it.
-    if (usesExternalTts(settings) && !settings.avatarEnabled) {
+    if (usesExternalTts(settings) && !isAvatarActive(settings)) {
       params.tts_pace = String(settings.ttsPace ?? 1.0);
     }
     const thinkingLevel = resolveThinkingLevel(settings);
@@ -643,7 +652,7 @@ export function buildConnectRequest(settings: SessionSettings) {
     const rawTokens = settings.contextCompressionTokens ?? 5000;
     body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
   }
-  if (settings.avatarEnabled && settings.avatarName === "custom" && settings.avatarCustomImage?.trim()) {
+  if (isAvatarActive(settings) && settings.avatarName === "custom" && settings.avatarCustomImage?.trim()) {
     body.avatar_custom_image = settings.avatarCustomImage.trim();
   }
   // A voice cloning key is a credential. It travels in the POST body only, and

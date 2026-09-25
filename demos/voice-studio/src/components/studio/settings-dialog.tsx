@@ -288,8 +288,8 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
         )}
 
         <div className="dialog-fields">
-          {/* HERO CARD: GEMINI 3.8 LIVE AVATAR (DEFAULT OFF) */}
-          <div className={`settings-group avatar-settings-hero ${settings.avatarEnabled ? "avatar-hero-active" : ""}`}>
+          {/* HERO CARD: GEMINI 3.8 LIVE AVATAR (DEFAULT OFF). Live-only: Cascade has no video path. */}
+          {settings.engine === "live" && <div className={`settings-group avatar-settings-hero ${settings.avatarEnabled ? "avatar-hero-active" : ""}`}>
             <div className="avatar-hero-header">
               <div className="avatar-hero-title-wrap">
                 <div className="avatar-hero-icon">
@@ -319,9 +319,6 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   const nextVal = !settings.avatarEnabled;
                   updateBool("avatarEnabled", nextVal);
                   if (nextVal) {
-                    if (settings.engine !== "live") {
-                      studio.chooseEngine("live");
-                    }
                     update("model", "gemini-3.8-live");
                   }
                 }}
@@ -428,7 +425,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                 )}
               </div>
             )}
-          </div>
+          </div>}
 
           {/* GROUP 1: ENGINE & PIPELINE (TOP OF SETTINGS: STT -> LLM -> TTS) */}
           <div className="settings-group">

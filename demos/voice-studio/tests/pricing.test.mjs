@@ -151,7 +151,7 @@ test('formatCost formats fractional cents with elegance', () => {
 });
 
 test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut and excluded from residualOut', async () => {
-  const { accumulateSplit, EMPTY_TOKEN_SPLIT } = await import('../src/lib/pricing.ts');
+  const { accumulateSplit, EMPTY_TOKEN_SPLIT, totalOut } = await import('../src/lib/pricing.ts');
   const avatarUsage = {
     prompt_token_count: 132,
     response_token_count: 16569,
@@ -164,6 +164,7 @@ test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut and excluded f
   assert.equal(split.audioOut, 51);
   assert.equal(split.textOut, 6);
   assert.equal(split.residualOut, 0, 'VIDEO tokens must not leak into residualOut');
+  assert.equal(totalOut(split), 16569, 'totalOut must include videoOut so Call tokens reconciles with in + out');
 
   const cost = calculateTurnCost('gemini-3.8-live', avatarUsage);
   assert.ok(cost);
