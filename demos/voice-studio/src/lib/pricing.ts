@@ -110,8 +110,8 @@ export interface UsageTokenData {
   response_token_count?: number | null;
   thoughts_token_count?: number | null;
   total_token_count?: number | null;
-  prompt_details?: { text?: number; audio?: number };
-  response_details?: { text?: number; audio?: number };
+  prompt_details?: { text?: number; audio?: number; video?: number; image?: number };
+  response_details?: { text?: number; audio?: number; video?: number; image?: number };
 }
 
 export interface TurnCostResult {
@@ -237,6 +237,8 @@ export interface TokenSplit {
   residualIn: number;
   textOut: number;
   audioOut: number;
+  /** Live Avatar video/image tokens (`response_tokens_details[VIDEO]`). */
+  videoOut: number;
   /** Thinking tokens (`thoughts_token_count`), also included in `textOut` at $4.50/1M. */
   thoughtsOut: number;
   /** Output tokens the server billed but left unattributed. */
@@ -249,6 +251,7 @@ export const EMPTY_TOKEN_SPLIT: TokenSplit = {
   residualIn: 0,
   textOut: 0,
   audioOut: 0,
+  videoOut: 0,
   thoughtsOut: 0,
   residualOut: 0,
 };
@@ -280,8 +283,10 @@ export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null):
     .reduce((sum, [, value]) => sum + num(value), 0);
   const textIn = modality(pd, "text");
   const audioIn = modality(pd, "audio");
+  const videoIn = modality(pd, "video") + modality(pd, "image");
   const textOut = modality(rd, "text");
   const audioOut = modality(rd, "audio");
+  const videoOut = modality(rd, "video") + modality(rd, "image");
   const thoughtsOut = num(usage.thoughts_token_count);
 
   const promptTotal = num(usage.prompt_token_count);
@@ -290,12 +295,13 @@ export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null):
   return {
     textIn: acc.textIn + textIn,
     audioIn: acc.audioIn + audioIn,
-    residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn),
+    residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn - videoIn),
     // Per Google Gemini pricing, thoughts_token_count is billed at the Output Text rate ($4.50/1M)
     textOut: acc.textOut + textOut + thoughtsOut,
     audioOut: acc.audioOut + audioOut,
+    videoOut: acc.videoOut + videoOut,
     thoughtsOut: acc.thoughtsOut + thoughtsOut,
-    residualOut: acc.residualOut + Math.max(0, responseTotal - textOut - audioOut),
+    residualOut: acc.residualOut + Math.max(0, responseTotal - textOut - audioOut - videoOut),
   };
 }
 

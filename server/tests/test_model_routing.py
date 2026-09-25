@@ -163,6 +163,44 @@ class TestVoiceCloningRouting(unittest.TestCase):
         self.assertFalse(voice_profiles.is_custom_clone_voice(None))
 
 
+class TestLiveAvatarRouting(unittest.TestCase):
+    def test_resolve_prebuilt_avatar_name(self):
+        from agent_live import resolve_prebuilt_avatar_name
+
+        # Explicit prebuilt avatar names (case-insensitive)
+        self.assertEqual(resolve_prebuilt_avatar_name("Vera", "debt-collector", "Gacrux", "female"), "Vera")
+        self.assertEqual(resolve_prebuilt_avatar_name("kira", "debt-collector", "Gacrux", "female"), "Kira")
+        self.assertEqual(resolve_prebuilt_avatar_name("leo", None, "Puck", "male"), "Leo")
+
+        # Auto-match by persona or voice/gender
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", "hindi-assistant", "Gacrux", "female"), "Vera")
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", "banking-advisor", "Aoede", "female"), "Kira")
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", "tech-architect", "Puck", "male"), "Leo")
+        self.assertEqual(resolve_prebuilt_avatar_name("custom", "custom", "Puck", "male"), "Ben")
+        self.assertEqual(resolve_prebuilt_avatar_name("custom", "custom", "Kore", "female"), "Kira")
+
+    def test_normalize_custom_avatar_image_produces_704x1280_rgb_png(self):
+        import io
+        from PIL import Image
+        from agent_live import normalize_custom_avatar_image
+
+        # 1. Square RGBA input -> 704x1280 RGB PNG
+        rgba_src = Image.new("RGBA", (420, 420), color=(90, 140, 210, 180))
+        src_buf = io.BytesIO()
+        rgba_src.save(src_buf, format="PNG")
+        norm_bytes, meta = normalize_custom_avatar_image(src_buf.getvalue())
+
+        self.assertEqual(meta["orig_size"], "420x420")
+        self.assertEqual(meta["norm_size"], "704x1280")
+        self.assertLess(len(norm_bytes), 5_000_000)
+
+        with Image.open(io.BytesIO(norm_bytes)) as out_img:
+            self.assertEqual(out_img.size, (704, 1280))
+            self.assertEqual(out_img.format, "PNG")
+            self.assertEqual(out_img.mode, "RGB")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

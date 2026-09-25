@@ -150,6 +150,28 @@ test('formatCost formats fractional cents with elegance', () => {
   assert.equal(formatCost(1.23456), '$1.23');
 });
 
+test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut and excluded from residualOut', async () => {
+  const { accumulateSplit, EMPTY_TOKEN_SPLIT } = await import('../src/lib/pricing.ts');
+  const avatarUsage = {
+    prompt_token_count: 132,
+    response_token_count: 16569,
+    total_token_count: 16701,
+    prompt_details: { text: 132 },
+    response_details: { audio: 51, text: 6, video: 16512 },
+  };
+  const split = accumulateSplit(EMPTY_TOKEN_SPLIT, avatarUsage);
+  assert.equal(split.videoOut, 16512);
+  assert.equal(split.audioOut, 51);
+  assert.equal(split.textOut, 6);
+  assert.equal(split.residualOut, 0, 'VIDEO tokens must not leak into residualOut');
+
+  const cost = calculateTurnCost('gemini-3.8-live', avatarUsage);
+  assert.ok(cost);
+  assert.equal(cost.residualOutputTokens, 0);
+  assert.equal(cost.estimated, false);
+});
+
+
 /**
  * gemini-3.1-flash-live-preview returns prompt_tokens_details that are present
  * but do not sum to prompt_token_count. Measured over a 4-turn session the

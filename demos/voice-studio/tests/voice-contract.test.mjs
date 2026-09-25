@@ -18,15 +18,16 @@ for (const persona of PERSONAS) {
       }
       if (engine === 'live') {
         assert.equal(url.searchParams.get('model'), settings.model);
-        assert.equal(url.searchParams.get('voice'), 'Aoede');
+        assert.equal(url.searchParams.get('voice'), settings.voice);
         assert.equal(url.searchParams.get('language'), 'hi-IN');
         assert.equal(url.searchParams.get('tts'), 'false');
         assert.equal(url.searchParams.has('llm_model'), false);
+        assert.equal(url.searchParams.has('avatar_enabled'), false, 'Avatar must be off by default');
       } else {
         assert.equal(url.searchParams.get('stt_model'), settings.sttModel);
         assert.equal(url.searchParams.get('llm_model'), settings.llmModel);
         assert.equal(url.searchParams.get('tts_model'), settings.ttsModel);
-        assert.equal(url.searchParams.get('tts_voice'), 'Aoede');
+        assert.equal(url.searchParams.get('tts_voice'), settings.voice);
         assert.equal(url.searchParams.get('stt_language'), 'hi-IN');
         assert.equal(url.searchParams.get('skip_stt'), 'false');
         assert.equal(url.searchParams.has('model'), false);
@@ -34,6 +35,39 @@ for (const persona of PERSONAS) {
     });
   }
 }
+
+test('Gemini 3.8 Live Avatar passes avatar_enabled, avatar_name, and avatar_custom_image only when enabled', () => {
+  const { url: urlOff, body: bodyOff } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    avatarEnabled: false,
+    avatarName: 'Ben',
+    avatarCustomImage: 'data:image/png;base64,iVBORw0KGgo=',
+  });
+  assert.equal(urlOff.searchParams.has('avatar_enabled'), false);
+  assert.equal(bodyOff.avatar_custom_image, undefined);
+
+  const { url: urlPrebuilt, body: bodyPrebuilt } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    avatarEnabled: true,
+    avatarName: 'Ben',
+  });
+  assert.equal(urlPrebuilt.searchParams.get('avatar_enabled'), 'true');
+  assert.equal(urlPrebuilt.searchParams.get('avatar_name'), 'Ben');
+  assert.equal(bodyPrebuilt.avatar_custom_image, undefined);
+
+  const { url: urlCustom, body: bodyCustom } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    avatarEnabled: true,
+    avatarName: 'custom',
+    avatarCustomImage: 'data:image/png;base64,iVBORw0KGgo=',
+  });
+  assert.equal(urlCustom.searchParams.get('avatar_enabled'), 'true');
+  assert.equal(urlCustom.searchParams.get('avatar_name'), 'custom');
+  assert.equal(bodyCustom.avatar_custom_image, 'data:image/png;base64,iVBORw0KGgo=');
+});
 test('custom instructions replace any persona preset and are sent in the body for both engines', () => {
   for (const persona of PERSONAS) for (const engine of ['live', 'cascade']) {
     const { url, body } = buildConnectRequest({ ...settings, personaId: persona.id, engine, instructions: '  Say नमस्ते & ask a question?  ' });

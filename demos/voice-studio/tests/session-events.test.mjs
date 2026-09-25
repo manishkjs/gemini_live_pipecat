@@ -29,6 +29,7 @@ async function harness() {
     const exports = {};
     const require = name => {
       if (name in overrides) return overrides[name];
+      if (name === 'react') return react;
       if (name === '@pipecat-ai/websocket-transport') return {
         WebSocketTransport: class { initialize(_config, callback) { handler = callback; } },
         DailyMediaManager: class {},

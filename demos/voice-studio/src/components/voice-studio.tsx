@@ -12,6 +12,7 @@ import PersonaPicker from "./studio/persona-picker";
 import EngineToolbar from "./studio/engine-toolbar";
 import ConversationStage from "./studio/conversation-stage";
 import TranscriptPanel from "./studio/transcript-panel";
+import AvatarStagePanel from "./studio/avatar-stage-panel";
 import SettingsDialog from "./studio/settings-dialog";
 import PersonaAvatar from "./studio/persona-avatar";
 import ContextCompressionToast from "./studio/context-compression-toast";
@@ -109,7 +110,10 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           </div>
 
           <ConversationStage studio={studio} Wave={Wave} />
-          <TranscriptPanel studio={studio} />
+          <div className={`lower-stage-split ${settings.avatarEnabled && settings.engine === "live" ? "has-avatar-half" : ""}`}>
+            {settings.avatarEnabled && settings.engine === "live" && <AvatarStagePanel studio={studio} />}
+            <TranscriptPanel studio={studio} />
+          </div>
         </section>
       </div>
 

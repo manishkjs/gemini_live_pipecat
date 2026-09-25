@@ -26,6 +26,9 @@ export type SessionEvents = {
   onLevel: (level: number) => void;
   onLatency: (ms: number) => void;
   onMetricUpdate?: (metricType: string, value: any) => void;
+  onAvatarVideo?: (chunkB64: string, isInit: boolean, seq: number) => void;
+  onAvatarInterrupted?: () => void;
+  onAvatarFallback?: (fallbackAvatar: string, reason: string) => void;
   onError: (text: string) => void;
   onDisconnected: () => void;
 };
@@ -136,8 +139,29 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       text?: string;
       ttft?: number;
       stt_latency?: number;
+      data?: string;
+      is_init?: boolean;
+      seq?: number;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
+
+    if (data.type === "avatar_video" && typeof data.data === "string") {
+      events.onAvatarVideo?.(data.data, Boolean(data.is_init), Number(data.seq ?? 0));
+      return;
+    }
+
+    if (data.type === "avatar_interrupted") {
+      events.onAvatarInterrupted?.();
+      events.onPhase("listening");
+      return;
+    }
+
+    if (data.type === "avatar_fallback") {
+      const fb = typeof (data as any).fallback_avatar === "string" ? (data as any).fallback_avatar : "Kira";
+      const reason = typeof (data as any).reason === "string" ? (data as any).reason : "Custom avatar fallback active";
+      events.onAvatarFallback?.(fb, reason);
+      return;
+    }
 
     if (data.type === "transcription" && typeof data.text === "string") {
       if (!data.text) {
@@ -160,6 +184,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         pendingTTSLatency = null;
         const effStt = settings.engine === "cascade" ? (lastTurnSTTLatency ?? undefined) : undefined;
         lastTurnSTTLatency = null;
+
+        if (settings.avatarEnabled) {
+          events.onPhase("speaking");
+          if (lastUserAt !== null) {
+            events.onLatency(performance.now() - lastUserAt);
+            lastUserAt = null;
+          }
+        }
 
         events.onMessage("assistant", data.text, turnStarted, {
           llmLatency: effLlm,
@@ -186,10 +218,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         pendingLLMLatency = null;
         pendingTTSLatency = null;
         lastTurnSTTLatency = null;
+        if (settings.avatarEnabled) {
+          events.onPhase("listening");
+        }
         events.onMetricUpdate?.("turn_complete", p);
       } else if (p.type === "interruption") {
         turnStarted = false;
         void media.userStartedSpeaking();
+        events.onAvatarInterrupted?.();
         events.onPhase("listening");
         events.onMetricUpdate?.("interruption", p);
       } else if (p.type === "stt_latency") {

@@ -28,6 +28,98 @@ export const VAD_MODES: [VadMode, string][] = [
   ["silero", "Silero VAD Only (Pipecat Local VAD)"],
 ];
 
+export type AvatarCharacter = {
+  id: string;
+  name: string;
+  role: string;
+  gender: "female" | "male" | "auto" | "custom";
+  accentColor: string;
+  badge: string;
+};
+
+export const AVATAR_CHARACTERS: AvatarCharacter[] = [
+  {
+    id: "auto",
+    name: "Auto-Match Persona",
+    role: "Automatically pairs Kira, Vera, Ben, or Leo with the active persona & voice",
+    gender: "auto",
+    accentColor: "#1a73e8",
+    badge: "Recommended",
+  },
+  {
+    id: "Kira",
+    name: "Kira",
+    role: "Executive Advisor · Warm & Articulate",
+    gender: "female",
+    accentColor: "#9334e6",
+    badge: "Female",
+  },
+  {
+    id: "Ben",
+    name: "Ben",
+    role: "Concierge Specialist · Friendly & Grounded",
+    gender: "male",
+    accentColor: "#1a73e8",
+    badge: "Male",
+  },
+  {
+    id: "Vera",
+    name: "Vera",
+    role: "Multilingual Specialist · Expressive & Clear",
+    gender: "female",
+    accentColor: "#e8710a",
+    badge: "Female",
+  },
+  {
+    id: "Leo",
+    name: "Leo",
+    role: "Technical Architect · Composed & Precise",
+    gender: "male",
+    accentColor: "#1e8e3e",
+    badge: "Male",
+  },
+  {
+    id: "Sam",
+    name: "Sam",
+    role: "Support Specialist · Approachable & Calm",
+    gender: "male",
+    accentColor: "#12b5cb",
+    badge: "Male",
+  },
+  {
+    id: "Kai",
+    name: "Kai",
+    role: "Product Guide · Energetic & Modern",
+    gender: "male",
+    accentColor: "#f29900",
+    badge: "Male",
+  },
+  {
+    id: "Jay",
+    name: "Jay",
+    role: "Wealth Specialist · Confident & Direct",
+    gender: "male",
+    accentColor: "#3949ab",
+    badge: "Male",
+  },
+  {
+    id: "Paul",
+    name: "Paul",
+    role: "Senior Consultant · Authoritative & Steady",
+    gender: "male",
+    accentColor: "#5f6368",
+    badge: "Male",
+  },
+  {
+    id: "custom",
+    name: "Custom Portrait",
+    role: "Upload any portrait photo (customized_avatar with automatic prebuilt fallback)",
+    gender: "custom",
+    accentColor: "#d93025",
+    badge: "Upload Photo",
+  },
+];
+
 export type SessionSettings = {
   backendUrl: string;
   engine: Engine;
@@ -56,6 +148,12 @@ export type SessionSettings = {
   toolsJson?: string;
   thinkingLevel?: ThinkingLevel;
   customVoiceKey?: string;
+  /** Whether Gemini 3.8 Live Avatar (lip-synced H.264/AAC MP4 stream) is active. Defaults to false. */
+  avatarEnabled?: boolean;
+  /** Selected prebuilt avatar ('auto', 'Ben', 'Kira', 'Leo', 'Vera', 'Sam', 'Kai', 'Jay', 'Paul', or 'custom'). */
+  avatarName?: string;
+  /** Optional base64 data URI for Custom Portrait upload (`customized_avatar`). */
+  avatarCustomImage?: string;
   /**
    * Identifies this browser's session to the backend diagnostics buffer.
    *
@@ -115,6 +213,9 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
+  avatarEnabled: false,
+  avatarName: "auto",
+  avatarCustomImage: "",
   sessionId: "",
 };
 
@@ -483,9 +584,13 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       persona_id: settings.personaId,
     };
     if (settings.sessionId) params.session_id = settings.sessionId;
+    if (settings.avatarEnabled) {
+      params.avatar_enabled = "true";
+      params.avatar_name = settings.avatarName || "auto";
+    }
     // Native audio has no pace parameter, so only send one when a TTS service
     // is actually rendering the audio and can apply it.
-    if (usesExternalTts(settings)) {
+    if (usesExternalTts(settings) && !settings.avatarEnabled) {
       params.tts_pace = String(settings.ttsPace ?? 1.0);
     }
     const thinkingLevel = resolveThinkingLevel(settings);
@@ -537,6 +642,9 @@ export function buildConnectRequest(settings: SessionSettings) {
   if (settings.contextCompression) {
     const rawTokens = settings.contextCompressionTokens ?? 5000;
     body.context_compression_trigger_tokens = Math.max(5000, isNaN(rawTokens) ? 5000 : rawTokens);
+  }
+  if (settings.avatarEnabled && settings.avatarName === "custom" && settings.avatarCustomImage?.trim()) {
+    body.avatar_custom_image = settings.avatarCustomImage.trim();
   }
   // A voice cloning key is a credential. It travels in the POST body only, and
   // the server exchanges it for an opaque, short-lived voice_profile_id before

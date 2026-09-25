@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Edit3, Mic, RotateCcw, DollarSign, Maximize2, Minimize2, Wrench } from "lucide-react";
+import { Edit3, Mic, RotateCcw, DollarSign, Maximize2, Minimize2, Wrench, Video, Sparkles, Upload, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -23,6 +23,7 @@ import {
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
   VAD_MODES,
+  AVATAR_CHARACTERS,
   type VadMode,
   usesExternalTts,
   buildPersonaPromptUrl,
@@ -76,6 +77,58 @@ function Picker({
       </Select>
     </div>
   );
+}
+
+/**
+ * Automatically normalizes any uploaded user photo into Vertex AI's required
+ * 704 x 1280 (9:16 portrait) RGB PNG format with upper-center bust framing.
+ */
+async function normalizeAvatarPortraitFile(file: File): Promise<{ dataUrl: string; origDims: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read image file"));
+    reader.onload = () => {
+      const srcUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!srcUrl) {
+        reject(new Error("Empty image data"));
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        const targetW = 704;
+        const targetH = 1280;
+        const origW = img.naturalWidth || img.width;
+        const origH = img.naturalHeight || img.height;
+        const canvas = document.createElement("canvas");
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve({ dataUrl: srcUrl, origDims: `${origW}×${origH}` });
+          return;
+        }
+        // Fill RGB dark slate backdrop in case source has transparent pixels
+        ctx.fillStyle = "#121826";
+        ctx.fillRect(0, 0, targetW, targetH);
+
+        // Cover-fit with upper-center bias (0.22) so head & shoulders stay centered in 9:16
+        const scale = Math.max(targetW / origW, targetH / origH);
+        const scaledW = origW * scale;
+        const scaledH = origH * scale;
+        const offsetX = (targetW - scaledW) * 0.5;
+        const offsetY = (targetH - scaledH) * 0.22;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, offsetX, offsetY, scaledW, scaledH);
+
+        const pngDataUrl = canvas.toDataURL("image/png");
+        resolve({ dataUrl: pngDataUrl, origDims: `${origW}×${origH}` });
+      };
+      img.onerror = () => resolve({ dataUrl: srcUrl, origDims: "raw" });
+      img.src = srcUrl;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 /** Every engine parameter the backend accepts, in one place, organized logically. */
@@ -235,6 +288,148 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
         )}
 
         <div className="dialog-fields">
+          {/* HERO CARD: GEMINI 3.8 LIVE AVATAR (DEFAULT OFF) */}
+          <div className={`settings-group avatar-settings-hero ${settings.avatarEnabled ? "avatar-hero-active" : ""}`}>
+            <div className="avatar-hero-header">
+              <div className="avatar-hero-title-wrap">
+                <div className="avatar-hero-icon">
+                  <Video size={18} />
+                </div>
+                <div>
+                  <div className="avatar-hero-title-row">
+                    <h3 className="settings-section-title" style={{ margin: 0 }}>
+                      Gemini 3.8 Live Avatar
+                    </h3>
+                    <span className="avatar-hero-badge">
+                      <Sparkles size={11} /> Vertex AI 3.8 Video
+                    </span>
+                  </div>
+                  <p className="avatar-hero-sub">
+                    Stream a real-time 9:16 portrait lip-synced digital human (704×1280 H.264 + 24 kHz AAC) powered by{" "}
+                    <code>google/gemini-3.8-live</code>. Off by default.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(settings.avatarEnabled)}
+                disabled={active}
+                onClick={() => {
+                  const nextVal = !settings.avatarEnabled;
+                  updateBool("avatarEnabled", nextVal);
+                  if (nextVal) {
+                    if (settings.engine !== "live") {
+                      studio.chooseEngine("live");
+                    }
+                    update("model", "gemini-3.8-live");
+                  }
+                }}
+                className={`avatar-power-toggle ${settings.avatarEnabled ? "is-on" : ""}`}
+              >
+                <span className="avatar-power-thumb" />
+                <span className="avatar-power-label">{settings.avatarEnabled ? "ON" : "OFF"}</span>
+              </button>
+            </div>
+
+            {settings.avatarEnabled && (
+              <div className="avatar-options-panel">
+                <div className="avatar-options-label-row">
+                  <span className="avatar-options-label">Select Digital Human Character</span>
+                  <span className="avatar-options-hint">
+                    Voice: <strong>{settings.voice}</strong> · Model: <strong>gemini-3.8-live (Vertex AI)</strong>
+                  </span>
+                </div>
+
+                <div className="avatar-character-grid" role="radiogroup" aria-label="Avatar character">
+                  {AVATAR_CHARACTERS.map((char) => {
+                    const selected = (settings.avatarName || "auto") === char.id;
+                    return (
+                      <button
+                        key={char.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        disabled={active}
+                        onClick={() => update("avatarName", char.id)}
+                        className={`avatar-char-card ${selected ? "selected" : ""}`}
+                        style={{ "--avatar-accent": char.accentColor } as React.CSSProperties}
+                      >
+                        <div className="avatar-char-top">
+                          <span
+                            className="avatar-char-monogram"
+                            style={{ background: char.accentColor }}
+                          >
+                            {char.id === "auto" ? "✨" : char.id === "custom" ? "📷" : char.name.slice(0, 2).toUpperCase()}
+                          </span>
+                          <div className="avatar-char-meta">
+                            <span className="avatar-char-name">{char.name}</span>
+                            <span className="avatar-char-pill">{char.badge}</span>
+                          </div>
+                          {selected && (
+                            <span className="avatar-char-check">
+                              <Check size={13} />
+                            </span>
+                          )}
+                        </div>
+                        <p className="avatar-char-role">{char.role}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {(settings.avatarName === "custom") && (
+                  <div className="avatar-custom-upload-box">
+                    <div className="avatar-custom-upload-info">
+                      <strong>Custom Portrait Upload (<code>customized_avatar</code> · Auto 704×1280 9:16 PNG)</strong>
+                      <p>
+                        Any photo you upload is automatically cropped &amp; normalized to Vertex AI&apos;s required{" "}
+                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format. Note: Requires GCP project allowlisting for{" "}
+                        <code>customized_avatar</code> (automatically falls back to prebuilt avatar if not allowlisted).
+                      </p>
+                    </div>
+                    <div className="avatar-custom-upload-actions">
+                      <label className="avatar-upload-btn">
+                        <Upload size={14} />
+                        <span>{settings.avatarCustomImage ? "Replace Portrait" : "Upload Portrait"}</span>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          disabled={active}
+                          style={{ display: "none" }}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            try {
+                              const { dataUrl } = await normalizeAvatarPortraitFile(file);
+                              update("avatarCustomImage", dataUrl);
+                            } catch {
+                              // Ignore read error
+                            }
+                          }}
+                        />
+                      </label>
+                      {settings.avatarCustomImage && (
+                        <div className="avatar-custom-preview">
+                          <img src={settings.avatarCustomImage} alt="Custom avatar preview (704x1280 9:16 PNG)" />
+                          <span className="avatar-norm-spec-tag">704×1280 PNG</span>
+                          <button
+                            type="button"
+                            disabled={active}
+                            onClick={() => update("avatarCustomImage", "")}
+                            className="avatar-custom-clear"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* GROUP 1: ENGINE & PIPELINE (TOP OF SETTINGS: STT -> LLM -> TTS) */}
           <div className="settings-group">
             <h3 className="settings-section-title">{engineName} Engine</h3>

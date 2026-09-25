@@ -58,6 +58,19 @@ const TRANSPORT = {
   // Cascade drops the VADProcessor; Live defers to Gemini's server-side
   // endpointing. Either way the backend has to be told.
   vad:                      { live: 'query:vad',                  cascade: 'query:vad',                   probe: false },
+  vadMode:                  { live: 'query:vad_mode',             cascade: 'query:vad_mode',              probe: 'silero' },
+
+  // Cascade Gemini 3.8 TTS Voice Design parameters
+  ttsStyle:                 { live: null,                         cascade: 'query:tts_style',             probe: 'Expressive' },
+  ttsAccent:                { live: null,                         cascade: 'query:tts_accent',            probe: 'British' },
+  ttsPitch:                 { live: null,                         cascade: 'query:tts_pitch',             probe: 'Low' },
+  ttsPaceLabel:             { live: null,                         cascade: 'query:tts_pace_label',        probe: 'Brisk' },
+  ttsVoicePrompt:           { live: null,                         cascade: 'query:tts_voice_prompt',      probe: 'Speak with a calm studio tone.' },
+
+  // Gemini 3.8 Live Avatar controls (default OFF; custom portrait rides in POST body only)
+  avatarEnabled:            { live: 'query:avatar_enabled',       cascade: null,                          probe: true },
+  avatarName:               { live: 'query:avatar_name',          cascade: null,                          probe: 'Ben', requires: { avatarEnabled: true } },
+  avatarCustomImage:        { live: 'body:avatar_custom_image',   cascade: null,                          probe: 'data:image/png;base64,iVBORw0KGgo=', requires: { avatarEnabled: true, avatarName: 'custom' } },
 
   // Cloned-voice credentials must never ride in a URL. Once the server-side
   // voice registry lands this becomes `voiceProfileId`.

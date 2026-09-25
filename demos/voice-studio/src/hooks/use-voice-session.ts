@@ -14,6 +14,7 @@ import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
+import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /**
@@ -34,6 +35,7 @@ export function useVoiceSession() {
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [sound, setSound] = useState(true);
+  const avatarStream = useAvatarStream(!sound);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [latency, setLatency] = useState<number | null>(null);
@@ -108,6 +110,11 @@ export function useVoiceSession() {
     setCompressionEvent(null);
   }, []);
 
+  const [avatarFallbackNotice, setAvatarFallbackNotice] = useState<{
+    fallbackAvatar: string;
+    reason: string;
+  } | null>(null);
+
   const customInstructions = useRef("");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const session = useRef<LiveSession | null>(null);
@@ -180,8 +187,9 @@ export function useVoiceSession() {
     setMuted(false);
     setPartialUser("");
     starting.current = false;
+    avatarStream.reset();
     if (current) await current.disconnect();
-  }, []);
+  }, [avatarStream]);
 
   const resetConversation = (personaId = settings.personaId) => {
     setError("");
@@ -212,6 +220,7 @@ export function useVoiceSession() {
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
     starting.current = false;
+    avatarStream.reset();
     if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
     setCompressionEvent(null);
     followTranscript.current = true;
@@ -427,6 +436,17 @@ export function useVoiceSession() {
         onLatency: (value) => {
           if (run.current === current) setLatency(value);
         },
+        onAvatarVideo: (chunkB64, isInit, seq) => {
+          if (run.current === current) avatarStream.pushChunk(chunkB64, isInit, seq);
+        },
+        onAvatarInterrupted: () => {
+          if (run.current === current) avatarStream.flushOnInterrupt();
+        },
+        onAvatarFallback: (fallbackAvatar, reason) => {
+          if (run.current === current) {
+            setAvatarFallbackNotice({ fallbackAvatar, reason });
+          }
+        },
         onError: (text) => {
           if (run.current === current) setError(text);
         },
@@ -438,6 +458,7 @@ export function useVoiceSession() {
           setPartialUser("");
           session.current = null;
           starting.current = false;
+          avatarStream.reset();
         },
       });
       if (run.current !== current) {
@@ -504,6 +525,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
+    avatarStream, avatarFallbackNotice, setAvatarFallbackNotice,
     // phase tracking & booking
     currentPhase, visitedPhases, phaseDirective, phaseDelivery, callSlots, confirmedBooking,
     // setters the views drive directly

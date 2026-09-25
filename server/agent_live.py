@@ -40,6 +40,7 @@ import voice_profiles
 from collections import deque
 import numpy as np
 
+import base64
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (
@@ -52,6 +53,7 @@ from pipecat.frames.frames import (
     TextFrame,
     TTSStoppedFrame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     InputTransportMessageFrame,
     StartFrame,
     EndFrame,
@@ -138,12 +140,54 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         origin = getattr(self, "_live_output_turn", None)
         if origin is not None:
             origin.finish("interrupted")
+        if getattr(self, "_avatar_enabled", False):
+            try:
+                await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {"type": "avatar_interrupted"}
+                }))
+            except Exception:
+                pass
         try:
             await super().broadcast_interruption(*args, **kwargs)
         finally:
             self._live_output_turn = None
 
     async def _handle_msg_model_turn(self, message):
+        if getattr(self, "_avatar_enabled", False):
+            sc = getattr(message, "server_content", None)
+            mt = getattr(sc, "model_turn", None) if sc else None
+            parts = getattr(mt, "parts", None) or []
+            has_non_video = False
+            for part in parts:
+                inl = getattr(part, "inline_data", None)
+                mime = getattr(inl, "mime_type", "") if inl else ""
+                if inl and mime.startswith("video/mp4") and getattr(inl, "data", None):
+                    raw_bytes = inl.data
+                    is_init = (b"ftyp" in raw_bytes[:32] or b"moov" in raw_bytes[:64])
+                    b64_str = base64.b64encode(raw_bytes).decode("ascii")
+                    if is_init:
+                        self._avatar_init_segment = b64_str
+                    seq = getattr(self, "_avatar_seq", 0) + 1
+                    self._avatar_seq = seq
+                    await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                        "label": "rtvi-ai",
+                        "type": "server-message",
+                        "data": {
+                            "type": "avatar_video",
+                            "data": b64_str,
+                            "is_init": is_init,
+                            "seq": seq,
+                        }
+                    }))
+                    # Clear video/mp4 inline_data so stock Pipecat doesn't log 'Unrecognized server_content format video/mp4'
+                    part.inline_data = None
+                elif getattr(part, "text", None) or (inl and mime.startswith("audio/pcm")):
+                    has_non_video = True
+            if not has_non_video:
+                return
+
         self._bot_is_responding = True
         if getattr(self, "_live_output_turn", None) is None:
             self._live_output_turn = getattr(self, "_last_input_turn", None)
@@ -580,6 +624,17 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
         if session_id:
             logger.info(f"Session ID Established: {session_id}")
+        fallback_notice = getattr(self, "_avatar_fallback_notice", None)
+        if fallback_notice:
+            self._avatar_fallback_notice = None
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    "type": "avatar_fallback",
+                    **fallback_notice,
+                }
+            }))
 
     async def _handle_msg_usage_metadata(self, message):
         await super()._handle_msg_usage_metadata(message)
@@ -657,12 +712,15 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             current_tot = getattr(usage, 'total_token_count', 0)
             current_prompt = getattr(usage, 'prompt_token_count', 0)
             last_prompt = getattr(self, '_last_prompt_tokens', 0)
+            # Exclude streamed output video tokens (e.g. ~16.5k/turn in Live Avatar mode) from context window threshold check
+            video_out_tokens = int(response_details.get("video", 0) or 0)
+            effective_context_tot = max(current_prompt, current_tot - video_out_tokens)
 
             # Detect compression:
-            # 1. Total tokens reached or exceeded the configured threshold
+            # 1. Effective context tokens reached or exceeded the configured threshold
             # 2. OR prompt tokens dropped significantly (>150 tokens) while turn count > 1 (signature of FIFO eviction compaction)
             compression_detected = False
-            if current_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
+            if effective_context_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
                 compression_detected = True
             elif last_prompt > 1000 and current_prompt < (last_prompt - 150):
                 compression_detected = True
@@ -670,10 +728,10 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
 
             if compression_detected:
                 self._context_compression_triggered = True
-                logger.info(f"🗜️ [Context Compression] Triggered! Token count {current_tot} (threshold: {threshold}, prompt: {current_prompt})")
+                logger.info(f"🗜️ [Context Compression] Triggered! Context token count {effective_context_tot} (threshold: {threshold}, prompt: {current_prompt})")
                 append_diagnostic_log(
                     "🗜️ Context Compression",
-                    f"Triggered at {current_tot} tokens (threshold: {threshold}, prompt: {current_prompt}) · Sliding window active"
+                    f"Triggered at {effective_context_tot} tokens (threshold: {threshold}, prompt: {current_prompt}) · Sliding window active"
                 )
                 await self.push_frame(OutputTransportMessageFrame(message={
                     "label": "rtvi-ai",
@@ -682,9 +740,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                         "type": "context_compression",
                         "payload": {
                             "status": "triggered",
-                            "tokens": current_tot,
+                            "tokens": effective_context_tot,
                             "threshold": threshold,
-                            "message": f"Context window compressed at {current_tot} tokens",
+                            "message": f"Context window compressed at {effective_context_tot} tokens",
                             "timestamp": time.time(),
                         }
                     }
@@ -792,6 +850,68 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             target = int(trigger * 0.8)  # 4000 for 5000 trigger
             config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
             logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
+
+        if getattr(self, "_avatar_enabled", False):
+            from google.genai.types import AvatarConfig, CustomizedAvatar, Modality
+            if getattr(config, "generation_config", None) is not None:
+                config.generation_config.response_modalities = None
+            config.response_modalities = [Modality.VIDEO]
+            fallback_name = getattr(self, "_avatar_name", "Ben") or "Ben"
+            custom_img_b64 = getattr(self, "_avatar_custom_image", None)
+            if custom_img_b64:
+                try:
+                    raw_img = base64.b64decode(custom_img_b64.split(",")[-1])
+                    norm_img, img_meta = normalize_custom_avatar_image(raw_img)
+                    config.avatar_config = AvatarConfig(
+                        customized_avatar=CustomizedAvatar(
+                            image_data=norm_img,
+                            image_mime_type="image/png",
+                        )
+                    )
+                    logger.info(
+                        f"🎭 [Live Avatar] Configured customized_avatar "
+                        f"({img_meta['orig_size']} -> {img_meta['norm_size']} RGB PNG, {len(norm_img)} bytes) "
+                        f"with fallback '{fallback_name}'"
+                    )
+                except Exception as img_err:
+                    logger.warning(f"🎭 [Live Avatar] Invalid custom image ({img_err}); using prebuilt '{fallback_name}'")
+                    config.avatar_config = AvatarConfig(avatar_name=fallback_name)
+                    self._avatar_custom_image = None
+                    self._avatar_fallback_notice = {
+                        "fallback_avatar": fallback_name,
+                        "reason": f"Image normalization failed: {img_err}",
+                        "code": "invalid_image",
+                    }
+            else:
+                config.avatar_config = AvatarConfig(avatar_name=fallback_name)
+                logger.info(f"🎭 [Live Avatar] Configured prebuilt avatar_name='{fallback_name}' with response_modalities=[VIDEO]")
+
+            try:
+                await super()._connection_task_handler(config)
+                return
+            except Exception as conn_err:
+                if getattr(self, "_avatar_custom_image", None):
+                    err_str = str(conn_err)
+                    is_allowlist = "not allowlisted" in err_str.lower()
+                    logger.warning(
+                        f"🎭 [Live Avatar] customized_avatar connection rejected ({err_str}); "
+                        f"automatically falling back to prebuilt avatar '{fallback_name}'"
+                    )
+                    self._avatar_custom_image = None
+                    self._avatar_fallback_notice = {
+                        "fallback_avatar": fallback_name,
+                        "reason": (
+                            "Current GCP project is not allowlisted for the customized_avatar feature on Vertex AI "
+                            f"(using prebuilt '{fallback_name}' instead)."
+                            if is_allowlist
+                            else f"Custom avatar rejected by Vertex AI ({err_str}); using '{fallback_name}'."
+                        ),
+                        "code": "project_not_allowlisted" if is_allowlist else "rejected",
+                    }
+                    config.avatar_config = AvatarConfig(avatar_name=fallback_name)
+                    await super()._connection_task_handler(config)
+                    return
+                raise
 
         await super()._connection_task_handler(config)
 
@@ -1147,6 +1267,90 @@ def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = Non
 from persona_registry import get_persona_architecture
 
 
+PREBUILT_AVATAR_NAMES = {"Ben", "Kira", "Leo", "Vera", "Sam", "Kai", "Jay", "Paul"}
+
+FEMALE_VOICE_NAMES = {
+    "aoede", "despina", "kore", "leda", "zephyr", "autonoe",
+    "callirhoe", "erinome", "gacrux", "laomedeia", "pulcherrima",
+    "sulafat", "vindemiatrix",
+}
+
+
+def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
+    """Normalize any user-uploaded portrait into Vertex AI's required 9:16 RGB PNG (>=704x1280, <5 MB).
+
+    Requirements per Vertex AI Gemini 3.8 Live Avatar documentation:
+      - Format: PNG (lossless RGB)
+      - Minimum size: 704 x 1280 pixels (9:16 portrait)
+      - File size: < 5 MB
+      - Framing: Head & shoulders bust shot (upper-center bias when cropping square/landscape uploads)
+    """
+    import io
+    from PIL import Image, ImageOps
+
+    with Image.open(io.BytesIO(raw_bytes)) as img:
+        img = ImageOps.exif_transpose(img)
+        orig_w, orig_h = img.size
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            bg = Image.new("RGB", img.size, (18, 24, 38))
+            rgba = img.convert("RGBA")
+            bg.paste(rgba, mask=rgba.split()[3])
+            rgb_img = bg
+        else:
+            rgb_img = img.convert("RGB")
+
+        target_w, target_h = 704, 1280
+        # Bias vertical crop slightly toward top (0.22) to preserve head & shoulders bust framing
+        fitted = ImageOps.fit(
+            rgb_img,
+            (target_w, target_h),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.22),
+        )
+        out = io.BytesIO()
+        fitted.save(out, format="PNG", optimize=True)
+        norm_bytes = out.getvalue()
+
+        # If PNG exceeds 4.8 MB, downscale slightly while keeping >= 704x1280
+        if len(norm_bytes) > 4_800_000:
+            out = io.BytesIO()
+            fitted.quantize(colors=256).convert("RGB").save(out, format="PNG", optimize=True)
+            norm_bytes = out.getvalue()
+
+        return norm_bytes, {
+            "orig_size": f"{orig_w}x{orig_h}",
+            "norm_size": f"{target_w}x{target_h}",
+            "bytes": len(norm_bytes),
+        }
+
+
+def resolve_prebuilt_avatar_name(
+    avatar_name: Optional[str],
+    persona_id: Optional[str],
+    voice: Optional[str],
+    gender: str,
+) -> str:
+    """Resolve an avatar selection ('auto', 'custom', or explicit prebuilt name) to a valid Vertex AI prebuilt avatar_name."""
+    raw = (avatar_name or "").strip()
+    for valid in PREBUILT_AVATAR_NAMES:
+        if raw.lower() == valid.lower():
+            return valid
+
+    pid = (persona_id or "").strip().lower()
+    v_low = (voice or "").strip().lower()
+    if pid == "hindi-assistant":
+        return "Vera"
+    if pid == "banking-advisor":
+        return "Kira"
+    if pid == "tech-architect":
+        return "Leo"
+    if pid == "store-assistant":
+        return "Ben"
+    if v_low in FEMALE_VOICE_NAMES or gender == "female":
+        return "Kira"
+    return "Ben"
+
+
 async def run_agent_live(
     websocket: WebSocket,
     model: str,
@@ -1167,6 +1371,9 @@ async def run_agent_live(
     # decides which persona tooling loads -- the system instruction is never
     # inspected for that purpose. See server/persona_registry.py.
     persona_id: Optional[str] = None,
+    avatar_enabled: bool = False,
+    avatar_name: str = "auto",
+    avatar_custom_image: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -1275,8 +1482,11 @@ async def run_agent_live(
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
+    resolved_avatar_name = resolve_prebuilt_avatar_name(avatar_name, persona_id, voice, gender)
     is_custom_voice = voice_profiles.is_custom_clone_voice(voice)
-    use_external_tts = tts or is_custom_voice
+    # When Live Avatar is enabled, Gemini 3.8 Live synthesizes lip-synced video + AAC audio natively
+    # inside the MP4 stream (response_modalities=[VIDEO]), so external TTS must be disabled.
+    use_external_tts = False if avatar_enabled else (tts or is_custom_voice)
     tts_service = None
     if use_external_tts:
         from agent import CustomGoogleTTSService
@@ -1299,6 +1509,8 @@ async def run_agent_live(
     voice_name = voice if not use_external_tts else None
     if not voice_name and not use_external_tts:
         voice_name = "Aoede"
+    if voice_name and (voice_name.startswith("Custom") or "clone" in voice_name.lower()):
+        voice_name = "Puck" if gender == "male" else "Aoede"
 
     # Voice compatibility guard:
     # Most Gemini Live models (including 2.5 and 3.5) support the full voice library (Aoede, Despina, Puck, etc.).
@@ -1319,6 +1531,15 @@ async def run_agent_live(
         cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
     is_ai_studio, clean_model = resolve_live_model_gateway(model)
+    if avatar_enabled:
+        # Gemini 3.8 Live Avatar (AvatarConfig + response_modalities=[VIDEO]) is exclusively
+        # served on the Vertex AI Enterprise gateway via `google/gemini-3.8-live`.
+        is_ai_studio = False
+        clean_model = "gemini-3.8-live"
+        logger.info(
+            f"🎭 [Live Avatar] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
+            f"(avatar_name='{resolved_avatar_name}', custom_image={'yes' if avatar_custom_image else 'no'})"
+        )
     model = clean_model
 
     if is_ai_studio:
@@ -1393,6 +1614,12 @@ async def run_agent_live(
             except Exception:
                 pass
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
+
+    # Avatar flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
+    llm._avatar_enabled = bool(avatar_enabled)
+    llm._avatar_name = resolved_avatar_name
+    llm._avatar_custom_image = avatar_custom_image
+    llm._avatar_seq = 0
 
     # Context compression tracking and notification flags
     effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None

@@ -133,6 +133,8 @@ async def websocket_endpoint(
     # signal that decides which persona tooling loads; the system instruction is
     # never inspected for routing. See server/persona_registry.py.
     persona_id: Optional[str] = None,
+    avatar_enabled: bool = False,
+    avatar_name: str = "auto",
 ):
     await websocket.accept()
     print("WebSocket connection accepted")
@@ -150,6 +152,7 @@ async def websocket_endpoint(
     diagnostic_buffer.bind_session(session_id, bot_type)
     stored_instruction = session_access.take_instructions(session_id)
     system_instruction = stored_instruction or system_instruction
+    avatar_custom_image = session_access.take_avatar_custom_image(session_id)
     custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
@@ -171,6 +174,9 @@ async def websocket_endpoint(
                 thinking_level=thinking_level,
                 custom_voice_key=custom_voice_key,
                 persona_id=persona_id,
+                avatar_enabled=avatar_enabled,
+                avatar_name=avatar_name,
+                avatar_custom_image=avatar_custom_image,
             )
         elif bot_type == "tts-llm-stt":
             run_agent = await asyncio.to_thread(load_pipeline, bot_type)
@@ -322,10 +328,12 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             "tts_pitch",
             "tts_pace_label",
             "tts_voice_prompt",
+            "avatar_name",
+            "avatar_custom_image",
         ):
             if field in body and body[field] is not None and not isinstance(body[field], str):
                 raise ValueError(f"Invalid {field}")
-        for field in ("context_compression", "thinking", "vad"):
+        for field in ("context_compression", "thinking", "vad", "avatar_enabled"):
             if field in body and not isinstance(body[field], bool):
                 raise ValueError(f"Invalid {field}")
         clone_key = body.get("custom_voice_key")
@@ -349,7 +357,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         if "tools" in body:
             tools_data = body["tools"]
             params_dict["tools"] = json.dumps(tools_data) if isinstance(tools_data, (dict, list)) else str(tools_data)
-        for field in ("context_compression", "thinking", "vad"):
+        for field in ("context_compression", "thinking", "vad", "avatar_enabled"):
             if field in body:
                 params_dict[field] = "true" if body[field] else "false"
         if "context_compression_trigger_tokens" in body:
@@ -363,6 +371,9 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             params_dict["thinking_level"] = body["thinking_level"]
         if "vad_mode" in body and body["vad_mode"]:
             params_dict["vad_mode"] = body["vad_mode"]
+        if "avatar_name" in body and body["avatar_name"]:
+            params_dict["avatar_name"] = body["avatar_name"]
+        avatar_custom_image = body.get("avatar_custom_image")
         for field in ("tts_style", "tts_accent", "tts_pitch", "tts_pace_label", "tts_voice_prompt"):
             if field in body and body[field]:
                 params_dict[field] = body[field]
@@ -377,7 +388,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     try:
         session_id, viewer_token, connection_id = session_access.issue(
             params_dict.get("session_id"), request.headers.get("x-session-token"),
-            instructions=instructions)
+            instructions=instructions, avatar_custom_image=avatar_custom_image)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except RuntimeError as exc:
