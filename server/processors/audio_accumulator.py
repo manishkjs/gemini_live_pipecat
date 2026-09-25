@@ -44,7 +44,7 @@ class AudioAccumulator(FrameProcessor):
             )
         return self._stt_client
 
-    async def _run_parallel_stt(self, audio_data: bytes):
+    async def _run_parallel_stt(self, audio_data: bytes, target_msg: dict | None = None):
         meter = self._cascade_meter
         cost_key = None
         received = False
@@ -74,7 +74,7 @@ class AudioAccumulator(FrameProcessor):
             received = True
             if meter:
                 seconds = billed_duration(getattr(response, "metadata", None))
-                meter.update(cost_key, complete=True, usage={"billed_seconds": seconds})
+                meter.update(cost_key, complete=True, in_flight=False, usage={"billed_seconds": seconds})
                 await publish_cost(self)
 
             transcription = ""
@@ -83,14 +83,19 @@ class AudioAccumulator(FrameProcessor):
                     transcription += result.alternatives[0].transcript
 
             if transcription.strip():
-                logger.info(f"Parallel STT result: {transcription.strip()}")
+                clean_tx = transcription.strip()
+                logger.info(f"Parallel STT result: {clean_tx}")
+                # Replace the raw audio blob in context with the transcribed text for subsequent turns
+                # so the LLM has the exact verbatim user text in conversation history without re-billing audio.
+                if isinstance(target_msg, dict):
+                    target_msg["content"] = clean_tx
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
                     "type": "server-message",
                     "data": {
                         'type': 'transcription_replace',
                         'participant': 'User',
-                        'text': transcription.strip()
+                        'text': clean_tx
                     }
                 }))
             else:
@@ -101,7 +106,7 @@ class AudioAccumulator(FrameProcessor):
             logger.error(f"Parallel STT error: {e}")
         finally:
             if meter and cost_key and not received:
-                meter.update(cost_key, issue="Background transcript request ended without billed duration")
+                meter.update(cost_key, in_flight=False, issue="Background transcript request ended without billed duration")
                 await publish_cost(self)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -148,10 +153,11 @@ class AudioAccumulator(FrameProcessor):
 
                 maybe_coro = self._context.add_audio_frames_message(
                     audio_frames=self._audio_frames,
-                    text="The user is speaking. Here is the audio:"
+                    text="Listen carefully to the user's spoken audio and directly answer or respond to what they just said before continuing:"
                 )
                 if inspect.iscoroutine(maybe_coro):
                     await maybe_coro
+                target_msg = self._context.messages[-1] if getattr(self._context, "messages", None) else None
                 self._audio_frames = []
 
                 # Emit User transcription frame FIRST so pipecat-session.ts creates the User bubble
@@ -169,7 +175,7 @@ class AudioAccumulator(FrameProcessor):
                 await self.push_frame(LLMContextFrame(self._context))
 
                 self._stt_task = asyncio.create_task(
-                    self._run_parallel_stt(audio_data)
+                    self._run_parallel_stt(audio_data, target_msg=target_msg)
                 )
         elif isinstance(frame, AudioRawFrame):
             if self._accumulating:

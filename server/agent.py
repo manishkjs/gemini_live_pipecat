@@ -365,7 +365,8 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
                                 text=text_to_emit,
                                 user_id=self._user_id,
                                 timestamp=time_now_iso8601(),
-                                language=primary_lang
+                                language=primary_lang,
+                                finalized=True,
                             ))
                             await self.stop_processing_metrics()
                             if hasattr(self, "_handle_transcription"):
@@ -547,6 +548,7 @@ class CustomGoogleSTTService(TurnOriginMixin, GoogleSTTService):
                                 time_now_iso8601(),
                                 primary_language,
                                 result=result,
+                                finalized=True,
                             )
                         )
                         await self.stop_processing_metrics()
@@ -612,6 +614,11 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             language=language_code or "en-US",
         )
         super().__init__(api_key=api_key, settings=settings, **kwargs)
+        # GeminiTTSService yields all TTSAudioRawFrames synchronously inside run_tts().
+        # Setting _is_yielding_frames_synchronously = True instructs TTSService.on_turn_context_completed()
+        # to close the turn audio context immediately after all TTSTextFrame(append_to_context=True)
+        # frames have been appended, preserving assistant context history while avoiding the 3.0s timeout.
+        self._is_yielding_frames_synchronously = True
         if self._is_aistudio:
             self._client = genai.Client(api_key=api_key)
             self._cost_provider = "gemini"
@@ -817,13 +824,10 @@ Pace: {self._tts_pace_label or 'Conversational'}.
                         yield TTSAudioRawFrame(chunk_bytes, self.sample_rate or 24000, 1)
 
             completed = True
-            yield TTSStoppedFrame(context_id=context_id)
         except Exception as e:
             logger.exception(f"{self} error generating TTS: {e}")
             yield ErrorFrame(error=f"Gemini TTS generation error: {str(e)}")
         finally:
-            if context_id and self.audio_context_available(context_id):
-                await self.remove_audio_context(context_id)
             if meter:
                 if last_usage_metadata is not None:
                     observe_tokens(meter, cost_key, last_usage_metadata)
@@ -911,6 +915,7 @@ class _MeteredGeminiLLMMixin:
                 async for chunk in stream:
                     if getattr(chunk, "usage_metadata", None):
                         last_usage = chunk.usage_metadata
+                        self._last_usage_metadata = chunk.usage_metadata
                     yield chunk
                 completed = True
             finally:
@@ -991,6 +996,20 @@ class _MeteredGeminiLLMMixin:
         
         logger.info(f"LLM Token Usage: Prompt: {prompt_tokens}, Response: {completion_tokens}, Total: {total_tokens}")
         
+        prompt_details = {"text": prompt_tokens}
+        last_meta = getattr(self, "_last_usage_metadata", None)
+        if last_meta and getattr(last_meta, "prompt_tokens_details", None):
+            parsed = {}
+            for d in last_meta.prompt_tokens_details:
+                mod = str(getattr(d, "modality", "")).lower()
+                cnt = getattr(d, "token_count", 0) or 0
+                if "audio" in mod:
+                    parsed["audio"] = parsed.get("audio", 0) + cnt
+                elif "text" in mod:
+                    parsed["text"] = parsed.get("text", 0) + cnt
+            if parsed:
+                prompt_details = parsed
+
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
@@ -1002,7 +1021,7 @@ class _MeteredGeminiLLMMixin:
                         "prompt_token_count": prompt_tokens,
                         "response_token_count": completion_tokens,
                         "total_token_count": total_tokens,
-                        "prompt_details": {"text": prompt_tokens},
+                        "prompt_details": prompt_details,
                         "response_details": {"text": completion_tokens},
                         "phase": "final", "service": "llm", "revision": 0,
                         "model": self._settings.model,

@@ -190,6 +190,11 @@ class BasePersonaArchitecture(ABC):
         the client sends them anyway.
         """
         if system_instruction:
+            if getattr(self, "persona_id", None) == "debt-collector" and system_instruction.startswith("You are Meera,") and "off-topic question" not in system_instruction:
+                from persona_prompt_cards.meera_cards import get_meera_system_instruction, get_meera_signature_instruction
+                if "impatient, assertive" in system_instruction:
+                    return get_meera_signature_instruction()
+                return get_meera_system_instruction()
             return system_instruction
         from persona_prompt_cards import get_persona_system_instruction
         return get_persona_system_instruction(getattr(self, "persona_id", None), engine=engine)
