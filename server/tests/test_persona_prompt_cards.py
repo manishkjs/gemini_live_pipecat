@@ -121,9 +121,13 @@ class TestPersonaPromptCards(unittest.TestCase):
             self.assertNotIn("Ajna", c.directive)
 
     def test_static_persona_instructions(self):
-        ranvir_inst = get_persona_system_instruction("car-negotiator")
-        self.assertIn("Ranvir", ranvir_inst)
-        self.assertIn("18,000", ranvir_inst)
+        abhay_inst = get_persona_system_instruction("car-negotiator")
+        self.assertIn("Abhay", abhay_inst)
+        self.assertIn("AeroNxt EV", abhay_inst)
+        self.assertIn("₹20,00,000", abhay_inst)
+        self.assertIn("₹14,50,000", abhay_inst)
+        self.assertNotIn("Ranvir", abhay_inst)
+        self.assertNotIn("dollar", abhay_inst.lower())
 
         meera_inst = get_persona_system_instruction("debt-collector")
         self.assertIn("Meera", meera_inst)

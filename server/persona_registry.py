@@ -3,7 +3,7 @@
 Why this module exists
 ----------------------
 Persona behaviour used to be inferred by sniffing substrings out of the caller's
-``system_instruction`` (``"Ranvir" in system_instruction``, ``"Lamborghini" in
+``system_instruction`` (``"Abhay" in system_instruction``, ``"Lamborghini" in
 system_instruction`` and friends). That coupling is wrong in three ways:
 
 1. It is fragile. Editing one word of a prompt silently disables a whole engine.
@@ -37,7 +37,7 @@ class ArchitecturePattern(str, Enum):
 
     #: A single static system instruction, no persona-specific tools.
     MONOLITHIC_STATIC = "monolithic_static"
-    #: Ranvir's strict concession ladder with server-authoritative deal state.
+    #: Abhay's strict concession ladder with server-authoritative deal state.
     STATE_LADDER_NEGOTIATOR = "negotiator_ladder"
     #: Pragya's context cards selected by Gemini through ``switch_phase``.
     JIT_PHASE_CARDS = "jit_phase_cards"
@@ -63,7 +63,7 @@ PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
         architecture=ArchitecturePattern.JIT_PHASE_CARDS,
         is_ui_editable=False,
     ),
-    # Ranvir - car negotiator. Entirely independent of the supercar modules;
+    # Abhay - car negotiator (AeroNxt EV, rupees). Entirely independent of the supercar modules;
     # they share no code, no state and no branch.
     "car-negotiator": PersonaConfig(
         persona_id="car-negotiator",
@@ -214,7 +214,7 @@ class MonolithicArchitecture(BasePersonaArchitecture):
 
 
 class NegotiatorLadderArchitecture(BasePersonaArchitecture):
-    """Ranvir. Server-authoritative concession ladder via ``negotiation.Deal``."""
+    """Abhay. Server-authoritative rupee concession ladder via ``negotiation.Deal``."""
 
     pattern = ArchitecturePattern.STATE_LADDER_NEGOTIATOR
 
@@ -262,7 +262,8 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
             await params.result_callback(res)
 
         async def handle_close_deal(params):
-            price = (params.arguments or {}).get("price_usd", 0)
+            args = params.arguments or {}
+            price = args.get("price_inr", args.get("price", 0))
             res = deal.close(price)
             logger.info(f"[Negotiator] close_deal -> {res}")
             await params.result_callback(res)

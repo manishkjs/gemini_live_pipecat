@@ -35,9 +35,9 @@ from persona_prompt_cards.kavya_cards import (
     get_kavya_root_system_instruction,
     get_kavya_monolithic_system_instruction,
 )
-from persona_prompt_cards.ranvir_cards import (
-    get_ranvir_system_instruction,
-    get_ranvir_signature_instruction,
+from persona_prompt_cards.abhay_cards import (
+    get_abhay_system_instruction,
+    get_abhay_signature_instruction,
 )
 from persona_prompt_cards.meera_cards import (
     get_meera_system_instruction,
@@ -78,8 +78,8 @@ __all__ = [
     "get_kavya_root_system_instruction",
     "get_kavya_monolithic_system_instruction",
     # Other personas
-    "get_ranvir_system_instruction",
-    "get_ranvir_signature_instruction",
+    "get_abhay_system_instruction",
+    "get_abhay_signature_instruction",
     "get_meera_system_instruction",
     "get_meera_signature_instruction",
     "get_kabir_system_instruction",
@@ -103,7 +103,7 @@ _PHASED = {
               get_kavya_root_system_instruction, get_kavya_monolithic_system_instruction),
 }
 _STATIC = {
-    "car-negotiator": (get_ranvir_system_instruction, get_ranvir_signature_instruction),
+    "car-negotiator": (get_abhay_system_instruction, get_abhay_signature_instruction),
     "debt-collector": (get_meera_system_instruction, get_meera_signature_instruction),
     "storyteller": (get_kabir_system_instruction, get_kabir_signature_instruction),
     "ai-companion": (get_aisha_system_instruction, get_aisha_signature_instruction),

@@ -13,7 +13,8 @@ PERSONA_ALIASES = {
     "reservation-agent": "kavya-glass-buddy",
     "kavya": "kavya-glass-buddy",
     "glass-buddy": "kavya-glass-buddy",
-    "ranvir": "car-negotiator",
+    "abhay": "car-negotiator",
+    "ranvir": "car-negotiator",  # legacy name, kept so old links still route
     "meera": "debt-collector",
     "kabir": "storyteller",
     "aisha": "ai-companion",

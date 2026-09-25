@@ -32,7 +32,7 @@ class TestDeterministicRouting(unittest.TestCase):
         self.assertIsInstance(arch, JITPhaseCardsArchitecture)
         self.assertEqual(arch.pattern, ArchitecturePattern.JIT_PHASE_CARDS)
 
-    def test_ranvir_gets_negotiator_and_no_supercar_tools(self):
+    def test_abhay_gets_negotiator_and_no_supercar_tools(self):
         arch = get_persona_architecture("car-negotiator")
         self.assertIsInstance(arch, NegotiatorLadderArchitecture)
         names = {s.name for s in arch.get_tool_schemas()}

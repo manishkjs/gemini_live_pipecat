@@ -12,7 +12,7 @@ class TestPersonaRegistry(unittest.TestCase):
         self.assertEqual(arch, ArchitecturePattern.JIT_PHASE_CARDS)
         self.assertFalse(is_persona_ui_editable("lamborghini-concierge"))
 
-    def test_ranvir_routing(self):
+    def test_abhay_routing(self):
         arch = resolve_persona_architecture("car-negotiator")
         self.assertEqual(arch, ArchitecturePattern.STATE_LADDER_NEGOTIATOR)
         self.assertTrue(is_persona_ui_editable("car-negotiator"))
@@ -80,6 +80,7 @@ class TestPersonaRegistry(unittest.TestCase):
             "kavya": ArchitecturePattern.GLASS_BUDDY,
             "glass-buddy": ArchitecturePattern.GLASS_BUDDY,
             "reservation-agent": ArchitecturePattern.GLASS_BUDDY,
+            "abhay": ArchitecturePattern.STATE_LADDER_NEGOTIATOR,
             "ranvir": ArchitecturePattern.STATE_LADDER_NEGOTIATOR,
         }
         for alias, pattern in expected.items():

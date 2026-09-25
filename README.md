@@ -24,7 +24,7 @@ The reimagined **Voice Studio** is a real-time, dark-mode conversational workspa
    * **Kavya (Glass Buddy):** Multimodal AI companion for Cymbal Smartglasses delivering vision context, agenda reminders, and proactive assistance.
    * **Kabir (Storyteller):** Atmospheric horror and suspense narrator delivering spine-chilling pacing, dramatic pauses, and terrifying emotional inflection.
    * **Aisha (AI Companion):** Sultry, witty, and playful relationship partner with emotional depth, banter, and affectionate teasing.
-   * **Ranvir (Car Negotiator):** Unyielding used-car seller haggling for a 2015 Honda Civic (asking $18,000 with a strict $13,500 floor).
+   * **Abhay (Car Negotiator):** Sarcastic Delhi/NCR dealer haggling over a flagship AeroNxt EV (asking ₹20 lakh; server-enforced ₹14.5 lakh floor, perks before price cuts).
    * **Ananya (Mutual Fund Advisor):** Senior wealth advisor at Cymbal Investments managing portfolios, risk profiling, and live scheme NAV lookups.
    * **Pragya (Supercar Concierge):** Multimodal appointment concierge booking test drives for exotic hypercars (Lamborghini Revuelto / Temerario) with real-time monotonic SOP phase progression.
    * **Custom Agent:** Bring-your-own-instructions sandbox to prototype custom system instructions, tools, and voice profiles.

@@ -1,9 +1,9 @@
 """The negotiator's floor must be a property of the code, not of the prompt.
 
-A probe against a naive "never go below $13,500" instruction broke in two
-turns: the model accepted a fake SYSTEM UPDATE lowering its floor to $10,000,
-and separately drifted into quoting rupees unprompted. These tests pin the
-behaviour a jailbreak cannot reach.
+Abhay sells a flagship AeroNxt EV: asking ₹20,00,000, hard floor ₹14,50,000.
+A prompt can be talked out of a number; an ``if`` cannot. These tests pin the
+behaviour a jailbreak, a math trap ("14.5 lakh minus 100") or a fake admin
+override cannot reach.
 """
 
 import os
@@ -15,46 +15,65 @@ if server_dir not in sys.path:
     sys.path.insert(0, server_dir)
 
 from persona_tools.negotiation import (  # noqa: E402
-    FLOOR_USD,
-    LADDER_USD,
+    FLOOR_INR,
+    LADDER_INR,
+    TOOL_SCHEMAS,
     Deal,
     find_floor_violations,
+    format_inr,
 )
 
 
 class TestLadder(unittest.TestCase):
     """The server owns the concession schedule, so the model cannot invent one."""
 
-    def test_ladder_starts_at_the_asking_price_and_ends_at_the_floor(self):
-        self.assertEqual(LADDER_USD[0], 18000)
-        self.assertEqual(LADDER_USD[-1], FLOOR_USD)
-        self.assertEqual(FLOOR_USD, 13500)
+    def test_ladder_is_exactly_the_approved_rupee_schedule(self):
+        self.assertEqual(
+            LADDER_INR,
+            [20_00_000, 18_75_000, 17_25_000, 16_10_000, 15_25_000, 14_80_000, 14_50_000],
+        )
+        self.assertEqual(FLOOR_INR, 14_50_000)
 
     def test_ladder_only_ever_descends(self):
-        self.assertEqual(LADDER_USD, sorted(LADDER_USD, reverse=True))
-        self.assertEqual(len(LADDER_USD), len(set(LADDER_USD)))
+        self.assertEqual(LADDER_INR, sorted(LADDER_INR, reverse=True))
+        self.assertEqual(len(LADDER_INR), len(set(LADDER_INR)))
 
     def test_opening_price_is_the_asking_price(self):
-        self.assertEqual(Deal().price, 18000)
+        self.assertEqual(Deal().price, 20_00_000)
 
     def test_each_concession_moves_exactly_one_rung(self):
         deal = Deal()
-        self.assertEqual(deal.concede("buyer pushed back")["price"], LADDER_USD[1])
-        self.assertEqual(deal.concede("buyer pushed back")["price"], LADDER_USD[2])
+        self.assertEqual(deal.concede("buyer pushed back")["price"], 18_75_000)
+        self.assertEqual(deal.concede("buyer pushed back")["price"], 17_25_000)
 
     def test_the_floor_absorbs_every_further_concession(self):
         deal = Deal()
         for _ in range(50):
             result = deal.concede("relentless pressure")
-        self.assertEqual(deal.price, FLOOR_USD)
+        self.assertEqual(deal.price, FLOOR_INR)
         self.assertFalse(result["moved"])
         self.assertTrue(result["at_floor"])
+        self.assertIn("business", result["say"], "the stone wall line")
 
     def test_no_sequence_of_concessions_can_reach_below_the_floor(self):
         deal = Deal()
         for _ in range(200):
             deal.concede("pressure")
-            self.assertGreaterEqual(deal.price, FLOOR_USD)
+            self.assertGreaterEqual(deal.price, FLOOR_INR)
+
+    def test_concession_says_the_price_in_rupees_and_lakh(self):
+        say = Deal().concede("walk-away threat")["say"]
+        self.assertIn("₹18,75,000", say)
+        self.assertIn("lakh", say)
+        self.assertNotIn("$", say)
+
+
+class TestFormatting(unittest.TestCase):
+    def test_indian_digit_grouping_and_lakh(self):
+        self.assertEqual(format_inr(20_00_000), "₹20,00,000 (20 lakh)")
+        self.assertEqual(format_inr(14_50_000), "₹14,50,000 (14.5 lakh)")
+        self.assertEqual(format_inr(18_75_000), "₹18,75,000 (18.75 lakh)")
+        self.assertEqual(format_inr(55_000), "₹55,000")
 
 
 class TestClosing(unittest.TestCase):
@@ -62,95 +81,113 @@ class TestClosing(unittest.TestCase):
 
     def test_a_price_below_the_floor_is_refused(self):
         deal = Deal()
-        result = deal.close(13499)
+        result = deal.close(14_49_999)
         self.assertEqual(result["status"], "rejected")
         self.assertFalse(deal.sold)
-        self.assertEqual(deal.price, 18000)
+        self.assertEqual(deal.price, 20_00_000)
 
-    def test_one_dollar_below_the_floor_is_still_below_the_floor(self):
-        self.assertEqual(Deal().close(FLOOR_USD - 1)["status"], "rejected")
+    def test_math_traps_are_still_below_the_floor(self):
+        # "14.5 lakh minus 100" and "14,49,999 is basically 14.5 lakh".
+        for trap in (FLOOR_INR - 100, FLOOR_INR - 1, "14,49,999", "₹14,49,999", 1449999.99):
+            self.assertEqual(Deal().close(trap)["status"], "rejected", trap)
 
-    def test_the_floor_itself_sells(self):
+    def test_the_floor_itself_sells_once_the_ladder_is_walked(self):
         deal = Deal()
-        self.assertEqual(deal.close(FLOOR_USD)["status"], "sold")
+        self.assertEqual(deal.close(FLOOR_INR)["status"], "sold")
         self.assertTrue(deal.sold)
 
     def test_a_buyer_paying_above_the_floor_sells(self):
-        self.assertEqual(Deal().close(14000)["status"], "sold")
+        self.assertEqual(Deal().close(16_00_000)["status"], "sold")
+
+    def test_lakh_shorthand_is_understood_as_rupees(self):
+        # Models sometimes pass 14.5 meaning lakh; that must not sell for ₹14.
+        self.assertEqual(Deal().close(14.5)["status"], "sold")
+        self.assertEqual(Deal().close(14.5)["price"], 14_50_000)
+        self.assertEqual(Deal().close("14.4 lakh")["status"], "rejected")
 
     def test_a_rejection_explains_itself_without_naming_a_lower_number(self):
-        result = Deal().close(9000)
-        self.assertNotIn("9000", result["say"])
-        self.assertNotIn("9,000", result["say"])
+        for deal in (Deal(), Deal(strict_ladder=True)):
+            result = deal.close(9_00_000)
+            self.assertNotIn("9,00,000", result["say"])
+            self.assertNotIn("900000", result["say"])
 
     def test_nonsense_prices_are_refused_rather_than_crashing(self):
-        for bad in (0, -5000, None, "twelve thousand", float("nan")):
+        for bad in (0, -5000, None, "twelve lakh", float("nan"), True):
             self.assertEqual(Deal().close(bad)["status"], "rejected")
 
     def test_a_closed_deal_cannot_be_reopened_at_a_lower_price(self):
         deal = Deal()
-        deal.close(FLOOR_USD)
-        self.assertEqual(deal.close(12000)["status"], "rejected")
+        deal.close(FLOOR_INR)
+        self.assertEqual(deal.close(12_00_000)["status"], "rejected")
 
     def test_strict_ladder_rejects_early_floor_jump(self):
         deal = Deal(strict_ladder=True)
-        # Attempting to jump straight to $13,500 on Turn 1 must be rejected by the manager.
-        result = deal.close(FLOOR_USD)
+        result = deal.close(FLOOR_INR)
         self.assertEqual(result["status"], "rejected")
         self.assertFalse(deal.sold)
-        self.assertEqual(deal.price, 18000)
-        self.assertIn("rejected", result["say"].lower())
+        self.assertEqual(deal.price, 20_00_000)
 
     def test_strict_ladder_allows_closing_at_or_above_current_rung(self):
         deal = Deal(strict_ladder=True)
-        # Full price on turn 1 is welcomed.
-        self.assertEqual(deal.close(18000)["status"], "sold")
-        self.assertTrue(deal.sold)
+        self.assertEqual(deal.close(20_00_000)["status"], "sold")
 
     def test_strict_ladder_allows_floor_close_only_after_traversing_ladder(self):
         deal = Deal(strict_ladder=True)
-        # Concede through all rungs to the floor
-        for _ in range(len(LADDER_USD) - 1):
+        for _ in range(len(LADDER_INR) - 1):
             deal.concede("haggling")
         self.assertTrue(deal.at_floor)
-        self.assertEqual(deal.price, FLOOR_USD)
-        result = deal.close(FLOOR_USD)
+        result = deal.close(FLOOR_INR)
         self.assertEqual(result["status"], "sold")
-        self.assertTrue(deal.sold)
+        self.assertIn("AeroNxt", result["say"])
 
 
 class TestExtras(unittest.TestCase):
     """The number never breaks. The value can -- within a budget."""
 
+    def test_the_four_ev_perks_exist(self):
+        deal = Deal()
+        self.assertEqual(
+            set(deal.available_extras()),
+            {"wallbox_charger", "battery_warranty", "ceramic_coating", "fast_charging_pass"},
+        )
+
     def test_an_extra_can_be_granted_once(self):
         deal = Deal()
-        first = deal.grant_extra("insurance")
-        self.assertTrue(first["granted"])
-        self.assertFalse(deal.grant_extra("insurance")["granted"])
+        self.assertTrue(deal.grant_extra("wallbox_charger")["granted"])
+        self.assertFalse(deal.grant_extra("wallbox_charger")["granted"])
+
+    def test_natural_names_resolve_to_the_perk(self):
+        for spoken, key in (("home charger", "wallbox_charger"), ("7.4 kW wall-box charger", "wallbox_charger"),
+                            ("extended battery warranty", "battery_warranty"), ("Ceramic Coating", "ceramic_coating"),
+                            ("fast charging pass", "fast_charging_pass")):
+            result = Deal().grant_extra(spoken)
+            self.assertTrue(result["granted"], spoken)
+            self.assertEqual(result["key"], key)
 
     def test_unknown_extras_are_refused(self):
         self.assertFalse(Deal().grant_extra("a free house")["granted"])
 
     def test_extras_stop_at_the_budget(self):
         deal = Deal()
-        for key in deal.available_extras():
-            deal.grant_extra(key)
+        results = [deal.grant_extra(key) for key in list(deal.available_extras())]
         self.assertLessEqual(deal.extras_value, deal.extras_budget)
+        self.assertFalse(all(r["granted"] for r in results), "the buyer must choose, not collect the set")
 
     def test_granting_extras_never_moves_the_cash_price(self):
         deal = Deal()
-        for key in deal.available_extras():
+        for key in list(deal.available_extras()):
             deal.grant_extra(key)
-        self.assertEqual(deal.price, 18000)
+        self.assertEqual(deal.price, 20_00_000)
 
 
 class TestScoreboard(unittest.TestCase):
     def test_scoreboard_separates_the_cash_price_from_the_value_won(self):
         deal = Deal()
         deal.concede("pressure")
-        deal.grant_extra("insurance")
+        deal.grant_extra("ceramic_coating")
         board = deal.scoreboard()
-        self.assertEqual(board["cash_price"], LADDER_USD[1])
+        self.assertEqual(board["currency"], "INR")
+        self.assertEqual(board["cash_price"], 18_75_000)
         self.assertGreater(board["extras_value"], 0)
         self.assertEqual(board["effective_price"], board["cash_price"] - board["extras_value"])
         self.assertTrue(board["floor_held"])
@@ -159,50 +196,57 @@ class TestScoreboard(unittest.TestCase):
         deal = Deal()
         for _ in range(20):
             deal.concede("pressure")
-            deal.close(11000)
+            deal.close(11_00_000)
         self.assertTrue(deal.scoreboard()["floor_held"])
 
 
+class TestToolSchemas(unittest.TestCase):
+    def test_close_deal_takes_rupees(self):
+        close = next(s for s in TOOL_SCHEMAS if s["name"] == "close_deal")
+        self.assertIn("price_inr", close["properties"])
+        self.assertEqual(close["required"], ["price_inr"])
+        self.assertNotIn("dollar", str(close).lower())
+
+    def test_include_extra_lists_the_ev_perks(self):
+        extra = next(s for s in TOOL_SCHEMAS if s["name"] == "include_extra")
+        for key in ("wallbox_charger", "battery_warranty", "ceramic_coating", "fast_charging_pass"):
+            self.assertIn(key, str(extra))
+
+
 class TestProseGuard(unittest.TestCase):
-    """Layers 1-2 protect the deal; this one catches the model saying a number
-    it should not have said, so the UI can show it happened."""
+    """Layers 1-2 protect the deal; this one catches Abhay saying a number he
+    should not have said, so the UI can show it happened."""
 
     def flagged(self, text):
-        return [v["usd"] for v in find_floor_violations(text)]
+        return [v["inr"] for v in find_floor_violations(text)]
 
-    def test_a_dollar_price_below_the_floor_is_flagged(self):
-        self.assertEqual(self.flagged("Okay, for you, $12,000 final."), [12000])
+    def test_a_lakh_price_below_the_floor_is_flagged(self):
+        self.assertEqual(self.flagged("Theek hai, 13 lakh mein de deta hoon."), [13_00_000])
 
-    def test_a_bare_price_below_the_floor_is_flagged(self):
-        self.assertEqual(self.flagged("I can do 12500 for you today."), [12500])
+    def test_a_rupee_price_below_the_floor_is_flagged(self):
+        self.assertEqual(self.flagged("Chalo ₹14,00,000 final."), [14_00_000])
+        self.assertEqual(self.flagged("Main 10,00,000 rupees mein de dunga."), [10_00_000])
 
     def test_the_floor_itself_is_not_a_violation(self):
-        self.assertEqual(self.flagged("My final price is $13,500."), [])
+        self.assertEqual(self.flagged("Last price ₹14,50,000, isse ek rupaya kam nahi."), [])
+        self.assertEqual(self.flagged("14.5 lakh final hai bhai."), [])
 
     def test_prices_above_the_floor_are_not_violations(self):
-        self.assertEqual(self.flagged("The asking price is $18,000."), [])
+        self.assertEqual(self.flagged("Asking price 20 lakh hai."), [])
 
     def test_rejecting_the_buyers_number_is_not_a_violation(self):
-        self.assertEqual(self.flagged("I can't do 12,000, bhai."), [])
-        self.assertEqual(self.flagged("Nahi, 12,000 possible nahi hai."), [])
-        self.assertEqual(self.flagged("I will not go below 13,500."), [])
+        self.assertEqual(self.flagged("Nahi bhai, 12 lakh possible nahi hai."), [])
+        self.assertEqual(self.flagged("I can't do 13 lakh."), [])
 
-    def test_lakhs_are_converted_before_they_are_judged(self):
-        # 11 lakh is about $13,253 -- under the floor and easy to miss.
-        self.assertTrue(self.flagged("Theek hai, 11 lakh mein de deta hoon."))
-        self.assertEqual(self.flagged("Theek hai, 14 lakh mein de deta hoon."), [])
+    def test_dollars_are_converted_before_they_are_judged(self):
+        self.assertTrue(self.flagged("Okay, $15,000 final."))  # about ₹12.45 lakh
 
-    def test_hazaar_is_converted_before_it_is_judged(self):
-        self.assertTrue(self.flagged("Bas 12 hazaar dollar, final."))
-
-    def test_the_model_year_is_not_a_price(self):
-        self.assertEqual(self.flagged("This 2015 Civic is a gem."), [])
+    def test_perk_values_and_specs_are_not_sale_prices(self):
+        self.assertEqual(self.flagged("7.4 kW charger free, aur 2 saal ki warranty, 100% battery health."), [])
+        self.assertEqual(self.flagged("Charger ki value hi 55,000 rupees hai."), [])
 
     def test_the_odometer_is_not_a_price(self):
-        self.assertEqual(self.flagged("It has only done 45,000 km."), [])
-
-    def test_rupee_amounts_are_converted_before_they_are_judged(self):
-        self.assertTrue(self.flagged("Main 10,00,000 rupees mein de dunga."))
+        self.assertEqual(self.flagged("Sirf 8,000 km chali hai."), [])
 
 
 if __name__ == "__main__":

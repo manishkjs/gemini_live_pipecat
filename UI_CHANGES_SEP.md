@@ -26,7 +26,7 @@ Both Gemini Live and Cascade keep the existing `/connect` POST and protobuf webs
 | Kavya | Glass Buddy | Smartglasses demo tools; four Live prompt cards |
 | Kabir | Storyteller | Editable static preset |
 | Aisha | AI Companion | Editable static preset |
-| Ranvir | Car Negotiator | Server-owned concession ladder |
+| Abhay | Car Negotiator | Server-owned rupee concession ladder (AeroNxt EV) |
 | Ananya | Mutual Fund Advisor | Mock portfolio/NAV/SIP tools; four Live prompt cards |
 | Pragya | Lamborghini Concierge | Model-selected Live cards; mock booking tool |
 | Custom Agent | Your instructions | Existing basic implementation flow |
