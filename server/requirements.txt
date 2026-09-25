@@ -21,12 +21,12 @@ flatbuffers==25.2.10
 frozenlist==1.8.0
 fsspec==2026.4.0
 google-api-core==2.30.3
-google-auth==2.53.0
+google-auth==2.58.0
 google-cloud-aiplatform
 google-cloud-secret-manager>=2.30.0
 google-cloud-speech==2.39.0
 google-cloud-texttospeech==2.36.0
-google-genai==2.4.0
+google-genai==2.25.0
 googleapis-common-protos==1.75.0
 grpcio==1.80.0
 grpcio-status==1.80.0

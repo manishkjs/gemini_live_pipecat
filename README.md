@@ -10,23 +10,50 @@ A high-performance, real-time voice-to-voice conversational AI application built
 
 ---
 
-## 🖥️ Bot Interface & User Experience
+## 🖥️ Voice Studio Interface & User Experience
 
-![Gemini Live Voice Bot UI](./bot_UI.jpeg)
+![Gemini Live Voice Studio UI](./bot_UI.jpeg)
 
-### 🎙️ How to Use the UI:
-1. **Select Flow:** Choose between **Gemini Live (Native Duplex Audio)** (default) or **STT + LLM + TTS (Cascaded)**.
-2. **Configure Model & Voice:**
-   * **Gemini Live Models:** `gemini-3.5-flash-live-preview`, `gemini-3.5-flash-lite-live-preview`, `gemini-live-2.5-flash-native-audio`
-   * **STT-LLM-TTS Stack:**
-     - **STT:** `gemini-3.5-transcribe-live-aistudio` (AI Studio - Default), `gemini-3.5-transcribe-live` (Vertex AI), `chirp_3` (Cloud Speech v2 Multilingual), `chirp_2`, `latest_long`, `telephony`
-     - **LLM:** `gemini-3.5-flash-lite` (Vertex AI - Default), `gemini-3.7-flash`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
-     - **TTS:** `gemini-3.1-flash-tts-preview` (Gemini 3.1 Flash TTS - Default), `gemini-2.5-flash-lite-preview-tts`, `gemini-2.5-flash-preview-tts`, Google Cloud TTS (Chirp 3 HD), or Instant Custom Voice Cloning
-   * **Voice:** Aoede, Puck, Charon, Fenrir, or Kore
-   * **Language:** Hindi, English, Spanish, French, etc.
-3. **Customize System Instructions:** Modify persona or behavior directly in the prompt textarea.
-4. **Connect & Speak:** Click **Connect**, grant microphone access, and start speaking naturally.
-5. **Inspect Live Telemetry:** Click the **`⚡ DIAGNOSTIC ENGINE`** badge at the bottom-right for live TTFB gauges or click **`↗ Full Dashboard`** / **`↗️ Open in LangSmith`** for trace trees.
+The reimagined **Voice Studio** is a real-time, dark-mode conversational workspace engineered for low-latency duplex voice AI, featuring 8 specialized Indian enterprise personas, instant conversational engine switching (Native Gemini Live vs. Cascaded STT-LLM-TTS), real-time cost metering, monotonic SOP phase tracking, and in-depth turn diagnostics.
+
+### 🎙️ Step-by-Step User Workflow:
+
+1. **Select an Enterprise Persona:**
+   Choose from 8 built-in personas in the left sidebar (or launch the **Custom Agent** sandbox):
+   * **Meera (Debt Collector):** High-urgency recovery officer from Sahaj Finance handling overdue borrower objections with composure and strict payment commitments.
+   * **Kavya (Glass Buddy):** Multimodal AI companion for Cymbal Smartglasses delivering vision context, agenda reminders, and proactive assistance.
+   * **Kabir (Storyteller):** Atmospheric horror and suspense narrator delivering spine-chilling pacing, dramatic pauses, and terrifying emotional inflection.
+   * **Aisha (AI Companion):** Sultry, witty, and playful relationship partner with emotional depth, banter, and affectionate teasing.
+   * **Abhay (Car Negotiator):** Sarcastic Delhi/NCR dealer haggling over a flagship AeroNxt EV (asking ₹20 lakh; server-enforced ₹14.5 lakh floor, perks before price cuts).
+   * **Ananya (Mutual Fund Advisor):** Senior wealth advisor at Cymbal Investments managing portfolios, risk profiling, and live scheme NAV lookups.
+   * **Pragya (Supercar Concierge):** Multimodal appointment concierge booking test drives for exotic hypercars (Lamborghini Revuelto / Temerario) with real-time monotonic SOP phase progression.
+   * **Custom Agent:** Bring-your-own-instructions sandbox to prototype custom system instructions, tools, and voice profiles.
+
+2. **Choose the Conversational Engine:**
+   Toggle the **ENGINE** switch in the top header:
+   * **Gemini Live (Native Duplex Audio — Default):** End-to-end multimodal audio-in / audio-out streaming via WebSocket directly to **Gemini Live on Vertex AI** (`gemini-3.5-flash-live-preview`, `gemini-live-2.5-flash-native-audio`), achieving sub-500ms TTFB turnaround.
+   * **Cascade Mode (STT + LLM + TTS):** Modular pipeline combining Gemini 3.5 Transcribe Live / Cloud Speech Chirp 3 HD + Gemini 3.7 Flash / 2.5 Flash LLM + Gemini TTS (`gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-preview-tts`) or Cloud TTS (Chirp 3 HD).
+
+3. **Configure Voice & Audio Hardware:**
+   Click **Settings** (⚙️) in the top-right navigation bar to configure:
+   * **Voice Models:** 29 verified celestial voices (Aoede, Puck, Charon, Fenrir, Kore, Zephyr, Sulafat, etc.) with automatic cross-engine voice-name sanitization and fallback.
+   * **Languages:** Hindi (`hi-IN`), Indian English (`en-IN`), US English (`en-US`), Spanish (`es-ES`), French (`fr-FR`), and more.
+   * **Audio Devices & Processing:** Select microphone and speaker hardware, configure echo cancellation, and adjust input noise suppression.
+
+4. **Inspect & Tweak System Instructions:**
+   Review the active agent directives in the **System Instructions** card. Click **Edit / Customize** to adjust operational rules on the fly (locked automatically for state-machine-governed architectures like Pragya to preserve SOP contracts).
+
+5. **Connect & Speak (Full-Duplex Voice):**
+   Click **Start Gemini Live** (or **Start Cascade**), grant microphone permission, and begin speaking naturally. The central animated audio orb pulses dynamically with duplex speech energy. Full barge-in interruption detection allows you to interrupt the bot at any millisecond.
+
+6. **Track Monotonic SOP Funnels (Pragya):**
+   For structured multi-phase workflows, the **SOP Phase Bar** automatically advances through numbered milestones (e.g. `1. Opening` → `2. Discovery` → `3. PIN Code` → `4. Confirmed Booking`), derived deterministically on the server from caller speech transcripts with zero extra LLM tool tokens.
+
+7. **Monitor Real-Time Cascade Cost:**
+   In Cascade mode, the live **Cascade Cost Meter** computes exact turn-by-turn and cumulative session spend broken down across STT audio seconds, LLM prompt/completion tokens, and TTS characters according to official Google Cloud rate cards.
+
+8. **Inspect Live Observability & Telemetry:**
+   Click **Observability** at the top right to open the slide-out telemetry drawer for live TTFB gauges, turn-by-turn latency stage waterfalls (STT offset, LLM TTFT, TTS synthesis), and direct links to public **LangSmith** trace graphs (requiring zero credentials or login).
 
 ---
 
@@ -126,11 +153,11 @@ cd gemini_live_pipecat
    ```
    *The backend starts listening on `http://0.0.0.0:7860`.*
 
-### 3. Build & Run the Frontend Client
+### 3. Build & Run the Frontend Client (Voice Studio)
 
-1. Open a **new terminal** and navigate to the `client/` directory:
+1. Open a **new terminal** and navigate to the `demos/voice-studio/` directory:
    ```bash
-   cd client
+   cd demos/voice-studio
    npm install
    ```
 
@@ -140,11 +167,11 @@ cd gemini_live_pipecat
    ```
    *Open `http://localhost:5173` in your browser.*
 
-3. *(Optional)* To test production builds locally:
+3. To build the production client locally:
    ```bash
    npm run build
    ```
-   *Vite compiles both `index.html` (Main Voice Demo) and `diagnostics.html` (`/diagnostics` Telemetry Console) into `client/dist/`.*
+   *Vite compiles the Voice Studio single-page application into `demos/voice-studio/dist/`, which is automatically mounted and served by the FastAPI server at `/`.*
 
 ---
 
@@ -160,8 +187,8 @@ Every conversation automatically initializes a trace lifecycle managed by `serve
    - Function calls emit a `Tool_{name}` span with execution latency and returned payload.
    - User speech interruptions emit a `UserInterruption_Turn_{i}` span with speaking duration.
 
-### Accessing the Diagnostics Console
-* **Main Voice Demo (`/`):** Click on the floating **`⚡ DIAGNOSTIC ENGINE`** badge at the bottom-right of the screen to open the slide-out drawer or click `↗ Full Dashboard`.
+### Accessing Observability & Diagnostics
+* **Voice Studio Telemetry Drawer:** Click the **`Observability`** button in the top navigation bar to open the slide-out telemetry drawer featuring live TTFB gauges, turn-by-turn latency stage waterfalls (STT offset, LLM TTFT, TTS synthesis), and direct public LangSmith links.
 * **Full-Screen Console (`/diagnostics`):** Open `https://<YOUR_APP_URL>/diagnostics` to view:
   * ⚡ **Live TTFB Latency** Gauge
   * 📊 **Token Usage** (Prompt & Response counters)

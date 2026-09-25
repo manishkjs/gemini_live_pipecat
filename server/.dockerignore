@@ -3,3 +3,7 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+
+# Also exclude coordination notes when server/ is the build context.
+temp.md
+**/temp.md
