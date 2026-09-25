@@ -1235,6 +1235,17 @@ async def run_agent(
 
     if is_aistudio_llm:
         gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+        if not gemini_api_key:
+            try:
+                from google.cloud import secretmanager
+                sm_client = secretmanager.SecretManagerServiceClient()
+                sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
+                sm_res = sm_client.access_secret_version(request={"name": sm_name})
+                gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
+                if gemini_api_key:
+                    os.environ["GEMINI_API_KEY"] = gemini_api_key
+            except Exception as sm_err:
+                logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
         aistudio_kwargs = {
             "api_key": gemini_api_key,
             "settings": GoogleLLMService.Settings(
@@ -1354,10 +1365,15 @@ async def run_agent(
     initial_greeting = "नमस्ते!" if is_hindi else "Hello!"
 
     if skip_stt:
-        from pipecat.services.google.llm import GoogleLLMContext
         from processors.audio_accumulator import AudioAccumulator
-        context = GoogleLLMContext()
-        context.set_messages([
+        if vad_processor is None:
+            # AudioAccumulator requires VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame
+            # to segment raw user audio when streaming STT is bypassed.
+            vad_analyzer = SileroVADAnalyzer(
+                params=VADParams(confidence=0.7, start_secs=0.2, stop_secs=0.4, min_volume=0.6)
+            )
+            vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
+        context = LLMContext(messages=[
             {"role": "user", "content": initial_greeting}
         ])
         stt_languages = [lang.strip() for lang in stt_language.split(',')] if stt_language else ["en-US"]

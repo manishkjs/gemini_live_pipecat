@@ -111,10 +111,13 @@ class AudioAccumulator(FrameProcessor):
 
                 audio_data = b''.join([f.audio for f in self._audio_frames])
 
-                self._context.add_audio_frames_message(
+                import inspect
+                maybe_coro = self._context.add_audio_frames_message(
                     audio_frames=self._audio_frames,
                     text="The user is speaking. Here is the audio:"
                 )
+                if inspect.iscoroutine(maybe_coro):
+                    await maybe_coro
                 self._audio_frames = []
 
                 await self.push_frame(LLMContextFrame(self._context))
