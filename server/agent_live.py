@@ -1027,6 +1027,15 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
     def _supports_non_blocking_tools(self) -> bool:
         return True
 
+    @staticmethod
+    def _get_credentials(credentials, credentials_path):
+        from runtime_compat import _ensure_valid_adc
+        cached = _ensure_valid_adc()
+        if not credentials and not credentials_path and cached is not None:
+            return cached
+        return GeminiLiveVertexLLMService._get_credentials(credentials, credentials_path)
+
+
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
@@ -1396,7 +1405,24 @@ def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
     import io
     from PIL import Image, ImageOps
 
+    target_w, target_h = 704, 1280
     with Image.open(io.BytesIO(raw_bytes)) as img:
+        orig_format = img.format
+        exif = img.getexif()
+        orientation = exif.get(0x0112, 1) if exif else 1
+        if (
+            orig_format == "PNG"
+            and img.size == (target_w, target_h)
+            and img.mode == "RGB"
+            and orientation == 1
+            and len(raw_bytes) <= 4_800_000
+        ):
+            return raw_bytes, {
+                "orig_size": f"{target_w}x{target_h}",
+                "norm_size": f"{target_w}x{target_h}",
+                "bytes": len(raw_bytes),
+            }
+
         img = ImageOps.exif_transpose(img)
         orig_w, orig_h = img.size
         if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
@@ -1407,22 +1433,24 @@ def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
         else:
             rgb_img = img.convert("RGB")
 
-        target_w, target_h = 704, 1280
         # Bias vertical crop slightly toward top (0.22) to preserve head & shoulders bust framing
-        fitted = ImageOps.fit(
-            rgb_img,
-            (target_w, target_h),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.22),
-        )
+        if rgb_img.size == (target_w, target_h):
+            fitted = rgb_img
+        else:
+            fitted = ImageOps.fit(
+                rgb_img,
+                (target_w, target_h),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.22),
+            )
         out = io.BytesIO()
-        fitted.save(out, format="PNG", optimize=True)
+        fitted.save(out, format="PNG", compress_level=6)
         norm_bytes = out.getvalue()
 
         # If PNG exceeds 4.8 MB, downscale slightly while keeping >= 704x1280
         if len(norm_bytes) > 4_800_000:
             out = io.BytesIO()
-            fitted.quantize(colors=256).convert("RGB").save(out, format="PNG", optimize=True)
+            fitted.quantize(colors=256).convert("RGB").save(out, format="PNG", compress_level=6)
             norm_bytes = out.getvalue()
 
         return norm_bytes, {
@@ -1953,7 +1981,8 @@ async def run_agent_live(
         enable_usage_metrics=True,
     ))
     
-    task.add_observer(WhiskerObserver(pipeline))
+    if os.getenv("ENABLE_WHISKER") == "1":
+        task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

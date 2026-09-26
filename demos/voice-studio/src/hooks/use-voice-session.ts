@@ -276,13 +276,23 @@ export function useVoiceSession() {
     resetConversation();
   };
 
-  const startBackend = async (engineOverride?: Engine) => {
-    if (starting.current || session.current) return;
-    const targetEngine = engineOverride || settings.engine;
-    const targetVoice = reconcileVoiceForEngine(settings, targetEngine);
-    const targetBackendUrl = settings.backendUrl?.trim() || getDefaultBackendUrl();
-    const activeSettings: SessionSettings = {
+  const startBackend = async (engineOverride?: Engine, overrides?: Partial<SessionSettings>) => {
+    if (starting.current || session.current) {
+      if (overrides) {
+        await endSession();
+      } else {
+        return;
+      }
+    }
+    const mergedSettings: SessionSettings = {
       ...settings,
+      ...overrides,
+    };
+    const targetEngine = engineOverride || mergedSettings.engine;
+    const targetVoice = reconcileVoiceForEngine(mergedSettings, targetEngine);
+    const targetBackendUrl = mergedSettings.backendUrl?.trim() || getDefaultBackendUrl();
+    const activeSettings: SessionSettings = {
+      ...mergedSettings,
       engine: targetEngine,
       voice: targetVoice,
       backendUrl: targetBackendUrl,
@@ -290,6 +300,7 @@ export function useVoiceSession() {
     };
     setSettings((current) => ({
       ...current,
+      ...overrides,
       engine: targetEngine,
       voice: targetVoice,
       sessionId: activeSettings.sessionId,
@@ -299,6 +310,7 @@ export function useVoiceSession() {
     starting.current = true;
     setSource("backend");
     setPhase("connecting");
+
     const current = ++run.current;
     const updateResponse = (responseId: string, patch: MessageMetrics) => {
       const metrics = { ...responseMetrics.current.get(responseId), ...patch, responseId };
@@ -542,6 +554,16 @@ export function useVoiceSession() {
 
   const duration = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
+  const applyCustomAvatarAndStart = async (dataUrl: string) => {
+    await startBackend("live", {
+      engine: "live",
+      avatarEnabled: true,
+      avatarName: "custom",
+      model: "gemini-3.8-live",
+      avatarCustomImage: dataUrl,
+    });
+  };
+
   return {
     // state
     settings, phase, source, messages, elapsed, muted, sound, error, copied,
@@ -558,9 +580,10 @@ export function useVoiceSession() {
     // derived
     active, persona, custom, engineName, phaseLabel, duration, reduced,
     // actions
-    endSession, choosePersona, chooseEngine, startBackend, toggleSound,
+    endSession, choosePersona, chooseEngine, startBackend, applyCustomAvatarAndStart, toggleSound,
     update, updateBool, updateNumber, copyTranscript,
   };
 }
+
 
 export type VoiceStudio = ReturnType<typeof useVoiceSession>;

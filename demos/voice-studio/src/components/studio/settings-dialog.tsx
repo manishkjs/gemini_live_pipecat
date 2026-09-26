@@ -94,7 +94,7 @@ function Picker({
 export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   const {
     active, custom, engineName, persona, settings, settingsOpen, setSettingsOpen,
-    startBackend, update, updateBool, updateNumber, currentPhase,
+    startBackend, applyCustomAvatarAndStart, update, updateBool, updateNumber, currentPhase,
   } = studio;
 
   const isLive = settings.engine === "live";
@@ -102,6 +102,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   // Webcam capture state for Custom Portrait (704×1280 9:16 RGB PNG)
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState<string>("");
+  const [avatarProcessing, setAvatarProcessing] = useState(false);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
 
@@ -149,13 +150,17 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
     const videoEl = cameraVideoRef.current;
     if (!videoEl) return;
     try {
+      setAvatarProcessing(true);
+      setCameraError("");
       const { dataUrl } = captureVideoFrameToAvatarPng(videoEl, true);
-      update("avatarCustomImage", dataUrl);
       stopCamera();
+      void applyCustomAvatarAndStart(dataUrl).finally(() => setAvatarProcessing(false));
     } catch (err) {
+      setAvatarProcessing(false);
       setCameraError(err instanceof Error ? err.message : "Failed to capture frame.");
     }
-  }, [update, stopCamera]);
+  }, [applyCustomAvatarAndStart, stopCamera]);
+
 
   // Browser Microphone Recorder state for Custom Voice Clone (24 kHz 16-bit mono WAV)
   const [voiceRecording, setVoiceRecording] = useState(false);
@@ -508,48 +513,91 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                       <strong>Custom Portrait Upload / Camera (<code>customized_avatar</code> · Auto 704×1280 9:16 PNG)</strong>
                       <p>
                         Take a live photo with your webcam or upload any portrait image—automatically cropped &amp; normalized to Vertex AI&apos;s required{" "}
-                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format.
+                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format and starts processing immediately.
                       </p>
                     </div>
                     <div className="avatar-custom-upload-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-                      <button
-                        type="button"
-                        disabled={active}
-                        onClick={() => (cameraOpen ? stopCamera() : void startCamera())}
-                        className="avatar-upload-btn"
-                        style={{
-                          cursor: active ? "not-allowed" : "pointer",
-                          background: cameraOpen ? "rgba(239, 68, 68, 0.16)" : undefined,
-                          borderColor: cameraOpen ? "rgba(239, 68, 68, 0.45)" : undefined,
-                        }}
-                      >
-                        <Camera size={14} />
-                        <span>{cameraOpen ? "Close Camera" : "Take Photo (Camera)"}</span>
-                      </button>
-                      <label className="avatar-upload-btn">
+                      {!cameraOpen ? (
+                        <button
+                          type="button"
+                          disabled={avatarProcessing}
+                          onClick={() => void startCamera()}
+                          className="avatar-upload-btn"
+                          style={{ cursor: avatarProcessing ? "wait" : "pointer" }}
+                        >
+                          <Camera size={14} />
+                          <span>Take Photo (Camera)</span>
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={snapCameraPhoto}
+                            className="avatar-upload-btn"
+                            style={{
+                              background: "rgba(16, 185, 129, 0.22)",
+                              borderColor: "rgba(16, 185, 129, 0.55)",
+                              color: "#ecfdf5",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <Camera size={14} />
+                            <span>Snap Photo &amp; Start</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={stopCamera}
+                            className="avatar-upload-btn"
+                            style={{
+                              cursor: "pointer",
+                              background: "rgba(239, 68, 68, 0.16)",
+                              borderColor: "rgba(239, 68, 68, 0.45)",
+                            }}
+                          >
+                            <span>Close Camera</span>
+                          </button>
+                        </>
+                      )}
+                      <label className="avatar-upload-btn" style={{ cursor: avatarProcessing ? "wait" : "pointer" }}>
                         <Upload size={14} />
-                        <span>{settings.avatarCustomImage ? "Replace Portrait" : "Upload Portrait"}</span>
+                        <span>
+                          {avatarProcessing
+                            ? "Processing 704×1280 Portrait…"
+                            : settings.avatarCustomImage
+                              ? "Replace Portrait"
+                              : "Upload Portrait"}
+                        </span>
                         <input
                           type="file"
                           accept="image/png,image/jpeg,image/webp"
-                          disabled={active}
+                          disabled={avatarProcessing}
                           style={{ display: "none" }}
                           onChange={async (e) => {
-                            const file = e.target.files?.[0];
+                            const file = e.currentTarget.files?.[0];
+                            e.currentTarget.value = "";
                             if (!file) return;
                             try {
                               setCameraError("");
+                              setAvatarProcessing(true);
                               const { dataUrl } = await normalizeAvatarPortraitFile(file);
-                              update("avatarCustomImage", dataUrl);
+                              await applyCustomAvatarAndStart(dataUrl);
                             } catch (err) {
                               setCameraError(err instanceof Error ? err.message : "Failed to process portrait.");
+                            } finally {
+                              setAvatarProcessing(false);
                             }
                           }}
                         />
                       </label>
                       {settings.avatarCustomImage && (
                         <div className="avatar-custom-preview">
-                          <img src={settings.avatarCustomImage} alt="Custom avatar preview (704x1280 9:16 PNG)" />
+                          <img
+                            src={settings.avatarCustomImage}
+                            alt="Custom avatar preview (704x1280 9:16 PNG)"
+                            title="Click portrait to start Live Avatar"
+                            style={{ cursor: "pointer" }}
+                            onClick={() => void applyCustomAvatarAndStart(settings.avatarCustomImage!)}
+                          />
                           <span className="avatar-norm-spec-tag">704×1280 PNG</span>
                           <button
                             type="button"
@@ -584,6 +632,8 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                           autoPlay
                           playsInline
                           muted
+                          onClick={snapCameraPhoto}
+                          title="Click video frame to capture 704×1280 portrait and start"
                           style={{
                             width: "176px",
                             height: "320px",
@@ -591,6 +641,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                             borderRadius: "8px",
                             border: "1px solid rgba(255,255,255,0.2)",
                             transform: "scaleX(-1)",
+                            cursor: "pointer",
                           }}
                         />
                         <div style={{ display: "flex", gap: "8px" }}>
@@ -620,6 +671,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                     )}
                   </div>
                 )}
+
               </div>
             )}
           </div>}

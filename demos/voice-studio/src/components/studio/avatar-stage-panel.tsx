@@ -1,6 +1,8 @@
-import { Video, Sparkles, Settings2 } from "lucide-react";
+import { useState } from "react";
+import { Video, Sparkles, Settings2, Upload, Camera } from "lucide-react";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 import { AVATAR_CHARACTERS, fallbackHeadline } from "@/lib/voice-session";
+import { normalizeAvatarPortraitFile } from "@/lib/media-capture";
 import PersonaAvatar from "./persona-avatar";
 
 /**
@@ -19,7 +21,9 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
     avatarFallbackNotice,
     update,
     setSettingsOpen,
+    applyCustomAvatarAndStart,
   } = studio;
+  const [uploadBusy, setUploadBusy] = useState(false);
 
   const activeAvatarChar =
     AVATAR_CHARACTERS.find((c) => c.id === (settings.avatarName || "auto")) ?? AVATAR_CHARACTERS[0];
@@ -50,15 +54,45 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
           </span>
           <span className="avatar-half-spec">704×1280 HD · 24 kHz AAC</span>
         </div>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className="avatar-half-config-btn"
-          title="Open Avatar & Voice Settings"
-        >
-          <Settings2 size={13} />
-          <span>Avatar Options</span>
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label
+            className="avatar-half-config-btn"
+            style={{ cursor: "pointer" }}
+            title="Upload a portrait image to immediately start Custom 3.8 Live Avatar"
+          >
+            <Upload size={13} />
+            <span>{uploadBusy ? "Starting…" : "Upload Photo"}</span>
+            <input
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.currentTarget.value = "";
+                if (!file) return;
+                setUploadBusy(true);
+                try {
+                  const { dataUrl } = await normalizeAvatarPortraitFile(file);
+                  await applyCustomAvatarAndStart(dataUrl);
+                } catch {
+                  setSettingsOpen(true);
+                } finally {
+                  setUploadBusy(false);
+                }
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="avatar-half-config-btn"
+            title="Open Avatar & Camera Settings"
+          >
+            <Camera size={13} />
+            <Settings2 size={13} />
+            <span>Camera &amp; Options</span>
+          </button>
+        </div>
       </div>
 
       <div className="avatar-half-stage-center">
@@ -80,6 +114,13 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
                     src={settings.avatarCustomImage}
                     alt="Custom portrait (704x1280 9:16 PNG)"
                     className="avatar-custom-stage-img"
+                    onClick={() => {
+                      if (!active && phase === "idle") {
+                        void applyCustomAvatarAndStart(settings.avatarCustomImage!);
+                      }
+                    }}
+                    style={{ cursor: !active && phase === "idle" ? "pointer" : "default" }}
+                    title={!active && phase === "idle" ? "Click portrait to start Custom 3.8 Live Avatar" : undefined}
                   />
                 ) : (
                   <PersonaAvatar key={persona.id} persona={persona} className="stage-portrait" />
@@ -95,7 +136,7 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
                       ? "Establishing Vertex AI 3.8 video stream…"
                       : active
                         ? "Streaming initialization segment…"
-                        : "Click Start Live Avatar above to begin"}
+                        : "Upload/click a portrait or click Start Live Avatar to begin"}
                   </span>
                 </div>
               </div>
@@ -144,8 +185,12 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
               disabled={active}
               onClick={() => {
                 update("avatarName", char.id);
-                if (char.id === "custom" && !settings.avatarCustomImage) {
-                  setSettingsOpen(true);
+                if (char.id === "custom") {
+                  if (settings.avatarCustomImage && !active && phase === "idle") {
+                    void applyCustomAvatarAndStart(settings.avatarCustomImage);
+                  } else {
+                    setSettingsOpen(true);
+                  }
                 }
               }}
               className={`avatar-quick-pill ${isSelected ? "selected" : ""}`}

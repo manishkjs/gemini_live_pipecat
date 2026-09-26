@@ -36,12 +36,21 @@ def load_pipeline(bot_type):
     return run_agent
 
 
+def _safe_print(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except OSError:
+        pass
+
+
 def warm_media_pipelines():
     """Pay the one-time media SDK import cost (~25s on Cloud Run) before the first call.
 
     Without this, the first WebSocket on a fresh instance waits for pipecat, google-genai and
     transformers (pulled in by Smart Turn v3) to import, which outlasts client timeouts.
     """
+    from runtime_compat import _ensure_valid_adc
+    _ensure_valid_adc()
     for bot_type in ("tts-llm-stt", "gemini-live"):
         load_pipeline(bot_type)
     importlib.import_module("pipecat.audio.turn.smart_turn.local_smart_turn_v3")
@@ -51,9 +60,9 @@ async def _warm_in_background():
     started = time.monotonic()
     try:
         await asyncio.to_thread(warm_media_pipelines)
-        print(f"Media pipelines warmed in {time.monotonic() - started:.1f}s", flush=True)
+        _safe_print(f"Media pipelines warmed in {time.monotonic() - started:.1f}s")
     except Exception as exc:  # Warmup is an optimization; a call will retry the import.
-        print(f"Media pipeline warmup failed (will load on first call): {exc!r}", flush=True)
+        _safe_print(f"Media pipeline warmup failed (will load on first call): {exc!r}")
 
 
 from system_prompt import SYSTEM_PROMPT, tts_prompt
@@ -137,7 +146,7 @@ async def websocket_endpoint(
     avatar_name: str = "auto",
 ):
     await websocket.accept()
-    print("WebSocket connection accepted")
+    _safe_print("WebSocket connection accepted")
     if connection_id:
         if not session_access.consume_join(session_id, connection_id):
             await websocket.close(code=1008, reason="Invalid or expired connection")
@@ -204,7 +213,24 @@ async def websocket_endpoint(
             )
     except Exception as e:
         diagnostic_buffer.append_raw_log_entry(f"Session failed: {type(e).__name__}: {e}", "ERROR")
-        print(f"Exception in run_bot: {e}")
+        _safe_print(f"Exception in run_bot: {e}")
+        try:
+            from pipecat.frames.frames import OutputTransportMessageFrame
+            from pipecat.serializers.protobuf import ProtobufFrameSerializer
+            payload = await ProtobufFrameSerializer().serialize(
+                OutputTransportMessageFrame(
+                    message={
+                        "label": "rtvi-ai",
+                        "type": "error",
+                        "data": {"error": f"Session failed: {e}", "fatal": True},
+                    }
+                )
+            )
+            if payload:
+                await websocket.send_bytes(payload if isinstance(payload, bytes) else payload.encode("utf-8"))
+        except Exception:
+            pass
+
 
 
 @app.get("/persona-prompt/{persona_id}")
