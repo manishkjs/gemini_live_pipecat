@@ -598,15 +598,19 @@ export function reconcileVoiceForPersona(currentVoice: string, nextPersonaId: st
 
 
 /**
- * Gemini 3.8 TTS performs inline <vocal tags> and |pipe| backchannels; they are
- * direction for the voice, not words for the reader. Mirrors
- * `tts_script.display_text` on the server.
+ * Gemini 3.8 TTS performs [[emotion, pitch, pace]] direction blocks, inline
+ * <vocal tags> and |pipe| backchannels; they are direction for the voice, not
+ * words for the reader. Mirrors `tts_script.display_text` on the server.
  */
 export function displaySpokenText(text: string): string {
   // Transcripts stream in chunks whose edge spaces are meaningful ("Second" +
   // " answer"), so leave any text without markup exactly as it arrived.
-  if (!text || !/[<|]/.test(text)) return text;
+  if (!text || !/[<|\[\]]/.test(text)) return text;
   return text
+    .replace(/\[\[[^\[\]]{1,200}?\]\]/g, " ")
+    // A block split across streamed chunks: hide either half.
+    .replace(/\[\[[^\]]*$/g, "")
+    .replace(/^[^\[]*\]\]/g, "")
     .replace(/\|[^|\n]{1,40}\|/g, " ")
     .replace(/<\s*[a-zA-Z][a-zA-Z \-]{0,30}?\s*>/g, " ")
     .replace(/[ \t]{2,}/g, " ");

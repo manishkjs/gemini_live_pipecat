@@ -69,6 +69,11 @@ _ANGLE_TAG = re.compile(r"<\s*([a-zA-Z][a-zA-Z \-]{0,30}?)\s*>")
 _PIPE_BACKCHANNEL = re.compile(r"\|[^|\n]{1,40}\|")
 _BRACKETED = re.compile(r"\[[^\]]*\]")
 _SPACES = re.compile(r"[ \t]{2,}")
+# [[emotion, pitch, pace]]: per-part delivery direction -> speech_metadata.style.
+_DIRECTION = re.compile(r"\[\[\s*([^\[\]]{1,200}?)\s*\]\]")
+# Halves of a block the sentence aggregator cut apart ("[[calm, slow." | "pace]] Suno.").
+_OPEN_FRAGMENT = re.compile(r"\[\[[^\]]*$")
+_CLOSE_FRAGMENT = re.compile(r"^[^\[]*\]\]")
 # Private-use sentinels survive markdown filtering untouched.
 _SENTINEL = "\ue000{}\ue001"
 _SENTINEL_RE = re.compile("\ue000(\\d+)\ue001")
@@ -78,13 +83,12 @@ def is_gemini_38_tts(model: str | None) -> bool:
     return (model or "").replace("-aistudio", "") in GEMINI_38_TTS_MODELS
 
 
-GEMINI_38_SPEECH_PROMPT = """VOICE OUTPUT (Gemini 3.8 TTS): every character you write is spoken verbatim. Write a spoken script, not text.
-- Speak like a real person on a call: 1-2 short sentences per turn, contractions, natural fillers ("hmm", "achha", "well") only where a human would use them.
-- Delivery (tone, pace, accent) is already configured. Never write stage directions or narration such as [warmly], (laughs), "she said softly", or "Say cheerfully:".
-- Prosody comes from punctuation: commas for breaths, "..." for a hesitant pause, "!" for energy, "?" for a rising question. Put a word in CAPS only to stress it.
-- When real emotion calls for it, you may add at most ONE inline vocal tag per turn, placed exactly where the sound happens: <laugh>, <chuckle>, <sigh>, <breath>, <gasp>, <short pause>, <long pause>, <throat-clearing>. Tags are always in English, even inside Hindi. Use none in most turns.
-- Never use |pipes|, markdown, emojis, bullet points, URLs, or symbols that cannot be spoken. Write numbers, currency, and dates the way you would say them.
-- For a tricky name or acronym you may follow it with its IPA in slashes, e.g. /niːv/."""
+# The footer every persona prompt ends with when a Gemini 3.8 voice speaks the reply.
+GEMINI_38_SPEECH_PROMPT = """OUTPUT GOES TO TEXT-TO-SPEECH: a Gemini 3.8 voice speaks every character verbatim except [[direction]] blocks and <vocal tags>. Write a script for a real human voice, not text.
+1. DIRECTION: open every reply with [[emotion, pitch, pace]], e.g. [[amused disbelief, high pitch, fast]]. When the feeling turns mid-reply, start a new block (1-3 per reply). Always name all three: emotion or texture; pitch (high, low, hushed low, rising, bright); pace (fast, brisk, relaxed, slow drawn-out). Contrast them: high pitch for surprise, excitement, teasing; low pitch for secrets, warnings, gravity. Only words and commas inside [[...]].
+2. HUMAN SOUNDS: 1-3 tags per reply, exactly where the sound happens, in English even inside Hindi: <breath> <heavy breath> <exhales> <sigh> <pant> <short pause> <long pause> <laugh> <chuckle> <giggle> <snicker> <snort> <gasp> <tsk> <groan> <throat-clearing> <cough> <sneeze> <yawn>. Breaths and pauses in most replies; <throat-clearing> or <cough> now and then; <sneeze> or <yawn> at most once a call, unless your voice notes say otherwise.
+3. SPEAK, DON'T WRITE: 1-2 short sentences, contractions, real thinking fillers ("hmm...", "arre", "achha", "uff", "matlab", "well"). Commas for breaths, "..." to hesitate or trail off, "?!" for a spike, CAPS on at most 1-2 stressed words.
+4. Never write (laughs) or *sighs*, |pipes|, markdown, emojis, lists, URLs or symbols. Say numbers, money and dates as words. For a tricky name you may add IPA in slashes, e.g. /niːv/."""
 
 LEGACY_GEMINI_SPEECH_PROMPT = """VOICE OUTPUT (Gemini TTS): every character you write is spoken aloud.
 - Speak like a real person on a call: 1-2 short sentences per turn.
@@ -92,14 +96,40 @@ LEGACY_GEMINI_SPEECH_PROMPT = """VOICE OUTPUT (Gemini TTS): every character you 
 - Use commas for natural pauses. Never use markdown, emojis, bullet points, or symbols that cannot be spoken."""
 
 
-def speech_prompt_for(tts_model: str | None) -> str:
-    """The script-writing rules for the LLM, matched to what the TTS can perform."""
+def speech_prompt_for(tts_model: str | None, persona_id: str | None = None) -> str:
+    """The TTS footer for the LLM: what the voice can perform, then how this persona sounds."""
     model = (tts_model or "").replace("-aistudio", "")
     if model in GEMINI_38_TTS_MODELS:
-        return GEMINI_38_SPEECH_PROMPT
+        from persona_prompt_cards.voice_notes import voice_notes_for  # local: avoids a cycle at import
+
+        notes = voice_notes_for(persona_id)
+        return f"{GEMINI_38_SPEECH_PROMPT}\n{notes}" if notes else GEMINI_38_SPEECH_PROMPT
     if model.startswith("gemini"):
         return LEGACY_GEMINI_SPEECH_PROMPT
     return ""
+
+
+def split_styled_parts(text: str) -> list[tuple[str | None, str]]:
+    """Split a script into (direction, text) parts at each [[direction]] block.
+
+    Text before the first block carries no direction (the caller keeps the
+    previous sentence's). A block with no text after it is kept so the next
+    sentence inherits it; half-blocks cut by sentence aggregation are dropped.
+    """
+    t = _CLOSE_FRAGMENT.sub("", _OPEN_FRAGMENT.sub("", text or ""))
+    parts: list[tuple[str | None, str]] = []
+    style: str | None = None
+    cursor = 0
+    for m in _DIRECTION.finditer(t):
+        lead = t[cursor:m.start()].strip()
+        if lead or style:
+            parts.append((style, lead))
+        style = _SPACES.sub(" ", m.group(1).strip().rstrip(".,;"))
+        cursor = m.end()
+    tail = t[cursor:].strip()
+    if tail or style:
+        parts.append((style, tail))
+    return parts
 
 
 def normalize_spoken_text(text: str) -> str:
@@ -110,22 +140,40 @@ def normalize_spoken_text(text: str) -> str:
     return _SPACES.sub(" ", t).strip()
 
 
+def spoken_parts(text: str, carried: str | None) -> tuple[list[tuple[str | None, str]], str | None]:
+    """One sentence chunk -> TTS parts [(direction, clean text)] and the direction to carry forward.
+
+    Pipecat hands run_tts one sentence at a time, so a [[direction]] set in one
+    sentence keeps applying to the following ones until the LLM sets a new one.
+    """
+    parts: list[tuple[str | None, str]] = []
+    for style, segment in split_styled_parts(text):
+        if style:
+            carried = style
+        clean = normalize_spoken_text(segment)
+        if any(ch.isalnum() for ch in clean):
+            parts.append((carried, clean))
+    return parts, carried
+
+
 class Gemini38TextFilter(MarkdownTextFilter):
-    """MarkdownTextFilter that preserves Gemini 3.8 vocal tags and drops |backchannels|."""
+    """MarkdownTextFilter that preserves Gemini 3.8 vocal tags and [[direction]] blocks, and drops |backchannels|."""
 
     async def filter(self, text: str) -> str:
         kept: list[str] = []
 
-        def protect(m: re.Match) -> str:
-            raw = re.sub(r"\s+", " ", m.group(1).strip().lower())
-            tag = _TAG_ALIASES.get(raw, raw)
-            if tag not in VOCAL_TAGS:
-                return " "
-            kept.append(f"<{tag}>")
+        def keep(markup: str) -> str:
+            kept.append(markup)
             return _SENTINEL.format(len(kept) - 1)
 
+        def protect_tag(m: re.Match) -> str:
+            raw = re.sub(r"\s+", " ", m.group(1).strip().lower())
+            tag = _TAG_ALIASES.get(raw, raw)
+            return keep(f"<{tag}>") if tag in VOCAL_TAGS else " "
+
         staged = _PIPE_BACKCHANNEL.sub(" ", text or "")
-        staged = _ANGLE_TAG.sub(protect, staged)
+        staged = _DIRECTION.sub(lambda m: keep(f"[[{m.group(1).strip()}]]"), staged)
+        staged = _ANGLE_TAG.sub(protect_tag, staged)
         filtered = await super().filter(staged)
         restored = _SENTINEL_RE.sub(lambda m: kept[int(m.group(1))], filtered)
         return _SPACES.sub(" ", restored).strip()
@@ -133,7 +181,8 @@ class Gemini38TextFilter(MarkdownTextFilter):
 
 def display_text(text: str) -> str:
     """Transcript text for humans: performance markup removed."""
-    t = _PIPE_BACKCHANNEL.sub(" ", text or "")
+    t = _DIRECTION.sub(" ", text or "")
+    t = _PIPE_BACKCHANNEL.sub(" ", t)
     t = _ANGLE_TAG.sub(" ", t)
     return _SPACES.sub(" ", t).strip()
 

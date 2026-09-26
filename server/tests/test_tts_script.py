@@ -88,6 +88,112 @@ class TestNormalizeSpokenText(unittest.TestCase):
         self.assertEqual(tts_script.normalize_spoken_text("[warmly] Namaste!"), "Namaste!")
 
 
+class TestTtsFooter(unittest.TestCase):
+    """Every persona's prompt ends with a footer: 'your output is fed to TTS, write it like this'."""
+
+    PERSONAS = ("storyteller", "car-negotiator", "debt-collector", "ai-companion",
+                "lamborghini-concierge", "ananya-advisor", "kavya-glass-buddy")
+
+    def test_footer_tells_the_llm_its_output_goes_to_tts(self):
+        p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts")
+        self.assertIn("TEXT-TO-SPEECH", p)
+        self.assertIn("[[", p, "must teach the per-part direction block")
+        for tag in ("<breath>", "<cough>", "<sneeze>", "<throat-clearing>", "<gasp>", "<snort>"):
+            self.assertIn(tag, p)
+        for knob in ("pitch", "pace"):
+            self.assertIn(knob, p)
+
+    def test_every_persona_gets_its_own_voice_notes(self):
+        generic = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts")
+        notes = set()
+        for pid in self.PERSONAS:
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
+            self.assertTrue(p.startswith(generic), pid)
+            extra = p[len(generic):]
+            self.assertIn("[[", extra, f"{pid}: persona notes must show a direction example")
+            notes.add(extra)
+        self.assertEqual(len(notes), len(self.PERSONAS), "notes must be persona-specific")
+
+    def test_kabir_and_abhay_contrast_high_and_low_pitch(self):
+        for pid in ("storyteller", "car-negotiator"):
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
+            self.assertIn("high pitch", p, pid)
+            self.assertIn("low pitch", p, pid)
+
+    def test_persona_aliases_resolve(self):
+        self.assertEqual(tts_script.speech_prompt_for("gemini-3.8-flash-tts", "mf-advisor"),
+                         tts_script.speech_prompt_for("gemini-3.8-flash-tts", "ananya-advisor"))
+
+    def test_unknown_persona_gets_generic_footer(self):
+        self.assertEqual(tts_script.speech_prompt_for("gemini-3.8-flash-tts", "nobody"),
+                         tts_script.speech_prompt_for("gemini-3.8-flash-tts"))
+
+    def test_older_tts_never_learns_direction_blocks(self):
+        p = tts_script.speech_prompt_for("gemini-3.1-flash-tts-preview", "storyteller")
+        self.assertNotIn("[[", p)
+
+    def test_footer_with_persona_notes_stays_small(self):
+        for pid in self.PERSONAS:
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
+            self.assertLess(len(p) / 3.8, 520, pid)
+
+
+class TestStyledParts(unittest.TestCase):
+    def test_splits_direction_blocks_into_parts(self):
+        parts = tts_script.split_styled_parts(
+            "[[mock outrage, high pitch, fast]] <snort> Kya?! [[conspiratorial, low pitch, measured]] Dekho... suno.")
+        self.assertEqual(parts, [
+            ("mock outrage, high pitch, fast", "<snort> Kya?!"),
+            ("conspiratorial, low pitch, measured", "Dekho... suno."),
+        ])
+
+    def test_text_without_direction_has_no_style(self):
+        self.assertEqual(tts_script.split_styled_parts("Achha, theek hai."), [(None, "Achha, theek hai.")])
+
+    def test_direction_alone_is_kept_so_the_next_sentence_inherits_it(self):
+        self.assertEqual(tts_script.split_styled_parts("[[calm, low pitch, slow]]"), [("calm, low pitch, slow", "")])
+
+    def test_direction_split_by_sentence_aggregation_is_never_spoken(self):
+        # A stray '.' inside [[...]] can make the sentence aggregator cut the block.
+        self.assertEqual(tts_script.split_styled_parts("[[calm, slow pace."), [])
+        self.assertEqual(tts_script.split_styled_parts("low pitch]] Suno."), [(None, "Suno.")])
+
+    def test_filter_keeps_direction_blocks(self):
+        out = run(tts_script.Gemini38TextFilter().filter("[[amused, high pitch, brisk]] **Arre** bhai! <laugh>"))
+        self.assertEqual(out, "[[amused, high pitch, brisk]] Arre bhai! <laugh>")
+
+    def test_display_text_hides_direction_blocks(self):
+        self.assertEqual(tts_script.display_text("[[eerie whisper, low pitch, slow]] Suno... <breath> kaun hai?"),
+                         "Suno... kaun hai?")
+
+
+class TestSpokenParts(unittest.TestCase):
+    """run_tts gets one sentence at a time; a direction lasts until the next one."""
+
+    def test_sentence_without_direction_inherits_the_previous_one(self):
+        parts, carried = tts_script.spoken_parts("BARAH lakh?!", "mock outrage, high pitch, fast")
+        self.assertEqual(parts, [("mock outrage, high pitch, fast", "BARAH lakh?!")])
+        self.assertEqual(carried, "mock outrage, high pitch, fast")
+
+    def test_mid_sentence_shift_becomes_two_parts(self):
+        parts, carried = tts_script.spoken_parts(
+            "[[shocked, high pitch, fast]] <gasp> ACHANAK! [[whisper, low pitch, slow]] <breath> Suno..", None)
+        self.assertEqual(parts, [("shocked, high pitch, fast", "<gasp> ACHANAK!"),
+                                 ("whisper, low pitch, slow", "<breath> Suno.")])
+        self.assertEqual(carried, "whisper, low pitch, slow")
+
+    def test_direction_only_chunk_speaks_nothing_but_carries(self):
+        parts, carried = tts_script.spoken_parts("[[calm, low pitch, slow]]", None)
+        self.assertEqual(parts, [])
+        self.assertEqual(carried, "calm, low pitch, slow")
+
+    def test_punctuation_only_fragments_are_skipped(self):
+        self.assertEqual(tts_script.spoken_parts(" . ", "x")[0], [])
+
+    def test_stray_single_brackets_are_still_dropped(self):
+        self.assertEqual(tts_script.spoken_parts("[warmly] Namaste!", None)[0], [(None, "Namaste!")])
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -607,6 +607,8 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
+            if frame.response_id != getattr(self, "_current_response_id", None):
+                self._carried_direction = None  # each reply opens with its own [[direction]]
             self._current_response_id = frame.response_id
         await super().process_frame(frame, direction)
 
@@ -640,12 +642,19 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             return types.VoiceConfig(voice=self._voice_key)
         return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
 
-    def _build_speech_metadata_style(self, lang_code: Optional[str]) -> str:
-        """Constructs the structured SpeechMetadata style string for Gemini 3.8 TTS.
+    def _build_speech_metadata_style(self, lang_code: Optional[str], direction: Optional[str] = None) -> str:
+        """Constructs the SpeechMetadata style string for one Gemini 3.8 TTS part.
 
-        Default output:
+        With the LLM's per-part direction ([[emotion, pitch, pace]]) the direction
+        leads and the session supplies only the accent and character anchor:
+        'mock outrage, high pitch, fast. Accent: Indian. Sharp, witty Delhi car dealer...'
+        Without one, the session's static design is used:
         'Style: Empathetic. Pace: Natural. Accent: Indian. Pitch: Default.'
         """
+        if direction:
+            anchor = (self._voice_prompt or "").strip()
+            return " ".join(p for p in (f"{direction}.", f"Accent: {self._accent_label(lang_code)}.", anchor) if p)
+
         if self._voice_prompt and self._voice_prompt.strip().lower().startswith("style:"):
             # Allow full manual override if user typed a raw "Style: ... Pace: ..." string
             return self._voice_prompt.strip()
@@ -667,17 +676,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             pace_val = "Natural"
         parts.append(f"Pace: {pace_val}.")
 
-        if self._tts_accent and self._tts_accent.strip().lower() not in ("auto", "auto (from language)", ""):
-            accent_val = self._tts_accent.strip()
-        elif lang_code and "in" in lang_code.lower():
-            accent_val = "Indian"
-        elif lang_code and "gb" in lang_code.lower():
-            accent_val = "British"
-        elif lang_code and "au" in lang_code.lower():
-            accent_val = "Australian"
-        else:
-            accent_val = "Indian"
-        parts.append(f"Accent: {accent_val}.")
+        parts.append(f"Accent: {self._accent_label(lang_code)}.")
 
         pitch_val = (self._tts_pitch or "Default").strip()
         parts.append(f"Pitch: {pitch_val}.")
@@ -687,14 +686,26 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
 
         return " ".join(parts)
 
+    def _accent_label(self, lang_code: Optional[str]) -> str:
+        if self._tts_accent and self._tts_accent.strip().lower() not in ("auto", "auto (from language)", ""):
+            return self._tts_accent.strip()
+        code = (lang_code or "").lower()
+        if "gb" in code:
+            return "British"
+        if "au" in code:
+            return "Australian"
+        return "Indian"
+
     async def run_tts(self, text: str, context_id: str):
-        # Drop bracketed stage directions ([warmly]); keep a deliberate "..." (a
-        # real pause in 3.8 TTS) and <vocal tags>, which the filter preserved.
-        clean_text = tts_script.normalize_spoken_text(text)
-        # Skip standalone punctuation or empty fragments (e.g. ".") so TTS never hangs or speaks "dot"
-        if not clean_text or not any(ch.isalnum() for ch in clean_text):
+        # Split at the LLM's [[emotion, pitch, pace]] blocks into directed parts; a
+        # direction carries across sentence chunks until the next one. Drops
+        # [warmly]-style stage words, keeps "..." and <vocal tags>, and skips
+        # punctuation-only fragments (e.g. ".") so TTS never hangs or speaks "dot".
+        spoken, self._carried_direction = tts_script.spoken_parts(text, getattr(self, "_carried_direction", None))
+        if not spoken:
             logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}]")
             return
+        clean_text = " ".join(segment for _, segment in spoken)
 
         logger.debug(f"{self}: Generating TTS [{clean_text}] with model={self._settings.model} aistudio={self._is_aistudio}")
         meter = getattr(self, "_cascade_meter", None)
@@ -713,37 +724,25 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 lang_code = hi_lang if hi_lang else langs[0]
 
             if self._is_aistudio:
-                style_str = self._build_speech_metadata_style(lang_code)
                 speech_config = types.SpeechConfig(voice_config=self._voice_config())
                 generate_content_config = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=speech_config,
                 )
-                # Pass ONLY clean_text (no "## Transcript:" header and NO system_instruction)
+                # One part per direction, each with its own speech_metadata.style: the
+                # 3.8 guide's multi-part tone transitions (whisper -> shout -> whisper).
+                # Transcript text only: no "## Transcript:" header, NO system_instruction.
+                directed = [(segment, self._build_speech_metadata_style(lang_code, d)) for d, segment in spoken]
+                logger.debug(f"{self}: TTS parts {[style for _, style in directed]}")
                 if hasattr(types, "SpeechMetadata"):
-                    contents = [
-                        types.Content(
-                            role="user",
-                            parts=[
-                                types.Part(
-                                    text=clean_text,
-                                    speech_metadata=types.SpeechMetadata(style=style_str),
-                                )
-                            ],
-                        )
-                    ]
+                    parts = [types.Part(text=segment, speech_metadata=types.SpeechMetadata(style=style))
+                             for segment, style in directed]
+                    contents = [types.Content(role="user", parts=parts)]
                 else:
-                    contents = [
-                        {
-                            "role": "user",
-                            "parts": [
-                                {
-                                    "text": clean_text,
-                                    "speech_metadata": {"style": style_str},
-                                }
-                            ],
-                        }
-                    ]
+                    contents = [{
+                        "role": "user",
+                        "parts": [{"text": segment, "speech_metadata": {"style": style}} for segment, style in directed],
+                    }]
             else:
                 speech_config = types.SpeechConfig(
                     voice_config=self._voice_config(),
@@ -1211,7 +1210,7 @@ async def run_agent(
     if not system_instruction:
         neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
     final_system_instruction = (system_instruction or SYSTEM_PROMPT) + neutrality_instruction
-    speech_prompt = tts_script.speech_prompt_for(clean_tts_model)
+    speech_prompt = tts_script.speech_prompt_for(clean_tts_model, persona_id)
     if speech_prompt:
         final_system_instruction += "\n\n" + speech_prompt
     gender_rule = tts_script.voice_gender_rule(tts_voice)
