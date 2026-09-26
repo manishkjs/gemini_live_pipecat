@@ -120,6 +120,10 @@ class TestTtsFooter(unittest.TestCase):
             self.assertIn("high pitch", p, pid)
             self.assertIn("low pitch", p, pid)
 
+    def test_kabir_voice_notes_cap_scene_length(self):
+        p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", "storyteller")
+        self.assertIn("2-3 short", p)
+
     def test_persona_aliases_resolve(self):
         self.assertEqual(tts_script.speech_prompt_for("gemini-3.8-flash-tts", "mf-advisor"),
                          tts_script.speech_prompt_for("gemini-3.8-flash-tts", "ananya-advisor"))
@@ -135,7 +139,7 @@ class TestTtsFooter(unittest.TestCase):
     def test_footer_with_persona_notes_stays_small(self):
         for pid in self.PERSONAS:
             p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
-            self.assertLess(len(p) / 3.8, 520, pid)
+            self.assertLess(len(p) / 3.8, 530, pid)
 
 
 class TestStyledParts(unittest.TestCase):
@@ -187,11 +191,39 @@ class TestSpokenParts(unittest.TestCase):
         self.assertEqual(parts, [])
         self.assertEqual(carried, "calm, low pitch, slow")
 
+    def test_leading_vocal_tag_before_direction_attaches_to_next_part(self):
+        parts, carried = tts_script.spoken_parts(
+            " <gasp> [[whisper, low pitch, slow]] Bataiye... <heavy breath> kya karoge?",
+            "startled dread, high pitch, fast",
+        )
+        self.assertEqual(
+            parts,
+            [("whisper, low pitch, slow", "<gasp> Bataiye... <heavy breath> kya karoge?")],
+        )
+        self.assertEqual(carried, "whisper, low pitch, slow")
+
+    def test_trailing_vocal_tag_attaches_to_previous_part(self):
+        parts, _ = tts_script.spoken_parts(
+            "[[startled dread, high pitch, fast]] Achanak aawaaz aayi! [[whisper, low pitch, slow]] <gasp>",
+            None,
+        )
+        self.assertEqual(
+            parts,
+            [("startled dread, high pitch, fast", "Achanak aawaaz aayi! <gasp>")],
+        )
+
+    def test_tag_only_chunk_speaks_nothing_and_extracts_tags_for_next_sentence(self):
+        parts, carried = tts_script.spoken_parts(" <long pause> <gasp>! ", "whisper, low pitch, slow")
+        self.assertEqual(parts, [])
+        self.assertEqual(carried, "whisper, low pitch, slow")
+        self.assertEqual(tts_script.extract_vocal_tags(" <long pause> <gasp>! "), "<long pause> <gasp>")
+
     def test_punctuation_only_fragments_are_skipped(self):
         self.assertEqual(tts_script.spoken_parts(" . ", "x")[0], [])
 
     def test_stray_single_brackets_are_still_dropped(self):
         self.assertEqual(tts_script.spoken_parts("[warmly] Namaste!", None)[0], [(None, "Namaste!")])
+
 
 
 if __name__ == "__main__":

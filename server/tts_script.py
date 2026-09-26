@@ -140,20 +140,48 @@ def normalize_spoken_text(text: str) -> str:
     return _SPACES.sub(" ", t).strip()
 
 
+def extract_vocal_tags(text: str) -> str:
+    """Return all valid <vocal tags> in `text`, normalized and space-joined."""
+    tags: list[str] = []
+    for m in _ANGLE_TAG.finditer(text or ""):
+        raw = re.sub(r"\s+", " ", m.group(1).strip().lower())
+        tag = _TAG_ALIASES.get(raw, raw)
+        if tag in VOCAL_TAGS:
+            tags.append(f"<{tag}>")
+    return " ".join(tags)
+
+
 def spoken_parts(text: str, carried: str | None) -> tuple[list[tuple[str | None, str]], str | None]:
     """One sentence chunk -> TTS parts [(direction, clean text)] and the direction to carry forward.
 
     Pipecat hands run_tts one sentence at a time, so a [[direction]] set in one
     sentence keeps applying to the following ones until the LLM sets a new one.
+    Tag-only fragments (e.g. a standalone `<gasp>` or `<long pause>` split at
+    punctuation) are attached to an adjacent spoken part instead of triggering
+    a separate TTS part.
     """
     parts: list[tuple[str | None, str]] = []
+    leading_tags: list[str] = []
     for style, segment in split_styled_parts(text):
         if style:
             carried = style
         clean = normalize_spoken_text(segment)
-        if any(ch.isalnum() for ch in clean):
+        has_words = any(ch.isalnum() for ch in display_text(clean))
+        if has_words:
+            if leading_tags:
+                clean = f"{' '.join(leading_tags)} {clean}"
+                leading_tags.clear()
             parts.append((carried, clean))
+        else:
+            tags = extract_vocal_tags(clean)
+            if tags:
+                if parts:
+                    prev_style, prev_text = parts[-1]
+                    parts[-1] = (prev_style, f"{prev_text} {tags}")
+                else:
+                    leading_tags.append(tags)
     return parts, carried
+
 
 
 class Gemini38TextFilter(MarkdownTextFilter):

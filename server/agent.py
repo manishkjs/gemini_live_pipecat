@@ -609,6 +609,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         if isinstance(frame, TextFrame) and getattr(frame, "response_id", None):
             if frame.response_id != getattr(self, "_current_response_id", None):
                 self._carried_direction = None  # each reply opens with its own [[direction]]
+                self._pending_tags = ""
             self._current_response_id = frame.response_id
         await super().process_frame(frame, direction)
 
@@ -698,13 +699,16 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
 
     async def run_tts(self, text: str, context_id: str):
         # Split at the LLM's [[emotion, pitch, pace]] blocks into directed parts; a
-        # direction carries across sentence chunks until the next one. Drops
-        # [warmly]-style stage words, keeps "..." and <vocal tags>, and skips
-        # punctuation-only fragments (e.g. ".") so TTS never hangs or speaks "dot".
-        spoken, self._carried_direction = tts_script.spoken_parts(text, getattr(self, "_carried_direction", None))
+        # direction and any standalone <vocal tags> carry across sentence chunks
+        # until the next spoken words arrive.
+        pending = getattr(self, "_pending_tags", "")
+        combined = f"{pending} {text}" if pending else text
+        spoken, self._carried_direction = tts_script.spoken_parts(combined, getattr(self, "_carried_direction", None))
         if not spoken:
-            logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}]")
+            self._pending_tags = tts_script.extract_vocal_tags(combined)
+            logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}] (pending_tags={self._pending_tags!r})")
             return
+        self._pending_tags = ""
         clean_text = " ".join(segment for _, segment in spoken)
 
         logger.debug(f"{self}: Generating TTS [{clean_text}] with model={self._settings.model} aistudio={self._is_aistudio}")
