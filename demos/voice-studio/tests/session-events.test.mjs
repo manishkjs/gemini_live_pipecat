@@ -246,4 +246,147 @@ test('avatar and voice fallback notices surface their codes and clear when the n
   await next.endSession();
 });
 
+test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExceededError and resets MediaSource on mid-call re-init', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  const mediaSources = [];
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.removed = [];
+      this.throwNextAppend = false;
+      this.listeners = {};
+      this.bufferedRanges = [[0, 10.2]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      if (this.throwNextAppend) {
+        this.throwNextAppend = false;
+        throw new Error('QuotaExceededError');
+      }
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove(start, end) {
+      this.updating = true;
+      this.removed.push([start, end]);
+    }
+    finishUpdate() {
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
+    console,
+  }, { filename: full });
+
+  const render = () => { cursor = 0; return exports.useAvatarStream(false); };
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 10,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 10.2 },
+    play: () => Promise.resolve(),
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener: () => {},
+  };
+
+  let ctrl = render();
+  ctrl.videoRef(videoEl);
+
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // 1. Push init segment; while sb.updating is true, push 2 media segments and call flushOnInterrupt()
+  ctrl.pushChunk(b64('init-1'), true, 1);
+  const ms1 = mediaSources[0];
+  assert.deepEqual(ms1.sb.appended, ['init-1']);
+  assert.equal(ms1.sb.updating, true);
+
+  ctrl.pushChunk(b64('moof-mdat-1'), false, 2);
+  ctrl.pushChunk(b64('moof-mdat-2'), false, 3);
+  // Interrupt arrives while sb.updating is true (e.g. during Turn 2): must NOT drop queued moof-mdat segments!
+  ctrl.flushOnInterrupt();
+
+  ms1.sb.finishUpdate(); // finishes init-1 -> appends moof-mdat-1
+  ms1.sb.finishUpdate(); // finishes moof-mdat-1 -> appends moof-mdat-2
+  ms1.sb.finishUpdate(); // finishes moof-mdat-2
+  assert.deepEqual(ms1.sb.appended, ['init-1', 'moof-mdat-1', 'moof-mdat-2']);
+
+  // 2. When appendBuffer throws QuotaExceededError, chunk must be retried after remove(), never lost
+  ms1.sb.throwNextAppend = true;
+  ctrl.pushChunk(b64('moof-mdat-3'), false, 4);
+  assert.equal(ms1.sb.removed.length, 1);
+  ms1.sb.finishUpdate(); // finishes remove() -> retries moof-mdat-3
+  ms1.sb.finishUpdate();
+  assert.deepEqual(ms1.sb.appended, ['init-1', 'moof-mdat-1', 'moof-mdat-2', 'moof-mdat-3']);
+
+  // 3. When a new isInit=true segment arrives mid-call (after reconnect), MediaSource is recreated for tfdt=0
+  ctrl.pushChunk(b64('init-2'), true, 5);
+  assert.equal(mediaSources.length, 2);
+  assert.deepEqual(mediaSources[1].sb.appended, ['init-2']);
+});
+
+
 

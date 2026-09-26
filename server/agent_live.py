@@ -1,4 +1,5 @@
 import os
+import struct
 import websockets
 import json
 import asyncio
@@ -166,6 +167,64 @@ def _rejection_detail(error: BaseException) -> str:
     return details if isinstance(details, str) and details.strip() else str(error)
 
 
+def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
+    """Reassemble arbitrary transport slices into complete ISO-BMFF segments.
+
+    Vertex AI Gemini Live Avatar slices its continuous fMP4 byte stream into
+    16 KiB chunks that split `moof` and `mdat` boxes mid-payload. Emitting
+    only complete `ftyp + moov` (is_init=True) and `moof + mdat` (is_init=False)
+    segments guarantees Chrome's MSE SourceBuffer never ingests a truncated box.
+    """
+    pos = 0
+    n = len(buf)
+    boxes: list[tuple[bytes, int, int]] = []
+    while pos + 8 <= n:
+        sz, btype = struct.unpack(">I4s", buf[pos : pos + 8])
+        if sz == 1:
+            if pos + 16 > n:
+                break
+            sz = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
+        elif sz < 8:
+            # Malformed or non-box stream: flush buffer as-is to avoid stalling
+            raw = bytes(buf)
+            buf.clear()
+            return [(raw, b"ftyp" in raw[:32] or b"moov" in raw[:64])]
+        if pos + sz > n:
+            break
+        boxes.append((btype, pos, pos + sz))
+        pos += sz
+
+    if not boxes:
+        return []
+
+    emitted: list[tuple[bytes, bool]] = []
+    start_idx = 0
+
+    if boxes[0][0] == b"ftyp":
+        moov_idx = next((i for i, b in enumerate(boxes) if b[0] == b"moov"), None)
+        if moov_idx is None:
+            return []
+        init_end = boxes[moov_idx][2]
+        emitted.append((bytes(buf[:init_end]), True))
+        start_idx = moov_idx + 1
+        last_mdat_end = max(
+            (b[2] for b in boxes[start_idx:] if b[0] == b"mdat"),
+            default=0,
+        )
+        if last_mdat_end > init_end:
+            emitted.append((bytes(buf[init_end:last_mdat_end]), False))
+            del buf[:last_mdat_end]
+        else:
+            del buf[:init_end]
+        return emitted
+
+    last_mdat_end = max((b[2] for b in boxes if b[0] == b"mdat"), default=0)
+    if last_mdat_end > 0:
+        emitted.append((bytes(buf[:last_mdat_end]), False))
+        del buf[:last_mdat_end]
+    return emitted
+
+
 class GeminiSessionLoggerMixin(TurnOriginMixin):
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
 
@@ -202,27 +261,29 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             mt = getattr(sc, "model_turn", None) if sc else None
             parts = getattr(mt, "parts", None) or []
             has_non_video = False
+            if not hasattr(self, "_avatar_mp4_buffer"):
+                self._avatar_mp4_buffer = bytearray()
             for part in parts:
                 inl = getattr(part, "inline_data", None)
                 mime = getattr(inl, "mime_type", "") if inl else ""
                 if inl and mime.startswith("video/mp4") and getattr(inl, "data", None):
-                    raw_bytes = inl.data
-                    is_init = (b"ftyp" in raw_bytes[:32] or b"moov" in raw_bytes[:64])
-                    b64_str = base64.b64encode(raw_bytes).decode("ascii")
-                    if is_init:
-                        self._avatar_init_segment = b64_str
-                    seq = getattr(self, "_avatar_seq", 0) + 1
-                    self._avatar_seq = seq
-                    await self.push_frame(OutputTransportMessageUrgentFrame(message={
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {
-                            "type": "avatar_video",
-                            "data": b64_str,
-                            "is_init": is_init,
-                            "seq": seq,
-                        }
-                    }))
+                    self._avatar_mp4_buffer.extend(inl.data)
+                    for seg_bytes, is_init in extract_complete_mp4_segments(self._avatar_mp4_buffer):
+                        b64_str = base64.b64encode(seg_bytes).decode("ascii")
+                        if is_init:
+                            self._avatar_init_segment = b64_str
+                        seq = getattr(self, "_avatar_seq", 0) + 1
+                        self._avatar_seq = seq
+                        await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                            "label": "rtvi-ai",
+                            "type": "server-message",
+                            "data": {
+                                "type": "avatar_video",
+                                "data": b64_str,
+                                "is_init": is_init,
+                                "seq": seq,
+                            }
+                        }))
                     # Clear video/mp4 inline_data so stock Pipecat doesn't log 'Unrecognized server_content format video/mp4'
                     part.inline_data = None
                 elif getattr(part, "text", None) or (inl and mime.startswith("audio/pcm")):
@@ -368,43 +429,50 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 return
 
         if isinstance(frame, InterruptionFrame):
-            if not hasattr(self, '_repeat_on_filler_pending'):
-                self._repeat_on_filler_pending = False
-            self._repeat_on_filler_pending = True
-            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
-            
-            if getattr(self, '_bot_turn_text_buffer', '').strip():
-                interrupted_text = self._bot_turn_text_buffer.strip()
-                append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
-                if not hasattr(self, '_dialogue_history'):
-                    self._dialogue_history = []
-                self._dialogue_history.append({
-                    "role": "Assistant",
-                    "text": f"{interrupted_text} [interrupted]",
-                    "timestamp": time.time()
-                })
-                logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
-                self._bot_turn_text_buffer = ""
+            was_responding = bool(
+                getattr(self, '_bot_is_responding', False)
+                or getattr(self, '_bot_turn_text_buffer', '').strip()
+                or getattr(self, '_my_ttfb_start', None)
+            )
+            self._bot_is_responding = False
+            if was_responding:
+                if not hasattr(self, '_repeat_on_filler_pending'):
+                    self._repeat_on_filler_pending = False
+                self._repeat_on_filler_pending = True
+                logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
 
-            elapsed_ms = None
-            if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-                elapsed_ms = round((time.monotonic() - self._my_ttfb_start) * 1000.0, 1)
-                append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
-                self._my_ttfb_start = None
+                if getattr(self, '_bot_turn_text_buffer', '').strip():
+                    interrupted_text = self._bot_turn_text_buffer.strip()
+                    append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                    if not hasattr(self, '_dialogue_history'):
+                        self._dialogue_history = []
+                    self._dialogue_history.append({
+                        "role": "Assistant",
+                        "text": f"{interrupted_text} [interrupted]",
+                        "timestamp": time.time()
+                    })
+                    logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
+                    self._bot_turn_text_buffer = ""
 
-            # Metric Streaming: Interruption
-            metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
-            if elapsed_ms is not None:
-                metric_payload['elapsed_ms'] = elapsed_ms
+                elapsed_ms = None
+                if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
+                    elapsed_ms = round((time.monotonic() - self._my_ttfb_start) * 1000.0, 1)
+                    append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
+                    self._my_ttfb_start = None
 
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': metric_payload
-                }
-            }))
+                # Metric Streaming: Interruption
+                metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
+                if elapsed_ms is not None:
+                    metric_payload['elapsed_ms'] = elapsed_ms
+
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        'type': 'metrics',
+                        'payload': metric_payload
+                    }
+                }))
 
         await super().process_frame(frame, direction)
 
@@ -510,6 +578,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         self.response_identity.begin()
         await super()._handle_msg_output_transcription(message)
         if message.server_content.output_transcription and message.server_content.output_transcription.text:
+            self._bot_is_responding = True
             text = message.server_content.output_transcription.text
             
             # Accumulate text for the complete bot turn
@@ -662,6 +731,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
     # ── Session ID & token usage logging ──────────────────────────────
 
     async def _handle_session_ready(self, session):
+        self._avatar_mp4_buffer = bytearray()
         await super()._handle_session_ready(session)
         session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
         if session_id:
@@ -719,10 +789,14 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             for d in usage.response_tokens_details:
                 response_details[clean_modality(d.modality)] = d.token_count
 
+        prompt_tokens = int(getattr(usage, 'prompt_token_count', 0) or 0)
+        response_tokens = int(getattr(usage, 'response_token_count', 0) or 0)
+        total_tokens = int(getattr(usage, 'total_token_count', 0) or 0)
+
         usage_dict = {
-            "prompt_token_count": getattr(usage, 'prompt_token_count', 0),
-            "response_token_count": getattr(usage, 'response_token_count', 0),
-            "total_token_count": getattr(usage, 'total_token_count', 0),
+            "prompt_token_count": prompt_tokens,
+            "response_token_count": response_tokens,
+            "total_token_count": total_tokens,
             "prompt_details": prompt_details,
             "response_details": response_details,
             "cached_content_token_count": getattr(usage, "cached_content_token_count", None),
@@ -750,9 +824,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if getattr(self, '_context_compression_enabled', False):
             raw_threshold = getattr(self, '_context_compression_trigger_tokens', 5000) or 5000
             threshold = max(5000, raw_threshold)
-            current_tot = getattr(usage, 'total_token_count', 0)
-            current_prompt = getattr(usage, 'prompt_token_count', 0)
-            last_prompt = getattr(self, '_last_prompt_tokens', 0)
+            current_tot = total_tokens
+            current_prompt = prompt_tokens
+            last_prompt = int(getattr(self, '_last_prompt_tokens', 0) or 0)
             # Exclude streamed output video tokens (e.g. ~16.5k/turn in Live Avatar mode) from context window threshold check
             video_out_tokens = int(response_details.get("video", 0) or 0)
             effective_context_tot = max(current_prompt, current_tot - video_out_tokens)
@@ -763,7 +837,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             compression_detected = False
             if effective_context_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
                 compression_detected = True
-            elif last_prompt > 1000 and current_prompt < (last_prompt - 150):
+            elif current_prompt > 0 and last_prompt > 1000 and current_prompt < (last_prompt - 150):
                 compression_detected = True
                 logger.info(f"🗜️ [Context Compression] Compaction detected! Prompt tokens contracted from {last_prompt} to {current_prompt}")
 
@@ -792,7 +866,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 # FactStore: Immediately inject verbatim dialogue transcription logs back into model context
                 await self._inject_transcription_logs()
 
-            self._last_prompt_tokens = current_prompt
+            if current_prompt > 0:
+                self._last_prompt_tokens = current_prompt
 
     async def _inject_transcription_logs(self):
         """Inject verbatim dialogue transcription logs into Gemini Live context on compression."""

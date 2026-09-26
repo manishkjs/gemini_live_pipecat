@@ -324,5 +324,114 @@ class TestSessionScopedDiagnostics(unittest.TestCase):
         self.assertIn("session_id", inspect.signature(websocket_endpoint).parameters)
 
 
+class TestLiveAvatarAndInterruptionResilience(unittest.IsolatedAsyncioTestCase):
+    """Regression tests for multi-turn Live Avatar stream alignment and interruption handling."""
+
+    def test_extract_complete_mp4_segments_reassembles_16k_slices(self):
+        import struct
+        from agent_live import extract_complete_mp4_segments
+
+        def make_box(btype: bytes, payload_len: int) -> bytes:
+            return struct.pack(">I4s", payload_len + 8, btype) + (b"x" * payload_len)
+
+        ftyp = make_box(b"ftyp", 20)      # 28 bytes
+        moov = make_box(b"moov", 1298)    # 1306 bytes -> init = 1334 bytes
+        moof1 = make_box(b"moof", 96)     # 104 bytes
+        mdat1 = make_box(b"mdat", 40000)  # 40008 bytes
+        moof2 = make_box(b"moof", 100)    # 108 bytes
+        mdat2 = make_box(b"mdat", 1365)   # 1373 bytes
+
+        full_stream = ftyp + moov + moof1 + mdat1 + moof2 + mdat2
+        buf = bytearray()
+        emitted = []
+
+        # Feed in 16,384-byte transport slices just like Vertex AI Live Avatar
+        for i in range(0, len(full_stream), 16384):
+            buf.extend(full_stream[i:i + 16384])
+            emitted.extend(extract_complete_mp4_segments(buf))
+
+        self.assertEqual(len(buf), 0)
+        self.assertGreaterEqual(len(emitted), 2)
+        # First emitted segment must be the exact ftyp + moov init segment
+        self.assertTrue(emitted[0][1])
+        self.assertEqual(emitted[0][0], ftyp + moov)
+        # Subsequent segments must be non-init and contain complete moof+mdat boxes
+        for seg_bytes, is_init in emitted[1:]:
+            self.assertFalse(is_init)
+            self.assertEqual(seg_bytes[4:8], b"moof")
+        reassembled = b"".join(seg for seg, _ in emitted)
+        self.assertEqual(reassembled, full_stream)
+
+    async def test_usage_metadata_handles_none_prompt_tokens_on_interrupted_turn(self):
+        from types import SimpleNamespace
+        from agent_live import GeminiSessionLoggerMixin
+
+        class DummyService(GeminiSessionLoggerMixin):
+            def __init__(self):
+                self._context_compression_enabled = True
+                self._context_compression_trigger_tokens = 5000
+                self._last_prompt_tokens = 1848
+                self.pushed = []
+
+            async def push_frame(self, frame, direction=None):
+                self.pushed.append(frame)
+
+        class BaseStub:
+            async def _handle_msg_usage_metadata(self, message):
+                pass
+
+        class TestService(DummyService, BaseStub):
+            pass
+
+        svc = TestService()
+        msg = SimpleNamespace(
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=None,
+                response_token_count=6,
+                total_token_count=6,
+                cached_content_token_count=None,
+                thoughts_token_count=None,
+                tool_use_prompt_token_count=None,
+                prompt_tokens_details=None,
+                response_tokens_details=[SimpleNamespace(modality="TEXT", token_count=6)],
+            )
+        )
+        # Must not raise TypeError: '>' not supported between instances of 'int' and 'NoneType'
+        await svc._handle_msg_usage_metadata(msg)
+        self.assertEqual(svc._last_prompt_tokens, 1848)
+        self.assertEqual(len(svc.pushed), 1)
+
+    async def test_spurious_interruption_frame_ignored_when_bot_not_responding(self):
+        from pipecat.frames.frames import InterruptionFrame
+        from agent_live import GeminiSessionLoggerMixin
+
+        class BaseStub:
+            async def process_frame(self, frame, direction=None):
+                pass
+
+        class TestService(GeminiSessionLoggerMixin, BaseStub):
+            def __init__(self):
+                self._bot_is_responding = False
+                self._bot_turn_text_buffer = ""
+                self._my_ttfb_start = None
+                self.pushed = []
+
+            async def push_frame(self, frame, direction=None):
+                self.pushed.append(frame)
+
+        svc = TestService()
+        await svc.process_frame(InterruptionFrame(), None)
+        # When bot is silent between turns, LLMUserAggregator's InterruptionFrame must not emit interruption metrics
+        self.assertEqual(len(svc.pushed), 0)
+        self.assertFalse(getattr(svc, "_repeat_on_filler_pending", False))
+
+        # When bot IS responding, InterruptionFrame must emit interruption metrics
+        svc._bot_is_responding = True
+        await svc.process_frame(InterruptionFrame(), None)
+        self.assertEqual(len(svc.pushed), 1)
+        self.assertTrue(getattr(svc, "_repeat_on_filler_pending", False))
+
+
 if __name__ == "__main__":
     unittest.main()
+
