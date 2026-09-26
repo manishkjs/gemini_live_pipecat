@@ -15,11 +15,22 @@ _sessions = {}
 
 def _prune():
     now = time.monotonic()
-    for key in [key for key, value in _sessions.items() if value["expires"] <= now]:
-        del _sessions[key]
+    for key, value in list(_sessions.items()):
+        if value["expires"] <= now:
+            del _sessions[key]
+        elif value["join_expires"] <= now:
+            value.pop("avatar_custom_image", None)
+            value.pop("custom_voice_audio", None)
 
 
-def issue(session_id=None, token=None, *, instructions=None, avatar_custom_image=None):
+def issue(
+    session_id=None,
+    token=None,
+    *,
+    instructions=None,
+    avatar_custom_image=None,
+    custom_voice_audio=None,
+):
     _prune()
     session_id = session_id or str(uuid4())
     if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128:
@@ -34,6 +45,8 @@ def issue(session_id=None, token=None, *, instructions=None, avatar_custom_image
         raise ValueError("Invalid session instructions")
     if avatar_custom_image is not None and not isinstance(avatar_custom_image, str):
         raise ValueError("Invalid avatar_custom_image")
+    if custom_voice_audio is not None and not isinstance(custom_voice_audio, str):
+        raise ValueError("Invalid custom_voice_audio")
     token = token or secrets.token_urlsafe(32)
     join = secrets.token_urlsafe(32)
     now = time.monotonic()
@@ -44,6 +57,7 @@ def issue(session_id=None, token=None, *, instructions=None, avatar_custom_image
         "expires": now + SESSION_TTL_SECONDS,
         "instructions": instructions,
         "avatar_custom_image": avatar_custom_image,
+        "custom_voice_audio": custom_voice_audio,
     }
     return session_id, token, join
 
@@ -97,3 +111,10 @@ def take_avatar_custom_image(session_id):
     _prune()
     record = _sessions.get(session_id)
     return record.pop("avatar_custom_image", None) if record else None
+
+
+def take_custom_voice_audio(session_id):
+    _prune()
+    record = _sessions.get(session_id)
+    return record.pop("custom_voice_audio", None) if record else None
+

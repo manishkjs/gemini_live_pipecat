@@ -153,6 +153,7 @@ async def websocket_endpoint(
     stored_instruction = session_access.take_instructions(session_id)
     system_instruction = stored_instruction or system_instruction
     avatar_custom_image = session_access.take_avatar_custom_image(session_id)
+    custom_voice_audio = session_access.take_custom_voice_audio(session_id)
     custom_voice_key = voice_profiles.consume(voice_profile_id)
     try:
         if bot_type == "gemini-live":
@@ -177,6 +178,7 @@ async def websocket_endpoint(
                 avatar_enabled=avatar_enabled,
                 avatar_name=avatar_name,
                 avatar_custom_image=avatar_custom_image,
+                custom_voice_audio=custom_voice_audio,
             )
         elif bot_type == "tts-llm-stt":
             run_agent = await asyncio.to_thread(load_pipeline, bot_type)
@@ -313,8 +315,23 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     # Finish reading and validating the request before allocating any handles.
     # Invalid requests must not occupy a session slot for the four-hour TTL.
     instructions = params_dict.pop("system_instruction", None)
+    MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024
+    MAX_AVATAR_IMAGE_B64_CHARS = 7_000_000  # ~5 MB binary
+    MAX_VOICE_AUDIO_B64_CHARS = 4_000_000   # ~3 MB binary
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_CONNECT_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body exceeds 12 MB limit")
+        except ValueError:
+            pass
+    raw_body = await request.body()
+    if len(raw_body) > MAX_CONNECT_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body exceeds 12 MB limit")
+
     try:
-        body = await request.json() if await request.body() else {}
+        body = json.loads(raw_body) if raw_body else {}
         if not isinstance(body, dict):
             raise ValueError("Expected a configuration object")
         for field in (
@@ -330,6 +347,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             "tts_voice_prompt",
             "avatar_name",
             "avatar_custom_image",
+            "custom_voice_audio",
         ):
             if field in body and body[field] is not None and not isinstance(body[field], str):
                 raise ValueError(f"Invalid {field}")
@@ -374,6 +392,11 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         if "avatar_name" in body and body["avatar_name"]:
             params_dict["avatar_name"] = body["avatar_name"]
         avatar_custom_image = body.get("avatar_custom_image")
+        custom_voice_audio = body.get("custom_voice_audio")
+        if avatar_custom_image and len(avatar_custom_image) > MAX_AVATAR_IMAGE_B64_CHARS:
+            raise HTTPException(status_code=413, detail="Custom avatar image exceeds 5 MB limit")
+        if custom_voice_audio and len(custom_voice_audio) > MAX_VOICE_AUDIO_B64_CHARS:
+            raise HTTPException(status_code=413, detail="Custom voice sample exceeds 3 MB limit")
         for field in ("tts_style", "tts_accent", "tts_pitch", "tts_pace_label", "tts_voice_prompt"):
             if field in body and body[field]:
                 params_dict[field] = body[field]
@@ -387,8 +410,12 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 
     try:
         session_id, viewer_token, connection_id = session_access.issue(
-            params_dict.get("session_id"), request.headers.get("x-session-token"),
-            instructions=instructions, avatar_custom_image=avatar_custom_image)
+            params_dict.get("session_id"),
+            request.headers.get("x-session-token"),
+            instructions=instructions,
+            avatar_custom_image=avatar_custom_image,
+            custom_voice_audio=custom_voice_audio,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except RuntimeError as exc:

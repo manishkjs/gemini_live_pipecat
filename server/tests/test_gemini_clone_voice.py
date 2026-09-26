@@ -80,5 +80,75 @@ class TestGeminiCloneSpeechConfig(unittest.TestCase):
         self.assertEqual(cfg.prebuilt_voice_config.voice_name, "Puck")
 
 
+class TestGeminiLiveReplicatedVoice(unittest.TestCase):
+    def test_live_replicated_voice_detection_and_manish_sample(self):
+        self.assertTrue(voice_profiles.is_live_replicated_voice("Gemini-Clone-Male"))
+        self.assertTrue(voice_profiles.is_live_replicated_voice("Custom-Live-Voice"))
+        self.assertFalse(voice_profiles.is_live_replicated_voice("Puck"))
+        self.assertFalse(voice_profiles.is_live_replicated_voice("Custom-Male"))
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".wav", delete=False) as f:
+            f.write(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        try:
+            with patch.dict(os.environ, {"GEMINI_LIVE_VOICE_SAMPLE_MALE": f.name}):
+                sample = voice_profiles.load_gemini_live_voice_sample("Gemini-Clone-Male")
+                self.assertIsNotNone(sample)
+                self.assertTrue(sample.startswith(b"RIFF"))
+                self.assertIsNone(voice_profiles.load_gemini_live_voice_sample("Puck"))
+        finally:
+            os.unlink(f.name)
+
+    def test_normalize_custom_voice_audio_resamples_to_24k_mono_s16le_wav(self):
+        import io
+        import wave
+        import numpy as np
+        from agent_live import normalize_custom_voice_audio
+
+        # Create a 5-second stereo 48kHz 16-bit WAV
+        sr = 48000
+        dur = 5.0
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        tone = (np.sin(2 * np.pi * 220 * t) * 12000).astype(np.int16)
+        stereo = np.column_stack([tone, tone]).ravel()
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(stereo.tobytes())
+
+        norm_bytes, meta = normalize_custom_voice_audio(buf.getvalue())
+        self.assertTrue(norm_bytes.startswith(b"RIFF"))
+        self.assertEqual(meta["orig_rate"], 48000)
+        self.assertEqual(meta["orig_channels"], 2)
+        self.assertAlmostEqual(meta["duration_s"], 5.0, places=1)
+
+        with wave.open(io.BytesIO(norm_bytes), "rb") as out_wf:
+            self.assertEqual(out_wf.getnchannels(), 1)
+            self.assertEqual(out_wf.getsampwidth(), 2)
+            self.assertEqual(out_wf.getframerate(), 24000)
+            self.assertEqual(out_wf.getnframes(), 24000 * 5)
+
+    def test_connect_stores_custom_voice_audio_outside_ws_url(self):
+        from fastapi.testclient import TestClient
+        import server
+        import session_access
+
+        session_access._sessions.clear()
+        client = TestClient(server.app)
+        fake_wav_b64 = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="
+        res = client.post(
+            "/connect?bot_type=gemini-live&voice=Custom-Live-Voice",
+            json={"custom_voice_audio": fake_wav_b64},
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertNotIn("UklGRiQ", data["ws_url"])
+        self.assertNotIn("custom_voice_audio", data["ws_url"])
+        self.assertEqual(session_access.take_custom_voice_audio(data["session_id"]), fake_wav_b64)
+        self.assertIsNone(session_access.take_custom_voice_audio(data["session_id"]))
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -75,6 +75,7 @@ const TRANSPORT = {
   // Cloned-voice credentials must never ride in a URL. Once the server-side
   // voice registry lands this becomes `voiceProfileId`.
   customVoiceKey:           { live: 'body:custom_voice_key',      cascade: 'body:custom_voice_key',       probe: 'secret-voice-key-abc123', requires: { voice: 'Custom-Key', customVoiceKey: 'old-dummy-key', ttsModel: 'google-tts' } },
+  customVoiceAudio:         { live: 'body:custom_voice_audio',    cascade: null,                          probe: 'data:audio/wav;base64,UklGRknew=', requires: { voice: 'Custom-Live-Voice', customVoiceAudio: 'data:audio/wav;base64,UklGRgold=' } },
 };
 
 function requestFor(engine, overrides = {}) {

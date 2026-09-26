@@ -113,10 +113,10 @@ export const AVATAR_CHARACTERS: AvatarCharacter[] = [
   {
     id: "custom",
     name: "Custom Portrait",
-    role: "Upload any portrait photo (customized_avatar with automatic prebuilt fallback)",
+    role: "Take a webcam photo or upload any portrait (704×1280 9:16 RGB PNG via customized_avatar)",
     gender: "custom",
     accentColor: "#d93025",
-    badge: "Upload Photo",
+    badge: "Camera / Upload",
   },
 ];
 
@@ -148,6 +148,8 @@ export type SessionSettings = {
   toolsJson?: string;
   thinkingLevel?: ThinkingLevel;
   customVoiceKey?: string;
+  /** Optional base64 WAV data URI for Gemini 3.8 Live voice replication (`replicated_voice_config`). */
+  customVoiceAudio?: string;
   /** Whether Gemini 3.8 Live Avatar (lip-synced H.264/AAC MP4 stream) is active. Defaults to false. */
   avatarEnabled?: boolean;
   /** Selected prebuilt avatar ('auto', 'Ben', 'Kira', 'Leo', 'Vera', 'Sam', 'Kai', 'Jay', 'Paul', or 'custom'). */
@@ -213,6 +215,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   toolsJson: "",
   thinkingLevel: "off",
   customVoiceKey: "",
+  customVoiceAudio: "",
   avatarEnabled: false,
   avatarName: "auto",
   avatarCustomImage: "",
@@ -480,6 +483,8 @@ export const TTS_PACE_OPTIONS: [string, string][] = [
 ];
 
 export const GEMINI_VOICES: [string, string][] = [
+  ["Gemini-Clone-Male", "Manish · Gemini 3.8 Voice Clone (Male)"],
+  ["Custom-Live-Voice", "Record / Upload Your Voice (Gemini 3.8 Clone)"],
   ["Gacrux", "Gacrux (Female - Gemini 3.8 Default)"],
   ["Aoede", "Aoede (Female)"],
   ["Puck", "Puck (Male)"],
@@ -532,9 +537,11 @@ export const CHIRP_HD_VOICES: [string, string][] = [
 ];
 
 /**
- * Gemini 3.8 TTS cloned voices. Server-managed `voicekey_...` credentials sent as
- * `VoiceConfig(voice=...)` to gemini-3.8-flash(-lite)-tts. The browser selects
- * them by name only; the key never leaves the server.
+ * Gemini 3.8 cloned voices.
+ * - In Cascade (`gemini-3.8-flash(-lite)-tts`), uses server-managed `voicekey_...`
+ *   sent as `VoiceConfig(voice=...)`.
+ * - In Gemini Live (`google/gemini-3.8-live`), uses the server-bundled 24 kHz 16-bit
+ *   mono reference WAV via `ReplicatedVoiceConfig`.
  */
 export const GEMINI_CLONE_VOICES: [string, string][] = [
   ["Gemini-Clone-Male", "Manish · Gemini 3.8 Voice Clone (Male)"],
@@ -543,6 +550,31 @@ export const GEMINI_CLONE_TTS_MODELS = ["gemini-3.8-flash-tts", "gemini-3.8-flas
 
 export function isGeminiClonedVoice(voice: string): boolean {
   return GEMINI_CLONE_VOICES.some(([id]) => id === voice);
+}
+
+/** Browser-recorded or uploaded 24 kHz 16-bit mono WAV voice sample for Gemini 3.8 Live (`ReplicatedVoiceConfig`). */
+export function isLiveCustomVoice(voice: string): boolean {
+  return voice === "Custom-Live-Voice";
+}
+
+const FALLBACK_CAUSES: Record<"avatar" | "voice", Record<string, string>> = {
+  avatar: {
+    project_not_allowlisted: "custom avatars are not allowlisted for this project",
+    invalid_image: "the photo could not be used",
+    rejected: "Vertex AI rejected the custom avatar",
+  },
+  voice: {
+    project_not_allowlisted: "custom voices are not allowlisted for this project",
+    invalid_sample: "the recording could not be read",
+    missing_sample: "no voice sample was recorded",
+    rejected: "Vertex AI rejected the voice sample",
+  },
+};
+
+/** One-line banner title for a server `avatar_fallback` / `voice_fallback` notice, keyed by its `code`. */
+export function fallbackHeadline(kind: "avatar" | "voice", name: string, code: string): string {
+  const cause = FALLBACK_CAUSES[kind][code] ?? FALLBACK_CAUSES[kind].rejected;
+  return `${kind === "avatar" ? "Showing" : "Speaking as"} ${name}: ${cause}`;
 }
 
 export function supportsGeminiClone(ttsModel: string): boolean {
@@ -560,7 +592,7 @@ export function reconcileVoiceForEngine(
 ): string {
   const fallback = getPersona(settings.personaId).defaultVoice || DEFAULT_SETTINGS.voice;
   if (nextEngine === "live") {
-    if (isGeminiClonedVoice(settings.voice) || settings.voice.includes("Chirp")) {
+    if (settings.voice.includes("Chirp")) {
       return fallback;
     }
     return settings.voice;
@@ -571,7 +603,7 @@ export function reconcileVoiceForEngine(
     }
     return settings.voice;
   }
-  if (isClonedVoice(settings.voice) || settings.voice.includes("Chirp")) {
+  if (isClonedVoice(settings.voice) || isLiveCustomVoice(settings.voice) || settings.voice.includes("Chirp")) {
     return fallback;
   }
   if (isGeminiClonedVoice(settings.voice) && !supportsGeminiClone(settings.ttsModel)) {
@@ -582,12 +614,13 @@ export function reconcileVoiceForEngine(
 
 /**
  * When switching between persona cards, preserve an explicitly chosen cloned or
- * Chirp voice (e.g. `Gemini-Clone-Male`, `Custom-Male`) so clicking another
- * persona does not silently reset the user back to a stock Gemini voice.
+ * Chirp voice (e.g. `Gemini-Clone-Male`, `Custom-Live-Voice`, `Custom-Male`) so
+ * clicking another persona does not silently reset the user back to a stock Gemini voice.
  */
 export function reconcileVoiceForPersona(currentVoice: string, nextPersonaId: string): string {
   if (
     isGeminiClonedVoice(currentVoice) ||
+    isLiveCustomVoice(currentVoice) ||
     isClonedVoice(currentVoice) ||
     currentVoice.includes("Chirp")
   ) {
@@ -597,23 +630,46 @@ export function reconcileVoiceForPersona(currentVoice: string, nextPersonaId: st
 }
 
 
+// Per markup opener: the complete construct, and any prefix one can still grow from.
+const TRANSCRIPT_MARKUP: Record<string, { whole: RegExp; open: RegExp }> = {
+  "[": { whole: /\[\[?[^\[\]]{0,200}\]\]?/y, open: /\[\[?[^\[\]]{0,200}\]?$/y },
+  "<": { whole: /<\s*[a-zA-Z][a-zA-Z \-]{0,30}?\s*>/y, open: /<\s*(?:[a-zA-Z][a-zA-Z \-]{0,30}\s*)?$/y },
+  "|": { whole: /\|[^|\n]{1,40}\|/y, open: /\|[^|\n]{0,40}$/y },
+};
+const NO_SPACE_BEFORE = ".,!?;:…।";
+
 /**
- * Gemini 3.8 TTS performs [[emotion, pitch, pace]] direction blocks, inline
- * <vocal tags> and |pipe| backchannels; they are direction for the voice, not
- * words for the reader. Mirrors `tts_script.display_text` on the server.
+ * What the reader sees of a raw Gemini 3.8 reply, streamed so far: [[direction]]
+ * blocks, <vocal tags>, |backchannels| and [stage directions] removed, even when
+ * they arrive cut across chunks. A construct still open at the end stays hidden
+ * until the next chunk decides it. Mirrors `tts_script.TranscriptStream`.
  */
-export function displaySpokenText(text: string): string {
-  // Transcripts stream in chunks whose edge spaces are meaningful ("Second" +
-  // " answer"), so leave any text without markup exactly as it arrived.
-  if (!text || !/[<|\[\]]/.test(text)) return text;
-  return text
-    .replace(/\[\[[^\[\]]{1,200}?\]\]/g, " ")
-    // A block split across streamed chunks: hide either half.
-    .replace(/\[\[[^\]]*$/g, "")
-    .replace(/^[^\[]*\]\]/g, "")
-    .replace(/\|[^|\n]{1,40}\|/g, " ")
-    .replace(/<\s*[a-zA-Z][a-zA-Z \-]{0,30}?\s*>/g, " ")
-    .replace(/[ \t]{2,}/g, " ");
+export function transcriptText(raw: string): string {
+  let text = "";
+  let gap = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    const markup = TRANSCRIPT_MARKUP[ch];
+    if (markup) {
+      markup.whole.lastIndex = i;
+      if (markup.whole.test(raw)) {
+        gap = gap === "\n" ? "\n" : " ";
+        i = markup.whole.lastIndex - 1;
+        continue;
+      }
+      markup.open.lastIndex = i;
+      if (markup.open.test(raw)) break;
+    }
+    if ("[]|".includes(ch)) continue; // markup residue, not words
+    if (/\s/.test(ch)) {
+      gap = ch === "\n" || gap === "\n" ? "\n" : " ";
+    } else {
+      if (text && !NO_SPACE_BEFORE.includes(ch)) text += gap;
+      text += ch;
+      gap = "";
+    }
+  }
+  return text;
 }
 
 /** Chirp 3 HD cloned voices, backed by a voice cloning key rather than a named Gemini voice. */
@@ -632,6 +688,7 @@ export function isClonedVoice(voice: string): boolean {
  */
 export function usesExternalTts(settings: SessionSettings): boolean {
   if (settings.engine === "cascade") return true;
+  if (isGeminiClonedVoice(settings.voice) || isLiveCustomVoice(settings.voice)) return false;
   return Boolean(settings.tts) || isClonedVoice(settings.voice);
 }
 
@@ -698,9 +755,11 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       : (settings.vadMode ?? "both");
   const effectiveVadStr = effectiveVadMode === "gemini" ? "false" : "true";
   if (settings.engine === "live") {
+    const requiresGemini38Live =
+      isAvatarActive(settings) || isGeminiClonedVoice(settings.voice) || isLiveCustomVoice(settings.voice);
     const params: Record<string, string> = {
       bot_type: "gemini-live",
-      model: settings.model,
+      model: requiresGemini38Live ? "gemini-3.8-live" : settings.model,
       voice: settings.voice,
       language: settings.language,
       tts: settings.tts ? "true" : "false",
@@ -779,11 +838,19 @@ export function buildConnectRequest(settings: SessionSettings) {
   // the server exchanges it for an opaque, short-lived voice_profile_id before
   // any WebSocket URL is minted — so it never reaches browser history, access
   // logs, or the in-app diagnostics buffer.
-  if (isGeminiClonedVoice(settings.voice)) {
-    if (settings.engine !== "cascade") throw new Error("The Gemini 3.8 cloned voice is available in Cascade only.");
+  if (isGeminiClonedVoice(settings.voice) && settings.engine === "cascade") {
     if (!supportsGeminiClone(settings.ttsModel)) {
       throw new Error("Select gemini-3.8-flash-tts or gemini-3.8-flash-lite-tts to use the Gemini 3.8 cloned voice.");
     }
+  }
+  if (isLiveCustomVoice(settings.voice)) {
+    if (settings.engine !== "live") {
+      throw new Error("Custom recorded/uploaded voice samples are supported in Gemini 3.8 Live mode.");
+    }
+    if (!settings.customVoiceAudio?.trim()) {
+      throw new Error("Record a 10–20s voice sample or upload a WAV file for your custom voice.");
+    }
+    body.custom_voice_audio = settings.customVoiceAudio.trim();
   }
   if (isClonedVoice(settings.voice) && settings.engine === "cascade" && settings.ttsModel !== "google-tts") {
     throw new Error("Select Chirp 3 HD to use a cloned voice in Cascade.");

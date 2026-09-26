@@ -4,7 +4,7 @@ import { useEffect, useState, type ComponentType, type CSSProperties } from "rea
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, AudioLines, ChartLine, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getDefaultBackendUrl, isAvatarActive } from "@/lib/voice-session";
+import { fallbackHeadline, getDefaultBackendUrl, isAvatarActive } from "@/lib/voice-session";
 import type { WaveProps } from "@/lib/studio-types";
 import { useVoiceSession } from "@/hooks/use-voice-session";
 import ObservabilityDrawer from "./observability-drawer";
@@ -44,6 +44,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const {
     active, audio, error, persona, settings, setError, setSettingsOpen, sound, turnCount,
     tokenCount, tokenSplit, sessionCostUSD, interruptCount, phaseLabel, custom,
+    voiceFallbackNotice, setVoiceFallbackNotice,
   } = studio;
 
   return (
@@ -118,6 +119,18 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
       </div>
 
     <AnimatePresence>
+      {voiceFallbackNotice && (
+        <motion.div className="error-banner" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <span>
+            <strong>{fallbackHeadline("voice", voiceFallbackNotice.fallbackVoice, voiceFallbackNotice.code)}</strong>
+            {" — "}
+            {voiceFallbackNotice.reason}
+          </span>
+          <Button variant="ghost" size="icon" aria-label="Dismiss voice fallback notice" onClick={() => setVoiceFallbackNotice(null)}>
+            <X size={16} />
+          </Button>
+        </motion.div>
+      )}
       {error && (
         <motion.div className="error-banner" role="alert" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <span>{error}</span>

@@ -187,3 +187,46 @@ class TestSessionAccess(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unknown or expired session"):
                 session_access.set_instructions("expired", "Replacement")
         self.assertFalse(session_access._sessions)
+
+    def test_connect_rejects_oversized_media_payloads_with_413(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        over_body = client.post(
+            "/connect?session_id=huge_body",
+            content=b"{}",
+            headers={"Content-Type": "application/json", "Content-Length": str(12 * 1024 * 1024 + 1)},
+        )
+        self.assertEqual(over_body.status_code, 413)
+        self.assertIn("MB", over_body.json()["detail"])
+
+        over_image = client.post(
+            "/connect?session_id=huge_img",
+            json={"avatar_custom_image": "A" * 7_000_001},
+        )
+        self.assertEqual(over_image.status_code, 413)
+        self.assertIn("5 MB", over_image.json()["detail"])
+
+        over_audio = client.post(
+            "/connect?session_id=huge_wav",
+            json={"custom_voice_audio": "A" * 4_000_001},
+        )
+        self.assertEqual(over_audio.status_code, 413)
+        self.assertIn("3 MB", over_audio.json()["detail"])
+        self.assertFalse(session_access._sessions)
+
+    def test_unclaimed_media_blobs_are_released_once_join_expires(self):
+        with patch("session_access.time.monotonic", return_value=0):
+            sid, token, _ = session_access.issue(
+                "media_sess",
+                avatar_custom_image="data:image/png;base64,AAAA",
+                custom_voice_audio="data:audio/wav;base64,BBBB",
+            )
+        with patch("session_access.time.monotonic", return_value=session_access.JOIN_TTL_SECONDS + 1):
+            self.assertTrue(session_access.authorized(sid, token))
+            self.assertIsNone(session_access._sessions[sid].get("avatar_custom_image"))
+            self.assertIsNone(session_access._sessions[sid].get("custom_voice_audio"))
+            self.assertIsNone(session_access.take_avatar_custom_image(sid))
+            self.assertIsNone(session_access.take_custom_voice_audio(sid))
+

@@ -1,6 +1,6 @@
 import { Video, Sparkles, Settings2 } from "lucide-react";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
-import { AVATAR_CHARACTERS } from "@/lib/voice-session";
+import { AVATAR_CHARACTERS, fallbackHeadline } from "@/lib/voice-session";
 import PersonaAvatar from "./persona-avatar";
 
 /**
@@ -122,7 +122,7 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
                   />
                 )}
                 <div className="avatar-fallback-text">
-                  <strong>Using {avatarFallbackNotice.fallbackAvatar} (Project Not Allowlisted for Custom Likeness)</strong>
+                  <strong>{fallbackHeadline("avatar", avatarFallbackNotice.fallbackAvatar, avatarFallbackNotice.code)}</strong>
                   <span>{avatarFallbackNotice.reason}</span>
                 </div>
               </div>

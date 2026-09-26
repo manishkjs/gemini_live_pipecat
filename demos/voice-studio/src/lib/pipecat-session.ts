@@ -1,5 +1,5 @@
 import { createDiagnosticAccess, diagnosticHeaders } from "./session-diagnostics";
-import { buildConnectRequest, displaySpokenText, isAvatarActive, validateSocketUrl, type SessionSettings } from "./voice-session";
+import { buildConnectRequest, isAvatarActive, validateSocketUrl, type SessionSettings } from "./voice-session";
 import { calculateTurnCost, type UsageTokenData } from "./pricing";
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
@@ -28,7 +28,8 @@ export type SessionEvents = {
   onMetricUpdate?: (metricType: string, value: any) => void;
   onAvatarVideo?: (chunkB64: string, isInit: boolean, seq: number) => void;
   onAvatarInterrupted?: () => void;
-  onAvatarFallback?: (fallbackAvatar: string, reason: string) => void;
+  onAvatarFallback?: (fallbackAvatar: string, reason: string, code: string) => void;
+  onVoiceFallback?: (fallbackVoice: string, reason: string, code: string) => void;
   onError: (text: string) => void;
   onDisconnected: () => void;
 };
@@ -156,10 +157,17 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       return;
     }
 
-    if (data.type === "avatar_fallback") {
-      const fb = typeof (data as any).fallback_avatar === "string" ? (data as any).fallback_avatar : "Kira";
-      const reason = typeof (data as any).reason === "string" ? (data as any).reason : "Custom avatar fallback active";
-      events.onAvatarFallback?.(fb, reason);
+    if (data.type === "avatar_fallback" || data.type === "voice_fallback") {
+      const notice = data as { fallback_avatar?: unknown; fallback_voice?: unknown; reason?: unknown; code?: unknown };
+      const reason = typeof notice.reason === "string" ? notice.reason : "";
+      const code = typeof notice.code === "string" ? notice.code : "rejected";
+      if (data.type === "avatar_fallback") {
+        const avatar = typeof notice.fallback_avatar === "string" ? notice.fallback_avatar : "Kira";
+        events.onAvatarFallback?.(avatar, reason || "Custom avatar fallback active", code);
+      } else {
+        const voice = typeof notice.fallback_voice === "string" ? notice.fallback_voice : "a prebuilt voice";
+        events.onVoiceFallback?.(voice, reason || "Custom voice fallback active", code);
+      }
       return;
     }
 
@@ -193,7 +201,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
           }
         }
 
-        events.onMessage("assistant", displaySpokenText(data.text), turnStarted, {
+        events.onMessage("assistant", data.text, turnStarted, {
           llmLatency: effLlm,
           ttsLatency: effTts,
           sttLatency: effStt,
@@ -204,7 +212,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     } else if (data.type === "transcription_replace" && typeof data.text === "string") {
       const role = data.participant?.toLowerCase() === "user" ? "user" : "assistant";
       if (events.onReplaceMessage) {
-        events.onReplaceMessage(role, role === "assistant" ? displaySpokenText(data.text) : data.text);
+        events.onReplaceMessage(role, data.text);
       }
     } else if (data.type === "interim_transcription" || data.type === "interim_input_transcription") {
       if (typeof data.text === "string") {

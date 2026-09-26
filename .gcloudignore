@@ -49,8 +49,10 @@ docs-site/
 temp.md
 **/temp.md
 
-# Voice cloning keys live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
+# Voice cloning keys and reference WAV samples live in gs://deep-clock-339817-v2v-demo-keys (mounted at /keys)
 **/voice_cloning_key_*.txt
-# Gemini 3.8 TTS cloned voice keys (voicekey_...) are credentials
+# Gemini 3.8 TTS cloned voice keys (voicekey_...) and reference WAV samples are credentials/biometric data
 **/gemini_*_voicekey_*.txt
 **/*voicekey*.txt
+**/manish_reference_24k.wav
+**/*reference*.wav

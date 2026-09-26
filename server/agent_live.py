@@ -34,6 +34,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+import tts_script
 import voice_profiles
 
 
@@ -122,6 +123,47 @@ async def get_current_time(params: FunctionCallParams):
     await params.result_callback(
         {"time": datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
     )
+
+
+# Live closes the socket with 1007 (invalid payload) or 1008 (policy) when it
+# refuses what we sent at setup; those are the only closes custom media can cause.
+_MEDIA_REJECTION_CLOSE_CODES = (1007, 1008)
+_OUTAGE_HINTS = (
+    "quota", "exhausted", "rate limit", "429", "unavailable", "deadline",
+    "timeout", "timed out", "overloaded", "try again",
+)
+_MEDIA_HINTS = {
+    "avatar": ("avatar", "image"),
+    "voice": ("voice", "wav", "audio", "replicated", "speech"),
+}
+
+
+def classify_custom_media_rejection(error: BaseException, *, avatar: bool, voice: bool) -> set:
+    """Name the custom media ("avatar", "voice") a Live connection error blames.
+
+    Only a 1007/1008 close can blame media, and never one that reads like an
+    outage (quota, overload, timeout): those must surface, not be hidden by a
+    silent swap to prebuilt media. A rejection that names a part blames just
+    that part, if the session has it; one that names nothing blames every
+    custom part the session sent.
+    """
+    configured = {part for part, sent in (("avatar", avatar), ("voice", voice)) if sent}
+    text = str(error)
+    if not configured:
+        return set()
+    if getattr(error, "code", None) not in _MEDIA_REJECTION_CLOSE_CODES and not re.match(r"\s*100[78]\b", text):
+        return set()
+    lowered = text.lower()
+    if any(hint in lowered for hint in _OUTAGE_HINTS):
+        return set()
+    named = {part for part, hints in _MEDIA_HINTS.items() if any(hint in lowered for hint in hints)}
+    return named & configured if named else configured
+
+
+def _rejection_detail(error: BaseException) -> str:
+    """The server's own words: "Failed to parse WAV audio", not "1007 None. Failed…"."""
+    details = getattr(error, "details", None)
+    return details if isinstance(details, str) and details.strip() else str(error)
 
 
 class GeminiSessionLoggerMixin(TurnOriginMixin):
@@ -624,16 +666,15 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
         if session_id:
             logger.info(f"Session ID Established: {session_id}")
-        fallback_notice = getattr(self, "_avatar_fallback_notice", None)
-        if fallback_notice:
-            self._avatar_fallback_notice = None
+        for kind in ("avatar", "voice"):
+            notice = getattr(self, f"_{kind}_fallback_notice", None)
+            if not notice:
+                continue
+            setattr(self, f"_{kind}_fallback_notice", None)
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
-                "data": {
-                    "type": "avatar_fallback",
-                    **fallback_notice,
-                }
+                "data": {"type": f"{kind}_fallback", **notice},
             }))
 
     async def _handle_msg_usage_metadata(self, message):
@@ -835,15 +876,18 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         
         await super()._handle_msg_tool_call(message)
 
+    # ── Custom Live media: recorded voice clone and uploaded avatar ─────
+
     async def _connection_task_handler(self, config):
         from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+
+        lang_code = getattr(self, "_language_code", None) or "en-US"
         if isinstance(self, GeminiLiveVertexLLMService):
-            # Set transcription language to match the session's configured language (Vertex AI Enterprise only)
+            # Transcription language pinning is Vertex AI Enterprise only.
             from google.genai.types import AudioTranscriptionConfig
-            lang_code = getattr(self, "_language_code", "en-US")
             config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
             config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
-        
+
         # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
         if getattr(config, "context_window_compression", None):
             trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 5000
@@ -851,69 +895,132 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
             logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
 
-        if getattr(self, "_avatar_enabled", False):
-            from google.genai.types import AvatarConfig, CustomizedAvatar, Modality
-            if getattr(config, "generation_config", None) is not None:
-                config.generation_config.response_modalities = None
-            config.response_modalities = [Modality.VIDEO]
-            fallback_name = getattr(self, "_avatar_name", "Ben") or "Ben"
-            custom_img_b64 = getattr(self, "_avatar_custom_image", None)
-            if custom_img_b64:
-                try:
-                    raw_img = base64.b64decode(custom_img_b64.split(",")[-1])
-                    norm_img, img_meta = normalize_custom_avatar_image(raw_img)
-                    config.avatar_config = AvatarConfig(
-                        customized_avatar=CustomizedAvatar(
-                            image_data=norm_img,
-                            image_mime_type="image/png",
-                        )
-                    )
-                    logger.info(
-                        f"🎭 [Live Avatar] Configured customized_avatar "
-                        f"({img_meta['orig_size']} -> {img_meta['norm_size']} RGB PNG, {len(norm_img)} bytes) "
-                        f"with fallback '{fallback_name}'"
-                    )
-                except Exception as img_err:
-                    logger.warning(f"🎭 [Live Avatar] Invalid custom image ({img_err}); using prebuilt '{fallback_name}'")
-                    config.avatar_config = AvatarConfig(avatar_name=fallback_name)
-                    self._avatar_custom_image = None
-                    self._avatar_fallback_notice = {
-                        "fallback_avatar": fallback_name,
-                        "reason": f"Image normalization failed: {img_err}",
-                        "code": "invalid_image",
-                    }
-            else:
-                config.avatar_config = AvatarConfig(avatar_name=fallback_name)
-                logger.info(f"🎭 [Live Avatar] Configured prebuilt avatar_name='{fallback_name}' with response_modalities=[VIDEO]")
-
+        # Every attempt starts from Pipecat's config (prebuilt voice, no avatar) and
+        # adds whatever custom media is still in play. A rejection drops the part it
+        # blames, so each retry carries strictly less custom media: at most three
+        # attempts, and anything that is not a media rejection surfaces at once.
+        while True:
+            attempt = config.model_copy(deep=True)
+            self._apply_custom_media(attempt, lang_code)
             try:
-                await super()._connection_task_handler(config)
-                return
-            except Exception as conn_err:
-                if getattr(self, "_avatar_custom_image", None):
-                    err_str = str(conn_err)
-                    is_allowlist = "not allowlisted" in err_str.lower()
-                    logger.warning(
-                        f"🎭 [Live Avatar] customized_avatar connection rejected ({err_str}); "
-                        f"automatically falling back to prebuilt avatar '{fallback_name}'"
-                    )
-                    self._avatar_custom_image = None
-                    self._avatar_fallback_notice = {
-                        "fallback_avatar": fallback_name,
-                        "reason": (
-                            "Current GCP project is not allowlisted for the customized_avatar feature on Vertex AI "
-                            f"(using prebuilt '{fallback_name}' instead)."
-                            if is_allowlist
-                            else f"Custom avatar rejected by Vertex AI ({err_str}); using '{fallback_name}'."
-                        ),
-                        "code": "project_not_allowlisted" if is_allowlist else "rejected",
-                    }
-                    config.avatar_config = AvatarConfig(avatar_name=fallback_name)
-                    await super()._connection_task_handler(config)
-                    return
-                raise
+                return await super()._connection_task_handler(attempt)
+            except Exception as error:
+                if not self._reject_custom_media(error):
+                    raise
 
-        await super()._connection_task_handler(config)
+    async def _handle_connection_error(self, error):
+        # A rejection after setup: drop the blamed media so the reconnect Pipecat
+        # is about to make comes back with the prebuilt voice or avatar.
+        self._reject_custom_media(error)
+        return await super()._handle_connection_error(error)
+
+    def _apply_custom_media(self, config, lang_code):
+        self._apply_custom_voice(config, lang_code)
+        if getattr(self, "_avatar_enabled", False):
+            self._apply_avatar(config)
+
+    def _apply_custom_voice(self, config, lang_code):
+        sample = getattr(self, "_replicated_voice_sample", None)
+        if not sample:
+            return  # Pipecat's config already speaks with the prebuilt voice.
+        from google.genai.types import ReplicatedVoiceConfig
+        try:
+            wav, meta = normalize_custom_voice_audio(sample)
+        except Exception as wav_err:
+            self._fall_back_voice(f"The voice sample could not be read ({wav_err})", "invalid_sample")
+            return
+        speech = SpeechConfig(
+            voice_config=VoiceConfig(
+                replicated_voice_config=ReplicatedVoiceConfig(
+                    voice_sample_audio=wav,
+                    mime_type="audio/pcm;rate=24000",
+                )
+            ),
+            language_code=lang_code,
+        )
+        if getattr(config, "generation_config", None) is not None:
+            config.generation_config.speech_config = speech
+        config.speech_config = speech
+        logger.info(
+            f"🎙️ [Live Voice Clone] Configured replicated_voice_config "
+            f"({meta['duration_s']}s, 24kHz 16-bit mono WAV, {meta['bytes']} bytes) "
+            f"with fallback '{self._fallback_voice()}'"
+        )
+
+    def _apply_avatar(self, config):
+        from google.genai.types import AvatarConfig, CustomizedAvatar, Modality
+        if getattr(config, "generation_config", None) is not None:
+            config.generation_config.response_modalities = None
+        config.response_modalities = [Modality.VIDEO]
+        name = self._fallback_avatar()
+        image_b64 = getattr(self, "_avatar_custom_image", None)
+        if image_b64:
+            try:
+                image, meta = normalize_custom_avatar_image(base64.b64decode(image_b64.split(",")[-1]))
+            except Exception as img_err:
+                self._fall_back_avatar(f"The image could not be used ({img_err})", "invalid_image")
+            else:
+                config.avatar_config = AvatarConfig(
+                    customized_avatar=CustomizedAvatar(image_data=image, image_mime_type="image/png")
+                )
+                logger.info(
+                    f"🎭 [Live Avatar] Configured customized_avatar "
+                    f"({meta['orig_size']} -> {meta['norm_size']} RGB PNG, {len(image)} bytes) "
+                    f"with fallback '{name}'"
+                )
+                return
+        config.avatar_config = AvatarConfig(avatar_name=name)
+        logger.info(f"🎭 [Live Avatar] Configured prebuilt avatar_name='{name}' with response_modalities=[VIDEO]")
+
+    def _reject_custom_media(self, error) -> set:
+        """Drop whichever custom media `error` blames and return what was dropped."""
+        rejected = classify_custom_media_rejection(
+            error,
+            avatar=bool(getattr(self, "_avatar_custom_image", None)),
+            voice=bool(getattr(self, "_replicated_voice_sample", None)),
+        )
+        detail = _rejection_detail(error)
+        not_allowlisted = "not allowlisted" in detail.lower()
+        code = "project_not_allowlisted" if not_allowlisted else "rejected"
+        if "avatar" in rejected:
+            self._fall_back_avatar(
+                "This Google Cloud project is not allowlisted for custom avatars" if not_allowlisted
+                else f"Vertex AI rejected the custom avatar ({detail})",
+                code,
+            )
+        if "voice" in rejected:
+            self._fall_back_voice(
+                "This Google Cloud project is not allowlisted for custom Live voices" if not_allowlisted
+                else f"Vertex AI rejected the voice sample ({detail})",
+                code,
+            )
+        return rejected
+
+    def _fallback_avatar(self) -> str:
+        return getattr(self, "_avatar_name", None) or "Ben"
+
+    def _fallback_voice(self) -> str:
+        return getattr(self, "_fallback_voice_name", None) or "Puck"
+
+    def _fall_back_avatar(self, cause: str, code: str):
+        name = self._fallback_avatar()
+        logger.warning(f"🎭 [Live Avatar] {cause}; using the prebuilt avatar '{name}'")
+        self._avatar_custom_image = None
+        self._avatar_fallback_notice = {
+            "fallback_avatar": name,
+            "reason": f"{cause}, so the prebuilt avatar {name} is standing in.",
+            "code": code,
+        }
+
+    def _fall_back_voice(self, cause: str, code: str):
+        name = self._fallback_voice()
+        logger.warning(f"🎙️ [Live Voice Clone] {cause}; using the prebuilt voice '{name}'")
+        self._replicated_voice_sample = None
+        self._voice_fallback_notice = {
+            "fallback_voice": name,
+            "reason": f"{cause}, so the prebuilt voice {name} is speaking instead.",
+            "code": code,
+        }
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
     @property
@@ -1211,6 +1318,7 @@ def compose_live_system_prompt(
     system_instruction: Optional[str],
     gender: str,
     language: str,
+    voice: Optional[str] = None,
 ) -> str:
     """Build the system prompt for a Live session.
 
@@ -1221,8 +1329,14 @@ def compose_live_system_prompt(
     That rule now lives where it belongs: in the shared default prompt
     (``system_prompt.SYSTEM_PROMPT``) and in each persona's own prompt, both of
     which a caller can override.
+
+    A cloned ``voice`` also gets its self-reference grammar rule: its gender is
+    fixed by the recording, whatever the persona says.
     """
     base = system_instruction if system_instruction else SYSTEM_PROMPT.replace("female", gender)
+    gender_rule = tts_script.voice_gender_rule(voice)
+    if gender_rule:
+        base = f"{base}\n\n{gender_rule}"
     return f"{base}\n\nIMPORTANT: You must converse in {language} language."
 
 
@@ -1268,12 +1382,6 @@ from persona_registry import get_persona_architecture
 
 
 PREBUILT_AVATAR_NAMES = {"Ben", "Kira", "Leo", "Vera", "Sam", "Kai", "Jay", "Paul"}
-
-FEMALE_VOICE_NAMES = {
-    "aoede", "despina", "kore", "leda", "zephyr", "autonoe",
-    "callirhoe", "erinome", "gacrux", "laomedeia", "pulcherrima",
-    "sulafat", "vindemiatrix",
-}
 
 
 def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
@@ -1324,6 +1432,121 @@ def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
         }
 
 
+def normalize_custom_voice_audio(raw_bytes: bytes) -> tuple[bytes, dict]:
+    """Normalize any uploaded/recorded WAV sample into Vertex AI's required 24 kHz 16-bit mono WAV (`s16le`).
+
+    Requirements per Vertex AI Gemini 3.8 Live ReplicatedVoiceConfig documentation:
+      - Container: WAV (`RIFF...WAVE`) with `mime_type="audio/pcm;rate=24000"`
+      - Sample rate: 24,000 Hz
+      - Bit depth: 16-bit signed integer PCM (`s16le`)
+      - Channels: 1 (mono)
+      - Duration: 10–20 seconds recommended (clamped to <= 20s)
+    """
+    import io
+    import wave
+    import numpy as np
+
+    if not raw_bytes or len(raw_bytes) < 44:
+        raise ValueError("Voice sample audio is empty or too short")
+
+    try:
+        with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+            orig_ch = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            orig_sr = wf.getframerate()
+            nframes = wf.getnframes()
+            frames = wf.readframes(nframes)
+    except Exception as exc:
+        raise ValueError(f"Invalid WAV audio file: {exc}") from exc
+
+    if orig_sr <= 0 or orig_ch <= 0 or nframes <= 0:
+        raise ValueError("WAV audio has invalid header parameters")
+
+    #Fast-path if already 24kHz 16-bit mono WAV within 1..20s
+    if orig_sr == 24000 and orig_ch == 1 and sampwidth == 2 and (24000 <= nframes <= 24000 * 20):
+        return raw_bytes, {
+            "orig_rate": orig_sr,
+            "orig_channels": orig_ch,
+            "duration_s": round(nframes / 24000.0, 2),
+            "bytes": len(raw_bytes),
+        }
+
+    if sampwidth == 1:
+        samples = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sampwidth == 2:
+        samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    elif sampwidth == 4:
+        samples = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2147483648.0
+    elif sampwidth == 3:
+        raw_u8 = np.frombuffer(frames, dtype=np.uint8)
+        n_samp = len(raw_u8) // 3
+        b = raw_u8[: n_samp * 3].reshape(-1, 3)
+        signed = (
+            b[:, 0].astype(np.int32)
+            | (b[:, 1].astype(np.int32) << 8)
+            | (b[:, 2].astype(np.int8).astype(np.int32) << 16)
+        )
+        samples = signed.astype(np.float32) / 8388608.0
+    else:
+        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+
+    if orig_ch > 1:
+        usable = (len(samples) // orig_ch) * orig_ch
+        samples = samples[:usable].reshape(-1, orig_ch).mean(axis=1)
+
+    target_sr = 24000
+    if orig_sr != target_sr and len(samples) > 1:
+        new_len = int(round(len(samples) * target_sr / orig_sr))
+        old_x = np.linspace(0.0, 1.0, num=len(samples), endpoint=False)
+        new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+        samples = np.interp(new_x, old_x, samples).astype(np.float32)
+
+    if len(samples) < target_sr:
+        raise ValueError("Voice sample must be at least 1 second long")
+
+    max_samples = target_sr * 20
+    if len(samples) > max_samples:
+        samples = samples[:max_samples]
+
+    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
+    if 0.01 < peak < 0.35:
+        samples = samples * (0.85 / peak)
+
+    pcm_i16 = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    out = io.BytesIO()
+    with wave.open(out, "wb") as out_wf:
+        out_wf.setnchannels(1)
+        out_wf.setsampwidth(2)
+        out_wf.setframerate(target_sr)
+        out_wf.writeframes(pcm_i16.tobytes())
+    norm_wav = out.getvalue()
+    return norm_wav, {
+        "orig_rate": orig_sr,
+        "orig_channels": orig_ch,
+        "duration_s": round(len(pcm_i16) / float(target_sr), 2),
+        "bytes": len(norm_wav),
+    }
+
+
+def load_live_voice_sample(voice: Optional[str], custom_voice_audio: Optional[str]) -> tuple[Optional[bytes], bool]:
+    """The ReplicatedVoiceConfig sample for a session, and whether a clone was asked for.
+
+    A recorded or uploaded sample (base64 or data URL) wins; a server-managed
+    Gemini clone loads its bundled sample. A clone that was asked for but has
+    no usable sample comes back as (None, True): the session runs as plain
+    Live and says so, instead of pretending to clone.
+    """
+    if custom_voice_audio:
+        try:
+            return base64.b64decode(custom_voice_audio.split(",")[-1]) or None, True
+        except ValueError as b64_err:
+            logger.warning(f"🎙️ [Live Voice Clone] Could not decode the recorded voice sample: {b64_err}")
+            return None, True
+    if voice_profiles.is_gemini_clone_voice(voice):
+        return voice_profiles.load_gemini_live_voice_sample(voice), True
+    return None, voice_profiles.is_live_replicated_voice(voice)
+
+
 def resolve_prebuilt_avatar_name(
     avatar_name: Optional[str],
     persona_id: Optional[str],
@@ -1337,7 +1560,6 @@ def resolve_prebuilt_avatar_name(
             return valid
 
     pid = (persona_id or "").strip().lower()
-    v_low = (voice or "").strip().lower()
     if pid == "hindi-assistant":
         return "Vera"
     if pid == "banking-advisor":
@@ -1346,9 +1568,7 @@ def resolve_prebuilt_avatar_name(
         return "Leo"
     if pid == "store-assistant":
         return "Ben"
-    if v_low in FEMALE_VOICE_NAMES or gender == "female":
-        return "Kira"
-    return "Ben"
+    return "Kira" if (voice_profiles.voice_gender(voice) or gender) == "female" else "Ben"
 
 
 async def run_agent_live(
@@ -1374,11 +1594,12 @@ async def run_agent_live(
     avatar_enabled: bool = False,
     avatar_name: str = "auto",
     avatar_custom_image: Optional[str] = None,
+    custom_voice_audio: Optional[str] = None,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
-    gender = "male" if voice == "Custom-Male" else "female"
+    gender = voice_profiles.voice_gender(voice) or "female"
     logger.info(f"Starting agent with language: {language}")
 
     # Resolved before the prompt is composed: an architecture may own its system
@@ -1396,7 +1617,7 @@ async def run_agent_live(
             f"{persona_architecture.pattern.value}; client-provided text ignored."
         )
 
-    prompt_text = compose_live_system_prompt(effective_instruction, gender, language)
+    prompt_text = compose_live_system_prompt(effective_instruction, gender, language, voice)
 
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
@@ -1484,9 +1705,13 @@ async def run_agent_live(
 
     resolved_avatar_name = resolve_prebuilt_avatar_name(avatar_name, persona_id, voice, gender)
     is_custom_voice = voice_profiles.is_custom_clone_voice(voice)
-    # When Live Avatar is enabled, Gemini 3.8 Live synthesizes lip-synced video + AAC audio natively
-    # inside the MP4 stream (response_modalities=[VIDEO]), so external TTS must be disabled.
-    use_external_tts = False if avatar_enabled else (tts or is_custom_voice)
+    replicated_voice_bytes, voice_clone_requested = load_live_voice_sample(voice, custom_voice_audio)
+    # Only a real sample takes the clone path; a clone with no sample runs as plain Live and says so.
+    is_live_voice_clone = bool(replicated_voice_bytes)
+    # When Live Avatar or Gemini 3.8 Live Voice Cloning (ReplicatedVoiceConfig) is enabled,
+    # Gemini 3.8 Live synthesizes audio natively on Vertex AI (`google/gemini-3.8-live`),
+    # so external Chirp TTS must be disabled.
+    use_external_tts = False if (avatar_enabled or is_live_voice_clone) else (tts or is_custom_voice)
     tts_service = None
     if use_external_tts:
         from agent import CustomGoogleTTSService
@@ -1531,15 +1756,21 @@ async def run_agent_live(
         cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
     is_ai_studio, clean_model = resolve_live_model_gateway(model)
-    if avatar_enabled:
-        # Gemini 3.8 Live Avatar (AvatarConfig + response_modalities=[VIDEO]) is exclusively
-        # served on the Vertex AI Enterprise gateway via `google/gemini-3.8-live`.
+    if avatar_enabled or is_live_voice_clone:
+        # Gemini 3.8 Live Avatar (AvatarConfig) and Live Voice Cloning (ReplicatedVoiceConfig)
+        # are served on the Vertex AI Enterprise gateway via `google/gemini-3.8-live`.
         is_ai_studio = False
         clean_model = "gemini-3.8-live"
-        logger.info(
-            f"🎭 [Live Avatar] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
-            f"(avatar_name='{resolved_avatar_name}', custom_image={'yes' if avatar_custom_image else 'no'})"
-        )
+        if avatar_enabled:
+            logger.info(
+                f"🎭 [Live Avatar] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
+                f"(avatar_name='{resolved_avatar_name}', custom_image={'yes' if avatar_custom_image else 'no'})"
+            )
+        if is_live_voice_clone:
+            logger.info(
+                f"🎙️ [Live Voice Clone] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
+                f"(voice='{voice}', sample_bytes={len(replicated_voice_bytes) if replicated_voice_bytes else 0})"
+            )
     model = clean_model
 
     if is_ai_studio:
@@ -1615,11 +1846,15 @@ async def run_agent_live(
                 pass
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
-    # Avatar flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
+    # Avatar & Voice Clone flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
     llm._avatar_enabled = bool(avatar_enabled)
     llm._avatar_name = resolved_avatar_name
     llm._avatar_custom_image = avatar_custom_image
     llm._avatar_seq = 0
+    llm._replicated_voice_sample = replicated_voice_bytes
+    llm._fallback_voice_name = voice_name or ("Puck" if gender == "male" else "Aoede")
+    if voice_clone_requested and not replicated_voice_bytes:
+        llm._fall_back_voice("No voice sample was recorded or configured for this voice", "missing_sample")
 
     # Context compression tracking and notification flags
     effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None

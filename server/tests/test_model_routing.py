@@ -179,6 +179,52 @@ class TestLiveAvatarRouting(unittest.TestCase):
         self.assertEqual(resolve_prebuilt_avatar_name("custom", "custom", "Puck", "male"), "Ben")
         self.assertEqual(resolve_prebuilt_avatar_name("custom", "custom", "Kore", "female"), "Kira")
 
+    def test_auto_avatar_follows_the_voice_before_the_default_gender(self):
+        from agent_live import resolve_prebuilt_avatar_name
+
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", None, "Puck", "female"), "Ben")
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", None, "Achernar", "male"), "Kira")
+        self.assertEqual(resolve_prebuilt_avatar_name("auto", None, "Custom-Live-Voice", "female"), "Kira",
+                         "a recorded voice has no known gender, so the default decides")
+
+
+class TestVoiceGender(unittest.TestCase):
+    def test_every_studio_voice_label_agrees(self):
+        import re
+        import voice_profiles
+
+        repo = os.path.dirname(server_dir)
+        with open(os.path.join(repo, "demos/voice-studio/src/lib/voice-session.ts"), encoding="utf-8") as f:
+            labels = dict(re.findall(r'\["([\w-]+)", "[^"]*\((Male|Female)\)"\]', f.read()))
+        self.assertGreater(len(labels), 25)
+        for voice, gender in labels.items():
+            self.assertEqual(voice_profiles.voice_gender(voice), gender.lower(), voice)
+
+    def test_voices_outside_the_list(self):
+        import voice_profiles
+
+        self.assertEqual(voice_profiles.voice_gender("Gacrux"), "female")
+        self.assertEqual(voice_profiles.voice_gender("hi-IN-Chirp3-HD-Charon"), "male")
+        for unknown in ("Custom-Live-Voice", "Custom-Key", "", None):
+            self.assertIsNone(voice_profiles.voice_gender(unknown), unknown)
+
+    def test_live_prompt_uses_the_voice_gender(self):
+        from agent_live import compose_live_system_prompt
+        import voice_profiles
+
+        self.assertIn("male AI assistant", compose_live_system_prompt(None, voice_profiles.voice_gender("Puck"), "en-US"))
+
+    def test_live_clone_voices_get_self_reference_grammar(self):
+        from agent_live import compose_live_system_prompt
+
+        prompt = compose_live_system_prompt("Be terse.", "male", "hi-IN", voice="Gemini-Clone-Male")
+        self.assertIn("सकता हूँ", prompt)
+        self.assertTrue(prompt.startswith("Be terse.\n\nVOICE GENDER:"), prompt)
+        self.assertTrue(prompt.endswith("IMPORTANT: You must converse in hi-IN language."), prompt)
+        self.assertEqual(compose_live_system_prompt("Be terse.", "male", "hi-IN", voice="Puck"),
+                         "Be terse.\n\nIMPORTANT: You must converse in hi-IN language.",
+                         "named voices are left to the persona")
+
     def test_normalize_custom_avatar_image_produces_704x1280_rgb_png(self):
         import io
         from PIL import Image

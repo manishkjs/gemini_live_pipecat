@@ -80,10 +80,12 @@ test('Live Avatar is Live-only: Cascade never carries avatar state even if the s
   assert.equal(body.avatar_custom_image, undefined, 'Cascade must never upload the avatar portrait');
 });
 
-test('Gemini 3.8 cloned voice: Cascade + 3.8 TTS only, selected by name, key never leaves the server', async () => {
-  const { isGeminiClonedVoice, supportsGeminiClone, isClonedVoice } = await import('../src/lib/voice-session.ts');
+test('Gemini 3.8 cloned voices: Gemini-Clone-Male works in both Live 3.8 and Cascade 3.8 TTS; Custom-Live-Voice sends custom_voice_audio in body only', async () => {
+  const { isGeminiClonedVoice, isLiveCustomVoice, supportsGeminiClone, isClonedVoice, reconcileVoiceForEngine } = await import('../src/lib/voice-session.ts');
   assert.equal(isGeminiClonedVoice('Gemini-Clone-Male'), true);
+  assert.equal(isLiveCustomVoice('Custom-Live-Voice'), true);
   assert.equal(isClonedVoice('Gemini-Clone-Male'), false, 'must not be treated as a Chirp clone (which forces google-tts)');
+  assert.equal(isClonedVoice('Custom-Live-Voice'), false);
   for (const m of ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts']) assert.equal(supportsGeminiClone(m), true, m);
   for (const m of ['google-tts', 'gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview']) assert.equal(supportsGeminiClone(m), false, m);
 
@@ -95,13 +97,42 @@ test('Gemini 3.8 cloned voice: Cascade + 3.8 TTS only, selected by name, key nev
     assert.equal(body.custom_voice_key, undefined);
   }
   assert.throws(() => buildConnectRequest({ ...settings, engine: 'cascade', ttsModel: 'google-tts', voice: 'Gemini-Clone-Male' }), /gemini-3\.8/);
-  assert.throws(() => buildConnectRequest({ ...settings, engine: 'live', voice: 'Gemini-Clone-Male' }), /Cascade/);
 
-  const { reconcileVoiceForEngine } = await import('../src/lib/voice-session.ts');
+  // Gemini-Clone-Male is also supported in Gemini Live 3.8 (via server-bundled manish_reference_24k.wav + ReplicatedVoiceConfig)
+  const { url: liveCloneUrl, body: liveCloneBody } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    model: 'gemini-live-2.5-flash-native-audio',
+    voice: 'Gemini-Clone-Male',
+  });
+  assert.equal(liveCloneUrl.searchParams.get('voice'), 'Gemini-Clone-Male');
+  assert.equal(liveCloneUrl.searchParams.get('model'), 'gemini-3.8-live', 'Live voice clone forces gemini-3.8-live');
+  assert.equal(liveCloneBody.custom_voice_audio, undefined);
+
+  // Custom-Live-Voice requires customVoiceAudio in Live mode and never leaks audio into the URL
+  assert.throws(() => buildConnectRequest({ ...settings, engine: 'live', voice: 'Custom-Live-Voice', customVoiceAudio: '' }), /Record a 10/);
+  assert.throws(() => buildConnectRequest({ ...settings, engine: 'cascade', voice: 'Custom-Live-Voice', customVoiceAudio: 'data:audio/wav;base64,UklGRg==' }), /Live/);
+  const sampleDataUrl = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+  const { url: customLiveUrl, body: customLiveBody } = buildConnectRequest({
+    ...settings,
+    engine: 'live',
+    voice: 'Custom-Live-Voice',
+    customVoiceAudio: sampleDataUrl,
+  });
+  assert.equal(customLiveUrl.searchParams.get('voice'), 'Custom-Live-Voice');
+  assert.equal(customLiveUrl.searchParams.get('model'), 'gemini-3.8-live');
+  assert.equal(customLiveUrl.searchParams.has('custom_voice_audio'), false);
+  assert.equal(customLiveBody.custom_voice_audio, sampleDataUrl);
+
   assert.equal(
     reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Gemini-Clone-Male', ttsModel: 'gemini-3.8-flash-lite-tts' }, 'live'),
+    'Gemini-Clone-Male',
+    'switching from Cascade (Gemini-Clone-Male) to Live preserves Manish cloned voice for Gemini 3.8 Live',
+  );
+  assert.equal(
+    reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Custom-Live-Voice', ttsModel: 'gemini-3.8-flash-lite-tts' }, 'cascade'),
     'Aoede',
-    'switching from Cascade (Gemini-Clone-Male) to Live falls back to the persona default voice so starting Live never errors',
+    'switching from Live (Custom-Live-Voice) to Cascade falls back to the persona default voice',
   );
   assert.equal(
     reconcileVoiceForEngine({ personaId: 'debt-collector', voice: 'Gemini-Clone-Male', ttsModel: 'gemini-3.1-flash-tts-preview' }, 'cascade'),
@@ -120,13 +151,19 @@ test('Gemini 3.8 cloned voice: Cascade + 3.8 TTS only, selected by name, key nev
   );
 });
 test('3.8 TTS performance markup is hidden from the transcript but words are kept', async () => {
-  const { displaySpokenText } = await import('../src/lib/voice-session.ts');
-  assert.equal(displaySpokenText('Arre wah! <laugh> Bahut badhiya.'), 'Arre wah! Bahut badhiya.');
-  assert.equal(displaySpokenText(' answer'), ' answer', 'streamed chunk edge spaces are preserved');
-  assert.equal(displaySpokenText('Hmm... <short pause> theek hai, SACH mein.'), 'Hmm... theek hai, SACH mein.');
-  assert.equal(displaySpokenText('Main |haan| sun raha hoon'), 'Main sun raha hoon');
-  assert.equal(displaySpokenText('<sigh> theek hai'), ' theek hai');
-  assert.equal(displaySpokenText('2 < 3 and 5 > 4'), '2 < 3 and 5 > 4', 'real comparisons are not tags');
+  const { transcriptText } = await import('../src/lib/voice-session.ts');
+  assert.equal(transcriptText('Arre wah! <laugh> Bahut  badhiya.'), 'Arre wah! Bahut badhiya.');
+  assert.equal(transcriptText('Hmm... <short pause> theek hai, SACH mein.'), 'Hmm... theek hai, SACH mein.');
+  assert.equal(transcriptText('Main |haan| sun raha hoon'), 'Main sun raha hoon');
+  assert.equal(transcriptText('<sigh> theek hai'), 'theek hai');
+  assert.equal(transcriptText('Suno <laugh>!'), 'Suno!');
+  assert.equal(transcriptText('2 < 3 and 5 > 4'), '2 < 3 and 5 > 4', 'real comparisons are not tags');
+  // Older servers stripped each streamed chunk on its own and left halves of a block behind.
+  assert.equal(transcriptText('[[amused disbelief, hi gh pitch, fast]] Arre bhai!'), 'Arre bhai!');
+  assert.equal(transcriptText('] Arre bhai!'), 'Arre bhai!');
+  // A construct that is still open stays hidden until the next chunk decides it.
+  assert.equal(transcriptText('Arre bhai! [[calm, lo'), 'Arre bhai!');
+  assert.equal(transcriptText('Arre bhai! <la'), 'Arre bhai!');
 });
 test('custom instructions replace any persona preset and are sent in the body for both engines', () => {
   for (const persona of PERSONAS) for (const engine of ['live', 'cascade']) {

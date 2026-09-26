@@ -151,6 +151,84 @@ def resolve_gemini_voice_key(voice: Optional[str]) -> Optional[str]:
     return key
 
 
+LIVE_CUSTOM_VOICE_ID = "Custom-Live-Voice"
+_GEMINI_LIVE_SAMPLE_FILES = {"male": "manish_reference_24k.wav"}
+
+
+def is_live_replicated_voice(voice: Optional[str]) -> bool:
+    """True when a Gemini Live voice selection uses Vertex AI ReplicatedVoiceConfig."""
+    if not voice:
+        return False
+    v = str(voice).strip()
+    return is_gemini_clone_voice(v) or v == LIVE_CUSTOM_VOICE_ID
+
+
+# Prebuilt Gemini voices, gendered as the studio labels them (voice-session.ts).
+_FEMALE_VOICES = frozenset({
+    "achernar", "aoede", "autonoe", "callirhoe", "callirrhoe", "despina", "erinome", "gacrux",
+    "kore", "laomedeia", "leda", "pulcherrima", "sulafat", "vindemiatrix", "zephyr",
+})
+_MALE_VOICES = frozenset({
+    "achird", "algenib", "algieba", "alnilam", "charon", "enceladus", "fenrir", "iapetus",
+    "orus", "puck", "rasalgethi", "sadachbia", "sadaltager", "schedar", "umbriel", "zubenelgenubi",
+})
+
+
+def voice_gender(voice: Optional[str]) -> Optional[str]:
+    """'male' or 'female' when the voice's gender is known; None otherwise (e.g. a recorded voice)."""
+    if not voice:
+        return None
+    v = str(voice).strip()
+    if is_gemini_clone_voice(v):
+        return GEMINI_CLONE_VOICES[v]
+    if is_female_clone_voice(v):
+        return "female"
+    if is_male_clone_voice(v):
+        return "male"
+    name = v.rsplit("-", 1)[-1].lower()  # "hi-IN-Chirp3-HD-Charon" -> "charon"
+    if name in _FEMALE_VOICES:
+        return "female"
+    if name in _MALE_VOICES:
+        return "male"
+    return None
+
+
+def get_gemini_live_voice_sample_file(gender: str = "male") -> Optional[str]:
+    env_path = os.getenv("GEMINI_LIVE_VOICE_SAMPLE_MALE" if gender == "male" else "GEMINI_LIVE_VOICE_SAMPLE_FEMALE")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    name = _GEMINI_LIVE_SAMPLE_FILES.get(gender)
+    if not name:
+        return None
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for c in (
+        f"/keys/{name}",
+        os.path.join(base_dir, name),
+        os.path.join(os.getcwd(), "server", name),
+        os.path.join(os.getcwd(), name),
+        f"/app/{name}",
+    ):
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def load_gemini_live_voice_sample(voice: Optional[str]) -> Optional[bytes]:
+    """Load the pre-bundled 24 kHz 16-bit mono WAV sample for a server-managed Gemini 3.8 clone."""
+    if not is_gemini_clone_voice(voice):
+        return None
+    gender = GEMINI_CLONE_VOICES[str(voice).strip()]
+    path = get_gemini_live_voice_sample_file(gender)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+            return data if data else None
+    except OSError:
+        return None
+
+
 
 def resolve_clone_key(voice: Optional[str], supplied_key: Optional[str] = None) -> Optional[str]:
     """Only an explicitly selected clone can use a credential.

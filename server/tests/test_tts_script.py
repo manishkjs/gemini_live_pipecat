@@ -5,6 +5,7 @@ In 3.8, `text` is a verbatim transcript: everything is spoken except inline
 performable script, and the text pipeline must deliver the tags intact.
 """
 import asyncio
+import random
 import unittest
 
 import tts_script
@@ -224,6 +225,86 @@ class TestSpokenParts(unittest.TestCase):
     def test_stray_single_brackets_are_still_dropped(self):
         self.assertEqual(tts_script.spoken_parts("[warmly] Namaste!", None)[0], [(None, "Namaste!")])
 
+
+class TestTranscriptStream(unittest.TestCase):
+    """The cascade transcript is built from raw LLM tokens, and markup can be cut across any of them."""
+
+    @staticmethod
+    def pieces(*chunks):
+        stream = tts_script.TranscriptStream()
+        return [stream.feed(chunk) for chunk in chunks] + [stream.flush()]
+
+    @staticmethod
+    def studio_join(pieces):
+        """How the studio appends cascade chunks (use-voice-session.ts): it adds a space
+        between a chunk ending in a non-space and one starting with a letter or digit."""
+        text = ""
+        for piece in pieces:
+            if piece:
+                text += (" " if text and not text[-1].isspace() and piece[0].isalnum() else "") + piece
+        return text
+
+    def test_markup_is_removed_and_spacing_is_kept(self):
+        cases = {
+            "[[amused disbelief, high pitch, fast]] Arre bhai! <laugh> Kya baat hai.": "Arre bhai! Kya baat hai.",
+            "Arre wah! <laugh> Bahut  badhiya.": "Arre wah! Bahut badhiya.",
+            "Main |haan| sun raha hoon.": "Main sun raha hoon.",
+            "[warmly] Namaste!": "Namaste!",
+            "Suno <laugh>!": "Suno!",
+            "मैं ठीक हूँ <sigh> ।": "मैं ठीक हूँ।",
+            "Hmm...\n\n[[calm, low pitch, slow]] Suno.": "Hmm...\nSuno.",
+            "2 < 3 and 5 > 4": "2 < 3 and 5 > 4",
+        }
+        for raw, shown in cases.items():
+            self.assertEqual(tts_script.transcript_text(raw), shown, raw)
+
+    def test_unfinished_markup_at_the_end_of_a_reply_is_hidden(self):
+        self.assertEqual(tts_script.transcript_text("Theek hai [[calm, slow"), "Theek hai")
+        self.assertEqual(tts_script.transcript_text("Theek hai <laug"), "Theek hai")
+        self.assertEqual(tts_script.transcript_text("Main |haan"), "Main haan", "an unclosed pipe is residue, not a line")
+
+    def test_a_lone_bracket_does_not_swallow_the_reply(self):
+        tail = "bahut lambi baat " * 20  # well past the 200-char limit of a direction block
+        self.assertEqual(tts_script.transcript_text("Suno [" + tail), ("Suno " + tail).strip())
+
+    def test_a_direction_block_split_across_tokens_never_reaches_the_screen(self):
+        pieces = self.pieces("[[amused disb", "elief, high pitch", ", fast]] Arre bhai! <la", "ugh> Kya haal hai?")
+        self.assertEqual(pieces[:2], ["", ""], "nothing is shown while the block is still open")
+        self.assertEqual("".join(pieces), "Arre bhai! Kya haal hai?")
+
+    def test_finished_words_are_released_before_the_reply_ends(self):
+        stream = tts_script.TranscriptStream()
+        self.assertEqual(stream.feed("[[warm, low pitch, slow]] Arre bhai! Kya "), "Arre bhai! Kya")
+        self.assertEqual(stream.feed("haal [[brighter, high pitch"), " haal")
+        self.assertEqual(stream.feed(", fast]] hai?"), "")
+        self.assertEqual(stream.flush(), " hai?")
+
+    def test_a_word_is_never_sent_in_two_pieces(self):
+        # The studio would render "Nam" + "askaar" as "Nam askaar".
+        pieces = self.pieces("Nam", "askaar dost, kaise", " ho?")
+        self.assertEqual(self.studio_join(pieces), "Namaskaar dost, kaise ho?")
+
+    def test_flush_starts_the_next_reply_clean(self):
+        stream = tts_script.TranscriptStream()
+        self.assertEqual(stream.feed("Pehla jawab [[calm"), "Pehla jawab")
+        self.assertEqual(stream.flush(), "", "the unclosed block is dropped")
+        self.assertEqual(stream.feed("Doosra "), "Doosra", "no space is owed across replies")
+
+    def test_any_chunking_shows_the_same_transcript(self):
+        rng = random.Random(38)
+        atoms = ["Arre", "bhai", "hi", "gh", "2", "मैं", " ", "  ", "\n", ",", "!", "...", "।", "-",
+                 "[[", "]]", "[", "]", "<", ">", "|", "<laugh>", "<short pause>", "|haan|",
+                 "[[calm, low pitch, slow]]", "[warmly]", "pitch"]
+        for _ in range(3000):
+            raw = "".join(rng.choice(atoms) for _ in range(rng.randint(0, 24)))
+            whole = tts_script.transcript_text(raw)
+            cuts = sorted(rng.sample(range(len(raw) + 1), k=min(len(raw) + 1, rng.randint(0, 8))))
+            chunks = [raw[a:b] for a, b in zip([0, *cuts], [*cuts, len(raw)])]
+            pieces = self.pieces(*chunks)
+            self.assertEqual("".join(pieces), whole, repr(chunks))
+            self.assertEqual(self.studio_join(pieces), whole, repr(chunks))
+            self.assertFalse(set("[]|") & set(whole), repr(raw))
+            self.assertEqual(whole, whole.strip(), repr(raw))
 
 
 if __name__ == "__main__":

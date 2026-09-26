@@ -10,6 +10,7 @@ import {
   reconcileVoiceForPersona,
   supportsGeminiClone,
   newSessionId,
+  transcriptText,
   type Engine,
   type SessionSettings,
 } from "@/lib/voice-session";
@@ -20,6 +21,18 @@ import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
 import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
+
+/** A transcript entry. Assistant text arrives as a raw script; the reader sees `transcriptText` of it. */
+function transcriptMessage(role: Message["role"], text: string, metrics?: MessageMetrics): Message {
+  return {
+    id: crypto.randomUUID(),
+    role,
+    ...(role === "assistant" ? { rawText: text, text: transcriptText(text) } : { text }),
+    time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    createdAt: Date.now(),
+    metrics,
+  };
+}
 
 /**
  * Owns a voice conversation: connection lifecycle, transcript, and the
@@ -117,6 +130,12 @@ export function useVoiceSession() {
   const [avatarFallbackNotice, setAvatarFallbackNotice] = useState<{
     fallbackAvatar: string;
     reason: string;
+    code: string;
+  } | null>(null);
+  const [voiceFallbackNotice, setVoiceFallbackNotice] = useState<{
+    fallbackVoice: string;
+    reason: string;
+    code: string;
   } | null>(null);
 
   const customInstructions = useRef("");
@@ -166,17 +185,7 @@ export function useVoiceSession() {
   }, [track]);
 
   const addMessage = useCallback((role: Message["role"], text: string, metrics?: MessageMetrics) => {
-    setMessages((items) => [
-      ...items,
-      {
-        id: crypto.randomUUID(),
-        role,
-        text,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        createdAt: Date.now(),
-        metrics,
-      },
-    ]);
+    setMessages((items) => [...items, transcriptMessage(role, text, metrics)]);
   }, []);
 
 
@@ -225,6 +234,8 @@ export function useVoiceSession() {
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
     starting.current = false;
     avatarStream.reset();
+    setAvatarFallbackNotice(null);
+    setVoiceFallbackNotice(null);
     if (compressionTimeout.current) clearTimeout(compressionTimeout.current);
     setCompressionEvent(null);
     followTranscript.current = true;
@@ -325,8 +336,10 @@ export function useVoiceSession() {
                 : items.length - 1;
               const last = items[index];
               if (last?.role === "assistant") {
+                const raw = last.rawText ?? last.text;
                 const separator =
-                  targetEngine === "cascade" && /\S$/.test(last.text) && /^[\p{L}\p{N}]/u.test(text) ? " " : "";
+                  targetEngine === "cascade" && /\S$/.test(raw) && /^[\p{L}\p{N}]/u.test(text) ? " " : "";
+                const rawText = raw + separator + text;
                 const mergedMetrics = {
                   ...last.metrics,
                   ...metrics,
@@ -336,19 +349,10 @@ export function useVoiceSession() {
                   turnCostUSD: metrics?.turnCostUSD ?? last.metrics?.turnCostUSD,
                   usage: metrics?.usage ?? last.metrics?.usage,
                 };
-                return items.map((item, i) => i === index ? { ...last, text: last.text + separator + text, metrics: mergedMetrics } : item);
+                return items.map((item, i) => i === index
+                  ? { ...last, rawText, text: transcriptText(rawText), metrics: mergedMetrics } : item);
               }
-              return [
-                ...items,
-                {
-                  id: crypto.randomUUID(),
-                  role,
-                  text,
-                  time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                  createdAt: Date.now(),
-                  metrics,
-                },
-              ];
+              return [...items, transcriptMessage(role, text, metrics)];
             });
           } else {
             addMessage(role, text, metrics);
@@ -360,7 +364,7 @@ export function useVoiceSession() {
             const idx = items.findLastIndex((m) => m.role === role);
             if (idx === -1) return items;
             const copy = [...items];
-            copy[idx] = { ...copy[idx], text };
+            copy[idx] = role === "assistant" ? { ...copy[idx], rawText: text, text: transcriptText(text) } : { ...copy[idx], text };
             return copy;
           });
         },
@@ -455,10 +459,11 @@ export function useVoiceSession() {
         onAvatarInterrupted: () => {
           if (run.current === current) avatarStream.flushOnInterrupt();
         },
-        onAvatarFallback: (fallbackAvatar, reason) => {
-          if (run.current === current) {
-            setAvatarFallbackNotice({ fallbackAvatar, reason });
-          }
+        onAvatarFallback: (fallbackAvatar, reason, code) => {
+          if (run.current === current) setAvatarFallbackNotice({ fallbackAvatar, reason, code });
+        },
+        onVoiceFallback: (fallbackVoice, reason, code) => {
+          if (run.current === current) setVoiceFallbackNotice({ fallbackVoice, reason, code });
         },
         onError: (text) => {
           if (run.current === current) setError(text);
@@ -543,7 +548,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
-    avatarStream, avatarFallbackNotice, setAvatarFallbackNotice,
+    avatarStream, avatarFallbackNotice, setAvatarFallbackNotice, voiceFallbackNotice, setVoiceFallbackNotice,
     // phase tracking & booking
     currentPhase, visitedPhases, phaseDirective, phaseDelivery, callSlots, confirmedBooking,
     // setters the views drive directly

@@ -215,6 +215,92 @@ def display_text(text: str) -> str:
     return _SPACES.sub(" ", t).strip()
 
 
+# Streaming transcript. Per markup opener: the complete construct, and every prefix
+# one can still grow from (held until the next token decides it).
+_MARKUP = {
+    "[": (re.compile(r"\[\[?[^\[\]]{0,200}\]\]?"), re.compile(r"\[\[?[^\[\]]{0,200}\]?")),
+    "<": (_ANGLE_TAG, re.compile(r"<\s*(?:[a-zA-Z][a-zA-Z \-]{0,30}\s*)?")),
+    "|": (_PIPE_BACKCHANNEL, re.compile(r"\|[^|\n]{0,40}")),
+}
+_NO_SPACE_BEFORE = frozenset(".,!?;:…।")
+
+
+class TranscriptStream:
+    """The transcript the user reads, built from raw LLM tokens as they stream.
+
+    [[direction]] blocks, <vocal tags>, |backchannels| and [stage directions] can be
+    cut across any tokens, so feed() returns only text that can never change: a
+    possible markup opener is held until the next token decides it, and the trailing
+    word is held so the UI never gets one word in two pieces. A removed construct
+    counts as a space; spaces collapse to one (a newline if the run had one) and are
+    dropped at the start, at the end and before punctuation.
+
+    The pieces feed() and flush() return always join to transcript_text(whole reply).
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._held = ""        # raw text from an undecided markup opener onward
+        self._word = ""        # current word, led by the space it is owed; not sent yet
+        self._gap = ""         # space owed before the next word: "", " " or "\n"
+        self._started = False  # no space is owed before the first word
+
+    def feed(self, chunk: str) -> str:
+        """Add raw LLM text; return the transcript text it settles."""
+        return self._scan(self._held + (chunk or ""), final=False)
+
+    def flush(self) -> str:
+        """End the reply: return the rest and start over."""
+        tail = self._scan(self._held, final=True) + self._word
+        self.reset()
+        return tail
+
+    def _scan(self, text: str, final: bool) -> str:
+        out: list[str] = []
+        self._held = ""
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch in _MARKUP:
+                whole, prefix = _MARKUP[ch]
+                construct = whole.match(text, i)
+                if construct:
+                    self._space(out, newline=False)
+                    i = construct.end()
+                    continue
+                if prefix.fullmatch(text, i):
+                    if not final:
+                        self._held = text[i:]
+                        break
+                    if ch != "|":
+                        break  # an unclosed [direction or <tag at the end is never shown
+            if ch in "[]|":
+                pass  # a stray bracket or pipe is markup residue, not words
+            elif ch.isspace():
+                self._space(out, newline=ch == "\n")
+            else:
+                if not self._word:
+                    owed = self._gap if self._started and ch not in _NO_SPACE_BEFORE else ""
+                    self._word, self._gap, self._started = owed, "", True
+                self._word += ch
+            i += 1
+        return "".join(out)
+
+    def _space(self, out: list[str], newline: bool) -> None:
+        if self._word:
+            out.append(self._word)
+            self._word = ""
+        self._gap = "\n" if newline or self._gap == "\n" else " "
+
+
+def transcript_text(text: str) -> str:
+    """The transcript of a whole reply, exactly as TranscriptStream shows it."""
+    stream = TranscriptStream()
+    return stream.feed(text) + stream.flush()
+
+
 _MASCULINE_RULE = ("VOICE GENDER: you are speaking in a male voice. Refer to yourself with masculine Hindi "
                    "forms (\"मैं मदद कर सकता हूँ\", \"मैं देख रहा हूँ\"), never feminine ones, even if your persona "
                    "name sounds female. Address the user gender-neutrally.")

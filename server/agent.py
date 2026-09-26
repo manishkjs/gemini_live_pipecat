@@ -37,7 +37,7 @@ from pipecat.services.google.tts import GoogleTTSService, GeminiTTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscriptionFrame, TextFrame, InterruptionFrame, CancelFrame,
-                                   StartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageUrgentFrame as OutputTransportMessageFrame, LLMRunFrame,
+                                   StartFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TTSAudioRawFrame, TTSStoppedFrame, ErrorFrame, OutputTransportMessageUrgentFrame as OutputTransportMessageFrame, LLMRunFrame,
                                    InputTransportMessageFrame, LLMContextFrame, AudioRawFrame, UserAudioRawFrame,
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
@@ -580,11 +580,6 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             language=language_code or "en-US",
         )
         super().__init__(api_key=api_key, settings=settings, **kwargs)
-        # GeminiTTSService yields all TTSAudioRawFrames synchronously inside run_tts().
-        # Setting _is_yielding_frames_synchronously = True instructs TTSService.on_turn_context_completed()
-        # to close the turn audio context immediately after all TTSTextFrame(append_to_context=True)
-        # frames have been appended, preserving assistant context history while avoiding the 3.0s timeout.
-        self._is_yielding_frames_synchronously = True
         if self._is_aistudio:
             self._client = genai.Client(api_key=api_key)
             self._cost_provider = "gemini"
@@ -612,6 +607,17 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 self._pending_tags = ""
             self._current_response_id = frame.response_id
         await super().process_frame(frame, direction)
+
+    async def tts_process_generator(self, context_id: str, generator):
+        # All audio arrives inside run_tts over HTTP, so the turn's audio context can
+        # always close at LLMFullResponseEndFrame. Pipecat instead re-derives this flag
+        # from "did the latest run_tts yield audio", which is False when run_tts skips a
+        # markup-only fragment (a trailing <laugh> or lone [[direction]]); the turn then
+        # waited out the 3 s stop-frame timeout before it could end.
+        result = await super().tts_process_generator(context_id, generator)
+        self._is_yielding_frames_synchronously = True
+        return result
+
 
     async def start_ttfb_metrics(self):
         if not getattr(self, '_my_ttfb_start', None):
@@ -1017,11 +1023,49 @@ class TranscriptionBroadcaster(FrameProcessor):
     def __init__(self, participant: str):
         super().__init__()
         self.participant = participant
+        # The bot's words are raw LLM tokens, with Gemini 3.8 TTS markup cut across them.
+        self._bot_transcript = tts_script.TranscriptStream() if participant == "Bot" else None
+        self._bot_response_id = None
+
+    async def _send_transcription(self, text: str, response_id=None):
+        # Never send "": the studio reads an empty transcription as "clear the partial".
+        if not text:
+            return
+        logger.info(f"TranscriptionBroadcaster [{self.participant}]: {text}")
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'transcription',
+                'participant': self.participant,
+                'response_id': response_id,
+                'text': text
+            }
+        }))
+
+    async def _process_bot_frame(self, frame: Frame) -> bool:
+        """Stream the bot's reply through the transcript; True if the frame was handled."""
+        stream = self._bot_transcript
+        if isinstance(frame, (LLMFullResponseStartFrame, InterruptionFrame)):
+            stream.reset()
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            await self._send_transcription(stream.flush(), self._bot_response_id)
+        elif isinstance(frame, TextFrame) and not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+            response_id = getattr(frame, "response_id", None)
+            if response_id != self._bot_response_id:
+                await self._send_transcription(stream.flush(), self._bot_response_id)
+                self._bot_response_id = response_id
+            await self._send_transcription(stream.feed(frame.text or ""), response_id)
+        else:
+            return False
+        return True
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM:
-            if isinstance(frame, InterimTranscriptionFrame):
+            if self._bot_transcript is not None and await self._process_bot_frame(frame):
+                pass
+            elif isinstance(frame, InterimTranscriptionFrame):
                 ui_text = re.sub(r'\[.*?\]', '', frame.text or "").strip()
                 if ui_text:
                     await self.push_frame(OutputTransportMessageFrame(message={
@@ -1034,21 +1078,8 @@ class TranscriptionBroadcaster(FrameProcessor):
                         }
                     }))
             elif isinstance(frame, (TranscriptionFrame, TextFrame)):
-                text = frame.text
-                if text:
-                    ui_text = re.sub(r'\[.*?\]', '', text).strip()
-                    if ui_text:
-                        logger.info(f"TranscriptionBroadcaster [{self.participant}]: {ui_text}")
-                        await self.push_frame(OutputTransportMessageFrame(message={
-                            "label": "rtvi-ai",
-                            "type": "server-message",
-                            "data": {
-                                'type': 'transcription',
-                                'participant': self.participant,
-                                'response_id': getattr(frame, 'response_id', None),
-                                'text': ui_text
-                            }
-                        }))
+                await self._send_transcription(re.sub(r'\[.*?\]', '', frame.text or "").strip(),
+                                               getattr(frame, 'response_id', None))
 
         await self.push_frame(frame, direction)
 

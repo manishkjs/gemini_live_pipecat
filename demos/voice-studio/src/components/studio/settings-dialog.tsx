@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Edit3, Mic, RotateCcw, DollarSign, Maximize2, Minimize2, Wrench, Video, Sparkles, Upload, Check } from "lucide-react";
+import { Edit3, Mic, RotateCcw, DollarSign, Maximize2, Minimize2, Wrench, Video, Sparkles, Upload, Check, Camera, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,8 @@ import {
   TTS_PACE_OPTIONS,
   GEMINI_VOICES,
   GEMINI_CLONE_VOICES,
+  isGeminiClonedVoice,
+  isLiveCustomVoice,
   supportsGeminiClone,
   CHIRP_HD_VOICES,
   THINKING_LEVELS,
@@ -30,6 +32,13 @@ import {
   usesExternalTts,
   buildPersonaPromptUrl,
 } from "@/lib/voice-session";
+import {
+  normalizeAvatarPortraitFile,
+  captureVideoFrameToAvatarPng,
+  encodeFloat32ToWav24kMonoDataUrl,
+  normalizeUploadedVoiceAudioFile,
+  VOICE_CLONE_READING_SCRIPT,
+} from "@/lib/media-capture";
 import { getPersonaPrompt, type PersonaTone } from "@/lib/personas";
 import { isLivePricingEligible, getLiveRateCard, estimateTokens } from "@/lib/pricing";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
@@ -81,58 +90,6 @@ function Picker({
   );
 }
 
-/**
- * Automatically normalizes any uploaded user photo into Vertex AI's required
- * 704 x 1280 (9:16 portrait) RGB PNG format with upper-center bust framing.
- */
-async function normalizeAvatarPortraitFile(file: File): Promise<{ dataUrl: string; origDims: string }> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Failed to read image file"));
-    reader.onload = () => {
-      const srcUrl = typeof reader.result === "string" ? reader.result : "";
-      if (!srcUrl) {
-        reject(new Error("Empty image data"));
-        return;
-      }
-      const img = new Image();
-      img.onload = () => {
-        const targetW = 704;
-        const targetH = 1280;
-        const origW = img.naturalWidth || img.width;
-        const origH = img.naturalHeight || img.height;
-        const canvas = document.createElement("canvas");
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          resolve({ dataUrl: srcUrl, origDims: `${origW}×${origH}` });
-          return;
-        }
-        // Fill RGB dark slate backdrop in case source has transparent pixels
-        ctx.fillStyle = "#121826";
-        ctx.fillRect(0, 0, targetW, targetH);
-
-        // Cover-fit with upper-center bias (0.22) so head & shoulders stay centered in 9:16
-        const scale = Math.max(targetW / origW, targetH / origH);
-        const scaledW = origW * scale;
-        const scaledH = origH * scale;
-        const offsetX = (targetW - scaledW) * 0.5;
-        const offsetY = (targetH - scaledH) * 0.22;
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(img, offsetX, offsetY, scaledW, scaledH);
-
-        const pngDataUrl = canvas.toDataURL("image/png");
-        resolve({ dataUrl: pngDataUrl, origDims: `${origW}×${origH}` });
-      };
-      img.onerror = () => resolve({ dataUrl: srcUrl, origDims: "raw" });
-      img.src = srcUrl;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 /** Every engine parameter the backend accepts, in one place, organized logically. */
 export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   const {
@@ -141,6 +98,174 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   } = studio;
 
   const isLive = settings.engine === "live";
+
+  // Webcam capture state for Custom Portrait (704×1280 9:16 RGB PNG)
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState<string>("");
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+
+  const bindCameraVideo = useCallback((el: HTMLVideoElement | null) => {
+    cameraVideoRef.current = el;
+    if (el && cameraStreamRef.current) {
+      el.srcObject = cameraStreamRef.current;
+      void el.play().catch(() => {});
+    }
+  }, []);
+
+  const stopCamera = useCallback(() => {
+    if (cameraStreamRef.current) {
+      for (const track of cameraStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      cameraStreamRef.current = null;
+    }
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = null;
+    }
+    setCameraOpen(false);
+  }, []);
+
+  const startCamera = useCallback(async () => {
+    setCameraError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        audio: false,
+      });
+      cameraStreamRef.current = stream;
+      setCameraOpen(true);
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        void cameraVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      setCameraError(err instanceof Error ? err.message : "Unable to access camera.");
+      setCameraOpen(false);
+    }
+  }, []);
+
+  const snapCameraPhoto = useCallback(() => {
+    const videoEl = cameraVideoRef.current;
+    if (!videoEl) return;
+    try {
+      const { dataUrl } = captureVideoFrameToAvatarPng(videoEl, true);
+      update("avatarCustomImage", dataUrl);
+      stopCamera();
+    } catch (err) {
+      setCameraError(err instanceof Error ? err.message : "Failed to capture frame.");
+    }
+  }, [update, stopCamera]);
+
+  // Browser Microphone Recorder state for Custom Voice Clone (24 kHz 16-bit mono WAV)
+  const [voiceRecording, setVoiceRecording] = useState(false);
+  const [voiceRecordSec, setVoiceRecordSec] = useState(0);
+  const [voiceMetaNote, setVoiceMetaNote] = useState<string>("");
+  const [voiceError, setVoiceError] = useState<string>("");
+  const voiceAudioCtxRef = useRef<AudioContext | null>(null);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChunksRef = useRef<Float32Array[]>([]);
+  const voiceSampleRateRef = useRef<number>(24000);
+  const voiceTimerRef = useRef<number | null>(null);
+
+  const cleanupVoiceRecordingResources = useCallback(() => {
+    if (voiceTimerRef.current !== null) {
+      window.clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    if (voiceStreamRef.current) {
+      for (const t of voiceStreamRef.current.getTracks()) {
+        t.stop();
+      }
+      voiceStreamRef.current = null;
+    }
+    if (voiceAudioCtxRef.current) {
+      void voiceAudioCtxRef.current.close().catch(() => {});
+      voiceAudioCtxRef.current = null;
+    }
+    setVoiceRecording(false);
+  }, []);
+
+  const stopVoiceRecording = useCallback(() => {
+    const chunks = voiceChunksRef.current;
+    const sr = voiceSampleRateRef.current;
+    cleanupVoiceRecordingResources();
+    const totalLen = chunks.reduce((acc, c) => acc + c.length, 0);
+    if (totalLen === 0) return;
+    const merged = new Float32Array(totalLen);
+    let offset = 0;
+    for (const c of chunks) {
+      merged.set(c, offset);
+      offset += c.length;
+    }
+    voiceChunksRef.current = [];
+    try {
+      const { dataUrl, durationSec, byteLength } = encodeFloat32ToWav24kMonoDataUrl(merged, sr);
+      update("customVoiceAudio", dataUrl);
+      update("model", "gemini-3.8-live");
+      setVoiceMetaNote(`${durationSec}s · 24 kHz 16-bit mono WAV (${Math.round(byteLength / 1024)} KB)`);
+      setVoiceError("");
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : "Failed to encode WAV sample.");
+    }
+  }, [cleanupVoiceRecordingResources, update]);
+
+  const startVoiceRecording = useCallback(async () => {
+    setVoiceError("");
+    voiceChunksRef.current = [];
+    setVoiceRecordSec(0);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1,
+          sampleRate: 24000,
+        },
+        video: false,
+      });
+      voiceStreamRef.current = stream;
+      const AudioCtx =
+        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AudioCtx({ sampleRate: 24000 });
+      voiceAudioCtxRef.current = ctx;
+      voiceSampleRateRef.current = ctx.sampleRate || 24000;
+
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (ev) => {
+        const input = ev.inputBuffer.getChannelData(0);
+        voiceChunksRef.current.push(new Float32Array(input));
+      };
+      source.connect(processor);
+      processor.connect(ctx.destination);
+
+      setVoiceRecording(true);
+      const startedAt = Date.now();
+      voiceTimerRef.current = window.setInterval(() => {
+        const elapsed = Math.round(((Date.now() - startedAt) / 1000) * 10) / 10;
+        setVoiceRecordSec(elapsed);
+        if (elapsed >= 18) {
+          stopVoiceRecording();
+        }
+      }, 200);
+    } catch (err) {
+      cleanupVoiceRecordingResources();
+      setVoiceError(err instanceof Error ? err.message : "Unable to access microphone.");
+    }
+  }, [cleanupVoiceRecordingResources, stopVoiceRecording]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      stopCamera();
+      if (voiceStreamRef.current) {
+        stopVoiceRecording();
+      } else {
+        cleanupVoiceRecordingResources();
+      }
+    }
+  }, [settingsOpen, stopCamera, stopVoiceRecording, cleanupVoiceRecordingResources]);
 
   // Resizable dialog width (drag left/right edge or click expand button)
   const [dialogWidth, setDialogWidth] = useState<number>(760);
@@ -380,14 +505,27 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                 {(settings.avatarName === "custom") && (
                   <div className="avatar-custom-upload-box">
                     <div className="avatar-custom-upload-info">
-                      <strong>Custom Portrait Upload (<code>customized_avatar</code> · Auto 704×1280 9:16 PNG)</strong>
+                      <strong>Custom Portrait Upload / Camera (<code>customized_avatar</code> · Auto 704×1280 9:16 PNG)</strong>
                       <p>
-                        Any photo you upload is automatically cropped &amp; normalized to Vertex AI&apos;s required{" "}
-                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format. Note: Requires GCP project allowlisting for{" "}
-                        <code>customized_avatar</code> (automatically falls back to prebuilt avatar if not allowlisted).
+                        Take a live photo with your webcam or upload any portrait image—automatically cropped &amp; normalized to Vertex AI&apos;s required{" "}
+                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format.
                       </p>
                     </div>
-                    <div className="avatar-custom-upload-actions">
+                    <div className="avatar-custom-upload-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+                      <button
+                        type="button"
+                        disabled={active}
+                        onClick={() => (cameraOpen ? stopCamera() : void startCamera())}
+                        className="avatar-upload-btn"
+                        style={{
+                          cursor: active ? "not-allowed" : "pointer",
+                          background: cameraOpen ? "rgba(239, 68, 68, 0.16)" : undefined,
+                          borderColor: cameraOpen ? "rgba(239, 68, 68, 0.45)" : undefined,
+                        }}
+                      >
+                        <Camera size={14} />
+                        <span>{cameraOpen ? "Close Camera" : "Take Photo (Camera)"}</span>
+                      </button>
                       <label className="avatar-upload-btn">
                         <Upload size={14} />
                         <span>{settings.avatarCustomImage ? "Replace Portrait" : "Upload Portrait"}</span>
@@ -400,10 +538,11 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                             const file = e.target.files?.[0];
                             if (!file) return;
                             try {
+                              setCameraError("");
                               const { dataUrl } = await normalizeAvatarPortraitFile(file);
                               update("avatarCustomImage", dataUrl);
-                            } catch {
-                              // Ignore read error
+                            } catch (err) {
+                              setCameraError(err instanceof Error ? err.message : "Failed to process portrait.");
                             }
                           }}
                         />
@@ -423,6 +562,62 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         </div>
                       )}
                     </div>
+                    {cameraError && (
+                      <p style={{ color: "#f87171", fontSize: "12px", marginTop: "6px" }}>{cameraError}</p>
+                    )}
+                    {cameraOpen && (
+                      <div
+                        style={{
+                          marginTop: "10px",
+                          padding: "10px",
+                          background: "rgba(15, 23, 42, 0.75)",
+                          border: "1px solid rgba(56, 189, 248, 0.35)",
+                          borderRadius: "10px",
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: "8px",
+                        }}
+                      >
+                        <video
+                          ref={bindCameraVideo}
+                          autoPlay
+                          playsInline
+                          muted
+                          style={{
+                            width: "176px",
+                            height: "320px",
+                            objectFit: "cover",
+                            borderRadius: "8px",
+                            border: "1px solid rgba(255,255,255,0.2)",
+                            transform: "scaleX(-1)",
+                          }}
+                        />
+                        <div style={{ display: "flex", gap: "8px" }}>
+                          <button
+                            type="button"
+                            onClick={snapCameraPhoto}
+                            className="avatar-upload-btn"
+                            style={{
+                              background: "rgba(16, 185, 129, 0.22)",
+                              borderColor: "rgba(16, 185, 129, 0.55)",
+                              color: "#ecfdf5",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <Camera size={14} />
+                            <span>Capture 704×1280 Portrait</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={stopCamera}
+                            className="avatar-custom-clear"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -482,7 +677,12 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                     label="Voice"
                     value={settings.voice}
                     disabled={active}
-                    onChange={(value) => update("voice", value)}
+                    onChange={(value) => {
+                      update("voice", value);
+                      if (isGeminiClonedVoice(value) || isLiveCustomVoice(value)) {
+                        update("model", "gemini-3.8-live");
+                      }
+                    }}
                     options={GEMINI_VOICES}
                   />
                   <Picker
@@ -493,6 +693,153 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                     options={LANGUAGE_OPTIONS}
                   />
                 </div>
+
+                {settings.voice === "Gemini-Clone-Male" && (
+                  <div style={{ padding: "8px 12px", background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: "8px", fontSize: "12px", color: "#6ee7b7", marginBottom: "8px" }}>
+                    ✨ <strong>Manish · Gemini 3.8 Live Voice Clone:</strong> Uses Manish&apos;s pre-bundled 24 kHz 16-bit mono reference WAV natively on <code>google/gemini-3.8-live</code> via <code>replicated_voice_config</code>.
+                  </div>
+                )}
+
+                {settings.voice === "Custom-Live-Voice" && (
+                  <div
+                    style={{
+                      padding: "12px",
+                      background: "rgba(56, 189, 248, 0.07)",
+                      border: "1px solid rgba(56, 189, 248, 0.28)",
+                      borderRadius: "10px",
+                      marginBottom: "10px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "10px",
+                    }}
+                  >
+                    <div style={{ fontSize: "12px", lineHeight: 1.45 }}>
+                      <strong style={{ color: "#38bdf8", display: "block", marginBottom: "3px" }}>
+                        🎙️ Record or Upload Your Voice (Gemini 3.8 Live Zero-Shot Clone · 24 kHz 16-bit Mono WAV)
+                      </strong>
+                      <span style={{ color: "rgba(226, 232, 240, 0.85)" }}>
+                        Record 10–20 seconds from your microphone or upload an audio clip (<code>.wav</code>, <code>.mp3</code>, <code>.m4a</code>). Automatically converted to <strong>24 kHz 16-bit mono PCM WAV</strong> for Vertex AI <code>replicated_voice_config</code>.
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        padding: "8px 10px",
+                        background: "rgba(15, 23, 42, 0.65)",
+                        border: "1px dashed rgba(148, 163, 184, 0.3)",
+                        borderRadius: "8px",
+                        fontSize: "11.5px",
+                        color: "#e2e8f0",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <span style={{ color: "#94a3b8", fontWeight: 600, display: "block", marginBottom: "2px" }}>
+                        Suggested 15-Second Reading Script:
+                      </span>
+                      &ldquo;{VOICE_CLONE_READING_SCRIPT}&rdquo;
+                    </div>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+                      {!voiceRecording ? (
+                        <button
+                          type="button"
+                          disabled={active}
+                          onClick={() => void startVoiceRecording()}
+                          className="avatar-upload-btn"
+                          style={{
+                            cursor: active ? "not-allowed" : "pointer",
+                            background: "rgba(239, 68, 68, 0.16)",
+                            borderColor: "rgba(239, 68, 68, 0.45)",
+                            color: "#fecaca",
+                          }}
+                        >
+                          <Mic size={14} />
+                          <span>{settings.customVoiceAudio ? "Re-Record Mic (10–20s)" : "Record Voice (10–20s)"}</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={stopVoiceRecording}
+                          className="avatar-upload-btn"
+                          style={{
+                            cursor: "pointer",
+                            background: "rgba(239, 68, 68, 0.35)",
+                            borderColor: "#ef4444",
+                            color: "#ffffff",
+                            fontWeight: 600,
+                          }}
+                        >
+                          <Square size={14} />
+                          <span>Stop &amp; Save ({voiceRecordSec.toFixed(1)}s / 20s)</span>
+                        </button>
+                      )}
+
+                      <label className="avatar-upload-btn" style={{ cursor: active ? "not-allowed" : "pointer" }}>
+                        <Upload size={14} />
+                        <span>Upload Audio (.wav/.mp3/.m4a)</span>
+                        <input
+                          type="file"
+                          accept="audio/wav,audio/x-wav,audio/mpeg,audio/mp3,audio/mp4,audio/x-m4a,audio/webm,audio/ogg,.wav,.mp3,.m4a"
+                          disabled={active || voiceRecording}
+                          style={{ display: "none" }}
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            try {
+                              setVoiceError("");
+                              const { dataUrl, durationSec, byteLength } = await normalizeUploadedVoiceAudioFile(file);
+                              update("customVoiceAudio", dataUrl);
+                              setVoiceMetaNote(`24 kHz · 16-bit mono WAV · ${durationSec.toFixed(1)}s (${Math.round(byteLength / 1024)} KB)`);
+                            } catch (err) {
+                              setVoiceError(err instanceof Error ? err.message : "Failed to normalize audio file.");
+                            }
+                          }}
+                        />
+                      </label>
+
+                      {settings.customVoiceAudio && (
+                        <button
+                          type="button"
+                          disabled={active}
+                          onClick={() => {
+                            update("customVoiceAudio", "");
+                            setVoiceMetaNote("");
+                          }}
+                          className="avatar-custom-clear"
+                        >
+                          Clear Voice Sample
+                        </button>
+                      )}
+                    </div>
+
+                    {voiceError && (
+                      <p style={{ color: "#f87171", fontSize: "12px", margin: 0 }}>{voiceError}</p>
+                    )}
+
+                    {settings.customVoiceAudio && (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                          padding: "6px 10px",
+                          background: "rgba(16, 185, 129, 0.1)",
+                          border: "1px solid rgba(16, 185, 129, 0.3)",
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <span className="avatar-norm-spec-tag" style={{ whiteSpace: "nowrap" }}>
+                          ✓ {voiceMetaNote || "24 kHz 16-bit Mono WAV"}
+                        </span>
+                        <audio
+                          controls
+                          src={settings.customVoiceAudio}
+                          style={{ height: "28px", flex: 1, minWidth: "160px" }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {settings.voice === "Custom-Key" && (
                   <div className="field" style={{ marginTop: "4px" }}>
@@ -510,7 +857,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   </div>
                 )}
 
-                {settings.voice.startsWith("Custom") && (
+                {settings.voice.startsWith("Custom-") && settings.voice !== "Custom-Live-Voice" && (
                   <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
                     ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
                   </div>
@@ -588,7 +935,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         onChange={(value) => update("voice", value)}
                         options={[
                           ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_CLONE_VOICES : []),
-                          ...GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom")),
+                          ...GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom") && !isGeminiClonedVoice(voice)),
                         ]}
                       />
                       <Picker

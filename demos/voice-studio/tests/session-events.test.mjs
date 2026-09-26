@@ -120,6 +120,23 @@ test('metrics received before text are retained for that response only', async (
   await state.endSession();
 });
 
+test('cascade transcript never shows TTS markup cut across chunks, from any server version', async () => {
+  const h = await harness();
+  await h.render().startBackend('cascade');
+  const chunks = [
+    // Older servers stripped each streamed chunk on its own, leaving halves of a block.
+    ['a', '[[amused disbelief, hi'], ['a', 'gh pitch, fast]] Arre bhai!'], ['b', '] Kya haal hai?'],
+    // Current servers send settled, markup-free words with exact spacing.
+    ['c', 'Namaskaar dost,'], ['c', ' kaise ho?'],
+  ];
+  for (const [response_id, text] of chunks) {
+    h.send({ type: 'transcription', participant: 'Bot', response_id, text });
+    for (const m of h.render().messages) assert.doesNotMatch(m.text, /[[\]|]|pitch|disbelief/, m.text);
+  }
+  assert.deepEqual(Array.from(h.render().messages, m => m.text), ['Arre bhai!', 'Kya haal hai?', 'Namaskaar dost, kaise ho?']);
+  await h.render().endSession();
+});
+
 test('start is guarded and each new call has a fresh identity and empty ledger', async () => {
   const h = await harness();
   const state = h.render();
@@ -212,4 +229,21 @@ test('call_state RTVI events populate callSlots and empty transcriptions clear i
   assert.equal(Object.keys(h.render().callSlots).length, 0);
   await h.render().endSession();
 });
+
+test('avatar and voice fallback notices surface their codes and clear when the next session starts', async () => {
+  const h = await harness();
+  await h.render().startBackend();
+  h.send({ type: 'avatar_fallback', fallback_avatar: 'Ben', reason: 'Bad PNG', code: 'invalid_image' });
+  h.send({ type: 'voice_fallback', fallback_voice: 'Puck', reason: 'No recording', code: 'missing_sample' });
+  const during = h.render();
+  assert.deepEqual({ ...during.avatarFallbackNotice }, { fallbackAvatar: 'Ben', reason: 'Bad PNG', code: 'invalid_image' });
+  assert.deepEqual({ ...during.voiceFallbackNotice }, { fallbackVoice: 'Puck', reason: 'No recording', code: 'missing_sample' });
+  await during.endSession();
+  await h.render().startBackend();
+  const next = h.render();
+  assert.equal(next.avatarFallbackNotice, null);
+  assert.equal(next.voiceFallbackNotice, null);
+  await next.endSession();
+});
+
 
