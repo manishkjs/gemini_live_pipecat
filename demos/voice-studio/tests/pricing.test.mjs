@@ -150,8 +150,8 @@ test('formatCost formats fractional cents with elegance', () => {
   assert.equal(formatCost(1.23456), '$1.23');
 });
 
-test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut and excluded from residualOut', async () => {
-  const { accumulateSplit, EMPTY_TOKEN_SPLIT, totalOut } = await import('../src/lib/pricing.ts');
+test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut, marked incomplete with unpricedTokens, and never produce a finite min/max range', async () => {
+  const { accumulateSplit, EMPTY_TOKEN_SPLIT, totalIn, totalOut } = await import('../src/lib/pricing.ts');
   const avatarUsage = {
     prompt_token_count: 132,
     response_token_count: 16569,
@@ -169,8 +169,98 @@ test('Gemini 3.8 Live Avatar VIDEO tokens are tracked in videoOut and excluded f
   const cost = calculateTurnCost('gemini-3.8-live', avatarUsage);
   assert.ok(cost);
   assert.equal(cost.residualOutputTokens, 0);
+  assert.equal(cost.incomplete, true, 'Presence of unpriced VIDEO tokens must mark cost incomplete');
+  assert.deepEqual(cost.unpricedTokens, { videoIn: 0, videoOut: 16512 });
+  assert.equal(cost.minUSD, null, 'Incomplete cost must not report a finite minUSD');
+  assert.equal(cost.maxUSD, null, 'Incomplete cost must not report a finite maxUSD');
   assert.equal(cost.estimated, false);
+
+  // Video-only output turn
+  const videoOnly = calculateTurnCost('gemini-3.8-live', {
+    prompt_token_count: 0,
+    response_token_count: 4000,
+    total_token_count: 4000,
+    prompt_details: {},
+    response_details: { video: 4000 },
+  });
+  assert.ok(videoOnly);
+  assert.equal(videoOnly.incomplete, true);
+  assert.equal(videoOnly.totalUSD, 0);
+  assert.deepEqual(videoOnly.unpricedTokens, { videoIn: 0, videoOut: 4000 });
+  assert.equal(videoOnly.minUSD, null);
+  assert.equal(videoOnly.maxUSD, null);
+
+  // Video + image input turn
+  const videoImageInUsage = {
+    prompt_token_count: 850,
+    response_token_count: 100,
+    total_token_count: 950,
+    prompt_details: { text: 100, video: 500, image: 250 },
+    response_details: { audio: 100 },
+  };
+  const splitIn = accumulateSplit(EMPTY_TOKEN_SPLIT, videoImageInUsage);
+  assert.equal(splitIn.videoIn, 750);
+  assert.equal(splitIn.residualIn, 0);
+  assert.equal(totalIn(splitIn), 850);
+  const costIn = calculateTurnCost('gemini-3.8-live', videoImageInUsage);
+  assert.ok(costIn);
+  assert.equal(costIn.incomplete, true);
+  assert.deepEqual(costIn.unpricedTokens, { videoIn: 750, videoOut: 0 });
+  assert.equal(costIn.minUSD, null);
+  assert.equal(costIn.maxUSD, null);
 });
+
+test('logged journalctl Live Avatar Turn 1 and Turn 2 fixtures reconcile token splits and report incomplete partial subtotals', async () => {
+  const { accumulateSplit, EMPTY_TOKEN_SPLIT, totalIn, totalOut } = await import('../src/lib/pricing.ts');
+
+  // Turn 1 from journalctl: 60113 = AUDIO 223 + TEXT 34 + VIDEO 59856
+  const turn1 = {
+    prompt_token_count: 1417,
+    response_token_count: 60113,
+    thoughts_token_count: 141,
+    total_token_count: 61671,
+    prompt_details: { text: 1417 },
+    response_details: { audio: 223, text: 34, video: 59856 },
+  };
+  const split1 = accumulateSplit(EMPTY_TOKEN_SPLIT, turn1);
+  assert.equal(totalIn(split1), 1417);
+  assert.equal(split1.videoOut, 59856);
+  assert.equal(split1.audioOut, 223);
+  assert.equal(split1.textOut, 34 + 141);
+  assert.equal(split1.residualOut, 0);
+  assert.equal(totalOut(split1), 60113 + 141);
+  const cost1 = calculateTurnCost('gemini-3.8-live', turn1);
+  assert.ok(cost1);
+  assert.equal(cost1.incomplete, true);
+  assert.deepEqual(cost1.unpricedTokens, { videoIn: 0, videoOut: 59856 });
+  assert.equal(cost1.minUSD, null);
+  assert.equal(cost1.maxUSD, null);
+  const expected1 = (1417 * 0.75 + 223 * 12.0 + (34 + 141) * 4.5) / 1_000_000;
+  assert.ok(Math.abs(cost1.totalUSD - expected1) < 1e-12);
+
+  // Turn 2 from journalctl: VIDEO 61920, AUDIO 233, TEXT 42
+  const turn2 = {
+    prompt_token_count: 1713,
+    response_token_count: 62195,
+    thoughts_token_count: 85,
+    total_token_count: 63993,
+    prompt_details: { audio: 259, text: 1454 },
+    response_details: { video: 61920, audio: 233, text: 42 },
+  };
+  const split2 = accumulateSplit(split1, turn2);
+  assert.equal(split2.videoOut, 59856 + 61920);
+  assert.equal(split2.residualIn, 0);
+  assert.equal(split2.residualOut, 0);
+  const cost2 = calculateTurnCost('gemini-3.8-live', turn2);
+  assert.ok(cost2);
+  assert.equal(cost2.incomplete, true);
+  assert.deepEqual(cost2.unpricedTokens, { videoIn: 0, videoOut: 61920 });
+  assert.equal(cost2.minUSD, null);
+  assert.equal(cost2.maxUSD, null);
+  const expected2 = (259 * 3.0 + 1454 * 0.75 + 233 * 12.0 + (42 + 85) * 4.5) / 1_000_000;
+  assert.ok(Math.abs(cost2.totalUSD - expected2) < 1e-12);
+});
+
 
 
 /**

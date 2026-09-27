@@ -34,8 +34,9 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
       ? "Auto"
       : activeAvatarChar.name;
 
-  const statusText =
-    phase === "speaking"
+  const statusText = avatarStream.avatarFailed
+    ? "Avatar Failed · Restart Required"
+    : phase === "speaking"
       ? `${persona.agentName} is speaking`
       : phase === "thinking"
         ? "Thinking…"
@@ -132,11 +133,13 @@ export default function AvatarStagePanel({ studio }: { studio: VoiceStudio }) {
                       : `${activeAvatarChar.name} · ${persona.agentName}`}
                   </strong>
                   <span>
-                    {phase === "connecting"
-                      ? "Establishing Vertex AI 3.8 video stream…"
-                      : active
-                        ? "Streaming initialization segment…"
-                        : "Upload/click a portrait or click Start Live Avatar to begin"}
+                    {avatarStream.avatarFailed
+                      ? avatarStream.failureReason || "Avatar video playback failed. Please restart the call."
+                      : phase === "connecting"
+                        ? "Establishing Vertex AI 3.8 video stream…"
+                        : active
+                          ? "Streaming initialization segment…"
+                          : "Upload/click a portrait or click Start Live Avatar to begin"}
                   </span>
                 </div>
               </div>

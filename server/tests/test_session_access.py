@@ -230,3 +230,71 @@ class TestSessionAccess(unittest.TestCase):
             self.assertIsNone(session_access.take_avatar_custom_image(sid))
             self.assertIsNone(session_access.take_custom_voice_audio(sid))
 
+    def test_connect_accepts_null_system_instruction(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        null_resp = client.post(
+            "/connect?session_id=null_instr&system_instruction=QueryFallback",
+            json={"system_instruction": None},
+        )
+        self.assertEqual(null_resp.status_code, 200)
+        self.assertEqual(
+            session_access.take_instructions(null_resp.json()["session_id"]),
+            "QueryFallback",
+        )
+
+        control_resp = client.post(
+            "/connect?session_id=str_instr",
+            json={"system_instruction": "hi"},
+        )
+        self.assertEqual(control_resp.status_code, 200)
+        self.assertEqual(
+            session_access.take_instructions(control_resp.json()["session_id"]),
+            "hi",
+        )
+
+    def test_connect_streams_body_and_enforces_byte_limit_without_trusting_content_length(self):
+        from fastapi.testclient import TestClient
+        from starlette.requests import Request
+        import server
+        client = TestClient(server.app)
+
+        chunks_yielded = 0
+
+        async def oversized_stream(self_req):
+            nonlocal chunks_yielded
+            # Yield 20 chunks of 1 MB each; intake must stop as soon as total > 12 MB (13th chunk)
+            for _ in range(20):
+                chunks_yielded += 1
+                yield b"x" * (1024 * 1024)
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", oversized_stream):
+            no_cl = client.post(
+                "/connect?session_id=stream_no_cl",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(no_cl.status_code, 413)
+            self.assertEqual(chunks_yielded, 13)
+
+            chunks_yielded = 0
+            understated_cl = client.post(
+                "/connect?session_id=stream_understated_cl",
+                content=b"{}",
+                headers={"Content-Type": "application/json", "Content-Length": "2"},
+            )
+            self.assertEqual(understated_cl.status_code, 413)
+            self.assertEqual(chunks_yielded, 13)
+
+        normal_resp = client.post(
+            "/connect?session_id=stream_ok",
+            json={"system_instruction": "streamed ok"},
+        )
+        self.assertEqual(normal_resp.status_code, 200)
+        self.assertFalse(session_access.authorized("stream_no_cl", "x" * 32))
+        self.assertFalse(session_access.authorized("stream_understated_cl", "x" * 32))
+
+

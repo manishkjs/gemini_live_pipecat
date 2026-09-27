@@ -1,6 +1,6 @@
 # Voice Studio on ui-changes-sep
 
-Updated: 13 September 2026. Work stays on `ui-changes-sep`; main is unchanged.
+Updated: 27 September 2026. Work stays on `ui-changes-sep` / `ui-changes-sep-premerge`; `main` is unchanged.
 
 This branch now includes Voice Studio, backend persona/tool execution, provider usage accounting and scoped diagnostics. The original client remains available. There is no automatic deployment.
 
@@ -50,24 +50,24 @@ The seven fictional portraits ship as 400×400 WebP files, approximately 105 KB 
 
 Keep the observability icon, original UI shortcut, both session engines, custom instructions, compact animation, readable transcript and reduced-motion support. Stop microphone tracks, queued audio, timers and transport connections when a call ends.
 
-A custom clone key is credential text sent in the POST body only. It applies only to Custom-Key; male/female clones use configured server files. Missing keys fail explicitly. Cascade cloning requires Chirp 3 HD, and Gemini TTS has its own named-voice picker. Live text-to-Chirp still requires a provider/model that supports text output; this change does not assert support on native-audio-only models.
+A custom clone key (`Custom-Key`) or reference audio payload (`Custom-Live-Voice` via `custom_voice_audio`) is credential/media data sent in the POST body only. `Custom-Key` applies to Chirp 3 HD custom keys, `Clone-Male` / `Clone-Female` use configured server files, and Gemini 3.8 supports zero-shot reference-audio voice cloning (`Gemini-Clone-Male` server asset or `Custom-Live-Voice` upload) in both Gemini 3.8 Live and Cascade Gemini 3.8 TTS alongside its named-voice picker. Missing keys or reference audio fail explicitly. Live text-to-Chirp still requires a provider/model that supports text output; this change does not assert support on native-audio-only models.
 
 Diagnostics require the call's `session_id` and in-memory `X-Session-Token`. Open the original standalone dashboard from an active call so it receives its capability. A bookmarked dashboard without that capability cannot read a call's data. Raw logs remain available, but numeric metrics never come from log parsing.
 
-Custom instructions retain the existing 4,000 estimated-token editor limit. Generated websocket URLs carry a one-use connection handle; prompt text is stored briefly on the server. API/list-price estimates are not Cloud Billing invoices. Transcribe Live usage scope, continuous STT turn correlation and caller-perceived playback latency remain explicit verification gates.
+Custom instructions retain the existing 4,000 estimated-token editor limit. Generated websocket URLs carry a one-use connection handle; prompt text is stored briefly on the server. API/list-price estimates are not Cloud Billing invoices. Unpriced modalities (such as Live Avatar `VIDEO` tokens) are surfaced explicitly as unpriced token counts with a partial subtotal and total marked unavailable. Transcribe Live usage scope, continuous STT turn correlation and caller-perceived playback latency remain explicit verification gates.
 
-`temp.md` remains tracked for agent coordination. Root and server Docker ignore files exclude it, including nested copies; `.gcloudignore` also excludes it from the documented Cloud Run source upload. Keep durable implementation contracts in `docs/`. Do not delete the coordination file as a packaging step.
+`temp.md` has been removed from the tracked working tree. Root and server Docker ignore files and `.gcloudignore` retain exclusions for scratch/coordination files as defense-in-depth. Keep durable implementation contracts in `docs/`.
 
 ## Verification
 
 ```bash
-# From the repository root, in your backend environment:
-PYTHONPATH=server python -m pytest -q server/tests
+# From the repository root, in your pinned backend environment (google-genai==2.25.0):
+PYTHONPATH=server server/venv/bin/python -m unittest discover -s server/tests -p "test_*.py"
 # From each frontend directory:
-npm test       # Voice Studio
-npm run build  # Voice Studio and original client
+npm test       # Voice Studio (node --test tests/*.test.mjs)
+npm run build  # Voice Studio, original client, and docs-site
 ```
 
 The backend UI-contract test imports the real Voice Studio persona exports with Node.js 22.13+ and checks backend IDs, editor locks and phase cards. It skips explicitly if Node is absent; run the combined check with Node available before merging.
 
-This checkpoint passed 176 backend tests plus 45 subtests, 100 Voice Studio tests and both production builds. Existing dependency deprecation and bundle-size warnings remain. Docker/gcloud are unavailable in the task environment, so packaging exclusions were inspected without a container build or deployment. The task browser could not open the local preview (`ERR_BLOCKED_BY_CLIENT`), so no full browser visual/microphone validation is claimed. Follow the real-call checklist in `docs/telemetry.md` before presenting the demo as production-verified.
+This checkpoint passed 305 backend tests (in `server/venv` with `google-genai==2.25.0`), 132 Voice Studio tests, and production builds for `demos/voice-studio`, `client`, and `docs-site`. Existing dependency deprecation and bundle-size warnings remain. Docker/gcloud are unavailable in the local cloudtop environment, so `Dockerfile` pins (`npm ci` and `google-genai==2.25.0` via `server/requirements.txt`) were verified against the pinned virtualenv without a container image build or deployment. Follow the real-call checklist in `docs/telemetry.md` before presenting the demo as production-verified.

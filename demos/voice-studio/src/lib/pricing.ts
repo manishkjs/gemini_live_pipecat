@@ -116,8 +116,8 @@ export interface UsageTokenData {
 
 export interface TurnCostResult {
   totalUSD: number;
-  minUSD: number;
-  maxUSD: number;
+  minUSD: number | null;
+  maxUSD: number | null;
   residualOutputTokens: number;
   audioInUSD: number;
   audioOutUSD: number;
@@ -132,6 +132,19 @@ export interface TurnCostResult {
    */
   residualTokens: number;
   residualUSD: number;
+  /**
+   * Unpriced modality token counts (e.g. Live Avatar video output or image/video input)
+   * for which no verified per-token rate card exists.
+   */
+  unpricedTokens: {
+    videoIn: number;
+    videoOut: number;
+  };
+  /**
+   * True when unpriced modalities (video/image input or output) are present,
+   * making `totalUSD` a partial audio/text subtotal while the full total is unavailable.
+   */
+  incomplete: boolean;
   /**
    * True when any part of this figure rests on an assumption rather than on
    * reported modality detail — either because details were absent entirely, or
@@ -154,8 +167,8 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   const details = [...Object.values(usage.prompt_details ?? {}), ...Object.values(usage.response_details ?? {})];
   if ([...counters, ...details].some(n => n != null && (!Number.isSafeInteger(n) || n < 0))) return null;
   const split = accumulateSplit(EMPTY_TOKEN_SPLIT, usage);
-  const attributedIn = split.audioIn + split.textIn;
-  const attributedOut = split.audioOut + (split.textOut - split.thoughtsOut);
+  const attributedIn = split.audioIn + split.textIn + split.videoIn;
+  const attributedOut = split.audioOut + (split.textOut - split.thoughtsOut) + split.videoOut;
   if ((usage.prompt_token_count != null && attributedIn > usage.prompt_token_count) ||
       (usage.response_token_count != null && attributedOut > usage.response_token_count)) return null;
   const audioInUSD = split.audioIn * card.audioInPerMillion / 1_000_000;
@@ -165,17 +178,21 @@ export function calculateTurnCost(model: string, usage?: UsageTokenData | null):
   const textOutUSD = split.textOut * card.textOutPerMillion / 1_000_000;
   const knownUSD = audioInUSD + textInUSD + audioOutUSD + textOutUSD;
   const residualUSD = split.residualIn * card.textInPerMillion / 1_000_000;
-  // Unknown modalities have a range. Keep the historical point estimate for
-  // callers, but never present that assumption as a measured bill.
-  const minUSD = knownUSD + (split.residualIn * Math.min(card.textInPerMillion, card.audioInPerMillion)
+  const incomplete = split.videoIn > 0 || split.videoOut > 0;
+  // Unknown modalities have a range when all present modalities are priced.
+  // When unpriced modalities (video/image) are present, the total is incomplete
+  // and must never be presented as a finite min/max range.
+  const minUSD = incomplete ? null : knownUSD + (split.residualIn * Math.min(card.textInPerMillion, card.audioInPerMillion)
     + split.residualOut * Math.min(card.textOutPerMillion, card.audioOutPerMillion)) / 1_000_000;
-  const maxUSD = knownUSD + (split.residualIn * Math.max(card.textInPerMillion, card.audioInPerMillion)
+  const maxUSD = incomplete ? null : knownUSD + (split.residualIn * Math.max(card.textInPerMillion, card.audioInPerMillion)
     + split.residualOut * Math.max(card.textOutPerMillion, card.audioOutPerMillion)) / 1_000_000;
   return {
     totalUSD: knownUSD + residualUSD + split.residualOut * card.audioOutPerMillion / 1_000_000,
     minUSD, maxUSD, audioInUSD, textInUSD, audioOutUSD, textOutUSD,
     thoughtsTokens: split.thoughtsOut, thoughtsUSD,
     residualTokens: split.residualIn, residualOutputTokens: split.residualOut, residualUSD,
+    unpricedTokens: { videoIn: split.videoIn, videoOut: split.videoOut },
+    incomplete,
     estimated: split.residualIn > 0 || split.residualOut > 0 ||
       usage.prompt_token_count == null || usage.response_token_count == null,
     tier: card.tier, rateCard: card,
@@ -233,6 +250,8 @@ export function estimateTokens(text: string): number {
 export interface TokenSplit {
   textIn: number;
   audioIn: number;
+  /** Input video/image tokens (`prompt_tokens_details[VIDEO|IMAGE]`). */
+  videoIn: number;
   /** Billed on input but unattributed to any modality by the server. */
   residualIn: number;
   textOut: number;
@@ -248,6 +267,7 @@ export interface TokenSplit {
 export const EMPTY_TOKEN_SPLIT: TokenSplit = {
   textIn: 0,
   audioIn: 0,
+  videoIn: 0,
   residualIn: 0,
   textOut: 0,
   audioOut: 0,
@@ -257,7 +277,7 @@ export const EMPTY_TOKEN_SPLIT: TokenSplit = {
 };
 
 export function totalIn(s: TokenSplit): number {
-  return s.textIn + s.audioIn + s.residualIn;
+  return s.textIn + s.audioIn + s.videoIn + s.residualIn;
 }
 
 export function totalOut(s: TokenSplit): number {
@@ -295,6 +315,7 @@ export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null):
   return {
     textIn: acc.textIn + textIn,
     audioIn: acc.audioIn + audioIn,
+    videoIn: acc.videoIn + videoIn,
     residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn - videoIn),
     // Per Google Gemini pricing, thoughts_token_count is billed at the Output Text rate ($4.50/1M)
     textOut: acc.textOut + textOut + thoughtsOut,

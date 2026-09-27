@@ -33,8 +33,8 @@ export class UsageLedger {
   }
 
   snapshot(engine: string, model: string) {
-    let tokens = 0, costUSD = 0, minUSD = 0, maxUSD = 0;
-    let estimated = false, complete = true;
+    let tokens = 0, costUSD = 0, minUSD: number | null = 0, maxUSD: number | null = 0;
+    let estimated = false, complete = true, incomplete = false;
     let split: TokenSplit = { ...EMPTY_TOKEN_SPLIT };
     for (const record of this.records.values()) {
       tokens += record.total_token_count ?? ((record.prompt_token_count ?? 0) + (record.response_token_count ?? 0));
@@ -43,15 +43,24 @@ export class UsageLedger {
         const cost = calculateTurnCost(record.model ?? model, record);
         if (cost) {
           costUSD += cost.totalUSD;
-          minUSD += cost.minUSD;
-          maxUSD += cost.maxUSD;
           estimated ||= cost.estimated;
+          if (cost.incomplete) {
+            incomplete = true;
+            complete = false;
+            minUSD = null;
+            maxUSD = null;
+          } else if (!incomplete && minUSD !== null && maxUSD !== null && cost.minUSD !== null && cost.maxUSD !== null) {
+            minUSD += cost.minUSD;
+            maxUSD += cost.maxUSD;
+          }
         } else {
           estimated = true;
           complete = false;
+          minUSD = null;
+          maxUSD = null;
         }
       }
     }
-    return { tokens, split, costUSD, minUSD, maxUSD, estimated, complete };
+    return { tokens, split, costUSD, minUSD, maxUSD, estimated, complete, incomplete };
   }
 }

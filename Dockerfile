@@ -2,7 +2,7 @@
 FROM node:22-slim as client
 WORKDIR /app/demos/voice-studio
 COPY demos/voice-studio/package*.json ./
-RUN npm install
+RUN npm ci
 COPY demos/voice-studio/ ./
 RUN npm run build
 
@@ -24,8 +24,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt && \
     python -m spacy download en_core_web_sm
 COPY server/ .
-RUN pip install --no-cache-dir --upgrade "google-genai>=2.25.0" && \
-    rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json /app/voice_cloning_key_*.txt /app/*voicekey*.txt /app/*.wav
+RUN rm -f /app/*sa_key*.json /app/.env /app/*credentials*.json /app/voice_cloning_key_*.txt /app/*voicekey*.txt /app/*.wav
 COPY --from=client /app/demos/voice-studio/dist ./demos/voice-studio/dist
 COPY --from=client /app/demos/voice-studio/dist ./client/dist
 

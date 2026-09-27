@@ -352,9 +352,14 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                 raise HTTPException(status_code=413, detail="Request body exceeds 12 MB limit")
         except ValueError:
             pass
-    raw_body = await request.body()
-    if len(raw_body) > MAX_CONNECT_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body exceeds 12 MB limit")
+    chunks = []
+    received_bytes = 0
+    async for chunk in request.stream():
+        received_bytes += len(chunk)
+        if received_bytes > MAX_CONNECT_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Request body exceeds 12 MB limit")
+        chunks.append(chunk)
+    raw_body = b"".join(chunks)
 
     try:
         body = json.loads(raw_body) if raw_body else {}
@@ -395,8 +400,9 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                 language=params_dict.get("language") or params_dict.get("stt_language", "en-US"))
             if preset:
                 body["system_instruction"] = preset
-        if body.get("system_instruction", "").strip():
-            instructions = body["system_instruction"].strip()
+        raw_instruction = (body.get("system_instruction") or "").strip()
+        if raw_instruction:
+            instructions = raw_instruction
 
         if "tools" in body:
             tools_data = body["tools"]

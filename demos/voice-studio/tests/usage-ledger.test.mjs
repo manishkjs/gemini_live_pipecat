@@ -60,3 +60,20 @@ test('incomplete pricing cannot turn into a zero-dollar complete estimate', () =
   ledger.ingest({ ...record('a'), response_details: { audio: 200 } });
   assert.equal(ledger.snapshot('live', model).complete, false);
 });
+
+test('ledger snapshot with unpriced video tokens preserves partial subtotal while marking total incomplete and min/max null', () => {
+  const ledger = new UsageLedger();
+  ledger.ingest({
+    session_id: 'call', response_id: 'turn-1', event_id: 'call:turn-1:usage',
+    phase: 'final', service: 'live', revision: 0, model: 'gemini-3.8-live',
+    prompt_token_count: 1417, response_token_count: 60113, thoughts_token_count: 141, total_token_count: 61671,
+    prompt_details: { text: 1417 }, response_details: { audio: 223, text: 34, video: 59856 },
+  });
+  const snap = ledger.snapshot('live', 'gemini-3.8-live');
+  assert.equal(snap.incomplete, true);
+  assert.equal(snap.complete, false);
+  assert.equal(snap.minUSD, null);
+  assert.equal(snap.maxUSD, null);
+  assert.ok(snap.costUSD > 0, 'Partial audio/text subtotal must still be tracked');
+});
+

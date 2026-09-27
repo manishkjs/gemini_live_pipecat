@@ -543,6 +543,217 @@ test('useAvatarStream stops lip movement immediately at speechEndTfdt and skips 
   assert.ok(videoEl.currentTime >= 7.20, `expected playhead to skip phantom tail to >=7.20s, got ${videoEl.currentTime}`);
 });
 
+test('useAvatarStream enters terminal failure, releases playback resources, and stops accepting chunks when addSourceBuffer throws or appendBuffer fails persistently', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  let throwOnAddSourceBuffer = false;
+  let alwaysThrowAppend = false;
+  const revokedUrls = [];
+  const mediaSources = [];
+
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.removed = [];
+      this.listeners = {};
+      this.bufferedRanges = [[0, 10.0]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      if (alwaysThrowAppend) {
+        throw new Error('QuotaExceededError: persistent failure');
+      }
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove(start, end) {
+      this.updating = true;
+      this.removed.push([start, end]);
+    }
+    finishUpdate() {
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      if (throwOnAddSourceBuffer) {
+        throw new Error('NotSupportedError: codec rejected');
+      }
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  let nowMs = 1000;
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    performance: { now: () => nowMs },
+    URL: {
+      createObjectURL: () => `blob:avatar-${mediaSources.length}`,
+      revokeObjectURL: url => { revokedUrls.push(url); },
+    },
+    console: { ...console, error: () => {} },
+  }, { filename: full });
+
+  const fatalReasons = [];
+  const render = () => {
+    cursor = 0;
+    return exports.useAvatarStream(false, undefined, reason => { fatalReasons.push(reason); });
+  };
+
+  let removedSrc = false;
+  let loadedCount = 0;
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 5,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 10 },
+    play: () => Promise.resolve(),
+    pause() { this.paused = true; },
+    removeAttribute(attr) { if (attr === 'src') { this.src = ''; removedSrc = true; } },
+    load() { loadedCount++; },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // Case 1: addSourceBuffer throws -> immediate terminal failure, resources released, subsequent chunks ignored
+  throwOnAddSourceBuffer = true;
+  let ctrl = render();
+  ctrl.videoRef(videoEl);
+  ctrl.pushChunk(b64('init-fail'), true, 1);
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'addSourceBuffer failure must latch avatarFailed');
+  assert.ok(ctrl.failureReason && ctrl.failureReason.includes('restart'), 'failureReason must tell user to restart');
+  assert.equal(ctrl.queuedBytes, 0, 'queue must be empty after addSourceBuffer failure');
+  assert.equal(fatalReasons.length, 1);
+  assert.equal(revokedUrls.length, 1, 'object URL must be revoked on terminal failure');
+  assert.equal(removedSrc, true, 'video element src must be cleared on terminal failure');
+  assert.ok(loadedCount >= 1, 'video element load() must be called to release decoder');
+
+  // Subsequent chunks must be rejected with zero queue growth
+  ctrl.pushChunk(b64('seg-after-fail-1'), false, 2);
+  ctrl.pushChunk(b64('seg-after-fail-2'), false, 3);
+  ctrl = render();
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must remain 0 after terminal failure');
+  assert.equal(mediaSources.length, 1, 'must not allocate new MediaSources while in terminal failed state');
+
+  // Reset clears terminal state for a fresh call
+  throwOnAddSourceBuffer = false;
+  ctrl.reset();
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, false);
+  assert.equal(ctrl.failureReason, null);
+
+  // Case 2: Persistent appendBuffer failure -> bounded retries, then terminal failure + resource release
+  ctrl.pushChunk(b64('init-ok'), true, 1);
+  const ms2 = mediaSources[1];
+  ms2.sb.finishUpdate();
+
+  alwaysThrowAppend = true;
+  removedSrc = false;
+  ctrl.pushChunk(b64('poison-segment'), false, 2);
+  // Drain retries via finishUpdate() after each eviction attempt until terminal failure latches
+  for (let i = 0; i < 6; i++) {
+    if (render().avatarFailed) break;
+    ms2.sb.finishUpdate();
+  }
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'persistent appendBuffer failure must transition to terminal avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared when retry cap is exceeded');
+  assert.equal(ms2.readyState, 'ended', 'MediaSource must be closed on terminal failure');
+  assert.equal(removedSrc, true, 'video element src must be cleared on persistent append failure');
+  assert.equal(fatalReasons.length, 2);
+
+  // Further chunks after persistent append failure must not accumulate
+  ctrl.pushChunk(b64('ignored-chunk-1'), false, 3);
+  ctrl.pushChunk(b64('ignored-chunk-2'), false, 4);
+  assert.equal(render().queuedBytes, 0, 'queuedBytes must stop growing after terminal failure');
+
+  // Case 3: Age cap breach while SourceBuffer is stalled -> terminal failure + queue cleared
+  alwaysThrowAppend = false;
+  ctrl.reset();
+  ctrl = render();
+  ctrl.pushChunk(b64('init-stall'), true, 1); // leaves ms3.sb.updating = true
+  nowMs += 100;
+  ctrl.pushChunk(b64('queued-while-updating'), false, 2);
+  assert.ok(render().queuedBytes > 0);
+  // Advance clock past MAX_QUEUE_AGE_MS (10_000 ms) while sb.updating remains stuck
+  nowMs += 11_000;
+  ctrl.pushChunk(b64('triggers-age-cap'), false, 3);
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'stalled queue exceeding max age must latch avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on age-cap breach');
+
+  // Case 4: Byte cap breach (MAX_QUEUED_BYTES = 8 MB) -> terminal failure + queue cleared
+  ctrl.reset();
+  ctrl = render();
+  ctrl.pushChunk(b64('init-byte-cap'), true, 1); // leaves sb.updating = true
+  const fourMbB64 = Buffer.alloc(4 * 1024 * 1024 + 1024, 0x61).toString('base64');
+  ctrl.pushChunk(fourMbB64, false, 2);
+  assert.ok(render().queuedBytes > 4 * 1024 * 1024);
+  ctrl.pushChunk(fourMbB64, false, 3); // exceeds 8 MB cap
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'queue exceeding 8 MB cap must latch avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on byte-cap breach');
+});
+
+
+
 
 
 

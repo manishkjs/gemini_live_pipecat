@@ -1073,7 +1073,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             current_tot = total_tokens
             current_prompt = prompt_tokens
             last_prompt = int(getattr(self, '_last_prompt_tokens', 0) or 0)
-            # Exclude streamed output video tokens (e.g. ~16.5k/turn in Live Avatar mode) from context window threshold check
+            # VIDEO output is excluded from the context threshold
             video_out_tokens = int(response_details.get("video", 0) or 0)
             effective_context_tot = max(current_prompt, current_tot - video_out_tokens)
 

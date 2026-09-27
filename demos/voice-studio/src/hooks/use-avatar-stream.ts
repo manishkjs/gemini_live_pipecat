@@ -42,10 +42,17 @@ const SEGMENT_DURATION_SEC = 1 / 24;
 // before settling back into its calm closed-mouth idle loop.
 const POST_SPEECH_PHANTOM_TAIL_SEC = 1.75;
 
+export const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+export const MAX_QUEUE_AGE_MS = 10_000;
+export const MAX_SEGMENT_RETRIES = 3;
+
 export type AvatarStreamController = {
   videoRef: (el: HTMLVideoElement | null) => void;
   hasVideoFrame: boolean;
   frameCount: number;
+  avatarFailed: boolean;
+  failureReason: string | null;
+  queuedBytes: number;
   pushChunk: (
     chunkB64: string,
     isInit: boolean,
@@ -62,17 +69,29 @@ type QueuedSegment = {
   isInit: boolean;
   hasAudio?: boolean;
   tfdt?: number;
+  enqueuedAt: number;
+  retries: number;
 };
+
+function nowTimestamp(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+}
 
 export function useAvatarStream(
   speakerMuted: boolean = false,
   onSpeechEnded?: () => void,
+  onFatalError?: (reason: string) => void,
 ): AvatarStreamController {
   const videoElRef = useRef<HTMLVideoElement | null>(null);
   const mediaSourceRef = useRef<MediaSource | null>(null);
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const appendQueueRef = useRef<QueuedSegment[]>([]);
+  const queuedBytesRef = useRef<number>(0);
+  const failedRef = useRef<boolean>(false);
   const initSegmentRef = useRef<Uint8Array | null>(null);
   const hasAppendedInitRef = useRef<boolean>(false);
   const isOpeningRef = useRef<boolean>(false);
@@ -80,6 +99,9 @@ export function useAvatarStream(
 
   const onSpeechEndedRef = useRef<(() => void) | undefined>(onSpeechEnded);
   onSpeechEndedRef.current = onSpeechEnded;
+
+  const onFatalErrorRef = useRef<((reason: string) => void) | undefined>(onFatalError);
+  onFatalErrorRef.current = onFatalError;
 
   const lastAppendedHasAudioRef = useRef<boolean>(false);
   const silentTailCountRef = useRef<number>(0);
@@ -91,6 +113,9 @@ export function useAvatarStream(
 
   const [hasVideoFrame, setHasVideoFrame] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const [failureReason, setFailureReason] = useState<string | null>(null);
+  const [queuedBytes, setQueuedBytes] = useState(0);
 
   const resetSpeechTracking = useCallback(() => {
     lastAppendedHasAudioRef.current = false;
@@ -212,6 +237,51 @@ export function useAvatarStream(
     }
   }, []);
 
+  const releasePlaybackResources = useCallback(() => {
+    appendQueueRef.current = [];
+    queuedBytesRef.current = 0;
+    setQueuedBytes(0);
+    initSegmentRef.current = null;
+    hasAppendedInitRef.current = false;
+    isOpeningRef.current = false;
+    lastRemovedStartRef.current = -1;
+    resetSpeechTracking();
+    setHasVideoFrame(false);
+    sourceBufferRef.current = null;
+    if (mediaSourceRef.current) {
+      try {
+        if (mediaSourceRef.current.readyState === "open") {
+          mediaSourceRef.current.endOfStream();
+        }
+      } catch {
+        // Ignore
+      }
+      mediaSourceRef.current = null;
+    }
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    if (videoElRef.current) {
+      videoElRef.current.pause?.();
+      videoElRef.current.removeEventListener?.("timeupdate", syncPlayhead);
+      videoElRef.current.removeAttribute("src");
+      videoElRef.current.load();
+    }
+  }, [resetSpeechTracking, syncPlayhead]);
+
+  const failStream = useCallback(
+    (reason: string) => {
+      if (failedRef.current) return;
+      failedRef.current = true;
+      setAvatarFailed(true);
+      setFailureReason(reason);
+      releasePlaybackResources();
+      onFatalErrorRef.current?.(reason);
+    },
+    [releasePlaybackResources],
+  );
+
   const videoRef = useCallback(
     (el: HTMLVideoElement | null) => {
       const prev = videoElRef.current;
@@ -244,6 +314,7 @@ export function useAvatarStream(
   }, [hasVideoFrame, syncPlayhead]);
 
   const drainQueue = useCallback(() => {
+    if (failedRef.current) return;
     const sb = sourceBufferRef.current;
     const ms = mediaSourceRef.current;
     if (!sb || !ms || ms.readyState !== "open" || sb.updating) return;
@@ -266,15 +337,27 @@ export function useAvatarStream(
 
     if (appendQueueRef.current.length === 0) return;
 
+    const now = nowTimestamp();
+    if (now - appendQueueRef.current[0].enqueuedAt > MAX_QUEUE_AGE_MS) {
+      failStream("Avatar video playback stalled for over 10 seconds. Please restart the call.");
+      return;
+    }
+
     const next = appendQueueRef.current.shift()!;
+    queuedBytesRef.current = Math.max(0, queuedBytesRef.current - next.bytes.byteLength);
+    setQueuedBytes(queuedBytesRef.current);
+
     if (!hasAppendedInitRef.current && !next.isInit) {
       appendQueueRef.current.unshift(next);
+      queuedBytesRef.current += next.bytes.byteLength;
+      setQueuedBytes(queuedBytesRef.current);
       if (initSegmentRef.current) {
         try {
           hasAppendedInitRef.current = true;
           sb.appendBuffer(initSegmentRef.current as unknown as BufferSource);
         } catch {
           hasAppendedInitRef.current = false;
+          failStream("Avatar initialization segment failed to append. Please restart the call.");
         }
       }
       return;
@@ -319,8 +402,15 @@ export function useAvatarStream(
       }
       sb.appendBuffer(next.bytes as unknown as BufferSource);
     } catch {
-      // Never drop the segment: put it back at the head of the queue before evicting old buffer
+      next.retries += 1;
+      if (next.retries > MAX_SEGMENT_RETRIES) {
+        failStream("Avatar video buffer failed repeatedly and could not recover. Please restart the call.");
+        return;
+      }
+      // Transient QuotaExceededError: put segment back at head within retry cap and evict old buffer
       appendQueueRef.current.unshift(next);
+      queuedBytesRef.current += next.bytes.byteLength;
+      setQueuedBytes(queuedBytesRef.current);
       if (sb.buffered.length > 0) {
         try {
           const s = sb.buffered.start(0);
@@ -330,9 +420,10 @@ export function useAvatarStream(
         }
       }
     }
-  }, [resetSpeechTracking]);
+  }, [failStream, resetSpeechTracking]);
 
   const ensureMediaSource = useCallback(() => {
+    if (failedRef.current) return;
     if (typeof window === "undefined" || typeof MediaSource === "undefined") return;
     if (
       mediaSourceRef.current &&
@@ -360,7 +451,7 @@ export function useAvatarStream(
     }
 
     ms.addEventListener("sourceopen", () => {
-      if (mediaSourceRef.current !== ms) return;
+      if (mediaSourceRef.current !== ms || failedRef.current) return;
       isOpeningRef.current = false;
       try {
         const mime = resolveSupportedMimeCodec();
@@ -378,37 +469,69 @@ export function useAvatarStream(
         drainQueue();
       } catch (err) {
         console.error("[AvatarMSE] Failed to create SourceBuffer:", err);
+        failStream("Your browser could not initialize the Live Avatar video decoder. Please restart the call.");
       }
     });
-  }, [drainQueue, speakerMuted, syncPlayhead]);
+  }, [drainQueue, failStream, speakerMuted, syncPlayhead]);
 
   const pushChunk = useCallback(
     (chunkB64: string, isInit: boolean, _seq: number, hasAudio?: boolean, tfdt?: number) => {
-      if (!chunkB64) return;
+      if (failedRef.current || !chunkB64) return;
       const bytes = decodeBase64ToUint8Array(chunkB64);
+      const now = nowTimestamp();
+
+      if (isInit && hasAppendedInitRef.current) {
+        // A new fMP4 stream started mid-call (e.g. after session resumption reconnect) with tfdt=0:
+        // recreate MediaSource so tfdt=0 plays immediately instead of landing behind currentTime.
+        appendQueueRef.current = [];
+        queuedBytesRef.current = 0;
+        setQueuedBytes(0);
+        sourceBufferRef.current = null;
+        mediaSourceRef.current = null;
+        hasAppendedInitRef.current = false;
+        isOpeningRef.current = false;
+        lastRemovedStartRef.current = -1;
+        resetSpeechTracking();
+      }
+
+      if (
+        appendQueueRef.current.length > 0 &&
+        now - appendQueueRef.current[0].enqueuedAt > MAX_QUEUE_AGE_MS
+      ) {
+        failStream("Avatar video playback stalled for over 10 seconds. Please restart the call.");
+        return;
+      }
+
+      if (queuedBytesRef.current + bytes.byteLength > MAX_QUEUED_BYTES) {
+        failStream("Avatar video buffer exceeded the 8 MB safety limit. Please restart the call.");
+        return;
+      }
+
       if (isInit) {
         initSegmentRef.current = bytes;
-        if (hasAppendedInitRef.current) {
-          // A new fMP4 stream started mid-call (e.g. after session resumption reconnect) with tfdt=0:
-          // recreate MediaSource so tfdt=0 plays immediately instead of landing behind currentTime.
-          appendQueueRef.current = [];
-          sourceBufferRef.current = null;
-          mediaSourceRef.current = null;
-          hasAppendedInitRef.current = false;
-          isOpeningRef.current = false;
-          lastRemovedStartRef.current = -1;
-          resetSpeechTracking();
-        }
       }
+
       ensureMediaSource();
-      appendQueueRef.current.push({ bytes, isInit, hasAudio, tfdt });
+      if (failedRef.current) return;
+
+      appendQueueRef.current.push({
+        bytes,
+        isInit,
+        hasAudio,
+        tfdt,
+        enqueuedAt: now,
+        retries: 0,
+      });
+      queuedBytesRef.current += bytes.byteLength;
+      setQueuedBytes(queuedBytesRef.current);
       setFrameCount((c) => c + 1);
       drainQueue();
     },
-    [ensureMediaSource, drainQueue, resetSpeechTracking],
+    [ensureMediaSource, drainQueue, failStream, resetSpeechTracking],
   );
 
   const flushOnInterrupt = useCallback(() => {
+    if (failedRef.current) return;
     // Never delete queued ISO-BMFF segments from appendQueueRef: Vertex AI streams a continuous
     // tfdt-indexed fMP4 timeline, and dropping segments creates unbuffered timeline gaps or
     // truncated boxes that stall MSE playback on subsequent turns.
@@ -437,35 +560,12 @@ export function useAvatarStream(
   }, []);
 
   const reset = useCallback(() => {
-    appendQueueRef.current = [];
-    initSegmentRef.current = null;
-    hasAppendedInitRef.current = false;
-    isOpeningRef.current = false;
-    lastRemovedStartRef.current = -1;
-    resetSpeechTracking();
-    setHasVideoFrame(false);
+    failedRef.current = false;
+    setAvatarFailed(false);
+    setFailureReason(null);
     setFrameCount(0);
-    sourceBufferRef.current = null;
-    if (mediaSourceRef.current) {
-      try {
-        if (mediaSourceRef.current.readyState === "open") {
-          mediaSourceRef.current.endOfStream();
-        }
-      } catch {
-        // Ignore
-      }
-      mediaSourceRef.current = null;
-    }
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-      objectUrlRef.current = null;
-    }
-    if (videoElRef.current) {
-      videoElRef.current.removeEventListener?.("timeupdate", syncPlayhead);
-      videoElRef.current.removeAttribute("src");
-      videoElRef.current.load();
-    }
-  }, [resetSpeechTracking, syncPlayhead]);
+    releasePlaybackResources();
+  }, [releasePlaybackResources]);
 
   useEffect(() => {
     return () => {
@@ -479,6 +579,9 @@ export function useAvatarStream(
     videoRef,
     hasVideoFrame,
     frameCount,
+    avatarFailed,
+    failureReason,
+    queuedBytes,
     pushChunk,
     flushOnInterrupt,
     reset,

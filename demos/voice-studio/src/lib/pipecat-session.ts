@@ -7,8 +7,9 @@ type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 export type MessageMetrics = {
   responseId?: string;
   costEstimated?: boolean;
-  costMinUSD?: number;
-  costMaxUSD?: number;
+  costIncomplete?: boolean;
+  costMinUSD?: number | null;
+  costMaxUSD?: number | null;
   sttLatency?: number; // In seconds
   llmLatency?: number; // In seconds (TTFB)
   ttsLatency?: number; // In seconds
@@ -272,6 +273,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
           session_id: p.session_id ?? p.usage?.session_id,
           turnCostUSD: turnCost?.totalUSD,
           costEstimated: turnCost?.estimated,
+          costIncomplete: turnCost?.incomplete,
           costMinUSD: turnCost?.minUSD,
           costMaxUSD: turnCost?.maxUSD,
         });

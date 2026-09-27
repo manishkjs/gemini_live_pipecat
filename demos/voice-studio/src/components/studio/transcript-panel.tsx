@@ -335,9 +335,15 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                               ) : null}
                               {isLivePricingEligible(settings.engine, settings.model) &&
                                 message.metrics?.turnCostUSD !== undefined &&
-                                message.metrics.turnCostUSD > 0 && (
-                                  <span className="cost-tag" title="Turn cost (audio/text tokens)">
+                                (message.metrics.turnCostUSD > 0 || message.metrics.costIncomplete) && (
+                                  <span
+                                    className="cost-tag"
+                                    title={message.metrics.costIncomplete
+                                      ? "Partial audio/text subtotal; total unavailable because video/image tokens have no verified rate card"
+                                      : "Turn cost (audio/text tokens)"}
+                                  >
                                     {message.metrics.costEstimated ? "≈ " : ""}{formatCost(message.metrics.turnCostUSD)}
+                                    {message.metrics.costIncomplete ? " subtotal · total unavailable" : ""}
                                   </span>
                                 )}
                             </div>
@@ -410,6 +416,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
             title={
               `Input ${totalIn(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioIn.toLocaleString()}` +
               ` + text ${tokenSplit.textIn.toLocaleString()}` +
+              (tokenSplit.videoIn ? ` + video ${tokenSplit.videoIn.toLocaleString()}` : "") +
               (tokenSplit.residualIn ? ` + ${tokenSplit.residualIn.toLocaleString()} unattributed by the server` : "") +
               `\nOutput ${totalOut(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioOut.toLocaleString()}` +
               ` + text ${tokenSplit.textOut.toLocaleString()}` +
@@ -427,6 +434,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                   <span className="tok-dir">in {formatTokens(totalIn(tokenSplit))}</span>
                   <span className="tok-modality">
                     {" "}aud {formatTokens(tokenSplit.audioIn)} · txt {formatTokens(tokenSplit.textIn)}
+                    {tokenSplit.videoIn > 0 && <> · vid {formatTokens(tokenSplit.videoIn)}</>}
                     {tokenSplit.residualIn > 0 && <> · ?{formatTokens(tokenSplit.residualIn)}</>}
                   </span>
                 </span>
@@ -447,12 +455,23 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
             <span
               className="footer-metric footer-cost"
               title={livePricingAvailable
-                ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. A range means text/audio modality was not fully reported."
+                ? "List-price model estimate for reported responses in this call. Excludes external TTS, other services and billing adjustments. When video/image tokens are present, only the audio/text subtotal is shown and the full total is unavailable."
                 : `No verified rate card is configured for ${settings.model || "the selected model"}. Token usage is still tracked; an unavailable rate does not mean the call is free.`}
             >
-              Model cost: {!livePricingAvailable ? "Rate unavailable" : !sessionCostBounds.complete ? "Unavailable" : tokenCount === 0 ? "—" : sessionCostBounds.estimated && sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
-                ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
-                : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
+              Model cost: {!livePricingAvailable
+                ? "Rate unavailable"
+                : tokenCount === 0
+                  ? "—"
+                  : sessionCostBounds.incomplete
+                    ? `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)} subtotal · total unavailable`
+                    : !sessionCostBounds.complete
+                      ? "Unavailable"
+                      : sessionCostBounds.estimated &&
+                        sessionCostBounds.minUSD !== null &&
+                        sessionCostBounds.maxUSD !== null &&
+                        sessionCostBounds.minUSD !== sessionCostBounds.maxUSD
+                        ? `${formatCost(sessionCostBounds.minUSD)}–${formatCost(sessionCostBounds.maxUSD)}`
+                        : `${sessionCostBounds.estimated ? "≈ " : ""}${formatCost(sessionCostUSD)}`}
             </span>
           )}
           {latency !== null && (

@@ -52,9 +52,26 @@ export function useVoiceSession() {
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [sound, setSound] = useState(true);
-  const avatarStream = useAvatarStream(!sound, () => {
-    setPhase((current) => (current === "speaking" ? "listening" : current));
-  });
+  const avatarStream = useAvatarStream(
+    !sound,
+    () => {
+      setPhase((current) => (current === "speaking" ? "listening" : current));
+    },
+    (reason) => {
+      run.current++;
+      timers.current.forEach(clearTimeout);
+      timers.current = [];
+      const current = session.current;
+      session.current = null;
+      setPhase("idle");
+      setTrack(null);
+      setMuted(false);
+      setPartialUser("");
+      starting.current = false;
+      setError(reason);
+      if (current) void current.disconnect();
+    },
+  );
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [latency, setLatency] = useState<number | null>(null);
@@ -73,7 +90,13 @@ export function useVoiceSession() {
   // output, so 16k "tokens" can mean very different bills.
   const [tokenSplit, setTokenSplit] = useState<TokenSplit>(EMPTY_TOKEN_SPLIT);
   const [sessionCostUSD, setSessionCostUSD] = useState<number>(0);
-  const [sessionCostBounds, setSessionCostBounds] = useState({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
+  const [sessionCostBounds, setSessionCostBounds] = useState<{
+    minUSD: number | null;
+    maxUSD: number | null;
+    estimated: boolean;
+    complete: boolean;
+    incomplete: boolean;
+  }>({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
   const ledger = useRef(new UsageLedger());
   const [cascadeCost, setCascadeCost] = useState<CascadeCost | null>(null);
   const cascadeCostRevision = useRef(-1);
@@ -233,7 +256,7 @@ export function useVoiceSession() {
     ledger.current = new UsageLedger();
     responseMetrics.current.clear();
     seenEvents.current.clear();
-    setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true });
+    setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
     avatarStream.reset();
     setAvatarFallbackNotice(null);
@@ -361,6 +384,7 @@ export function useVoiceSession() {
                   sttLatency: last.metrics?.sttLatency ?? metrics?.sttLatency,
                   ttsLatency: last.metrics?.ttsLatency ?? metrics?.ttsLatency,
                   turnCostUSD: metrics?.turnCostUSD ?? last.metrics?.turnCostUSD,
+                  costIncomplete: metrics?.costIncomplete ?? last.metrics?.costIncomplete,
                   usage: metrics?.usage ?? last.metrics?.usage,
                 };
                 return items.map((item, i) => i === index
@@ -447,12 +471,22 @@ export function useVoiceSession() {
             setTokenCount(totals.tokens);
             setTokenSplit(totals.split);
             setSessionCostUSD(totals.costUSD);
-            setSessionCostBounds({ minUSD: totals.minUSD, maxUSD: totals.maxUSD, estimated: totals.estimated, complete: totals.complete });
+            setSessionCostBounds({
+              minUSD: totals.minUSD,
+              maxUSD: totals.maxUSD,
+              estimated: totals.estimated,
+              complete: totals.complete,
+              incomplete: totals.incomplete,
+            });
             if (val.response_id) {
               const cost = targetEngine === "live" ? calculateTurnCost(val.model ?? activeSettings.model, val) : null;
               updateResponse(val.response_id, {
-                usage: val, turnCostUSD: cost?.totalUSD, costEstimated: cost?.estimated,
-                costMinUSD: cost?.minUSD, costMaxUSD: cost?.maxUSD,
+                usage: val,
+                turnCostUSD: cost?.totalUSD,
+                costEstimated: cost?.estimated,
+                costIncomplete: cost?.incomplete,
+                costMinUSD: cost?.minUSD,
+                costMaxUSD: cost?.maxUSD,
               });
             }
           }
