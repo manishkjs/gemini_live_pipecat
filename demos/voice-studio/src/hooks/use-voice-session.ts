@@ -52,7 +52,9 @@ export function useVoiceSession() {
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [sound, setSound] = useState(true);
-  const avatarStream = useAvatarStream(!sound);
+  const avatarStream = useAvatarStream(!sound, () => {
+    setPhase((current) => (current === "speaking" ? "listening" : current));
+  });
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [latency, setLatency] = useState<number | null>(null);
@@ -465,8 +467,8 @@ export function useVoiceSession() {
         onLatency: (value) => {
           if (run.current === current) setLatency(value);
         },
-        onAvatarVideo: (chunkB64, isInit, seq) => {
-          if (run.current === current) avatarStream.pushChunk(chunkB64, isInit, seq);
+        onAvatarVideo: (chunkB64, isInit, seq, hasAudio, tfdt) => {
+          if (run.current === current) avatarStream.pushChunk(chunkB64, isInit, seq, hasAudio, tfdt);
         },
         onAvatarInterrupted: () => {
           if (run.current === current) avatarStream.flushOnInterrupt();

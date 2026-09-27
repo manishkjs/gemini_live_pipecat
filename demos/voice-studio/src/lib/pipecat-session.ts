@@ -26,7 +26,7 @@ export type SessionEvents = {
   onLevel: (level: number) => void;
   onLatency: (ms: number) => void;
   onMetricUpdate?: (metricType: string, value: any) => void;
-  onAvatarVideo?: (chunkB64: string, isInit: boolean, seq: number) => void;
+  onAvatarVideo?: (chunkB64: string, isInit: boolean, seq: number, hasAudio?: boolean, tfdt?: number) => void;
   onAvatarInterrupted?: () => void;
   onAvatarFallback?: (fallbackAvatar: string, reason: string, code: string) => void;
   onVoiceFallback?: (fallbackVoice: string, reason: string, code: string) => void;
@@ -143,11 +143,26 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       data?: string;
       is_init?: boolean;
       seq?: number;
+      has_audio?: boolean;
+      tfdt?: number;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
     if (data.type === "avatar_video" && typeof data.data === "string") {
-      events.onAvatarVideo?.(data.data, Boolean(data.is_init), Number(data.seq ?? 0));
+      if (data.has_audio === true && isAvatarActive(settings)) {
+        events.onPhase("speaking");
+        if (lastUserAt !== null) {
+          events.onLatency(performance.now() - lastUserAt);
+          lastUserAt = null;
+        }
+      }
+      events.onAvatarVideo?.(
+        data.data,
+        Boolean(data.is_init),
+        Number(data.seq ?? 0),
+        typeof data.has_audio === "boolean" ? data.has_audio : undefined,
+        typeof data.tfdt === "number" ? data.tfdt : undefined,
+      );
       return;
     }
 

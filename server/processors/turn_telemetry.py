@@ -72,12 +72,35 @@ class TurnOriginMixin:
     async def process_frame(self, frame, direction):
         origin = frame.metadata.get(ORIGIN_KEY)
         tracker = getattr(self, "_turn_tracker", None)
+        if tracker is not None and tracker.padding is None and not frame.metadata.get("_turn_boundary_seen"):
+            # In server-VAD-only mode (padding=None), LLMUserAggregator sits downstream
+            # of TurnBoundaryProcessor and broadcasts UserStarted/StoppedSpeakingFrame
+            # directly to the LLM without passing through TurnBoundaryProcessor first.
+            if isinstance(frame, UserStartedSpeakingFrame):
+                tracker.start()
+                frame.metadata["_turn_boundary_seen"] = True
+            elif isinstance(frame, UserStoppedSpeakingFrame):
+                origin = tracker.stop(vad=False)
+                frame.metadata[ORIGIN_KEY] = origin
+                frame.metadata["turn_id"] = origin.turn_id
+                frame.metadata["_turn_boundary_seen"] = True
         if isinstance(frame, LLMContextFrame) and ORIGIN_KEY not in frame.metadata:
             # Aggregators can create context after delayed STT/tool callbacks.
             # Capturing tracker.current here would relabel late A as turn B.
             frame.metadata[ORIGIN_KEY] = None
         if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
-            self._last_input_turn = origin
+            if (
+                isinstance(frame, UserStoppedSpeakingFrame)
+                and origin is None
+                and tracker is not None
+                and tracker.padding is not None
+            ):
+                # In local-VAD modes, LLMUserAggregator broadcasts a synthetic
+                # UserStoppedSpeakingFrame downstream ~600ms after VADUserStoppedSpeakingFrame
+                # without TurnBoundaryProcessor metadata. Never let it wipe _last_input_turn.
+                origin = getattr(self, "_last_input_turn", None)
+            else:
+                self._last_input_turn = origin
             if getattr(self, "_live_telemetry", False) and getattr(self, "_live_output_turn", None) is None:
                 # Reserve A at its input boundary, before its first output.
                 # Keep that reservation until the ordered Live completion or

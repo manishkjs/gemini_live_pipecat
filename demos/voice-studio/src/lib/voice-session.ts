@@ -718,6 +718,16 @@ export function buildBackendPageUrl(backendUrl: string, page: "original" | "diag
   return url.href;
 }
 
+export const VISIT_COUNTER_LABEL = "live studio visits";
+
+/** Build the endpoint URL for recording and reading total Voice Studio visits. */
+export function buildVisitsUrl(backendUrl: string = getDefaultBackendUrl()): string {
+  const targetUrl = backendUrl?.trim() || getDefaultBackendUrl();
+  const url = validatedBackendUrl(targetUrl);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/api/visits`;
+  return url.href;
+}
+
 /**
  * Where to read the prompt the backend will actually run for a persona.
  *

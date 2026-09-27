@@ -4,7 +4,14 @@ import { useEffect, useState, type ComponentType, type CSSProperties } from "rea
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, AudioLines, ChartLine, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { fallbackHeadline, getDefaultBackendUrl, isAvatarActive } from "@/lib/voice-session";
+import {
+  buildVisitsUrl,
+  fallbackHeadline,
+  getDefaultBackendUrl,
+  isAvatarActive,
+  newSessionId,
+  VISIT_COUNTER_LABEL,
+} from "@/lib/voice-session";
 import type { WaveProps } from "@/lib/studio-types";
 import { useVoiceSession } from "@/hooks/use-voice-session";
 import ObservabilityDrawer from "./observability-drawer";
@@ -17,6 +24,8 @@ import SettingsDialog from "./studio/settings-dialog";
 import PersonaAvatar from "./studio/persona-avatar";
 import ContextCompressionToast from "./studio/context-compression-toast";
 import "./voice-studio.css";
+
+const PAGE_LOAD_VISIT_ID = newSessionId();
 
 /** Loaded on demand so the waveform bundle never blocks first paint. */
 function useWaveform() {
@@ -41,11 +50,40 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   const studio = useVoiceSession();
   const Wave = useWaveform();
   const [observabilityOpen, setObservabilityOpen] = useState(false);
+  const [visitCount, setVisitCount] = useState<number | null>(null);
   const {
     active, audio, error, persona, settings, setError, setSettingsOpen, sound, turnCount,
     tokenCount, tokenSplit, sessionCostUSD, interruptCount, phaseLabel, custom,
     voiceFallbackNotice, setVoiceFallbackNotice,
   } = studio;
+
+  useEffect(() => {
+    let cancelled = false;
+    const targetBackend = settings.backendUrl?.trim() || getDefaultBackendUrl();
+    let url: string;
+    try {
+      url = buildVisitsUrl(targetBackend);
+    } catch {
+      return;
+    }
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ page_load_id: PAGE_LOAD_VISIT_ID }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data && typeof data.visits === "number") {
+          setVisitCount(data.visits);
+        }
+      })
+      .catch(() => {
+        /* Non-blocking footer telemetry */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.backendUrl]);
 
   return (
   <main className="studio-shell" style={{ "--persona-color": persona.color } as CSSProperties}>
@@ -144,6 +182,13 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
     <footer className="studio-footer">
       <span>
         <AudioLines size={15} /> Voice Studio <span className="footer-separator">/</span> Fictional agents · Indian languages
+      </span>
+      <span className="visit-counter-pill" role="status" aria-label="Live studio visits">
+        <span className="visit-counter-dot" aria-hidden="true" />
+        <strong className="visit-counter-value">
+          {visitCount !== null ? visitCount.toLocaleString("en-IN") : "—"}
+        </strong>
+        <span className="visit-counter-label">{VISIT_COUNTER_LABEL}</span>
       </span>
       <div>
         {sourceDownload && (

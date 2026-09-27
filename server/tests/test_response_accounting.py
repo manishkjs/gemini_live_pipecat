@@ -44,6 +44,7 @@ def adapter_class(filename, class_name, methods):
         "logger": SimpleNamespace(info=lambda *a: None, warning=lambda *a: None, error=lambda *a: None, debug=lambda *a: None),
         "Content": SimpleNamespace, "Part": SimpleNamespace, "re": re,
         "estimate_tokens": lambda text: len(text),
+        "time": __import__("time"),
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
     return namespace[class_name]
@@ -176,6 +177,7 @@ class TestResponseEvents(unittest.IsolatedAsyncioTestCase):
         mixin = adapter_class("agent_live.py", "GeminiSessionLoggerMixin", {
             "response_identity", "push_frame", "_handle_msg_model_turn",
             "_handle_msg_turn_complete", "_handle_msg_usage_metadata",
+            "_begin_output", "_end_avatar_output",
         })
         class Service(mixin, ProviderBase):
             pass

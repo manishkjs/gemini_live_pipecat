@@ -425,13 +425,58 @@ class TestLiveAvatarAndInterruptionResilience(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(svc.pushed), 0)
         self.assertFalse(getattr(svc, "_repeat_on_filler_pending", False))
 
-        # When bot IS responding, InterruptionFrame must emit interruption metrics
-        svc._bot_is_responding = True
+        # When bot IS responding, InterruptionFrame must emit interruption metrics.
+        # The mixin tracks this itself; Pipecat's private _bot_is_responding is off-limits.
+        svc._mixin_bot_responding = True
         await svc.process_frame(InterruptionFrame(), None)
         self.assertEqual(len(svc.pushed), 1)
         self.assertTrue(getattr(svc, "_repeat_on_filler_pending", False))
 
 
+class TestVisitCounterRoutes(unittest.TestCase):
+    """Visit counter records studio visits atomically, deduplicates per page load, and persists to disk."""
+
+    def setUp(self):
+        import tempfile
+        import visit_counter
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.store_path = os.path.join(self.tmpdir.name, "studio_visits.json")
+        visit_counter.configure_store(self.store_path, initial_seed=800)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        import visit_counter
+        visit_counter.configure_store(None)
+        self.tmpdir.cleanup()
+
+    def test_get_and_post_visits_increment_and_persist(self):
+        import visit_counter
+        r0 = self.client.get("/api/visits")
+        self.assertEqual(r0.status_code, 200)
+        self.assertEqual(r0.json()["visits"], 800)
+        self.assertEqual(r0.json()["label"], "live studio visits")
+
+        r1 = self.client.post("/api/visits", json={"page_load_id": "pl_first"})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r1.json()["visits"], 801)
+
+        # Duplicate POST with the same page_load_id (e.g. React StrictMode double effect) must be idempotent
+        r1_dup = self.client.post("/api/visits", json={"page_load_id": "pl_first"})
+        self.assertEqual(r1_dup.status_code, 200)
+        self.assertEqual(r1_dup.json()["visits"], 801)
+
+        # A new page load increments the counter and persists across store reload
+        r2 = self.client.post("/api/visits", json={"page_load_id": "pl_second"})
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["visits"], 802)
+
+        visit_counter.configure_store(self.store_path, initial_seed=0)
+        r3 = self.client.get("/api/visits")
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(r3.json()["visits"], 802)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

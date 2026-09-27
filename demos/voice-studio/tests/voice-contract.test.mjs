@@ -423,4 +423,13 @@ test('every built-in persona has a tailored Voice Design entry and Abhay uses Ex
   assert.equal(reconcileVoiceForPersona('Fenrir', 'storyteller'), 'Puck');
 });
 
+test('visit counter targets /api/visits on configured backend and uses studio-appropriate label', async () => {
+  const { buildVisitsUrl, VISIT_COUNTER_LABEL } = await import('../src/lib/voice-session.ts');
+  assert.equal( buildVisitsUrl('https://voice.example.com'), 'https://voice.example.com/api/visits');
+  assert.equal( buildVisitsUrl('https://voice.example.com/demo/'), 'https://voice.example.com/demo/api/visits');
+  assert.equal(VISIT_COUNTER_LABEL, 'live studio visits');
+  assert.equal(VISIT_COUNTER_LABEL.includes('since 30 Jul'), false);
+});
+
+
 

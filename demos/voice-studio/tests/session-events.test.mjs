@@ -388,5 +388,161 @@ test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExce
   assert.deepEqual(mediaSources[1].sb.appended, ['init-2']);
 });
 
+test('useAvatarStream stops lip movement immediately at speechEndTfdt and skips the post-speech phantom lip-flap tail', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  const mediaSources = [];
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.listeners = {};
+      this.bufferedRanges = [[0, 0]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove() {
+      this.updating = true;
+    }
+    finishUpdate(newEnd) {
+      if (typeof newEnd === 'number') {
+        this.bufferedRanges = [[0, newEnd]];
+      }
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
+    console,
+  }, { filename: full });
+
+  let speechEndedCount = 0;
+  const render = () => {
+    cursor = 0;
+    return exports.useAvatarStream(false, () => { speechEndedCount++; });
+  };
+
+  let ms;
+  const videoListeners = {};
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 0,
+    paused: false,
+    get buffered() { return ms ? ms.sb.buffered : { length: 0, start: () => 0, end: () => 0 }; },
+    play() { this.paused = false; return Promise.resolve(); },
+    pause() { this.paused = true; },
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener(type, fn) { videoListeners[type] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const ctrl = render();
+  ctrl.videoRef(videoEl);
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // 1. Init + pre-speech idle segments: playhead pins within 80ms of live edge if idle lag > 0.35s
+  ctrl.pushChunk(b64('init'), true, 1, false, 0);
+  ms = mediaSources[0];
+  ms.sb.finishUpdate(0);
+
+  ctrl.pushChunk(b64('idle-1'), false, 2, false, 1.0);
+  ms.sb.finishUpdate(1.04);
+  assert.ok(videoEl.currentTime >= 0.9, `expected idle catch-up near 1.04s, got ${videoEl.currentTime}`);
+
+  // 2. Active speech segments from tfdt=1.50s to tfdt=5.46s: playhead plays normally without clipping
+  videoEl.currentTime = 1.50;
+  ctrl.pushChunk(b64('speech-start'), false, 3, true, 1.50);
+  ms.sb.finishUpdate(1.54);
+  ctrl.pushChunk(b64('speech-end'), false, 4, true, 5.46);
+  ms.sb.finishUpdate(5.50);
+  // Even though buffered end (5.50) is 1.0s ahead of currentTime (4.50), active speech is NOT clipped
+  videoEl.currentTime = 4.50;
+  ctrl.pushChunk(b64('tail-silent-1'), false, 5, false, 5.50);
+  ms.sb.finishUpdate(5.54);
+  assert.equal(videoEl.currentTime, 4.50);
+  assert.equal(videoEl.paused, false);
+
+  // 3. Second silent segment locks speechEndTfdt (~5.50s). When playhead reaches 5.48s (mouth closed at end of speech),
+  // video pauses immediately on the closed-mouth frame instead of playing the 5.50s..7.25s phantom lip-flap frames!
+  ctrl.pushChunk(b64('tail-silent-2'), false, 6, false, 5.54);
+  ms.sb.finishUpdate(5.58);
+  videoEl.currentTime = 5.48;
+  videoListeners.timeupdate?.();
+  assert.equal(videoEl.paused, true, 'video should hold on closed-mouth frame at speechEndTfdt during phantom tail');
+  assert.equal(speechEndedCount, 1, 'onSpeechEnded callback should fire as soon as spoken audio finishes playing');
+
+  // 4. Once buffered end advances past the phantom lip-flap window (>= speechEndTfdt + 1.75s = 7.25s),
+  // playhead jumps directly over the phantom window to the calm idle edge and resumes playing!
+  ctrl.pushChunk(b64('post-tail-idle'), false, 7, false, 7.30);
+  ms.sb.finishUpdate(7.34);
+  assert.equal(videoEl.paused, false, 'video should resume playing once calm post-tail idle frames are buffered');
+  assert.ok(videoEl.currentTime >= 7.20, `expected playhead to skip phantom tail to >=7.20s, got ${videoEl.currentTime}`);
+});
+
+
 
 

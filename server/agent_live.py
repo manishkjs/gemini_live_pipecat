@@ -61,11 +61,15 @@ from pipecat.frames.frames import (
     EndFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserSpeakingFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     TranscriptionFrame,
-    LLMRunFrame
+    LLMRunFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -225,6 +229,83 @@ def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
     return emitted
 
 
+def _iter_mp4_boxes(buf: bytes, start: int = 0, end: Optional[int] = None) -> list[tuple[bytes, int, int]]:
+    if end is None:
+        end = len(buf)
+    pos = start
+    out: list[tuple[bytes, int, int]] = []
+    while pos + 8 <= end:
+        sz, btype = struct.unpack(">I4s", buf[pos : pos + 8])
+        if sz == 1:
+            if pos + 16 > end:
+                break
+            sz = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
+        elif sz < 8 or pos + sz > end:
+            break
+        out.append((btype, pos, pos + sz))
+        pos += sz
+    return out
+
+
+def inspect_avatar_mp4_segment(seg_bytes: bytes) -> dict[str, Any]:
+    """Extract media decode timestamp (tfdt) and active-speech flag from an fMP4 segment.
+
+    Vertex AI Gemini 3.8 Live Avatar streams 24 fps H.264 (track 1, 12288 Hz timescale)
+    and 24 kHz CBR AAC (track 2, 24000 Hz timescale) continuously—including before the
+    first turn and after ``turn_complete``. During active TTS speech (and the ~300 ms
+    natural mouth-closure decay at the end of a phrase), track 2 ``mdat`` payloads encode
+    non-zero waveform samples whose ``zlib``-compressed size is 250–600 bytes. The exact
+    frame where TTS audio ends, track 2 switches to a constant CBR silence filler frame
+    (``01402280a37ff885...``, ``zlib`` size <= 100 bytes), while track 1 continues for
+    ~1.5–1.8 s with unconditioned phantom lip movement before settling into idle rest.
+    """
+    import zlib
+
+    boxes = _iter_mp4_boxes(seg_bytes)
+    saw_moof = False
+    video_tfdt: Optional[float] = None
+    audio_tfdt: Optional[float] = None
+    has_audio: Optional[bool] = None
+
+    for i, (btype, s, e) in enumerate(boxes):
+        if btype != b"moof":
+            continue
+        saw_moof = True
+        track_id: Optional[int] = None
+        tfdt_val: Optional[int] = None
+        for ctype, cs, ce in _iter_mp4_boxes(seg_bytes, s + 8, e):
+            if ctype != b"traf":
+                continue
+            for ttype, ts, te in _iter_mp4_boxes(seg_bytes, cs + 8, ce):
+                if ttype == b"tfhd" and ts + 16 <= te:
+                    track_id = struct.unpack(">I", seg_bytes[ts + 12 : ts + 16])[0]
+                elif ttype == b"tfdt" and ts + 16 <= te:
+                    ver = seg_bytes[ts + 8]
+                    if ver == 1 and ts + 20 <= te:
+                        tfdt_val = struct.unpack(">Q", seg_bytes[ts + 12 : ts + 20])[0]
+                    else:
+                        tfdt_val = struct.unpack(">I", seg_bytes[ts + 12 : ts + 16])[0]
+        if track_id == 1 and tfdt_val is not None:
+            video_tfdt = round(tfdt_val / 12288.0, 4)
+        elif track_id == 2:
+            if tfdt_val is not None:
+                audio_tfdt = round(tfdt_val / 24000.0, 4)
+            if i + 1 < len(boxes) and boxes[i + 1][0] == b"mdat":
+                ms, me = boxes[i + 1][1], boxes[i + 1][2]
+                aac_payload = seg_bytes[ms + 8 : me]
+                if len(aac_payload) >= 64:
+                    frame_active = len(zlib.compress(aac_payload, level=1)) > 120
+                else:
+                    frame_active = any(b != 0 for b in aac_payload)
+                has_audio = bool(has_audio or frame_active)
+
+    return {
+        "is_iso": saw_moof,
+        "has_audio": has_audio,
+        "tfdt": video_tfdt if video_tfdt is not None else audio_tfdt,
+    }
+
+
 class GeminiSessionLoggerMixin(TurnOriginMixin):
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
 
@@ -237,30 +318,66 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         return self._response_identity
 
     async def broadcast_interruption(self, *args, **kwargs):
-        self._bot_is_responding = False
+        # Pipecat calls this on Gemini's own barge-in (server_content.interrupted),
+        # WITHOUT running our process_frame(InterruptionFrame) or _handle_interruption().
+        # Gemini then sends turn_complete a few ms later, so record the interruption
+        # and clear Pipecat's _bot_is_responding via _handle_interruption() now.
+        self._awaiting_interrupted_turn_complete = True
+        await self._record_bot_interruption()
+        if hasattr(super(), "_handle_interruption"):
+            await super()._handle_interruption()
+        await super().broadcast_interruption(*args, **kwargs)
+
+    def _begin_output(self):
+        """Mark our response as active and bind it to its input turn.
+
+        Uses ``_mixin_bot_responding``, never Pipecat's private
+        ``_bot_is_responding``: writing that one before ``super()`` suppressed
+        TTSStartedFrame/TTSStoppedFrame/LLMFullResponseEndFrame on every turn.
+        """
+        if not getattr(self, "_mixin_bot_responding", False):
+            self._mixin_bot_responding = True
+            self._response_started_at = time.monotonic()
+        user_idle = getattr(self, "user_idle_processor", None)
+        if user_idle is not None:
+            user_idle._bot_speaking = True
+            user_idle.last_activity = time.monotonic()
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
+        self.response_identity.begin()
+
+    async def _begin_avatar_output(self):
+        """A Live Avatar turn carries only video/mp4: give it what audio turns get."""
+        self._begin_output()
+        await self.stop_ttfb_metrics()
         origin = getattr(self, "_live_output_turn", None)
-        if origin is not None:
-            origin.finish("interrupted")
-        if getattr(self, "_avatar_enabled", False):
-            try:
-                await self.push_frame(OutputTransportMessageUrgentFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {"type": "avatar_interrupted"}
-                }))
-            except Exception:
-                pass
-        try:
-            await super().broadcast_interruption(*args, **kwargs)
-        finally:
-            self._live_output_turn = None
+        if origin is not None and hasattr(origin, "audio"):
+            origin.audio()
+        if not getattr(self, "_avatar_speaking", False):
+            self._avatar_speaking = True
+            await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    async def _end_avatar_output(self):
+        self._avatar_last_has_audio = False
+        self._avatar_silent_tail_count = 0
+        user_idle = getattr(self, "user_idle_processor", None)
+        if user_idle is not None:
+            user_idle._bot_speaking = False
+            user_idle.last_activity = time.monotonic()
+        if getattr(self, "_avatar_speaking", False):
+            self._avatar_speaking = False
+            await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     async def _handle_msg_model_turn(self, message):
+        if getattr(self, "_awaiting_interrupted_turn_complete", False):
+            return
         if getattr(self, "_avatar_enabled", False):
             sc = getattr(message, "server_content", None)
             mt = getattr(sc, "model_turn", None) if sc else None
             parts = getattr(mt, "parts", None) or []
             has_non_video = False
+            saw_active_video_speech = False
+            saw_silent_video_after_speech = False
             if not hasattr(self, "_avatar_mp4_buffer"):
                 self._avatar_mp4_buffer = bytearray()
             for part in parts:
@@ -272,29 +389,55 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                         b64_str = base64.b64encode(seg_bytes).decode("ascii")
                         if is_init:
                             self._avatar_init_segment = b64_str
+                            seg_has_audio = False
+                            seg_tfdt: Optional[float] = 0.0
+                            self._avatar_last_has_audio = False
+                            self._avatar_silent_tail_count = 0
+                        else:
+                            seg_info = inspect_avatar_mp4_segment(seg_bytes)
+                            seg_tfdt = seg_info["tfdt"]
+                            if not seg_info["is_iso"]:
+                                seg_has_audio = True
+                            elif seg_info["has_audio"] is None:
+                                seg_has_audio = getattr(self, "_avatar_last_has_audio", False)
+                            else:
+                                seg_has_audio = bool(seg_info["has_audio"])
+                                self._avatar_last_has_audio = seg_has_audio
+                            if seg_has_audio:
+                                self._avatar_silent_tail_count = 0
+                                saw_active_video_speech = True
+                            elif getattr(self, "_avatar_speaking", False):
+                                self._avatar_silent_tail_count = getattr(self, "_avatar_silent_tail_count", 0) + 1
+                                if self._avatar_silent_tail_count >= 2:
+                                    saw_silent_video_after_speech = True
                         seq = getattr(self, "_avatar_seq", 0) + 1
                         self._avatar_seq = seq
+                        msg_data: Dict[str, Any] = {
+                            "type": "avatar_video",
+                            "data": b64_str,
+                            "is_init": is_init,
+                            "seq": seq,
+                            "has_audio": seg_has_audio,
+                        }
+                        if seg_tfdt is not None:
+                            msg_data["tfdt"] = seg_tfdt
                         await self.push_frame(OutputTransportMessageUrgentFrame(message={
                             "label": "rtvi-ai",
                             "type": "server-message",
-                            "data": {
-                                "type": "avatar_video",
-                                "data": b64_str,
-                                "is_init": is_init,
-                                "seq": seq,
-                            }
+                            "data": msg_data,
                         }))
                     # Clear video/mp4 inline_data so stock Pipecat doesn't log 'Unrecognized server_content format video/mp4'
                     part.inline_data = None
                 elif getattr(part, "text", None) or (inl and mime.startswith("audio/pcm")):
                     has_non_video = True
+            if saw_active_video_speech:
+                await self._begin_avatar_output()
+            elif saw_silent_video_after_speech:
+                await self._end_avatar_output()
             if not has_non_video:
                 return
 
-        self._bot_is_responding = True
-        if getattr(self, "_live_output_turn", None) is None:
-            self._live_output_turn = getattr(self, "_last_input_turn", None)
-        self.response_identity.begin()
+        self._begin_output()
         await super()._handle_msg_model_turn(message)
 
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
@@ -313,28 +456,113 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
 
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
+    def _anchor_ttft_at_speech_end(self):
+        """Local VAD saw the user stop: that is when the user starts waiting."""
+        if getattr(self, "_ttft_reported_for_response", False):
+            return
+        now = time.monotonic()
+        self._my_ttfb_start = now
+        self._ttft_anchored_to_speech_end = True
+        self._last_user_speech_activity_at = now
+
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.monotonic()
+        # Pipecat calls this when the aggregator closes the user turn. Without
+        # local VAD that is SpeechTimeoutUserTurnStopStrategy, ~600 ms after the
+        # transcript, often after the bot already started talking. Never let it
+        # restart a speech-end anchor, and never arm it mid-response.
+        anchored = getattr(self, "_ttft_anchored_to_speech_end", False) and getattr(self, "_my_ttfb_start", None)
+        already_reported = getattr(self, "_ttft_reported_for_response", False)
+        if not anchored and not already_reported and not getattr(self, "_mixin_bot_responding", False):
+            self._my_ttfb_start = time.monotonic()
+            self._ttft_anchored_to_speech_end = False
         await super().start_ttfb_metrics()
-        
+
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
-        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-            self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
-            logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
-            ttfb_ms = self._current_turn_ttft * 1000.0
-            append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
-            
-            # Stream llm_latency metric frame to UI client
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
-                }
-            }))
-            self._my_ttfb_start = None
+        await self._report_ttft()
+
+    async def _report_ttft(self):
+        """Emit one llm_latency per response; falls back to last speech activity if server VAD beat local VAD."""
+        if getattr(self, "_ttft_reported_for_response", False):
+            return
+        start = getattr(self, "_my_ttfb_start", None) or getattr(self, "_last_user_speech_activity_at", None)
+        if not start:
+            return
+        self._my_ttfb_start = None
+        self._ttft_anchored_to_speech_end = False
+        self._last_user_speech_activity_at = None
+        self._ttft_reported_for_response = True
+        self._current_turn_ttft = time.monotonic() - start
+        logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
+        ttfb_ms = self._current_turn_ttft * 1000.0
+        append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
+            }
+        }))
+
+    async def _record_bot_interruption(self):
+        """Record a barge-in once, whichever VAD (local Silero or Gemini) saw it.
+
+        Idempotent: the first caller clears the responding state and releases
+        ``_live_output_turn``, so a follow-up InterruptionFrame is a no-op.
+        """
+        was_responding = bool(
+            getattr(self, "_mixin_bot_responding", False)
+            or getattr(self, "_bot_turn_text_buffer", "").strip()
+        )
+        self._mixin_bot_responding = False
+        self._ttft_reported_for_response = False
+        origin = getattr(self, "_live_output_turn", None)
+        if origin is not None:
+            origin.finish("interrupted")
+        self._live_output_turn = None
+        if not was_responding:
+            await self._end_avatar_output()
+            return
+        if getattr(self, "_avatar_enabled", False):
+            self._avatar_mp4_buffer = bytearray()
+            try:
+                await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {"type": "avatar_interrupted"}
+                }))
+            except Exception:
+                pass
+        self._repeat_on_filler_pending = True
+        logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
+
+        interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
+        if interrupted_text:
+            append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+            if not hasattr(self, "_dialogue_history"):
+                self._dialogue_history = []
+            self._dialogue_history.append({
+                "role": "Assistant",
+                "text": f"{interrupted_text} [interrupted]",
+                "timestamp": time.time()
+            })
+            logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
+        self._bot_turn_text_buffer = ""
+
+        metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
+        started = getattr(self, "_response_started_at", None)
+        self._response_started_at = None
+        if started:
+            elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+            metric_payload['elapsed_ms'] = elapsed_ms
+            append_diagnostic_log("⚡ Interruption", f"Bot interrupted {elapsed_ms} ms into its reply")
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {'type': 'metrics', 'payload': metric_payload}
+        }))
+        await self._end_avatar_output()
 
     # Max wall-clock time a tool lock may suppress interruptions before self-healing.
     # Guards against a handler that raises before emitting FunctionCallResultFrame,
@@ -420,7 +648,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         # NOTE: CancelFrame is deliberately NOT suppressed. It is the pipeline
         # shutdown signal (client disconnect / task cancel); swallowing it leaks
         # the Cloud Run session forever.
-        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+        if isinstance(frame, (InterruptionFrame, VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             if self._tools_in_flight():
                 logger.info(
                     f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool call "
@@ -429,52 +657,65 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 return
 
         if isinstance(frame, InterruptionFrame):
-            was_responding = bool(
-                getattr(self, '_bot_is_responding', False)
-                or getattr(self, '_bot_turn_text_buffer', '').strip()
-                or getattr(self, '_my_ttfb_start', None)
-            )
-            self._bot_is_responding = False
-            if was_responding:
-                if not hasattr(self, '_repeat_on_filler_pending'):
-                    self._repeat_on_filler_pending = False
-                self._repeat_on_filler_pending = True
-                logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
-
-                if getattr(self, '_bot_turn_text_buffer', '').strip():
-                    interrupted_text = self._bot_turn_text_buffer.strip()
-                    append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
-                    if not hasattr(self, '_dialogue_history'):
-                        self._dialogue_history = []
-                    self._dialogue_history.append({
-                        "role": "Assistant",
-                        "text": f"{interrupted_text} [interrupted]",
-                        "timestamp": time.time()
-                    })
-                    logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
-                    self._bot_turn_text_buffer = ""
-
-                elapsed_ms = None
-                if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-                    elapsed_ms = round((time.monotonic() - self._my_ttfb_start) * 1000.0, 1)
-                    append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
-                    self._my_ttfb_start = None
-
-                # Metric Streaming: Interruption
-                metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
-                if elapsed_ms is not None:
-                    metric_payload['elapsed_ms'] = elapsed_ms
-
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': metric_payload
-                    }
-                }))
+            await self._record_bot_interruption()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._awaiting_interrupted_turn_complete = False
+            self._user_is_speaking = True
+            self._activity_end_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._my_ttfb_start = None
+                self._ttft_anchored_to_speech_end = False
+                self._ttft_reported_for_response = False
+                self._last_user_speech_activity_at = time.monotonic()
+            if getattr(self, "_vad_disabled", False) and not getattr(self, "_activity_start_sent_for_turn", False):
+                self._activity_start_sent_for_turn = True
+                await self._handle_user_started_speaking(frame)
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            self._awaiting_interrupted_turn_complete = False
+            self._activity_end_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._my_ttfb_start = None
+                self._ttft_anchored_to_speech_end = False
+                self._ttft_reported_for_response = False
+                self._last_user_speech_activity_at = time.monotonic()
+        elif isinstance(frame, UserSpeakingFrame):
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._last_user_speech_activity_at = time.monotonic()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._user_is_speaking = False
+            self._activity_start_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._anchor_ttft_at_speech_end()
+            if getattr(self, "_vad_disabled", False) and not getattr(self, "_activity_end_sent_for_turn", False):
+                await self._handle_user_stopped_speaking(frame)
+                self._activity_end_sent_for_turn = True
 
         await super().process_frame(frame, direction)
+
+    async def _handle_user_started_speaking(self, frame):
+        self._user_is_speaking = True
+        if getattr(self, "_vad_disabled", False):
+            if getattr(self, "_activity_start_sent_for_turn", False) and isinstance(frame, UserStartedSpeakingFrame):
+                return
+            self._activity_start_sent_for_turn = True
+        await super()._handle_user_started_speaking(frame)
+
+    async def _handle_user_stopped_speaking(self, frame):
+        self._user_is_speaking = False
+        self._activity_start_sent_for_turn = False
+        if getattr(self, "_vad_disabled", False):
+            if getattr(self, "_activity_end_sent_for_turn", False) and isinstance(frame, UserStoppedSpeakingFrame):
+                self._activity_end_sent_for_turn = False
+                return
+            self._activity_end_sent_for_turn = True
+        await super()._handle_user_stopped_speaking(frame)
+
+    async def _create_single_response(self, messages_list):
+        self._awaiting_interrupted_turn_complete = False
+        self._ttft_reported_for_response = False
+        self._ttft_anchored_to_speech_end = False
+        self._my_ttfb_start = time.monotonic()
+        await super()._create_single_response(messages_list)
 
     async def _push_user_transcription(self, sentence: str, result=None):
         """Emit consolidated complete sentences for user speech."""
@@ -515,6 +756,11 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
 
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
+        sc = getattr(message, "server_content", None)
+        it = getattr(sc, "input_transcription", None) if sc else None
+        if it and getattr(it, "text", None):
+            self._awaiting_interrupted_turn_complete = False
+            self._last_user_speech_activity_at = time.monotonic()
         if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
             # Short speech can be consent or a real answer ("आप बताइए").
             # Let Gemini interpret it, without a regex/word-count repeat rule.
@@ -573,35 +819,25 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                     self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
+        if getattr(self, "_awaiting_interrupted_turn_complete", False):
+            return
         if getattr(self, "_live_output_turn", None) is None:
             self._live_output_turn = getattr(self, "_last_input_turn", None)
         self.response_identity.begin()
+        has_text = bool(message.server_content.output_transcription and message.server_content.output_transcription.text)
+        if has_text:
+            self._begin_output()
         await super()._handle_msg_output_transcription(message)
-        if message.server_content.output_transcription and message.server_content.output_transcription.text:
-            self._bot_is_responding = True
+        if has_text:
             text = message.server_content.output_transcription.text
-            
+
             # Accumulate text for the complete bot turn
             if not hasattr(self, '_bot_turn_text_buffer'):
                 self._bot_turn_text_buffer = ""
             self._bot_turn_text_buffer += text
-            
-            # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
-            if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
-                self._current_turn_ttft = time.monotonic() - self._my_ttfb_start
-                ttfb_ms = self._current_turn_ttft * 1000.0
-                append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
-                self._my_ttfb_start = None
-                
-                # Also push metric frame immediately
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
-                    }
-                }))
+
+            # The transcript can beat the first audio chunk: first output wins.
+            await self._report_ttft()
 
             ttft = getattr(self, '_current_turn_ttft', None)
             message_data = {
@@ -620,9 +856,18 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             }))
 
     async def _handle_msg_turn_complete(self, message):
-        self._bot_is_responding = False
+        was_interrupted = getattr(self, "_awaiting_interrupted_turn_complete", False)
+        self._awaiting_interrupted_turn_complete = False
+        self._ttft_reported_for_response = False
         self.response_identity.begin()
+        # super() must see Pipecat's own _bot_is_responding intact, or it skips
+        # TTSStoppedFrame/LLMFullResponseEndFrame and every turn is "abandoned".
         await super()._handle_msg_turn_complete(message)
+        self._mixin_bot_responding = False
+        self._response_started_at = None
+        await self._end_avatar_output()
+        if was_interrupted:
+            self._bot_turn_text_buffer = ""
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
             append_diagnostic_log("🤖 Bot Response", f'"{full_bot_text}"')
@@ -691,7 +936,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if self._disconnecting or not self._session:
             logger.warning(f"[{tag}] Not delivered — session is not live.")
             return False
-        if not speak_now and not at_tool_boundary and getattr(self, "_bot_is_responding", False):
+        generating = getattr(self, "_mixin_bot_responding", False) or getattr(self, "_bot_is_responding", False)
+        if not speak_now and not at_tool_boundary and generating:
             self._last_directive_status = "pending"
             if not hasattr(self, "_pending_directives"):
                 self._pending_directives = []
@@ -1187,10 +1433,21 @@ class UserIdleProcessor(FrameProcessor):
             logger.info(f"[UserIdleProcessor] Bot finished speaking. Starting silence countdown.")
 
         # Reset timer ONLY on active speech activity (VAD or transcription/text frames)
-        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame)):
+        if isinstance(
+            frame,
+            (
+                VADUserStartedSpeakingFrame,
+                VADUserStoppedSpeakingFrame,
+                UserStartedSpeakingFrame,
+                UserStoppedSpeakingFrame,
+                UserSpeakingFrame,
+                TextFrame,
+                TranscriptionFrame,
+            ),
+        ):
             self.last_activity = time.monotonic()
             # Reset the idle retry counter back to 0 if the user confirms they are active
-            if isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame)):
+            if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame, TranscriptionFrame)):
                 if self.retry_count > 0:
                     logger.info(f"[UserIdleProcessor] User speech activity detected ({frame.name}). Resetting idle retry counter from {self.retry_count} to 0.")
                 self.retry_count = 0
@@ -1452,6 +1709,16 @@ def build_live_vad_analyzer(vad: bool = True, vad_mode: Optional[str] = None) ->
     if not use_silero:
         return None
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
+
+
+def build_live_vad_processor(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[VADProcessor]:
+    """Silero must run as a pipeline processor.
+
+    Pipecat 1.2.1 ``FastAPIWebsocketParams`` has no ``vad_analyzer`` field and
+    Pydantic drops it silently, so passing it to the transport never ran VAD.
+    """
+    analyzer = build_live_vad_analyzer(vad, vad_mode)
+    return VADProcessor(vad_analyzer=analyzer) if analyzer is not None else None
 
 
 def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[GeminiVADParams]:
@@ -1748,7 +2015,7 @@ async def run_agent_live(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=build_live_vad_analyzer(vad, vad_mode), serializer=CustomProtobufSerializer(),
+            serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
@@ -2028,18 +2295,24 @@ async def run_agent_live(
     )
     llm.start_trigger = start_trigger
 
-    turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if vad else None)
+    # Padding only makes sense when local VAD frames actually arrive.
+    turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if use_silero else None)
     llm._turn_tracker = turn_tracker
     llm._last_input_turn = turn_tracker.current
     llm._live_output_turn = turn_tracker.current
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
+    live_vad = build_live_vad_processor(vad, vad_mode)
+    user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
+    llm.user_idle_processor = user_idle
+
     pipeline = Pipeline([
         transport.input(),
         start_trigger,
+        *([live_vad] if live_vad else []),
         TurnBoundaryProcessor(turn_tracker),
-        UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
+        user_idle,
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),

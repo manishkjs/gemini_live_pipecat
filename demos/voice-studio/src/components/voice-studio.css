@@ -1334,8 +1334,8 @@
   flex-shrink: 0;
 }
 .studio-footer {
-  height: 28px;
-  min-height: 28px;
+  height: 32px;
+  min-height: 32px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1349,6 +1349,40 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.studio-footer > .visit-counter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 23px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  border: 1px solid transparent;
+  background:
+    linear-gradient(#121619, #121619) padding-box,
+    linear-gradient(90deg, #4285f4 0%, #9b51e0 35%, #ea4335 70%, #fbbc04 100%) border-box;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.28);
+  font-size: 11.5px;
+  line-height: 1;
+  user-select: none;
+}
+.visit-counter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34a853;
+  box-shadow: 0 0 6px rgba(52, 168, 83, 0.55);
+  flex-shrink: 0;
+}
+.visit-counter-value {
+  font-weight: 700;
+  color: #f1f5f2;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+.visit-counter-label {
+  color: #9aa69f;
+  font-weight: 450;
 }
 .footer-separator {
   margin: 0 3px;

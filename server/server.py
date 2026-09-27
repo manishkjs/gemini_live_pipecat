@@ -504,6 +504,29 @@ async def get_current_trace_endpoint(session_id: str = Depends(diagnostic_sessio
     from tracing import GLOBAL_LANGSMITH_TRACER
     return {"trace_url": GLOBAL_LANGSMITH_TRACER.get_current_trace_url(session_id)}
 
+
+@app.get("/api/visits")
+async def get_studio_visits_endpoint():
+    import visit_counter
+    return visit_counter.get_visits()
+
+
+@app.post("/api/visits")
+async def record_studio_visit_endpoint(request: Request):
+    import json
+    import visit_counter
+    page_load_id: Optional[str] = None
+    try:
+        raw = await request.body()
+        if raw:
+            body = json.loads(raw)
+            if isinstance(body, dict) and isinstance(body.get("page_load_id"), str):
+                page_load_id = body["page_load_id"]
+    except Exception:
+        pass
+    return visit_counter.record_visit(page_load_id=page_load_id)
+
+
 # Mount the static files directory
 possible_dist_dirs = [
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../demos/voice-studio/dist")),
