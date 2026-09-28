@@ -434,14 +434,14 @@ class TestLiveAvatarAndInterruptionResilience(unittest.IsolatedAsyncioTestCase):
 
 
 class TestVisitCounterRoutes(unittest.TestCase):
-    """Visit counter records studio visits atomically, deduplicates per page load, and persists to disk."""
+    """Visit counter starts at 0 (never fudged), deduplicates per page load, and persists to disk."""
 
     def setUp(self):
         import tempfile
         import visit_counter
         self.tmpdir = tempfile.TemporaryDirectory()
         self.store_path = os.path.join(self.tmpdir.name, "studio_visits.json")
-        visit_counter.configure_store(self.store_path, initial_seed=800)
+        visit_counter.configure_store(self.store_path)
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -453,27 +453,46 @@ class TestVisitCounterRoutes(unittest.TestCase):
         import visit_counter
         r0 = self.client.get("/api/visits")
         self.assertEqual(r0.status_code, 200)
-        self.assertEqual(r0.json()["visits"], 800)
+        self.assertEqual(r0.json()["visits"], 0)
         self.assertEqual(r0.json()["label"], "live studio visits")
 
         r1 = self.client.post("/api/visits", json={"page_load_id": "pl_first"})
         self.assertEqual(r1.status_code, 200)
-        self.assertEqual(r1.json()["visits"], 801)
+        self.assertEqual(r1.json()["visits"], 1)
 
         # Duplicate POST with the same page_load_id (e.g. React StrictMode double effect) must be idempotent
         r1_dup = self.client.post("/api/visits", json={"page_load_id": "pl_first"})
         self.assertEqual(r1_dup.status_code, 200)
-        self.assertEqual(r1_dup.json()["visits"], 801)
+        self.assertEqual(r1_dup.json()["visits"], 1)
 
         # A new page load increments the counter and persists across store reload
         r2 = self.client.post("/api/visits", json={"page_load_id": "pl_second"})
         self.assertEqual(r2.status_code, 200)
-        self.assertEqual(r2.json()["visits"], 802)
+        self.assertEqual(r2.json()["visits"], 2)
 
-        visit_counter.configure_store(self.store_path, initial_seed=0)
+        visit_counter.configure_store(self.store_path)
         r3 = self.client.get("/api/visits")
         self.assertEqual(r3.status_code, 200)
-        self.assertEqual(r3.json()["visits"], 802)
+        self.assertEqual(r3.json()["visits"], 2)
+
+    def test_firestore_targets_dedicated_v2v_demo_visits_db(self):
+        import visit_counter
+        prev = os.environ.get("GCP_PROJECT_ID")
+        try:
+            os.environ["GCP_PROJECT_ID"] = "deep-clock-339817"
+            self.assertEqual(
+                visit_counter._firestore_db_path(),
+                "projects/deep-clock-339817/databases/v2v-demo-visits",
+            )
+            self.assertEqual(
+                visit_counter._firestore_doc_path(),
+                "projects/deep-clock-339817/databases/v2v-demo-visits/documents/studio_telemetry/v2v_demo_visits",
+            )
+        finally:
+            if prev is None:
+                os.environ.pop("GCP_PROJECT_ID", None)
+            else:
+                os.environ["GCP_PROJECT_ID"] = prev
 
 
 if __name__ == "__main__":
