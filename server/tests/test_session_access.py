@@ -341,5 +341,17 @@ class TestSessionAccess(unittest.TestCase):
         self.assertFalse(session_access.authorized("stream_no_cl", "x" * 32))
         self.assertFalse(session_access.authorized("stream_understated_cl", "x" * 32))
         self.assertFalse(session_access.authorized("stream_limit_plus_one", "x" * 32))
+        self.assertNotIn("stream_no_cl", session_access._sessions)
+        self.assertNotIn("stream_understated_cl", session_access._sessions)
+        self.assertNotIn("stream_limit_plus_one", session_access._sessions)
+
+        for idx, bad_val in enumerate([123, ["a"], {"x": 1}, True]):
+            bad_sid = f"stream_bad_type_{idx}"
+            bad_resp = client.post(
+                f"/connect?session_id={bad_sid}",
+                json={"system_instruction": bad_val},
+            )
+            self.assertEqual(bad_resp.status_code, 400)
+            self.assertNotIn(bad_sid, session_access._sessions)
 
 

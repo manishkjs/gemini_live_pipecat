@@ -12,7 +12,7 @@ certifi==2026.4.22
 cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.4.0
-cryptography==48.0.0
+cryptography==49.0.0
 distro==1.9.0
 docstring_parser==0.18.0
 fastapi==0.136.1
@@ -94,7 +94,7 @@ ujson==5.10.0
 urllib3==2.5.0
 uvicorn==0.47.0
 uvloop==0.21.0
-websockets==13.1
+websockets==15.0.1
 yarl==1.23.0
 langchain-core>=0.3.0
 langchain-google-vertexai>=2.0.0

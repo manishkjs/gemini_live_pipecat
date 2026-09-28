@@ -8,12 +8,12 @@ import { Steps, Aside, Badge, Card, CardGrid, Tabs, TabItem } from '@astrojs/sta
 <div class="hero-card">
   <span class="badge badge-blue">SKILL REFERENCE (COMPLETE 25-SECTION EDITION)</span>
   <span class="badge badge-green">GEMINI 3.1 / 3.5 / 3.8 LIVE PREVIEW</span>
-  <span class="badge badge-purple">FULL 1,258-LINE UNABRIDGED HANDBOOK</span>
+  <span class="badge badge-purple">FULL 1,382-LINE UNABRIDGED HANDBOOK</span>
   <h3>The Complete Gemini Live & Duplex Voice Pipeline Skill (<code>/gemini-live</code>)</h3>
-  <p>This page contains the <strong>complete, unabridged 25-section production engineering specification</strong> (1,258 lines / ~99 KB) covering Bidi WebSocket lifecycle management, Silero VAD & duplex framing, sub-millisecond dual-layer BM25/Redis RAG caching, guided state machines, female Hindi grammatical gender discipline, token modality & cost accounting (<code>§13.A–T</code>), greeting barge-in recovery, <code>SILENT</code> vs. fire-and-forget tool scheduling, silent conductor split architectures, and the full raw <code>SKILL.md</code> dump at the bottom.</p>
+  <p>This page contains the <strong>complete, unabridged 25-section production engineering specification</strong> (1,382 lines / ~104 KB) covering Bidi WebSocket lifecycle management, Silero VAD & duplex framing, sub-millisecond dual-layer BM25/Redis RAG caching, guided state machines, female Hindi grammatical gender discipline, token modality & cost accounting (<code>§13.A–T</code>), greeting barge-in recovery, <code>SILENT</code> vs. fire-and-forget tool scheduling, silent conductor split architectures, and the full raw <code>SKILL.md</code> dump at the bottom.</p>
   <p style="margin-top: 0.75rem;">
-    <a href="/gemini_live_pipecat/gemini-live/SKILL.md" download="SKILL.md" style="display: inline-block; padding: 0.5rem 1rem; background: var(--sl-color-accent); color: var(--sl-color-text-invert); border-radius: 0.375rem; font-weight: 600; text-decoration: none; margin-right: 0.75rem;">⬇ Download Full SKILL.md (1,258 Lines / 99 KB)</a>
-    <a href="#26-raw-skillmd-file-complete-1258-line-dump" style="display: inline-block; padding: 0.5rem 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.375rem; font-weight: 600; text-decoration: none;">Jump to Raw SKILL.md Dump ↓</a>
+    <a href="/gemini_live_pipecat/gemini-live/SKILL.md" download="SKILL.md" style="display: inline-block; padding: 0.5rem 1rem; background: var(--sl-color-accent); color: var(--sl-color-text-invert); border-radius: 0.375rem; font-weight: 600; text-decoration: none; margin-right: 0.75rem;">⬇ Download Full SKILL.md (1,382 Lines / 104 KB)</a>
+    <a href="#26-raw-skillmd-file-complete-1382-line-dump" style="display: inline-block; padding: 0.5rem 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.375rem; font-weight: 600; text-decoration: none;">Jump to Raw SKILL.md Dump ↓</a>
   </p>
 </div>
 
@@ -27,22 +27,22 @@ import { Steps, Aside, Badge, Card, CardGrid, Tabs, TabItem } from '@astrojs/sta
 </Aside>
 
 > [!IMPORTANT]
-> **Canonical Voice Repository**: `gemini_live_pipecat` (`/usr/local/google/home/manishkjs/Downloads/Code/gemini_live_pipecat`) is the **sole canonical repository** for all Gemini Live, Pipecat duplex voice, and STT/TTS cascading applications.
+> **Canonical Voice Repository**: `gemini_live_pipecat` (`~/gemini_live_pipecat`) is the **sole canonical repository** for all Gemini Live, Pipecat duplex voice, and STT/TTS cascading applications.
 > **Branch-First Rule**: ALL new voice projects, customer POCs, and major features MUST be developed on dedicated Git branches within `gemini_live_pipecat` (e.g. `feat/<name>`, `customer/<name>`). Never create duplicate standalone voice folders in the workspace.
 
 ---
 
 ## 1. Protocol, Endpoints & Framing Matrix
 
-| Parameter | AI Studio (Public Prod) | AI Studio (Internal / Dogfood) | Vertex AI (GA & Preview Production) |
+| Parameter | AI Studio (Public Prod) | AI Studio (v1alpha Preview) | Vertex AI (GA & Preview Production) |
 |---|---|---|---|
-| **Base Host** | `generativelanguage.googleapis.com` | `autopush-generativelanguage.sandbox.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **Base Host** | `generativelanguage.googleapis.com` | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
 | **API Version** | `v1alpha` or `v1beta` | `v1alpha` | `v1beta1` *(never `v1` for Live models)* |
 | **WebSocket Path** | `/ws/google.ai.generativelanguage.{ver}.GenerativeService.BidiGenerateContent` | `/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
 | **Auth Method** | `?key=$GEMINI_API_KEY` | `Authorization: Bearer $(gcloud auth print-access-token)` | `Authorization: Bearer $(gcloud auth print-access-token)` (ADC) |
 | **Headers** | `Content-Type: application/json` | `x-goog-user-project: <PROJECT_ID>`&lt;br>`Content-Type: application/json` | `Content-Type: application/json` |
 | **Operational Models** | `models/gemini-3.1-flash-live-preview`&lt;br>`models/gemini-3.8-live`&lt;br>`models/gemini-3.8-live-extended-thinking` | `models/gemini-3.5-live-preview` | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-3.5-flash-live-preview`&lt;br>`.../models/gemini-3.8-live-preview`&lt;br>`.../models/gemini-3.8-live-extended-thinking-preview` |
-| **Gemini 3.5 / 3.8 Live Status** | ✅ `3.8` Operational (`v1alpha`)&lt;br>❌ `3.5` Gated (`1008 Policy Violation`) | ⚠️ Internal Dogfood Only | ✅ **100% Operational (`us-central1`, `v1beta1`)**&lt;br>**Zero `other_input_token` residual gap** |
+| **Gemini 3.5 / 3.8 Live Status** | ✅ `3.8` Operational (`v1alpha`)&lt;br>❌ `3.5` Gated (`1008 Policy Violation`) | ⚠️ Preview / Experiment-Gated | ✅ **100% Operational (`us-central1`, `v1beta1`)**&lt;br>**Zero `other_input_token` residual gap** |
 
 ### Protocol & Framing Invariants
 * **Error `1008` & Gating**: `gemini-3.5-live-preview` is experiment-gated on public AI Studio gateways. For production `3.5` and `3.8` Live voice, prefer **Vertex AI (`us-central1`, `api_version="v1beta1"`)**, where `gemini-3.8-live-preview` and `gemini-3.8-live-extended-thinking-preview` meter `SI + tools` in `TEXT` with **zero `other_input_token` residual gap** (unlike AI Studio, which exhibits a `157–229 tok/turn` unattributed residual).
@@ -116,11 +116,11 @@ def build_live_thinking_config(model_name: str, disable_reasoning: bool = True) 
 * **Text-to-Speech**: `roles/texttospeech.client` (`texttospeech.synthesize`).
 * **ADC Quota Project**: User credentials require `gcloud auth application-default set-quota-project <PROJECT_ID>`.
 
-### SSH Tunneling Invariant (Cloudtop VM -> Local Browser)
-* **NEVER** use synthetic Uberproxy PEN URLs (breaks WebSocket `wss://` upgrade).
+### SSH Tunneling Invariant (Remote VM -> Local Browser)
+* **NEVER** use synthetic reverse-proxy HTTP URLs (breaks WebSocket `wss://` upgrade).
 * **ALWAYS** forward the port over SSH:
   ```bash
-  ssh -L 7860:localhost:7860 <vm_name>.c.googlers.com
+  ssh -L 7860:localhost:7860 <user>@<remote-host>
   ```
   Open `http://localhost:7860/` in Chrome (treated as `isSecureContext === true` for microphone access).
 
@@ -673,8 +673,7 @@ reconcile **exactly (residual 0 on every turn)** under the identical client.
   reports openly (40/162, 44/170, 48/146). So 3.1's "no output text cost" is a
   **reporting gap, not a saving**: the transcript is generated, carried, and
   re-billed as prompt while appearing in neither details block.
-* **Filed as** http://b/560037988 (P2, component 2008740 — Live API,
-  Google DeepMind › API). Open questions: which modality/rate the 620 tokens
+* **Upstream reporting discrepancy** (3.1 Live API `usage_metadata`). Open questions: which modality/rate the 620 tokens
   bill at, and when `prompt_tokens_details` will sum to `prompt_token_count`.
 * **Cost-calculator invariant**: any Live pricing module MUST bill
   `prompt_token_count - sum(prompt_tokens_details)` as a residual line item,
@@ -743,7 +742,7 @@ Like-for-like 4-turn script:
 
 Measured gap **+25.3%**. Billing the 620 unattributed tokens raises it to
 **+29.0%** (text rate) or **+40.1%** (audio rate). Quote the range, not the
-+25.3%, until http://b/560037988 is resolved.
++25.3%, until the upstream 3.1 reporting discrepancy is resolved.
 
 * **Audio dominates spend, and the share grows**: audio as % of prompt cost —
   2.5: 79% → 87% → **90%** (T1→T3); 3.1: 62% → 76% → 80% → **84%**.
@@ -839,7 +838,7 @@ Cross-model benchmarks on identical conversational scripts yield distinct profil
 | **Pricing Rates (In / Out)** | Text: $0.50 / $2.00&lt;br>Audio: $3.00 / $12.00 | Text: **$0.75 / $4.50** (+50% / +125%)&lt;br>Audio: $3.00 / $12.00 | Text: $0.50 / $2.00&lt;br>Audio: $2.40 / $9.60 |
 | **Fixed Prompt Scaffolding (T0)** | **225 tokens** (lean, 0 scaffolding) | **501 tokens** (+276 model scaffolding) | **646 tokens** (+421 model scaffolding) |
 | **Pre-Speech Greeting Metering** | **AUDIO: 0** | ⚠️ **Bills ~201 audio tokens** during greeting playback before user speaks | **AUDIO: 0** |
-| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (b/560037988) | 100% exact (residual: 0) |
+| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (upstream 3.1 reporting discrepancy) | 100% exact (residual: 0) |
 | **Tool Declaration Accounting** | Omitted from turn prompt tokens | Omitted from turn prompt tokens | ⚠️ **Full Attention**: Serializes OpenAPI schemas into prompt (~500 tok/tool) |
 | **Tool Response Scheduling** | `WHEN_IDLE` | `WHEN_IDLE` | ⚠️ Strictly `None` (passing `WHEN_IDLE` crashes with 1007) |
 | **Tool Dispatch Stability** | Stable, sequential | ⚠️ **Parallel Double-Call Bug**: Rapidly fires duplicate parallel tool calls (`switch_phase` x2), spiking prompt to 11k tokens | Stable, sequential |
@@ -1007,7 +1006,7 @@ CMD ["python", "server.py"]
 
 ### B. Gold-Standard Cloud Run Deployment
 ```bash
-gcloud run deploy v2v-demo   --source .   --platform managed   --region us-central1   --project deep-clock-339817   --ingress all   --allow-unauthenticated   --memory 2Gi   --cpu 2   --no-cpu-throttling   --cpu-boost   --min-instances 1   --max-instances 100   --concurrency 80   --timeout 3600   --service-account 853612069841-compute@developer.gserviceaccount.com   --network default   --subnet default   --vpc-egress private-ranges-only   --set-env-vars="GCP_PROJECT_ID=deep-clock-339817,GCP_LOCATION=us-central1,USE_VERTEXAI=true,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true"   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
+gcloud run deploy v2v-demo   --source .   --platform managed   --region us-central1   --project <PROJECT_ID>   --ingress all   --allow-unauthenticated   --memory 2Gi   --cpu 2   --no-cpu-throttling   --cpu-boost   --min-instances 1   --max-instances 100   --concurrency 80   --timeout 3600   --service-account <SERVICE_ACCOUNT_EMAIL>   --network default   --subnet default   --vpc-egress private-ranges-only   --set-env-vars="GCP_PROJECT_ID=<PROJECT_ID>,GCP_LOCATION=us-central1,USE_VERTEXAI=true,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true"   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
 ```
 
 ### C. Deployment Monitoring Invariant
@@ -1027,7 +1026,7 @@ When launching long-running commands (`gcloud run deploy`), schedule a backgroun
 1. **Canonical Repository**: All voice projects live inside `gemini_live_pipecat/`.
 2. **Branch-First Rule**: Create all new POCs/features on a dedicated branch off `main`:
    ```bash
-   cd /usr/local/google/home/manishkjs/Downloads/Code/gemini_live_pipecat
+   cd ~/gemini_live_pipecat
    git checkout main && git pull origin main
    git checkout -b feat/<project-or-customer-name>
    ```
@@ -1403,14 +1402,14 @@ def compare_voice_session(si_tokens=1000, turns=5, user_sec=6, bot_sec=10, scaff
 
 ---
 
-## 26. Raw `SKILL.md` File (Complete 1,258-Line Dump)
+## 26. Raw `SKILL.md` File (Complete 1,382-Line Dump)
 
 Save the file below directly to `~/.gemini/config/skills/gemini-live/SKILL.md` or `.agents/skills/gemini-live/SKILL.md` (or [download the raw `SKILL.md` file directly](/gemini_live_pipecat/gemini-live/SKILL.md)):
 
 ``````markdown title="SKILL.md"
 ---
 name: gemini-live
-description: Technical reference, routing invariants, canonical repository guidelines (gemini_live_pipecat), branch-first workflow, Pipecat duplex voice pipelines, Speech-to-Text v2 (Chirp), IAM permissions, Cloud Run deployment, and cross-model Live token accounting / cost RCA (2.5 native audio vs 3.1 vs 3.5 Live).
+description: Technical reference, routing invariants, canonical repository guidelines (gemini_live_pipecat), branch-first workflow, Pipecat duplex voice pipelines, Speech-to-Text v2 (Chirp), IAM permissions, Cloud Run deployment, and cross-model Live token accounting / cost RCA (2.5 native audio vs 3.1 vs 3.5 vs 3.8 Live).
 ---
 
 # Gemini Live Voice Engine & Duplex Protocol Reference
@@ -1423,21 +1422,21 @@ description: Technical reference, routing invariants, canonical repository guide
 
 ## 1. Protocol, Endpoints & Framing Matrix
 
-| Parameter | AI Studio (Public Prod) | AI Studio (Internal / Dogfood) | Vertex AI (GA & Preview Production) |
+| Parameter | AI Studio (Public Prod) | AI Studio (v1alpha Preview) | Vertex AI (GA & Preview Production) |
 |---|---|---|---|
-| **Base Host** | `generativelanguage.googleapis.com` | `autopush-generativelanguage.sandbox.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
+| **Base Host** | `generativelanguage.googleapis.com` | `generativelanguage.googleapis.com` | `us-central1-aiplatform.googleapis.com` |
 | **API Version** | `v1alpha` or `v1beta` | `v1alpha` | `v1beta1` *(never `v1` for Live models)* |
 | **WebSocket Path** | `/ws/google.ai.generativelanguage.{ver}.GenerativeService.BidiGenerateContent` | `/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent` | `/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` |
 | **Auth Method** | `?key=$GEMINI_API_KEY` | `Authorization: Bearer $(gcloud auth print-access-token)` | `Authorization: Bearer $(gcloud auth print-access-token)` (ADC) |
 | **Headers** | `Content-Type: application/json` | `x-goog-user-project: <PROJECT_ID>`<br>`Content-Type: application/json` | `Content-Type: application/json` |
 | **Operational Models** | `models/gemini-3.1-flash-live-preview`<br>`models/gemini-3.8-live`<br>`models/gemini-3.8-live-extended-thinking` | `models/gemini-3.5-live-preview` | `projects/<PROJECT_ID>/locations/us-central1/publishers/google/models/gemini-3.5-flash-live-preview`<br>`.../models/gemini-3.8-live-preview`<br>`.../models/gemini-3.8-live-extended-thinking-preview` |
-| **Gemini 3.5 / 3.8 Live Status** | ✅ `3.8` Operational (`v1alpha`)<br>❌ `3.5` Gated (`1008 Policy Violation`) | ⚠️ Internal Dogfood Only | ✅ **100% Operational (`us-central1`, `v1beta1`)**<br>**Zero `other_input_token` residual gap** |
+| **Gemini 3.5 / 3.8 Live Status** | ✅ `3.8` Operational (`v1alpha`)<br>❌ `3.5` Gated (`1008 Policy Violation`) | ⚠️ Preview / Experiment-Gated | ✅ **100% Operational (`us-central1`, `v1beta1`)**<br>**Zero `other_input_token` residual gap** |
 
 ### Protocol & Framing Invariants
 * **Error `1008` & Gating**: `gemini-3.5-live-preview` is experiment-gated on public AI Studio gateways. For production `3.5` and `3.8` Live voice, prefer **Vertex AI (`us-central1`, `api_version="v1beta1"`)**, where `gemini-3.8-live-preview` and `gemini-3.8-live-extended-thinking-preview` meter `SI + tools` in `TEXT` with **zero `other_input_token` residual gap** (unlike AI Studio, which exhibits a `157–229 tok/turn` unattributed residual).
 * **Vertex AI 3.8 Naming Invariant**: On Vertex AI `us-central1`, always include the `-preview` suffix (`gemini-3.8-live-preview` / `gemini-3.8-live-extended-thinking-preview`) and use `api_version="v1beta1"`. Passing bare `gemini-3.8-live` or `api_version="v1"` fails on Vertex AI.
 * **Session Lifecycle Rotation (10–15 min)**: The server terminates sessions periodically with `1008` after emitting `session_resumption_update`. Reconnect using `session_resumption_handle=new_handle`.
-* **Modality Enforcement**: `responseModalities: ["AUDIO"]` only. Sending `["AUDIO", "TEXT"]` triggers close code `1007`.
+* **Modality Enforcement**: `responseModalities: ["AUDIO"]` only (or `["VIDEO"]` when Live Avatar is enabled on Gemini 3.8 Live). Sending `["AUDIO", "TEXT"]` triggers close code `1007`.
 * **Audio Formats**: Input must be PCM 16kHz 16-bit little-endian mono (`audio/pcm;rate=16000`). Output is PCM 24kHz 16-bit mono (`audio/pcm;rate=24000`).
 * **Setup Handshake ACK**: Vertex AI yields `{"setupComplete": {"sessionId": "<UUID>"}}`.
 
@@ -1451,11 +1450,29 @@ description: Technical reference, routing invariants, canonical repository guide
   - **Vertex AI Location Invariant**: On Vertex AI, the `gemini-3.5-transcribe-live` endpoint is deployed globally (`location="global"`). Using regional endpoints (e.g. `us-central1`) causes endpoint routing / 404 resource errors.
   - **Model-Generation Thinking Config Invariant (`thinking_budget=0` vs. `ThinkingLevel.MINIMAL`)**:
     - **Gemini 2.5 Models**: Explicitly set `thinking_budget=0` (`ThinkingConfig(thinking_budget=0, include_thoughts=False)`) to disable reasoning token generation.
-    - **Gemini 3.x Live Models (`3.1`, `3.5`, `3.8`)**: **NEVER pass `thinking_budget=0` to Gemini 3.x Live models.** Gemini 3.x uses discrete `ThinkingLevel` (`MINIMAL`, `LOW`, `MEDIUM`, `HIGH`); passing `thinking_budget=0` degrades multi-step tool parameter copying and slot accuracy (observed `3.30% -> 1.40%` conversion drop in production). Always use:
-      ```python
-      level = getattr(types.ThinkingLevel, "MINIMAL", "minimal")
-      ThinkingConfig(thinking_level=level, include_thoughts=False)
-      ```
+    - **Gemini 3.x Live Models (`3.1`, `3.5`, `3.8`)**: **NEVER pass `thinking_budget=0` to Gemini 3.x Live models.** Gemini 3.x uses discrete `ThinkingLevel` (`MINIMAL`, `LOW`, `MEDIUM`, `HIGH`); passing `thinking_budget=0` degrades multi-step tool parameter copying and slot accuracy (observed `3.30% -> 1.40%` conversion drop in production).
+
+> [!CAUTION]
+> **Why thinking_budget=0 drops conversion on Gemini 3.x Live**
+> - **Gemini 2.5** uses a numeric `thinking_budget` (`thinking_budget=0` cleanly disables reasoning latency).
+> - **Gemini 3.x (`3.1`, `3.5`, `3.8`)** uses discrete `ThinkingLevel` (`MINIMAL`, `LOW`, `MEDIUM`, `HIGH`). Passing `thinking_budget=0` to Gemini 3.8 Live degrades multi-step tool parameter copying and slot accuracy.
+
+```python
+from google.genai import types
+
+def build_live_thinking_config(model_name: str, disable_reasoning: bool = True) -> types.ThinkingConfig:
+    model_lower = (model_name or "").lower()
+    if "gemini-3" in model_lower:
+        level = getattr(types.ThinkingLevel, "MINIMAL", "minimal")
+        return types.ThinkingConfig(
+            thinking_level=level,
+            include_thoughts=False,
+        )
+    return types.ThinkingConfig(
+        thinking_budget=0 if disable_reasoning else 256,
+        include_thoughts=False,
+    )
+```
   - **AI Studio Developer API Invariant**: `language_codes` is strictly prohibited in Google AI Studio mode (`GEMINI_API_KEY`). Passing `language_codes` raises:
     `ValueError: language_codes parameter is only supported in Gemini Enterprise Agent Platform mode, not in Gemini Developer API mode.`
     When operating in AI Studio mode, instantiate `AudioTranscriptionConfig()` with zero arguments.
@@ -1487,11 +1504,11 @@ description: Technical reference, routing invariants, canonical repository guide
 * **Text-to-Speech**: `roles/texttospeech.client` (`texttospeech.synthesize`).
 * **ADC Quota Project**: User credentials require `gcloud auth application-default set-quota-project <PROJECT_ID>`.
 
-### SSH Tunneling Invariant (Cloudtop VM -> Local Browser)
-* **NEVER** use synthetic Uberproxy PEN URLs (breaks WebSocket `wss://` upgrade).
+### SSH Tunneling Invariant (Remote VM -> Local Browser)
+* **NEVER** use synthetic reverse-proxy HTTP URLs (breaks WebSocket `wss://` upgrade).
 * **ALWAYS** forward the port over SSH:
   ```bash
-  ssh -L 7860:localhost:7860 <vm_name>.c.googlers.com
+  ssh -L 7860:localhost:7860 <user>@<remote-host>
   ```
   Open `http://localhost:7860/` in Chrome (treated as `isSecureContext === true` for microphone access).
 
@@ -1691,6 +1708,76 @@ On Gemini 3.1, 3.5, and 3.8 Live, `LiveConnectConfig.tools` schemas and tool-cal
 4. **Collapse Deterministic Post-Action Tool Chains into the Python Handler**:
    - If booking an appointment is always followed by sending a WhatsApp confirmation (`232 tok/turn` schema) and returning store contact details (`183 tok/turn` schema), execute both follow-up API calls **directly inside `handle_create_appointment_booking()` in Python**. This removes 2 tool schemas from `LiveConnectConfig.tools` and collapses **3 sequential LLM tool turns into 1 Python round-trip**.
 
+```python
+class CallSlots:
+    def __init__(self, user_phone: str, user_name: str):
+        self.user_phone = user_phone
+        self.user_name = user_name
+        self.centres: dict[str, dict] = {}
+        self._next_idx = 1
+
+    async def handle_get_exp_center(self, pincode: str) -> dict:
+        raw_stores = await backend_api.fetch_centres(pincode=pincode)
+        if not raw_stores:
+            return {"centres_summary": f"No centres found near pincode {pincode}."}
+
+        lines = []
+        for store in raw_stores[:3]:
+            # Monotonic IDs (EC-1..EC-3 for query 1, EC-4..EC-6 for query 2) prevent index collisions
+            cid = f"EC-{self._next_idx}"
+            self._next_idx += 1
+            self.centres[cid] = store
+            lines.append(f"{cid}: {store['name']} ({store['distance_km']} km)")
+
+        # Returns ~25 tokens to Gemini instead of ~800 tokens of raw JSON (saves ~4,650 tok over 6 turns)
+        return {"centres_summary": " | ".join(lines)}
+
+    async def handle_create_appointment_booking(
+        self,
+        centre_id: str,
+        visit_date: str,
+        visit_time: str,
+    ) -> dict:
+        # Guard against hallucinated centre_id (never raise KeyError into the audio pipeline)
+        store = self.centres.get(centre_id)
+        if not store:
+            valid = ", ".join(self.centres.keys()) or "none fetched yet (call get_exp_center first)"
+            return {
+                "status": "error",
+                "message": f"Unknown centre_id '{centre_id}'. Available IDs: {valid}. Please confirm with the caller.",
+            }
+
+        # 1. Book appointment using cached store fields (LLM never copies UUIDs or city codes)
+        booking = await backend_api.create_booking(
+            phone=self.user_phone,
+            name=self.user_name,
+            city_code=store["city_code"],
+            centre_name=store["name"],
+            centre_uuid=store["uuid"],
+            pincode=store["pincode"],
+            visit_date=visit_date,
+            visit_time=visit_time,
+        )
+
+        # 2. Unconditionally trigger WhatsApp confirmation in Python (saves 232 tok/turn schema + 1 LLM turn)
+        await backend_api.send_whatsapp_confirmation(
+            phone=self.user_phone,
+            template_id="BOOKING_CONFIRMED",
+            media_url="https://cdn.example.com/assets/brochure.jpg",
+        )
+
+        # 3. Resolve store phone contact in Python (saves 183 tok/turn schema + 1 LLM turn)
+        store_phone = store.get("phone") or await backend_api.get_store_contact(store["uuid"])
+
+        return {
+            "status": "booked",
+            "booking_id": booking["id"],
+            "centre_name": store["name"],
+            "store_phone": store_phone,
+            "whatsapp_sent": True,
+        }
+```
+
 ---
 
 ## 8. Guided State Machine & Phase Engine Architecture
@@ -1810,11 +1897,46 @@ directive_text = (
     f"{card['directive']}
 
 "
-    f"Context: {trigger_reason}
-"
+    f"Context: {trigger_reason}\n"
     f"Rule: Always use Devanagari for Hindi words and Latin for English financial terms."
 )
 ```
+
+### C. Header + Directive + Footer (`PhaseCard`) 5-Layer Architecture
+
+In multi-turn duplex audio conversations, native audio models exhibit two recurring failure modes:
+1. **Language Recency Drift**: After 3+ turns in Hindi, if the user switches to English, the accumulated prior audio history biases the model into replying in Hindi despite top-of-prompt instructions.
+2. **Consonant-Cluster Audio Garbling**: Words with heavy consonant clusters (such as `"logged"` in `"Meal logged"`) can be slurred or mis-rendered (`"globbed"`) by native audio decoders.
+
+Wrap every dynamic phase card and tool response with a **Top Header** and a **Post-History Footer** (the very last tokens in the context window before audio generation):
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 1. HEADER (<system_header> + <system_profile_metadata>)                     │
+│    • Locks Persona Identity, Indian English Accent, Feminine Hindi Grammar  │
+│      ('मैं कर रही हूँ', 'बताती हूँ'), 3-sentence turn cap, and user profile.│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 2. PHASE DIRECTIVE ([CURRENT PHASE: ...])                                   │
+│    • "Disregard instructions in earlier phase cards." + phase tool rules.   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 3. LIVE SESSION STATE (render_state_summary)                                │
+│    • "Collected details: model Urus SE, pincode 400001. Still needed: date."│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4. ALWAYS-ACTIVE INVARIANTS (always_block)                                  │
+│    • Concise guardrails that hold across all phases; keep tool names silent.│
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 5. POST-HISTORY FOOTER (<system_footer> — Recency Anchor)                   │
+│    • 1) RESPOND IN THE EXACT SAME LANGUAGE AS THE USER'S LATEST UTTERANCE   │
+│         (English -> English, Hindi -> Hindi, Hinglish -> Hinglish).         │
+│    • 2) DO NOT RE-ASK ANY SLOT ALREADY LISTED IN `Collected details`.       │
+│    • 3) PHONETIC CLARITY: Prefer clean verbs ("Meal saved", "Recorded")     │
+│         over consonant clusters ("logged").                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+> [!NOTE]
+> **Cardless Turn-0 Opening Rule**
+> Keep Phase 1 (`SOP_01_OPENING`) strictly cardless and instruct the model in the root prompt: *"Speak the opening greeting first without calling any tools."* Allowing autonomous `switch_phase()` tool calls on Turn 0 before the caller speaks prematurely injects phase cards and inflates cold-start Turn 1 tokens from `~490` to `1,250+`.
 
 ---
 
@@ -1939,8 +2061,7 @@ reconcile **exactly (residual 0 on every turn)** under the identical client.
   reports openly (40/162, 44/170, 48/146). So 3.1's "no output text cost" is a
   **reporting gap, not a saving**: the transcript is generated, carried, and
   re-billed as prompt while appearing in neither details block.
-* **Filed as** http://b/560037988 (P2, component 2008740 — Live API,
-  Google DeepMind › API). Open questions: which modality/rate the 620 tokens
+* **Upstream reporting discrepancy** (3.1 Live API `usage_metadata`). Open questions: which modality/rate the 620 tokens
   bill at, and when `prompt_tokens_details` will sum to `prompt_token_count`.
 * **Cost-calculator invariant**: any Live pricing module MUST bill
   `prompt_token_count - sum(prompt_tokens_details)` as a residual line item,
@@ -2009,7 +2130,7 @@ Like-for-like 4-turn script:
 
 Measured gap **+25.3%**. Billing the 620 unattributed tokens raises it to
 **+29.0%** (text rate) or **+40.1%** (audio rate). Quote the range, not the
-+25.3%, until http://b/560037988 is resolved.
++25.3%, until the upstream 3.1 reporting discrepancy is resolved.
 
 * **Audio dominates spend, and the share grows**: audio as % of prompt cost —
   2.5: 79% → 87% → **90%** (T1→T3); 3.1: 62% → 76% → 80% → **84%**.
@@ -2105,7 +2226,7 @@ Cross-model benchmarks on identical conversational scripts yield distinct profil
 | **Pricing Rates (In / Out)** | Text: $0.50 / $2.00<br>Audio: $3.00 / $12.00 | Text: **$0.75 / $4.50** (+50% / +125%)<br>Audio: $3.00 / $12.00 | Text: $0.50 / $2.00<br>Audio: $2.40 / $9.60 |
 | **Fixed Prompt Scaffolding (T0)** | **225 tokens** (lean, 0 scaffolding) | **501 tokens** (+276 model scaffolding) | **646 tokens** (+421 model scaffolding) |
 | **Pre-Speech Greeting Metering** | **AUDIO: 0** | ⚠️ **Bills ~201 audio tokens** during greeting playback before user speaks | **AUDIO: 0** |
-| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (b/560037988) | 100% exact (residual: 0) |
+| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (upstream 3.1 reporting discrepancy) | 100% exact (residual: 0) |
 | **Tool Declaration Accounting** | Omitted from turn prompt tokens | Omitted from turn prompt tokens | ⚠️ **Full Attention**: Serializes OpenAPI schemas into prompt (~500 tok/tool) |
 | **Tool Response Scheduling** | `WHEN_IDLE` | `WHEN_IDLE` | ⚠️ Strictly `None` (passing `WHEN_IDLE` crashes with 1007) |
 | **Tool Dispatch Stability** | Stable, sequential | ⚠️ **Parallel Double-Call Bug**: Rapidly fires duplicate parallel tool calls (`switch_phase` x2), spiking prompt to 11k tokens | Stable, sequential |
@@ -2273,7 +2394,7 @@ CMD ["python", "server.py"]
 
 ### B. Gold-Standard Cloud Run Deployment
 ```bash
-gcloud run deploy v2v-demo   --source .   --platform managed   --region us-central1   --project deep-clock-339817   --ingress all   --allow-unauthenticated   --memory 2Gi   --cpu 2   --no-cpu-throttling   --cpu-boost   --min-instances 1   --max-instances 100   --concurrency 80   --timeout 3600   --service-account 853612069841-compute@developer.gserviceaccount.com   --network default   --subnet default   --vpc-egress private-ranges-only   --set-env-vars="GCP_PROJECT_ID=deep-clock-339817,GCP_LOCATION=us-central1,USE_VERTEXAI=true,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true"   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
+gcloud run deploy v2v-demo   --source .   --platform managed   --region us-central1   --project <PROJECT_ID>   --ingress all   --allow-unauthenticated   --memory 2Gi   --cpu 2   --no-cpu-throttling   --cpu-boost   --min-instances 1   --max-instances 100   --concurrency 80   --timeout 3600   --service-account <SERVICE_ACCOUNT_EMAIL>   --network default   --subnet default   --vpc-egress private-ranges-only   --set-env-vars="GCP_PROJECT_ID=<PROJECT_ID>,GCP_LOCATION=us-central1,USE_VERTEXAI=true,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true"   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
 ```
 
 ### C. Deployment Monitoring Invariant
@@ -2583,7 +2704,7 @@ Decouple conversational voice rendering from deterministic UI decision-making:
 - **NEVER commit `docs-site/` changes to `ui-changes-sep` or active UI feature branches.**
 - Customer-facing documentation at `https://manishkjs.github.io/gemini_live_pipecat/` deploys automatically via GitHub Actions on push to `main` (`docs-site/**`).
 - Always commit `docs-site/` edits directly to `main` (via a dedicated `git worktree` checked out at `origin/main`) and push with `git push --no-verify origin main`.
-- In `.mdx` files, raw `<` characters outside code blocks fail Vite/MDX compilation. Always escape them as `&lt;`.
+- In `.mdx` files, raw `<` characters outside code blocks fail Vite/MDX compilation. Always escape them as `<`.
 
 ### C. Cascade vs. Native Duplex Unit Economics
 - **Indian BPO Commercial Ceiling**: Enterprise contact centers benchmark AI voice agents against human labor in India (`$1.20-$1.80/hr` or `$0.02-$0.03/min`).
@@ -2666,4 +2787,6 @@ def compare_voice_session(si_tokens=1000, turns=5, user_sec=6, bot_sec=10, scaff
         "gpt_live_1_with_backend_usd": oai_totals,
     }
 ```
+
+---
 ``````

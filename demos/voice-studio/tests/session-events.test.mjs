@@ -777,6 +777,125 @@ test('useAvatarStream enters terminal failure, releases playback resources, and 
   assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on byte-cap breach');
 });
 
+test('useAvatarStream fails immediately when neither MediaSource nor ManagedMediaSource exists, and supports ManagedMediaSource fallback with disableRemotePlayback', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  // Part A: No MediaSource and no ManagedMediaSource -> immediate terminal failure on first chunk
+  const noMseExports = {};
+  const noMseFatal = [];
+  vm.runInNewContext(compiled, {
+    exports: noMseExports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    performance: { now: () => 1000 },
+  }, { filename: full });
+
+  assert.equal(noMseExports.isAvatarMseSupported(), false);
+  const renderNoMse = () => {
+    cursor = 0;
+    return noMseExports.useAvatarStream(false, undefined, reason => { noMseFatal.push(reason); });
+  };
+  let ctrlNoMse = renderNoMse();
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+  ctrlNoMse.pushChunk(b64('init-seg'), true, 1);
+  ctrlNoMse = renderNoMse();
+  assert.equal(ctrlNoMse.avatarFailed, true, 'must fail immediately on first chunk when MSE is unsupported');
+  assert.ok(ctrlNoMse.failureReason && ctrlNoMse.failureReason.includes('does not support MediaSource'), 'failureReason must clearly state MediaSource is unsupported');
+  assert.equal(ctrlNoMse.queuedBytes, 0, 'must not enqueue chunks when MSE is unsupported');
+  assert.equal(noMseFatal.length, 1);
+
+  // Part B: Safari iOS 17.1+ ManagedMediaSource fallback (no global MediaSource, window.ManagedMediaSource defined)
+  slots.length = 0;
+  const appendedSegments = [];
+  class FakeManagedMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+    }
+    addEventListener(type, fn) {
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      return {
+        updating: false,
+        mode: 'segments',
+        buffered: { length: 1, start: () => 0, end: () => 1 },
+        addEventListener: () => {},
+        appendBuffer(bytes) {
+          appendedSegments.push(Buffer.from(bytes).toString('utf8'));
+        },
+        remove: () => {},
+      };
+    }
+    endOfStream() {}
+  }
+
+  const managedExports = {};
+  vm.runInNewContext(compiled, {
+    exports: managedExports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      ManagedMediaSource: FakeManagedMediaSource,
+      atob: str => Buffer.from(str, 'base64').toString('binary'),
+    },
+    URL: {
+      createObjectURL: () => 'blob:managed-avatar',
+      revokeObjectURL: () => {},
+    },
+    performance: { now: () => 1000 },
+  }, { filename: full });
+
+  assert.equal(managedExports.isAvatarMseSupported(), true);
+  const renderManaged = () => {
+    cursor = 0;
+    return managedExports.useAvatarStream(false);
+  };
+  const videoEl = {
+    muted: false,
+    disableRemotePlayback: false,
+    src: '',
+    currentTime: 0,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 1 },
+    play: () => Promise.resolve(),
+    pause: () => {},
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  let ctrlManaged = renderManaged();
+  ctrlManaged.videoRef(videoEl);
+  assert.equal(videoEl.disableRemotePlayback, true, 'videoEl must have disableRemotePlayback=true for iOS ManagedMediaSource');
+  ctrlManaged.pushChunk(b64('managed-init'), true, 1);
+  ctrlManaged = renderManaged();
+  assert.equal(ctrlManaged.avatarFailed, false);
+  assert.deepEqual(appendedSegments, ['managed-init']);
+});
+
 
 
 

@@ -6,13 +6,42 @@ const PREFERRED_MIME_CODECS = [
   "video/mp4",
 ];
 
+type MediaSourceConstructor = {
+  new (): MediaSource;
+  isTypeSupported?: (type: string) => boolean;
+};
+
+export function getMediaSourceConstructor(): MediaSourceConstructor | null {
+  if (typeof MediaSource !== "undefined") {
+    return MediaSource as unknown as MediaSourceConstructor;
+  }
+  if (typeof window !== "undefined") {
+    const win = window as unknown as {
+      MediaSource?: MediaSourceConstructor;
+      ManagedMediaSource?: MediaSourceConstructor;
+    };
+    if (typeof win.MediaSource !== "undefined") {
+      return win.MediaSource;
+    }
+    if (typeof win.ManagedMediaSource !== "undefined") {
+      return win.ManagedMediaSource;
+    }
+  }
+  return null;
+}
+
+export function isAvatarMseSupported(): boolean {
+  return getMediaSourceConstructor() !== null;
+}
+
 function resolveSupportedMimeCodec(): string {
-  if (typeof window === "undefined" || typeof MediaSource === "undefined") {
+  const Ctor = getMediaSourceConstructor();
+  if (!Ctor || typeof Ctor.isTypeSupported !== "function") {
     return PREFERRED_MIME_CODECS[0];
   }
   for (const codec of PREFERRED_MIME_CODECS) {
     try {
-      if (MediaSource.isTypeSupported(codec)) {
+      if (Ctor.isTypeSupported(codec)) {
         return codec;
       }
     } catch {
@@ -318,6 +347,7 @@ export function useAvatarStream(
       }
       videoElRef.current = el;
       if (el && !failedRef.current) {
+        (el as HTMLVideoElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
         el.muted = speakerMuted;
         el.addEventListener?.("timeupdate", syncPlayhead);
         if (objectUrlRef.current && el.src !== objectUrlRef.current) {
@@ -458,7 +488,14 @@ export function useAvatarStream(
 
   const ensureMediaSource = useCallback(() => {
     if (failedRef.current) return;
-    if (typeof window === "undefined" || typeof MediaSource === "undefined") return;
+    if (typeof window === "undefined") return;
+    const MediaSourceCtor = getMediaSourceConstructor();
+    if (!MediaSourceCtor) {
+      failStream(
+        "Your browser does not support MediaSource video streaming required for Live Avatar. Please use Chrome, Edge, or desktop Safari, or disable Live Avatar.",
+      );
+      return;
+    }
     if (
       mediaSourceRef.current &&
       (mediaSourceRef.current.readyState === "open" || isOpeningRef.current)
@@ -466,7 +503,7 @@ export function useAvatarStream(
       return;
     }
 
-    const ms = new MediaSource();
+    const ms = new MediaSourceCtor();
     mediaSourceRef.current = ms;
     sourceBufferRef.current = null;
     hasAppendedInitRef.current = false;
@@ -479,6 +516,7 @@ export function useAvatarStream(
     objectUrlRef.current = url;
 
     if (videoElRef.current) {
+      (videoElRef.current as HTMLVideoElement & { disableRemotePlayback?: boolean }).disableRemotePlayback = true;
       videoElRef.current.src = url;
       videoElRef.current.currentTime = 0;
       videoElRef.current.muted = speakerMuted;
