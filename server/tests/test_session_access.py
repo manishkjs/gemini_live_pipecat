@@ -289,6 +289,50 @@ class TestSessionAccess(unittest.TestCase):
             self.assertEqual(understated_cl.status_code, 413)
             self.assertEqual(chunks_yielded, 13)
 
+        # Exact-limit boundary (MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024) across multiple chunks:
+        # 1) Exactly MAX_CONNECT_BODY_BYTES of valid JSON (padded with spaces) across 4 chunks -> 200
+        prefix = b'{"system_instruction":"boundary_ok"}'
+        pad_len = server.MAX_CONNECT_BODY_BYTES - len(prefix)
+        exact_payload = prefix + (b" " * pad_len)
+        chunk_size = 4 * 1024 * 1024
+        exact_chunks = [exact_payload[i : i + chunk_size] for i in range(0, len(exact_payload), chunk_size)]
+
+        async def exact_boundary_stream(self_req):
+            for c in exact_chunks:
+                yield c
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", exact_boundary_stream):
+            exact_resp = client.post(
+                "/connect?session_id=stream_exact_limit",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(exact_resp.status_code, 200)
+            self.assertEqual(
+                session_access.take_instructions(exact_resp.json()["session_id"]),
+                "boundary_ok",
+            )
+
+        # 2) MAX_CONNECT_BODY_BYTES + 1 across multiple chunks -> 413 on the 1-byte overflow chunk
+        plus_one_yielded = 0
+
+        async def boundary_plus_one_stream(self_req):
+            nonlocal plus_one_yielded
+            for c in exact_chunks + [b" ", b"ignored_trailing_chunk"]:
+                plus_one_yielded += 1
+                yield c
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", boundary_plus_one_stream):
+            plus_one_resp = client.post(
+                "/connect?session_id=stream_limit_plus_one",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(plus_one_resp.status_code, 413)
+            self.assertEqual(plus_one_yielded, len(exact_chunks) + 1)
+
         normal_resp = client.post(
             "/connect?session_id=stream_ok",
             json={"system_instruction": "streamed ok"},
@@ -296,5 +340,6 @@ class TestSessionAccess(unittest.TestCase):
         self.assertEqual(normal_resp.status_code, 200)
         self.assertFalse(session_access.authorized("stream_no_cl", "x" * 32))
         self.assertFalse(session_access.authorized("stream_understated_cl", "x" * 32))
+        self.assertFalse(session_access.authorized("stream_limit_plus_one", "x" * 32))
 
 

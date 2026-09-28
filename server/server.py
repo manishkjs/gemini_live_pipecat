@@ -328,6 +328,11 @@ async def persona_prompt(
     }
 
 
+MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024
+MAX_AVATAR_IMAGE_B64_CHARS = 7_000_000  # ~5 MB binary
+MAX_VOICE_AUDIO_B64_CHARS = 4_000_000   # ~3 MB binary
+
+
 @app.post("/connect")
 async def bot_connect(request: Request) -> Dict[Any, Any]:
     import json
@@ -341,9 +346,6 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     # Finish reading and validating the request before allocating any handles.
     # Invalid requests must not occupy a session slot for the four-hour TTL.
     instructions = params_dict.pop("system_instruction", None)
-    MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024
-    MAX_AVATAR_IMAGE_B64_CHARS = 7_000_000  # ~5 MB binary
-    MAX_VOICE_AUDIO_B64_CHARS = 4_000_000   # ~3 MB binary
 
     content_length = request.headers.get("content-length")
     if content_length:

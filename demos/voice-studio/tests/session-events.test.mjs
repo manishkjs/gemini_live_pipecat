@@ -630,6 +630,16 @@ test('useAvatarStream enters terminal failure, releases playback resources, and 
   }
 
   let nowMs = 1000;
+  const scheduledTimers = new Map();
+  let nextTimerId = 1;
+  const sandboxSetTimeout = (fn, delay) => {
+    const id = nextTimerId++;
+    scheduledTimers.set(id, { fn, delay });
+    return id;
+  };
+  const sandboxClearTimeout = id => {
+    scheduledTimers.delete(id);
+  };
   const exports = {};
   vm.runInNewContext(compiled, {
     exports,
@@ -640,6 +650,8 @@ test('useAvatarStream enters terminal failure, releases playback resources, and 
     },
     MediaSource: FakeMediaSource,
     performance: { now: () => nowMs },
+    setTimeout: sandboxSetTimeout,
+    clearTimeout: sandboxClearTimeout,
     URL: {
       createObjectURL: () => `blob:avatar-${mediaSources.length}`,
       revokeObjectURL: url => { revokedUrls.push(url); },
@@ -724,20 +736,33 @@ test('useAvatarStream enters terminal failure, releases playback resources, and 
   ctrl.pushChunk(b64('ignored-chunk-2'), false, 4);
   assert.equal(render().queuedBytes, 0, 'queuedBytes must stop growing after terminal failure');
 
-  // Case 3: Age cap breach while SourceBuffer is stalled -> terminal failure + queue cleared
+  // Case 3: Age cap breach while SourceBuffer is stalled -> fires via standalone timer even without new pushChunk/updateend, and ignores late callbacks
   alwaysThrowAppend = false;
   ctrl.reset();
   ctrl = render();
   ctrl.pushChunk(b64('init-stall'), true, 1); // leaves ms3.sb.updating = true
+  const ms3 = mediaSources[2];
   nowMs += 100;
   ctrl.pushChunk(b64('queued-while-updating'), false, 2);
   assert.ok(render().queuedBytes > 0);
-  // Advance clock past MAX_QUEUE_AGE_MS (10_000 ms) while sb.updating remains stuck
+  assert.ok(scheduledTimers.size > 0, 'queue age watchdog timer must be scheduled while items are queued');
+
+  // Advance clock past MAX_QUEUE_AGE_MS (10_000 ms) and fire the watchdog timer WITHOUT any new pushChunk or updateend
   nowMs += 11_000;
-  ctrl.pushChunk(b64('triggers-age-cap'), false, 3);
+  for (const { fn } of [...scheduledTimers.values()]) {
+    fn();
+  }
   ctrl = render();
-  assert.equal(ctrl.avatarFailed, true, 'stalled queue exceeding max age must latch avatarFailed');
+  assert.equal(ctrl.avatarFailed, true, 'stalled queue exceeding max age must latch avatarFailed via timer even without new chunks or updateend');
   assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on age-cap breach');
+
+  // Late updateend callback after terminal failure must not recreate resources or restart retries
+  const mediaSourcesBeforeLate = mediaSources.length;
+  ms3.sb.finishUpdate();
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'late updateend must not clear avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'late updateend must not requeue or mutate queuedBytes');
+  assert.equal(mediaSources.length, mediaSourcesBeforeLate, 'late callbacks must not recreate MediaSources');
 
   // Case 4: Byte cap breach (MAX_QUEUED_BYTES = 8 MB) -> terminal failure + queue cleared
   ctrl.reset();

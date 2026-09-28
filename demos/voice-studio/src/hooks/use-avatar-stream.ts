@@ -91,6 +91,7 @@ export function useAvatarStream(
   const objectUrlRef = useRef<string | null>(null);
   const appendQueueRef = useRef<QueuedSegment[]>([]);
   const queuedBytesRef = useRef<number>(0);
+  const queueAgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const failedRef = useRef<boolean>(false);
   const initSegmentRef = useRef<Uint8Array | null>(null);
   const hasAppendedInitRef = useRef<boolean>(false);
@@ -117,6 +118,13 @@ export function useAvatarStream(
   const [failureReason, setFailureReason] = useState<string | null>(null);
   const [queuedBytes, setQueuedBytes] = useState(0);
 
+  const clearQueueAgeTimer = useCallback(() => {
+    if (queueAgeTimerRef.current !== null) {
+      clearTimeout(queueAgeTimerRef.current);
+      queueAgeTimerRef.current = null;
+    }
+  }, []);
+
   const resetSpeechTracking = useCallback(() => {
     lastAppendedHasAudioRef.current = false;
     silentTailCountRef.current = 0;
@@ -128,6 +136,7 @@ export function useAvatarStream(
   }, []);
 
   const syncPlayhead = useCallback(() => {
+    if (failedRef.current) return;
     const v = videoElRef.current;
     if (!v || v.buffered.length === 0) return;
 
@@ -238,6 +247,7 @@ export function useAvatarStream(
   }, []);
 
   const releasePlaybackResources = useCallback(() => {
+    clearQueueAgeTimer();
     appendQueueRef.current = [];
     queuedBytesRef.current = 0;
     setQueuedBytes(0);
@@ -268,7 +278,7 @@ export function useAvatarStream(
       videoElRef.current.removeAttribute("src");
       videoElRef.current.load();
     }
-  }, [resetSpeechTracking, syncPlayhead]);
+  }, [clearQueueAgeTimer, resetSpeechTracking, syncPlayhead]);
 
   const failStream = useCallback(
     (reason: string) => {
@@ -282,6 +292,24 @@ export function useAvatarStream(
     [releasePlaybackResources],
   );
 
+  const syncQueueAgeWatchdog = useCallback(() => {
+    clearQueueAgeTimer();
+    if (failedRef.current || appendQueueRef.current.length === 0 || typeof setTimeout === "undefined") {
+      return;
+    }
+    const oldestAge = Math.max(0, nowTimestamp() - appendQueueRef.current[0].enqueuedAt);
+    const remainingMs = Math.max(0, MAX_QUEUE_AGE_MS - oldestAge + 1);
+    queueAgeTimerRef.current = setTimeout(() => {
+      queueAgeTimerRef.current = null;
+      if (failedRef.current || appendQueueRef.current.length === 0) return;
+      if (nowTimestamp() - appendQueueRef.current[0].enqueuedAt > MAX_QUEUE_AGE_MS) {
+        failStream("Avatar video playback stalled for over 10 seconds. Please restart the call.");
+      } else {
+        syncQueueAgeWatchdog();
+      }
+    }, remainingMs);
+  }, [clearQueueAgeTimer, failStream]);
+
   const videoRef = useCallback(
     (el: HTMLVideoElement | null) => {
       const prev = videoElRef.current;
@@ -289,7 +317,7 @@ export function useAvatarStream(
         prev.removeEventListener?.("timeupdate", syncPlayhead);
       }
       videoElRef.current = el;
-      if (el) {
+      if (el && !failedRef.current) {
         el.muted = speakerMuted;
         el.addEventListener?.("timeupdate", syncPlayhead);
         if (objectUrlRef.current && el.src !== objectUrlRef.current) {
@@ -335,7 +363,10 @@ export function useAvatarStream(
       }
     }
 
-    if (appendQueueRef.current.length === 0) return;
+    if (appendQueueRef.current.length === 0) {
+      clearQueueAgeTimer();
+      return;
+    }
 
     const now = nowTimestamp();
     if (now - appendQueueRef.current[0].enqueuedAt > MAX_QUEUE_AGE_MS) {
@@ -351,6 +382,7 @@ export function useAvatarStream(
       appendQueueRef.current.unshift(next);
       queuedBytesRef.current += next.bytes.byteLength;
       setQueuedBytes(queuedBytesRef.current);
+      syncQueueAgeWatchdog();
       if (initSegmentRef.current) {
         try {
           hasAppendedInitRef.current = true;
@@ -401,6 +433,7 @@ export function useAvatarStream(
         lastAppendedHasAudioRef.current = true;
       }
       sb.appendBuffer(next.bytes as unknown as BufferSource);
+      syncQueueAgeWatchdog();
     } catch {
       next.retries += 1;
       if (next.retries > MAX_SEGMENT_RETRIES) {
@@ -411,6 +444,7 @@ export function useAvatarStream(
       appendQueueRef.current.unshift(next);
       queuedBytesRef.current += next.bytes.byteLength;
       setQueuedBytes(queuedBytesRef.current);
+      syncQueueAgeWatchdog();
       if (sb.buffered.length > 0) {
         try {
           const s = sb.buffered.start(0);
@@ -420,7 +454,7 @@ export function useAvatarStream(
         }
       }
     }
-  }, [failStream, resetSpeechTracking]);
+  }, [clearQueueAgeTimer, failStream, resetSpeechTracking, syncQueueAgeWatchdog]);
 
   const ensureMediaSource = useCallback(() => {
     if (failedRef.current) return;
@@ -460,6 +494,7 @@ export function useAvatarStream(
         sb.mode = "segments";
         sourceBufferRef.current = sb;
         sb.addEventListener("updateend", () => {
+          if (failedRef.current || sourceBufferRef.current !== sb) return;
           syncPlayhead();
           if (videoElRef.current && videoElRef.current.buffered.length > 0) {
             setHasVideoFrame(true);
@@ -483,6 +518,7 @@ export function useAvatarStream(
       if (isInit && hasAppendedInitRef.current) {
         // A new fMP4 stream started mid-call (e.g. after session resumption reconnect) with tfdt=0:
         // recreate MediaSource so tfdt=0 plays immediately instead of landing behind currentTime.
+        clearQueueAgeTimer();
         appendQueueRef.current = [];
         queuedBytesRef.current = 0;
         setQueuedBytes(0);
@@ -525,9 +561,10 @@ export function useAvatarStream(
       queuedBytesRef.current += bytes.byteLength;
       setQueuedBytes(queuedBytesRef.current);
       setFrameCount((c) => c + 1);
+      syncQueueAgeWatchdog();
       drainQueue();
     },
-    [ensureMediaSource, drainQueue, failStream, resetSpeechTracking],
+    [clearQueueAgeTimer, ensureMediaSource, drainQueue, failStream, resetSpeechTracking, syncQueueAgeWatchdog],
   );
 
   const flushOnInterrupt = useCallback(() => {
@@ -569,11 +606,12 @@ export function useAvatarStream(
 
   useEffect(() => {
     return () => {
+      clearQueueAgeTimer();
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
       }
     };
-  }, []);
+  }, [clearQueueAgeTimer]);
 
   return {
     videoRef,
