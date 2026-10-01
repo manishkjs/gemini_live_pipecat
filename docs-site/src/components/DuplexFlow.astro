@@ -1,7 +1,7 @@
 ---
 /**
  * Animated duplex flow: continuous audio in both directions over one socket.
- * Pure CSS/SVG — no JS, no runtime cost, works in a static build.
+ * Pure CSS/SVG, no JS, no runtime cost, works in a static build.
  */
 interface Props {
   caption?: string;
@@ -73,31 +73,31 @@ const down = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75];
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .node rect {
-    fill: var(--sl-color-gray-6);
-    stroke: var(--sl-color-gray-5);
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
   }
   .node.accent rect {
     stroke: var(--sl-color-accent);
   }
   .node-title {
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
     font-size: 15px;
     font-weight: 600;
     text-anchor: middle;
   }
   .node-sub {
-    fill: var(--sl-color-gray-3);
+    fill: var(--gl-text-muted);
     font-size: 11.5px;
     text-anchor: middle;
   }
 
   .wire {
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
     stroke-dasharray: 3 4;
   }
@@ -105,20 +105,20 @@ const down = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75];
     fill: var(--sl-color-accent);
   }
   .arrow.down {
-    fill: #34a853;
+    fill: var(--gl-green-text);
   }
 
   .lane-label {
     font-size: 12px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-3);
+    fill: var(--gl-text-muted);
     font-family: var(--sl-font-mono, ui-monospace, monospace);
   }
 
   .socket-note {
     font-size: 11px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
     font-style: italic;
   }
 
@@ -127,7 +127,7 @@ const down = [0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75];
     animation: flow-right 4s linear infinite;
   }
   .pkt.down {
-    fill: #34a853;
+    fill: var(--gl-green-text);
     animation: flow-left 4s linear infinite;
   }
 

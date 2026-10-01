@@ -3,7 +3,7 @@
  * Animated barge-in: why `interrupted` must flush your playback buffer.
  *
  * The whole point of this diagram is to make the *buffer* visible. Prose keeps
- * saying "flush queued audio" without ever showing that a queue exists — which
+ * saying "flush queued audio" without ever showing that a queue exists, which
  * is exactly why people ship agents that talk over users.
  *
  * Pure CSS/SVG on a single synchronised 6s timeline. No JS.
@@ -84,48 +84,48 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .node rect {
-    fill: var(--sl-color-gray-6);
-    stroke: var(--sl-color-gray-5);
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
   }
   .node.accent rect { stroke: var(--sl-color-accent); }
   .node-title {
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
     font-size: 14px; font-weight: 600; text-anchor: middle;
   }
   .node-sub {
-    fill: var(--sl-color-gray-3);
+    fill: var(--gl-text-muted);
     font-size: 11px; text-anchor: middle;
   }
 
   .wire {
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
     stroke-dasharray: 3 4;
   }
-  .arrow-green { fill: #34a853; }
+  .arrow-green { fill: var(--gl-green-text); }
 
   .section-label {
     font-size: 11px;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
   .buffer-note {
     font-size: 11px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-2);
+    fill: var(--gl-text-secondary);
   }
 
   /* ── the shared 6s story ── */
 
   /* Bot audio streams only while the agent is speaking. */
   .pkt-bot {
-    fill: #34a853;
+    fill: var(--gl-green-text);
     animation: bot-flow 6s linear infinite;
   }
   @keyframes bot-flow {
@@ -138,7 +138,7 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
 
   /* The interrupt pulse: one sharp signal, right to left. */
   .pkt-interrupt {
-    fill: #ea4335;
+    fill: var(--gl-red-text);
     opacity: 0;
     animation: interrupt-pulse 6s linear infinite;
   }
@@ -152,7 +152,7 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
     font-size: 12px;
     font-weight: 600;
     text-anchor: middle;
-    fill: #ea4335;
+    fill: var(--gl-red-text);
     opacity: 0;
     font-family: var(--sl-font-mono, ui-monospace, monospace);
     animation: label-flash 6s linear infinite;
@@ -166,13 +166,13 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
   /* The buffer fills as audio arrives, then snaps empty on the flush. */
   .buffer-track {
     fill: none;
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
   }
   .buffer-fill {
-    fill: #34a853;
+    fill: var(--gl-green-text);
     fill-opacity: 0.35;
-    stroke: #34a853;
+    stroke: var(--gl-green-text);
     stroke-width: 1;
     transform-box: fill-box;
     transform-origin: left center;
@@ -188,18 +188,18 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
 
   /* Phase markers light up in sequence via per-element --on/--off. */
   .timeline {
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
     stroke-dasharray: 2 5;
   }
   .phase circle {
-    fill: var(--sl-color-gray-5);
+    fill: var(--gl-track-border);
     animation: phase-on 6s linear infinite;
   }
   .phase text {
     font-size: 12px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
     animation: phase-text 6s linear infinite;
   }
   .phase:nth-of-type(1) circle, .phase:nth-of-type(1) text { animation-delay: 0s; }
@@ -208,11 +208,11 @@ const botPackets = [0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8];
 
   @keyframes phase-on {
     0%, 45%   { fill: var(--sl-color-accent); r: 7; }
-    50%, 100% { fill: var(--sl-color-gray-5); r: 6; }
+    50%, 100% { fill: var(--gl-track-border); r: 6; }
   }
   @keyframes phase-text {
-    0%, 45%   { fill: var(--sl-color-white); }
-    50%, 100% { fill: var(--sl-color-gray-4); }
+    0%, 45%   { fill: var(--gl-text-primary); }
+    50%, 100% { fill: var(--gl-text-muted); }
   }
 
   /* Static, still-correct snapshot: buffer half full, interrupt in flight. */

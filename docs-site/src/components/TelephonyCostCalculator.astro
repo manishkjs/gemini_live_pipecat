@@ -5,7 +5,7 @@
  * Compares 3 columns side-by-side:
  *   1. Single-Pass Streaming Baseline ($0.023/min)
  *   2. Unmanaged Multi-Turn Duplex (quadratic prompt + raw caller audio history re-billing)
- *   3. Optimized Gemini Live (5k token sliding window + JIT prompt cards, staying inside the $0.02-$0.03/min Indian BPO ceiling)
+ *   3. Optimized Gemini Live (5k token sliding window + JIT prompt cards, staying near the $0.02 to $0.03/min offshore contact-center labor target)
  */
 ---
 
@@ -27,7 +27,7 @@
     </div>
     <h3 class="tcc-title">Simulate Multi-Turn Duplex Voice Unit Economics</h3>
     <p class="tcc-subtitle">
-      Compare uncompacted multi-turn WebSocket billing against an optimized Gemini Live pipeline (5k sliding window + JIT prompt cards) and the <strong>$0.02–$0.03/min Indian BPO human labor ceiling</strong>.
+      Compare uncompacted multi-turn WebSocket billing against an optimized Gemini Live pipeline (5k sliding window + JIT prompt cards) and the <strong>$0.02 to $0.03/min offshore contact-center labor benchmark</strong>.
     </p>
   </div>
 
@@ -95,7 +95,7 @@
     <!-- Column 1: Continuous Single-Pass Baseline -->
     <div class="tcc-receipt tcc-receipt-blue">
       <div class="tcc-receipt-head">
-        <span class="tcc-receipt-tag blue-tag">📘 SINGLE-PASS BASELINE</span>
+        <span class="tcc-receipt-tag blue-tag">SINGLE-PASS BASELINE</span>
         <div class="tcc-cpm-display blue-text">$0.023 / min</div>
       </div>
       <div class="tcc-receipt-lines">
@@ -121,7 +121,7 @@
     <!-- Column 2: Unmanaged Multi-Turn Duplex Session -->
     <div class="tcc-receipt tcc-receipt-red">
       <div class="tcc-receipt-head">
-        <span class="tcc-receipt-tag red-tag">⚡ UNMANAGED DUPLEX</span>
+        <span class="tcc-receipt-tag red-tag">UNMANAGED DUPLEX</span>
         <div class="tcc-cpm-display red-text" id="tcc-unopt-cpm">$0.082 / min</div>
       </div>
       <div class="tcc-receipt-lines">
@@ -147,7 +147,7 @@
     <!-- Column 3: Optimized Gemini Live (JIT Cards + 5k Compaction) -->
     <div class="tcc-receipt tcc-receipt-green">
       <div class="tcc-receipt-head">
-        <span class="tcc-receipt-tag green-tag">🚀 OPTIMIZED LIVE (JIT + 5K)</span>
+        <span class="tcc-receipt-tag green-tag">OPTIMIZED LIVE (JIT + 5K)</span>
         <div class="tcc-cpm-display green-text" id="tcc-opt-cpm">$0.031 / min</div>
       </div>
       <div class="tcc-receipt-lines">
@@ -176,10 +176,10 @@
     <div class="tcc-savings-left">
       <div class="tcc-savings-eyebrow">ARCHITECTURAL SAVINGS VS. UNMANAGED</div>
       <div class="tcc-savings-headline">
-        Optimization saves <span class="tcc-highlight-green" id="tcc-monthly-saved">$5,100 / month</span> and keeps unit cost inside the Indian BPO ceiling ($0.02–$0.03/min)
+        Optimization saves <span class="tcc-highlight-green" id="tcc-monthly-saved">$5,096 / month</span> and keeps unit cost near the offshore BPO target ($0.02 to $0.03/min)
       </div>
       <div class="tcc-savings-note">
-        At <strong id="tcc-vol-note">100,000 mins/mo</strong>: Unmanaged costs <strong id="tcc-actual-mo">$8,200/mo</strong> vs. Optimized at <strong id="tcc-opt-mo">$3,100/mo</strong> (Indian BPO human labor @ $0.025/min = <strong id="tcc-bpo-mo">$2,500/mo</strong>).
+        At <strong id="tcc-vol-note">100,000 mins/mo</strong>: Unmanaged costs <strong id="tcc-actual-mo">$8,196/mo</strong> vs. Optimized at <strong id="tcc-opt-mo">$3,100/mo</strong> (Offshore BPO labor @ $0.025/min = <strong id="tcc-bpo-mo">$2,500/mo</strong>).
       </div>
     </div>
     <div class="tcc-savings-badge">
@@ -262,27 +262,21 @@
       const unoptPromptCost = (totalTurns * promptTokens * 0.75) / 1000000;
 
       // 3. Unmanaged Conversational History Re-Billing
-      // Each prior turn adds ~240 caller audio tokens ($3.00/M) + ~70 bot text tokens ($0.75/M)
+      // Each prior turn adds ~235 caller audio tokens ($3.00/M) + ~72 bot text tokens ($0.75/M) = $0.000759/pair
       const pairs = (totalTurns * (totalTurns - 1)) / 2;
-      const perTurnHistoryCost = ((240 * 3.0) + (70 * 0.75)) / 1000000;
+      const perTurnHistoryCost = ((235 * 3.0) + (72 * 0.75)) / 1000000;
       const unoptHistoryCost = pairs * perTurnHistoryCost;
 
       const unoptTotal = baseStreamCost + unoptPromptCost + unoptHistoryCost;
       const unoptCpm = unoptTotal / duration;
 
       // 4. Optimized Gemini Live (JIT Cards + 5k Compaction + Transcript Conversion)
-      // - JIT keeps active prompt around min(promptTokens, 600) tokens on early turns, averaging ~650 tokens across the call
-      const effectivePromptTokens = Math.min(promptTokens, 500 + promptTokens * 0.12);
+      // - JIT keeps active prompt around ~500 tokens on average across the call
+      const effectivePromptTokens = Math.min(promptTokens, 500);
       const optPromptCost = (totalTurns * effectivePromptTokens * 0.75) / 1000000;
 
-      // - 5k Compaction & audio-to-text pruning caps carried audio history to the last 3 turns max, converting older turns to cheap text ($0.75/M)
-      let optHistoryCost = 0;
-      for (let i = 0; i < totalTurns; i++) {
-        const recentAudioTurns = Math.min(i, 3);
-        const olderTextTurns = Math.max(0, i - 3);
-        const turnCost = (recentAudioTurns * ((240 * 3.0) + (70 * 0.75)) + olderTextTurns * (130 * 0.75)) / 1000000;
-        optHistoryCost += turnCost;
-      }
+      // - 5k Compaction & audio-to-text pruning caps carried audio history to recent turns + compact text/FactStore
+      const optHistoryCost = Math.max(0, totalTurns - 1) * 0.001015;
 
       const optTotal = baseStreamCost + optPromptCost + optHistoryCost;
       const optCpm = optTotal / duration;
@@ -345,9 +339,9 @@
     margin: 1.5rem 0;
     padding: 1.5rem;
     border-radius: 14px;
-    background: var(--sl-color-gray-6, #14171c);
-    border: 1.5px solid var(--sl-color-gray-5, #2a2e37);
-    box-shadow: 0 10px 30px -8px rgba(0, 0, 0, 0.3);
+    background: var(--gl-card-bg);
+    border: 1.5px solid var(--gl-card-border);
+    box-shadow: var(--gl-shadow);
   }
   .tcc-header {
     margin-bottom: 1.25rem;
@@ -368,8 +362,9 @@
     letter-spacing: 0.06em;
     padding: 0.2rem 0.6rem;
     border-radius: 4px;
-    background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
+    background: var(--gl-blue-bg);
+    color: var(--gl-blue-text);
+    border: 1px solid var(--gl-blue-border);
   }
   .tcc-presets {
     display: flex;
@@ -382,32 +377,32 @@
     font-weight: 600;
     padding: 0.28rem 0.65rem;
     border-radius: 6px;
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--sl-color-gray-5, #2a2e37);
-    color: var(--sl-color-gray-3, #9ca3af);
+    background: var(--gl-track-bg);
+    border: 1px solid var(--gl-card-border);
+    color: var(--gl-text-secondary);
     cursor: pointer;
     transition: all 0.15s ease;
   }
   .tcc-preset-btn:hover {
-    background: rgba(59, 130, 246, 0.12);
-    color: #93c5fd;
-    border-color: rgba(59, 130, 246, 0.4);
+    background: var(--gl-blue-bg);
+    color: var(--gl-blue-text);
+    border-color: var(--gl-blue-border);
   }
   .tcc-preset-btn.active {
-    background: rgba(59, 130, 246, 0.22);
-    color: #60a5fa;
-    border-color: #3b82f6;
+    background: var(--gl-blue-bg);
+    color: var(--gl-blue-text);
+    border-color: var(--sl-color-accent);
   }
   .tcc-title {
     margin: 0 0 0.35rem 0 !important;
     font-size: 1.25rem !important;
     font-weight: 700;
-    color: var(--sl-color-white, #ffffff);
+    color: var(--gl-text-primary);
   }
   .tcc-subtitle {
     margin: 0 !important;
     font-size: 0.9rem;
-    color: var(--sl-color-gray-3, #9ca3af);
+    color: var(--gl-text-muted);
     line-height: 1.45;
   }
   .tcc-controls {
@@ -417,8 +412,8 @@
     margin-bottom: 1.5rem;
     padding: 1.1rem;
     border-radius: 10px;
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid var(--sl-color-gray-5, #262932);
+    background: var(--gl-track-bg);
+    border: 1px solid var(--gl-track-border);
   }
   .tcc-control-group {
     display: flex;
@@ -431,7 +426,7 @@
     align-items: center;
     font-size: 0.82rem;
     font-weight: 600;
-    color: var(--sl-color-gray-2, #e5e7eb);
+    color: var(--gl-text-primary);
   }
   .tcc-val-pill {
     font-family: var(--sl-font-mono, monospace);
@@ -439,19 +434,19 @@
     font-weight: 700;
     padding: 0.12rem 0.45rem;
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.08);
-    color: #60a5fa;
+    background: var(--gl-blue-bg);
+    color: var(--gl-blue-text);
   }
   .tcc-slider {
     width: 100%;
-    accent-color: #3b82f6;
+    accent-color: var(--sl-color-accent);
     cursor: pointer;
   }
   .tcc-range-hints {
     display: flex;
     justify-content: space-between;
     font-size: 0.7rem;
-    color: var(--sl-color-gray-4, #6b7280);
+    color: var(--gl-text-muted);
   }
   .tcc-receipts-grid {
     display: grid;
@@ -465,16 +460,16 @@
     border: 1.2px solid transparent;
   }
   .tcc-receipt-blue {
-    background: rgba(59, 130, 246, 0.06);
-    border-color: rgba(59, 130, 246, 0.3);
+    background: var(--gl-blue-bg);
+    border-color: var(--gl-blue-border);
   }
   .tcc-receipt-red {
-    background: rgba(239, 68, 68, 0.06);
-    border-color: rgba(239, 68, 68, 0.35);
+    background: var(--gl-red-bg);
+    border-color: var(--gl-red-border);
   }
   .tcc-receipt-green {
-    background: rgba(16, 185, 129, 0.07);
-    border-color: rgba(16, 185, 129, 0.4);
+    background: var(--gl-green-bg);
+    border-color: var(--gl-green-border);
   }
   .tcc-receipt-head {
     display: flex;
@@ -482,7 +477,7 @@
     align-items: center;
     padding-bottom: 0.65rem;
     margin-bottom: 0.65rem;
-    border-bottom: 1px dashed var(--sl-color-gray-5, #2a2e37);
+    border-bottom: 1px dashed var(--gl-card-border);
   }
   .tcc-receipt-tag {
     font-family: var(--sl-font-mono, monospace);
@@ -492,16 +487,16 @@
     border-radius: 4px;
   }
   .blue-tag {
-    background: rgba(59, 130, 246, 0.15);
-    color: #93c5fd;
+    background: var(--gl-blue-bg);
+    color: var(--gl-blue-text);
   }
   .red-tag {
-    background: rgba(239, 68, 68, 0.15);
-    color: #fca5a5;
+    background: var(--gl-red-bg);
+    color: var(--gl-red-text);
   }
   .green-tag {
-    background: rgba(16, 185, 129, 0.18);
-    color: #6ee7b7;
+    background: var(--gl-green-bg);
+    color: var(--gl-green-text);
   }
   .tcc-cpm-display {
     font-family: var(--sl-font-mono, monospace);
@@ -509,20 +504,20 @@
     font-weight: 800;
   }
   .blue-text {
-    color: #60a5fa;
+    color: var(--gl-blue-text);
   }
   .red-text {
-    color: #f87171;
+    color: var(--gl-red-text);
   }
   .green-text {
-    color: #34d399;
+    color: var(--gl-green-text);
   }
   .tcc-receipt-lines {
     display: flex;
     flex-direction: column;
     gap: 0.45rem;
     font-size: 0.8rem;
-    color: var(--sl-color-gray-2, #d1d5db);
+    color: var(--gl-text-secondary);
   }
   .tcc-line {
     display: flex;
@@ -532,10 +527,10 @@
   .tcc-line-total {
     margin-top: 0.3rem;
     padding-top: 0.5rem;
-    border-top: 1px solid var(--sl-color-gray-5, #2a2e37);
+    border-top: 1px solid var(--gl-card-border);
     font-size: 0.88rem;
     font-weight: 700;
-    color: var(--sl-color-white, #ffffff);
+    color: var(--gl-text-primary);
   }
   .tcc-savings-banner {
     display: flex;
@@ -545,29 +540,29 @@
     gap: 1rem;
     padding: 1.1rem 1.3rem;
     border-radius: 10px;
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(59, 130, 246, 0.12) 100%);
-    border: 1px solid rgba(16, 185, 129, 0.38);
+    background: linear-gradient(135deg, var(--gl-green-bg) 0%, var(--gl-blue-bg) 100%);
+    border: 1px solid var(--gl-green-border);
   }
   .tcc-savings-eyebrow {
     font-family: var(--sl-font-mono, monospace);
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #6ee7b7;
+    color: var(--gl-green-text);
     margin-bottom: 0.2rem;
   }
   .tcc-savings-headline {
     font-size: 1.05rem;
     font-weight: 700;
-    color: var(--sl-color-white, #ffffff);
+    color: var(--gl-text-primary);
   }
   .tcc-highlight-green {
-    color: #34d399;
+    color: var(--gl-green-text);
     font-weight: 800;
   }
   .tcc-savings-note {
     font-size: 0.8rem;
-    color: var(--sl-color-gray-3, #9ca3af);
+    color: var(--gl-text-secondary);
     margin-top: 0.25rem;
   }
   .tcc-savings-badge {
@@ -577,21 +572,21 @@
     justify-content: center;
     padding: 0.5rem 1rem;
     border-radius: 8px;
-    background: rgba(16, 185, 129, 0.18);
-    border: 1px solid rgba(16, 185, 129, 0.45);
+    background: var(--gl-green-bg);
+    border: 1px solid var(--gl-green-border);
   }
   .tcc-pct-number {
     font-family: var(--sl-font-mono, monospace);
     font-size: 1.55rem;
     font-weight: 800;
-    color: #34d399;
+    color: var(--gl-green-text);
     line-height: 1.1;
   }
   .tcc-pct-label {
     font-family: var(--sl-font-mono, monospace);
     font-size: 0.65rem;
     font-weight: 700;
-    color: #a7f3d0;
+    color: var(--gl-green-text);
     letter-spacing: 0.05em;
   }
 </style>

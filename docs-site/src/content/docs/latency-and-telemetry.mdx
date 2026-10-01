@@ -1,176 +1,93 @@
 ---
-title: Latency & telemetry
-description: Measure the number users actually feel, and avoid the measurement traps that produce confident, wrong numbers.
+title: Latency & Telemetry
+description: Measuring true voice-to-voice turn latency, token telemetry, and OpenTelemetry instrumentation for Gemini Live.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
 import LatencyWaterfall from '../../components/LatencyWaterfall.astro';
 
-There is only one latency number your users experience:
+In a real-time voice conversation, standard HTTP metrics like "total request duration" are meaningless because the WebSocket remains open for 10 to 60 minutes. Instead, voice engineering teams track **per-turn voice-to-voice latency** and **per-turn token consumption**.
 
-> **From the moment they stop speaking, to the moment they hear the first
-> syllable of the reply.**
+---
 
-Everything else is diagnostic detail. Measure the felt number first, then break
-it down when it is too high.
+## 1. Anatomy of a sub-second voice turn
+
+True **Voice-to-Voice Latency** is the elapsed time from the **last millisecond of user speech** (`speech_end`) to the **first byte of model audio arriving at the client** (`first_audio_byte`).
 
 <LatencyWaterfall />
 
-## What to measure
+| Stage | Typical Duration | What Happens | How to Optimize |
+| :--- | :--- | :--- | :--- |
+| **1. Network Transport (Client → Backend → Vertex)** | `30–60ms` | 20ms–40ms PCM audio frames traverse WebRTC/WebSocket to the regional endpoint. | Co-locate your Cloud Run / GKE media gateway in `us-central1` alongside the Vertex AI endpoint; use WebRTC (UDP) for the client leg. |
+| **2. VAD Silence Duration (`silenceDurationMs`)** | `300–500ms` | The server waits after the user stops speaking to confirm the turn is finished. | Tune `silenceDurationMs` down from `500ms` to `350ms` for snappy transactional bots. |
+| **3. Model Time-to-First-Audio-Byte (TTFAB)** | `220–350ms` | Gemini Live processes the active context window and synthesizes the first 24kHz PCM chunk. | Keep active context under 5,000 tokens using [SlidingWindow compression](/gemini_live_pipecat/optimization/#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) and modular prompt cards. |
 
-| Metric | Definition | Applies to |
-| --- | --- | --- |
-| **Live TTFB** | End of user speech → first audio chunk received | Native audio |
-| **STT latency** | End of user speech → finalized transcript | Cascade |
-| **LLM TTFT** | Transcript submitted → first generated token | Cascade |
-| **TTS latency** | First token → first synthesized audio chunk | Cascade |
+:::tip[Separating VAD wait time from model inference time]
+When logging latency in production, always record **Total Turn Latency** (`speech_end → first_audio_byte`) alongside **Model Inference Latency** (`vad_end_of_speech → first_audio_byte`). Otherwise, a deliberate `600ms` `silenceDurationMs` setting will look like a model slowdown on your dashboards.
+:::
 
-<Aside type="caution" title="Never mix the two label sets">
-A native Live session has **no STT or TTS stage**. Showing "STT: 0 ms" for a
-native session is a category error that leads to misleading dashboards. Bind labels to the pipeline type explicitly:
+---
 
-```javascript
-const isCascade = connectedBotType === 'stt-llm-tts';
-// Native  →  "⚡ Live TTFB: 640ms"
-// Cascade →  "STT: 210ms | ⚡ LLM TTFB: 380ms | TTS: 190ms"
-```
-</Aside>
+## 2. Reading `usageMetadata` on every turn
 
-## First-packet TTFB for native audio
-
-Whichever arrives first (a transcription fragment or an audio chunk) stops the clock. Latch it once per turn:
+At the end of every model turn (alongside `turnComplete`), the server emits a `usageMetadata` payload breaking down exact token consumption by modality:
 
 ```python
-if self._current_turn_ttft is None and self._ttfb_start is not None:
-    self._current_turn_ttft = time.time() - self._ttfb_start
-    self._ttfb_start = None          # latch: first packet only
+async for response in session.receive():
+    if response.usage_metadata:
+        usage = response.usage_metadata
+        print(f"Turn total tokens: {usage.total_token_count}")
+        print(f"Prompt tokens:     {usage.prompt_token_count}")
+        print(f"Response tokens:   {usage.response_token_count}")
+
+        # Inspect modality breakdown (TEXT vs AUDIO vs VIDEO)
+        for detail in usage.prompt_tokens_details or []:
+            print(f"  Input {detail.modality}: {detail.token_count} tok")
+        for detail in usage.response_tokens_details or []:
+            print(f"  Output {detail.modality}: {detail.token_count} tok")
 ```
 
-Start `_ttfb_start` when the server signals end of user speech, not when you
-finish sending audio. Those differ by however deep your input buffer is.
+### What to alert on in production
+1. **Monotonically rising `Input AUDIO` tokens per turn**: Indicates that `contextWindowCompression` is missing or `trigger_tokens` is set too high, causing the [Carried Audio Tax](/gemini_live_pipecat/pricing/#2-the-multi-turn-carried-audio-tax-quadratic-growth).
+2. **High `Input TEXT` tokens on Turn 1 (>1,500 tokens)**: Indicates an oversized static system prompt or bloated MCP/function tool schemas.
 
-<Aside type="note" title="Client time is not server time">
-The number above is *client-observed*: from end of user speech to the first packet received. It is not the same as server time-to-first-byte, which excludes the
-network path back to you. Both are valid; just label every metric with which one
-it is, or you will compare numbers that never measured the same thing.
-</Aside>
+---
 
-## The 2 ms trap
+## 3. OpenTelemetry per-turn span instrumentation
 
-This mistake produces artificially low numbers and is easy to overlook.
-
-<Aside type="danger" title="Do not measure STT latency from the last audio frame">
-Audio frames flow continuously, roughly every 20 ms, **including during
-silence**. So `now - last_audio_frame_time` is always a tiny number. You will see
-~2 ms STT latency, conclude your pipeline is extraordinary, and ship a metric
-that measures nothing but your frame interval.
-</Aside>
-
-The transcript result tells you when speech *actually* ended, as an offset from
-the start of the stream. Use that:
-
-```text
-STT latency = now − (stream_start_wall_time + result_end_offset)
-```
+Emit one OpenTelemetry child span per conversational turn (`gemini_live.turn`) attached to the parent call trace:
 
 ```python
-class CustomGoogleSTTService(GoogleSTTService):
-    async def _request_generator(self):
-        self._stream_start_wall_time = time.time()   # anchor the stream
-        async for req in super()._request_generator():
-            yield req
+import time
+from opentelemetry import trace
 
-    async def _process_responses(self, streaming_recognize):
-        async for response in streaming_recognize:
-            for result in response.results:
-                if not result.is_final:
-                    continue
+tracer = trace.get_tracer("gemini.live.voice")
 
-                stt_latency = None
-                offset = getattr(result, "result_end_offset", None)
-                if offset is not None and self._stream_start_wall_time:
-                    # Speech v2 returns a native timedelta, NOT a protobuf
-                    # Duration (there is no .nanos attribute here).
-                    secs = offset.total_seconds() if hasattr(offset, "total_seconds") else float(offset)
-                    speech_ended_wall = self._stream_start_wall_time + secs
-                    elapsed = time.time() - speech_ended_wall
+class TurnTelemetryTracker:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.turn_index = 0
+        self.user_speech_ended_at: float | None = None
+        self.first_audio_received: bool = False
 
-                    # Sanity window: reject idle-stream and clock-skew garbage.
-                    if 0.05 <= elapsed <= 15.0:
-                        stt_latency = elapsed
+    def mark_user_speech_end(self):
+        self.user_speech_ended_at = time.monotonic()
+        self.first_audio_received = False
 
-                if stt_latency is not None:
-                    await self.emit_metric("stt_latency", stt_latency)
+    def on_first_model_audio_chunk(self):
+        if not self.first_audio_received and self.user_speech_ended_at:
+            self.first_audio_received = True
+            ttfab_ms = (time.monotonic() - self.user_speech_ended_at) * 1000
+            return round(ttfab_ms, 1)
+        return None
+
+    def record_turn_metrics(self, usage_metadata, ttfab_ms: float | None):
+        self.turn_index += 1
+        with tracer.start_as_current_span("gemini_live.turn") as span:
+            span.set_attribute("session.id", self.session_id)
+            span.set_attribute("turn.index", self.turn_index)
+            if ttfab_ms is not None:
+                span.set_attribute("turn.ttfab_ms", ttfab_ms)
+            if usage_metadata:
+                span.set_attribute("turn.prompt_tokens", usage_metadata.prompt_token_count or 0)
+                span.set_attribute("turn.response_tokens", usage_metadata.response_token_count or 0)
 ```
-
-<Aside type="note" title="SDK gotcha">
-In the Google Cloud Speech v2 Python SDK, `result_end_offset` is a native
-`datetime.timedelta`. Code written against the protobuf `Duration` API throws or silently fails if accessing `.seconds` and `.nanos`. Call
-`.total_seconds()`.
-</Aside>
-
-## Guard every timer
-
-Real-world streams produce absurd values. Two guards remove nearly all of them:
-
-- **Sanity window.** Reject anything outside roughly `0.05 s – 15 s`. Below that
-  is a measurement artifact; above it is an idle timer that was never reset.
-- **Reset on connect.** `resetMetrics()` must purge every latency buffer when a
-  session starts. Stale values from the previous call are worse than no values.
-
-## Bind metrics to the right turn
-
-Latency events often arrive **before** the UI bubble they describe exists. Attach them naively and each number lands on the previous turn, causing an off-by-one error that makes dashboards inaccurate.
-
-Buffer early arrivals and bind at creation time:
-
-```javascript
-let pendingLLMLatency = null;
-
-function onMetric(type, value) {
-  if (type === 'llm_ttfb') pendingLLMLatency = value;   // park it
-}
-
-function createBotBubble() {
-  const bubble = renderBubble();
-  if (pendingLLMLatency !== null) {
-    bubble.latency = pendingLLMLatency;                  // bind, then clear
-    pendingLLMLatency = null;
-  }
-  return bubble;
-}
-```
-
-## A zero-disk diagnostic buffer
-
-Full-session logs are useless mid-incident. Keep the **last ~1500 events** in an
-in-memory ring buffer and expose it:
-
-```python
-from collections import deque
-diagnostic_buffer = deque(maxlen=1500)   # bounded: never touches disk
-```
-
-- `GET /api/logs`: Read recent events from the in-memory buffer.
-- `POST /api/logs/clear`: Reset the buffer between runs.
-- Poll every ~1.5 s from a debug pane.
-
-### Log turns, not tokens
-
-Streaming produces one event per fragment. Logging each one buries the signal.
-
-- **User speech:** flush a line on end-of-sentence punctuation (`.`, `?`, `!`,
-  `।`) or on VAD stop.
-- **Model speech:** accumulate into a turn buffer; flush on `turnComplete` or
-  `interrupted`.
-
-That way one conversational turn produces one log line, keeping incident logs clear and readable.
-
-## Watch in production
-
-- **First-audio latency p50 and p95.** The average hides the calls that hurt.
-- **Interruption effectiveness.** Did queued audio really stop on `interrupted`?
-- **Reconnect frequency.** Beyond the expected 10–15 minute rotation, rising
-  reconnects mean network or config trouble.
-- **Tool latency.** Slow tools are the usual cause of dead air.
-- **`usageMetadata` per turn.** Token and duration accounting: essential for tracking token cost and spotting context growth.

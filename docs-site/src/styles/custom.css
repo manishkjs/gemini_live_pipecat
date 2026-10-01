@@ -1,17 +1,341 @@
-/* Brand accent tuned toward Google blue. */
+/* ==========================================================================
+   Gemini Live for Developers, Design System & Editorial Theme
+   Warm Paper-Cream Light Mode (#FAF7F0) + Deep Slate Dark Mode (#0E131B)
+   ========================================================================== */
+
 :root {
-  --sl-color-accent-low: #0b2545;
-  --sl-color-accent: #1a73e8;
+  /* Typography & Reading Measure */
+  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sl-content-width: 48rem;
+  --sl-text-h1: clamp(1.85rem, 2.8vw, 2.45rem);
+  --sl-text-h2: clamp(1.38rem, 2vw, 1.7rem);
+  --sl-text-h3: clamp(1.12rem, 1.4vw, 1.3rem);
+
+  /* Dark Theme Surface Hierarchy (Default) */
+  --sl-color-bg: #0e131b;
+  --sl-color-bg-nav: rgba(14, 19, 27, 0.86);
+  --sl-color-bg-sidebar: #111722;
+  --sl-color-bg-inline-code: rgba(66, 133, 244, 0.14);
+  --sl-color-hairline: #1f2937;
+  --sl-color-hairline-light: #263244;
+  --sl-color-hairline-shade: #151c27;
+
+  /* Brand Accent (Google Blue) */
+  --sl-color-accent-low: #102a4c;
+  --sl-color-accent: #4285f4;
   --sl-color-accent-high: #a8c7fa;
+
+  /* Gray Scale (Dark) */
+  --sl-color-white: #f8fafc;
+  --sl-color-gray-1: #eef2f6;
+  --sl-color-gray-2: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #64748b;
+  --sl-color-gray-5: #263244;
+  --sl-color-gray-6: #151d2a;
+  --sl-color-black: #0a0e14;
+
+  /* Shared Semantic Tokens for Diagrams & Interactive Calculators */
+  --gl-card-bg: #131a26;
+  --gl-card-bg-elevated: #182130;
+  --gl-card-border: #263244;
+  --gl-track-bg: #1b2434;
+  --gl-track-border: #2e3b52;
+  --gl-text-primary: #f8fafc;
+  --gl-text-secondary: #cbd5e1;
+  --gl-text-muted: #94a3b8;
+  --gl-blue-text: #8ab4f8;
+  --gl-blue-bg: rgba(66, 133, 244, 0.12);
+  --gl-blue-border: rgba(66, 133, 244, 0.36);
+  --gl-red-text: #f28b82;
+  --gl-red-bg: rgba(234, 67, 53, 0.11);
+  --gl-red-border: rgba(234, 67, 53, 0.36);
+  --gl-green-text: #81c995;
+  --gl-green-bg: rgba(52, 168, 83, 0.12);
+  --gl-green-border: rgba(52, 168, 83, 0.38);
+  --gl-amber-text: #fdd663;
+  --gl-amber-bg: rgba(251, 188, 4, 0.12);
+  --gl-amber-border: rgba(251, 188, 4, 0.38);
+  --gl-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.35);
 }
 
 :root[data-theme='light'] {
+  /* Warm Paper-Cream Light Mode (#FAF7F0) with Deep Forest/Slate Ink */
+  --sl-color-bg: #faf7f0;
+  --sl-color-bg-nav: rgba(250, 247, 240, 0.9);
+  --sl-color-bg-sidebar: #f3efe6;
+  --sl-color-bg-inline-code: #ebe5d8;
+  --sl-color-hairline: #e2dccf;
+  --sl-color-hairline-light: #e8e2d5;
+  --sl-color-hairline-shade: #d8d0c1;
+
   --sl-color-accent-low: #d3e3fd;
   --sl-color-accent: #1a73e8;
   --sl-color-accent-high: #0b57d0;
+
+  --sl-color-white: #1c242b;
+  --sl-color-gray-1: #28323c;
+  --sl-color-gray-2: #3b4652;
+  --sl-color-gray-3: #576371;
+  --sl-color-gray-4: #758292;
+  --sl-color-gray-5: #dcd5c7;
+  --sl-color-gray-6: #f2ede2;
+  --sl-color-black: #ffffff;
+
+  /* Shared Semantic Tokens (Light Mode, High WCAG Contrast) */
+  --gl-card-bg: #f4efe4;
+  --gl-card-bg-elevated: #ffffff;
+  --gl-card-border: #dcd5c7;
+  --gl-track-bg: #ebe5d8;
+  --gl-track-border: #d0c8b8;
+  --gl-text-primary: #1c242b;
+  --gl-text-secondary: #333e49;
+  --gl-text-muted: #576371;
+  --gl-blue-text: #0b57d0;
+  --gl-blue-bg: rgba(26, 115, 232, 0.09);
+  --gl-blue-border: rgba(26, 115, 232, 0.32);
+  --gl-red-text: #b3261e;
+  --gl-red-bg: rgba(217, 48, 37, 0.08);
+  --gl-red-border: rgba(217, 48, 37, 0.32);
+  --gl-green-text: #137333;
+  --gl-green-bg: rgba(30, 142, 62, 0.09);
+  --gl-green-border: rgba(30, 142, 62, 0.34);
+  --gl-amber-text: #b06000;
+  --gl-amber-bg: rgba(249, 171, 0, 0.12);
+  --gl-amber-border: rgba(249, 171, 0, 0.38);
+  --gl-shadow: 0 8px 24px -6px rgba(28, 36, 43, 0.08);
 }
 
-/* Draggable / Resizable Left Sidebar Divider */
+/* ==========================================================================
+   1. Google 4-Color Top Accent Bar & Glassmorphic Header
+   ========================================================================== */
+header.header {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+header.header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    #4285f4 0%,
+    #4285f4 25%,
+    #ea4335 25%,
+    #ea4335 50%,
+    #fbbc04 50%,
+    #fbbc04 75%,
+    #34a853 75%,
+    #34a853 100%
+  );
+  z-index: 20;
+}
+
+/* ==========================================================================
+   2. Editorial Typography & Prose Rhythm
+   ========================================================================== */
+.sl-markdown-content {
+  font-size: 1.0125rem;
+  line-height: 1.72;
+  letter-spacing: -0.006em;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4 {
+  letter-spacing: -0.022em;
+  font-weight: 700;
+}
+
+.sl-markdown-content h2 {
+  margin-top: 2.6rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.sl-markdown-content p,
+.sl-markdown-content li {
+  color: var(--sl-color-gray-1);
+}
+
+.sl-markdown-content :not(pre) > code {
+  font-size: 0.875em;
+  font-weight: 500;
+  padding: 0.15em 0.42em;
+  border-radius: 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
+  background: var(--sl-color-bg-inline-code);
+  color: var(--sl-color-accent-high);
+}
+
+/* ==========================================================================
+   3. High-Craft Tables (Rounded Container, Sticky Headers, Tabular Numbers)
+   ========================================================================== */
+.sl-markdown-content table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 1.5rem 0;
+  border: 1px solid var(--gl-card-border);
+  border-radius: 0.75rem;
+  background: var(--gl-card-bg);
+  box-shadow: var(--gl-shadow);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+}
+
+.sl-markdown-content th {
+  background: color-mix(in srgb, var(--sl-color-accent) 9%, var(--gl-card-bg));
+  color: var(--gl-text-primary);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--gl-card-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sl-markdown-content td {
+  padding: 0.72rem 1rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--gl-card-border) 60%, transparent);
+  color: var(--gl-text-secondary);
+  vertical-align: top;
+}
+
+.sl-markdown-content tr:last-child td {
+  border-bottom: none;
+}
+
+.sl-markdown-content tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--sl-color-white) 2%, transparent);
+}
+
+.sl-markdown-content tbody tr:hover td {
+  background: color-mix(in srgb, var(--sl-color-accent) 6%, transparent);
+}
+
+/* ==========================================================================
+   4. Hero Card, Badges & Callouts (Used on Skill Reference & Landing Cards)
+   ========================================================================== */
+.hero-card {
+  padding: 1.5rem 1.75rem;
+  margin: 1.25rem 0 2rem;
+  border-radius: 0.875rem;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--sl-color-accent) 10%, var(--gl-card-bg)) 0%,
+    var(--gl-card-bg) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, var(--gl-card-border));
+  box-shadow: var(--gl-shadow);
+}
+
+.hero-card h3 {
+  margin-top: 0.65rem !important;
+  margin-bottom: 0.5rem !important;
+  font-size: 1.28rem;
+  color: var(--gl-text-primary);
+}
+
+.hero-card p {
+  margin-top: 0.4rem !important;
+  font-size: 0.95rem;
+  color: var(--gl-text-secondary);
+}
+
+.badge {
+  display: inline-block;
+  font-family: var(--sl-font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  margin-right: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+.badge-blue {
+  background: var(--gl-blue-bg);
+  color: var(--gl-blue-text);
+  border: 1px solid var(--gl-blue-border);
+}
+
+.badge-green {
+  background: var(--gl-green-bg);
+  color: var(--gl-green-text);
+  border: 1px solid var(--gl-green-border);
+}
+
+.badge-purple {
+  background: var(--gl-amber-bg);
+  color: var(--gl-amber-text);
+  border: 1px solid var(--gl-amber-border);
+}
+
+/* Starlight LinkCard & Card Hover Elevation */
+.sl-link-card,
+.card {
+  border-radius: 0.75rem !important;
+  border: 1px solid var(--gl-card-border) !important;
+  background: var(--gl-card-bg) !important;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.sl-link-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--sl-color-accent) !important;
+  box-shadow: var(--gl-shadow);
+}
+
+/* Starlight Asides / Callouts */
+.starlight-aside {
+  border-radius: 0.65rem;
+  border-left-width: 4px;
+  box-shadow: 0 2px 10px -4px rgba(0, 0, 0, 0.12);
+}
+
+/* ==========================================================================
+   5. Unified Diagram Container & Pause-on-Hover
+   ========================================================================== */
+figure.diagram {
+  margin: 1.75rem 0;
+  padding: 1.25rem 1.25rem 0.9rem;
+  border-radius: 0.875rem;
+  background: var(--gl-card-bg);
+  border: 1px solid var(--gl-card-border);
+  box-shadow: var(--gl-shadow);
+}
+
+figure.diagram:hover svg *,
+figure.diagram-wrapper:hover svg *,
+figure.snowball-wrapper:hover svg *,
+figure.timeline-wrapper:hover svg * {
+  animation-play-state: paused !important;
+}
+
+/* ==========================================================================
+   6. Left Sidebar Navigation Polish & Draggable Resizer
+   ========================================================================== */
+.sidebar-content a[aria-current='page'] {
+  background-color: color-mix(in srgb, var(--sl-color-accent) 16%, transparent) !important;
+  color: var(--sl-color-accent-high) !important;
+  border-inline-start: 3px solid var(--sl-color-accent);
+  font-weight: 600;
+}
+
 @media (min-width: 50rem) {
   html[data-has-sidebar] {
     --sl-content-inline-start: var(--sl-left-sidebar-width, var(--sl-sidebar-width)) !important;

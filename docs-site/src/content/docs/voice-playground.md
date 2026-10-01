@@ -1,55 +1,74 @@
 ---
-title: Voice Studio
-description: Talk to a live Gemini agent in your browser and compare native vs cascade before you write any code.
+title: Interactive Voice Studio
+description: Audition Gemini Live HD voices, test VAD sensitivity, and inspect real-time token telemetry in the browser.
 ---
 
-**Voice Studio** is the companion demo in this repo. Talk to a live agent in the
-browser and hear the two speech architectures side by side, so you can make the
-native-vs-cascade decision with your ears before you commit to code.
+The **Gemini Voice Studio** lets you audition prebuilt HD voices (`Puck`, `Charon`, `Kore`, `Fenrir`, `Aoede`, and 25+ regional voices), experiment with system instructions, and watch per-turn latency and token telemetry in real time.
 
-## Two engines, one UI
+<div class="hero-card" style="display: flex; flex-direction: column; gap: 1rem; margin: 1.5rem 0;">
+  <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+    <div>
+      <span class="badge badge-blue">Interactive Sandbox</span>
+      <h3 style="margin: 0.5rem 0 0.25rem 0;">Launch Gemini Voice Studio</h3>
+      <p style="margin: 0; font-size: 0.95rem; opacity: 0.85;">
+        Test live microphone streaming, barge-in interruption, custom system prompts, and voice selection.
+      </p>
+    </div>
+    <a href="https://aistudio.google.com/live" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 0.5rem; background: var(--sl-color-accent); color: #ffffff; font-weight: 600; padding: 0.65rem 1.25rem; border-radius: 8px; text-decoration: none;">
+      Open in Google AI Studio ↗
+    </a>
+  </div>
+</div>
 
-| Engine | Pipeline | When to use |
-| --- | --- | --- |
-| **Gemini Live** | Native speech-to-speech (one model) | Lowest latency, most natural prosody and interruptions |
-| **Cascade** | Speech-to-Text → LLM → Text-to-Speech | Maximum control over each stage; mix and match models |
+---
 
-For the full tradeoff, see
-[Choosing a framework → Cascade or native?](/gemini_live_pipecat/frameworks/#cascade-or-native).
+## 1. Choosing the right prebuilt HD voice
 
-## Run it locally
+Configure the model's voice in `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`:
 
-```bash
-cd demos/voice-studio
-npm ci
-npm run dev
+| Voice Name | Vocal Profile & Cadence | Recommended Use Cases |
+| :--- | :--- | :--- |
+| **`Aoede`** | Warm, composed, articulate mid-register | Enterprise concierge, healthcare intake, wealth management, executive assistants. |
+| **`Kore`** | Crisp, upbeat, clear diction | Retail customer support, order tracking, onboarding walkthroughs, travel booking. |
+| **`Puck`** | Energetic, conversational, fast-paced | Consumer companions, interactive gaming, brainstorming, casual tutoring. |
+| **`Charon`** | Calm, measured, authoritative low-register | Technical troubleshooting, IT helpdesk, financial disclosures, step-by-step guidance. |
+| **`Fenrir`** | Deep, resonant, steady | Storytelling, coaching, hardware/automotive voice interfaces. |
+
+```python
+from google.genai import types
+
+config = types.LiveConnectConfig(
+    response_modalities=[types.Modality.AUDIO],
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                voice_name="Aoede"
+            )
+        )
+    ),
+)
 ```
 
-Open the URL Vite prints. Persona previews run immediately with browser speech
-synthesis with no credentials needed. For real Gemini audio, point **Settings** at a
-running backend (see [Deployment](/gemini_live_pipecat/deployment/)).
+---
 
-## Personas
+## 2. Running the local reference Voice Studio (`gemini_live_pipecat`)
 
-Voice Studio ships with ready-made agent personas so you can hear how system
-instructions shape behavior, tone, and language. Pick one, press start, and talk, or choose **Custom Agent** to paste custom instructions.
+To run the full open-source Pipecat + Gemini Live reference studio locally with live token accounting and tool-call inspection:
 
-## Model choices
+```bash
+git clone https://github.com/manishkjs/gemini_live_pipecat.git
+cd gemini_live_pipecat
 
-- **Native audio / Live:** `gemini-3.1-flash-live-preview` (and `gemini-3.5-flash-live-preview`) handling speech-to-speech directly.
-- **Cascade STT:** `gemini-3.5-transcribe-live` and Chirp 2 streaming transcription models.
-- **Cascade LLM:** `gemini-3.5-flash-lite` or `gemini-3.7-flash` depending on latency and reasoning budget.
-- **Cascade TTS:** `gemini-3.1-flash-tts-preview` (or `gemini-2.5-pro-preview-tts`) native Gemini speech synthesis.
+# Configure your project or API key
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+export GOOGLE_GENAI_USE_VERTEXAI="TRUE"
 
-:::note
-Previews that use browser speech synthesis are clearly labeled and do **not**
-represent Gemini's real audio quality or latency. Use a connected backend for an
-accurate impression.
-:::
+# Start the backend and web UI
+uv run python server.py
+```
 
-## Then build your own
-
-Voice Studio is a reference, not a black box. When you are ready,
-[Getting started](/gemini_live_pipecat/getting-started/) takes you from zero to a
-working voice turn, and [Architecture](/gemini_live_pipecat/architecture/) explains
-the model it is built on.
+### What to test in your first 2 minutes
+1. **Barge-in latency**: Interrupt the model mid-sentence with *"Hold on, change the date to Friday"* and verify that playback stops within `<100ms`.
+2. **VAD sensitivity**: Pause for half a second mid-thought (for example, reciting a 10-digit phone number in groups of three) and tune `silenceDurationMs` until the model waits naturally for the full number.
+3. **Per-turn `usageMetadata` inspector**: Watch the `Input AUDIO` token counter across Turns 1 to 10 with `contextWindowCompression` toggled on vs. off.

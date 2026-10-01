@@ -1,114 +1,68 @@
 ---
-title: Deployment
-description: Ship a Gemini Live voice backend to Cloud Run with HTTPS, WSS, and CORS.
+title: Cloud Run & GKE Production Deployment
+description: Deploying stateful, long-lived Gemini Live WebSocket servers on Google Cloud Run and GKE.
 ---
 
-A voice backend is a **long-lived WebSocket** server. That one fact drives most
-deployment decisions.
+Deploying a real-time bidirectional voice server is fundamentally different from deploying stateless REST APIs. Each active voice call holds an open WebSocket connection, continuous audio buffers, and asyncio tasks for 5 to 60 minutes.
 
-## Containerize
+---
 
-Package your backend as a container that listens on a single port and speaks
-WebSocket. Keep the image lean: install only what the server needs.
+## 1. Cloud Run deployment checklist for stateful WebSockets
 
-## Deploy to Cloud Run
+Standard Cloud Run defaults (like CPU throttling between requests and 300-second request timeouts) will break live voice calls unless you override them explicitly:
+
+| Setting | Default | Required for Gemini Live | Why |
+| :--- | :--- | :--- | :--- |
+| **CPU Allocation** | CPU only allocated during request processing | **`--no-cpu-throttling` (CPU always allocated)** | Ensures background asyncio tasks, tool callbacks, and heartbeats never freeze between audio frames. |
+| **Request Timeout** | `300s` (5 minutes) | **`--timeout=3600`** (60 minutes) | Prevents Cloud Run's front-end load balancer from severing active calls at the 5-minute mark. |
+| **Session Affinity** | Disabled | **`--session-affinity`** | Routes reconnect attempts (`sessionResumption`) back to the same container instance holding in-memory call state. |
+| **Concurrency** | `80` requests/instance | **`--concurrency=15` to `25`** (for DSP/Pipecat) | Real-time audio resampling and VAD per call consume continuous CPU/RAM; capping concurrency prevents audio jitter under load. |
+| **Min Instances** | `0` (scale to zero) | **`--min-instances=1`** (or higher) | Eliminates 2–4 second cold-start delays when an inbound phone call rings. |
+
+### Reference `gcloud run deploy` command
 
 ```bash
-gcloud run deploy voice-backend \
+gcloud run deploy gemini-live-voice-gateway \
   --source . \
   --region us-central1 \
-  --allow-unauthenticated \
-  --timeout 3600 \
   --no-cpu-throttling \
+  --timeout 3600 \
   --session-affinity \
-  --cpu 2 --memory 2Gi
+  --concurrency 20 \
+  --cpu 2 \
+  --memory 2Gi \
+  --min-instances 1 \
+  --max-instances 50 \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=your-project-id,GOOGLE_CLOUD_LOCATION=us-central1,GOOGLE_GENAI_USE_VERTEXAI=TRUE"
 ```
 
-What matters for real-time voice:
+---
 
-- **`--timeout 3600`**: A voice session is one long request. The default 5-minute
-  timeout will cut calls off mid-conversation.
-- **`--no-cpu-throttling`**: Cloud Run throttles CPU to near zero outside active HTTP
-  request cycles by default. Without this flag, background asyncio tasks, WebSocket
-  heartbeats, and audio frame buffers freeze mid-call.
-- **`--session-affinity`**: Keep a client pinned to the same container instance for the
-  life of the WebSocket so session resumption reconnects hit the warm process holding
-  your in-memory state.
-- **CPU and memory**: Audio processing is CPU-bound; provision accordingly and
-  load-test before launch.
-- **Concurrency**: Each active call consumes an instance slot. Size max instances
-  to your expected concurrent-call peak.
+## 2. Regional co-location (`us-central1`)
 
-## When Cloud Run is not enough
+Every millisecond of network distance between your media gateway and the Vertex AI Gemini Live endpoint adds directly to turn latency:
+- **Always deploy your Cloud Run / GKE backend in `us-central1`** when connecting to the `us-central1` Vertex AI Live API endpoint.
+- Use **WebRTC edge relays** (such as Daily or LiveKit global PoPs) or **Twilio Media Streams regional edges** to terminate the caller's last-mile audio close to the user, then traverse Google's backbone to `us-central1`.
 
-Cloud Run is the fastest way to ship, and it is genuinely fine for many voice
-workloads. But a voice session is **stateful**, and three Cloud Run behaviors
-work against that:
+---
 
-- **Scale-to-zero cold starts** add seconds to the first call after idle.
-- **Reconnects can land on a different instance.** Session affinity is
-  best-effort; if in-memory session state does not follow the socket, the
-  reconnect resumes into an empty context.
-- **Request timeouts** cap session length even at the maximum.
+## 3. Graceful container draining (`SIGTERM`)
 
-:::tip[Move to GKE when reconnect correctness matters]
-Deploy on GKE with `sessionAffinity: ClientIP` to pin a client to a specific pod
-for the life of the WebSocket, and scale with an HPA driven by **active socket
-count** rather than CPU. A voice pod can be CPU-idle while saturated with calls.
-:::
+When you deploy a new revision or Cloud Run scales down an instance, Google Cloud sends a `SIGTERM` signal and gives the container up to **10 seconds** before `SIGKILL`.
 
-The durable fix, on either platform, is to **stop keeping session state only in
-process memory**. Persist the resumption handle and conversation state in Redis
-or a database keyed by the stable session ID, and any instance can pick up a
-reconnect.
+For zero-downtime deployments:
+1. Catch `SIGTERM` in your FastAPI / asyncio server.
+2. Mark readiness probes as unhealthy so no *new* calls are routed to the draining instance.
+3. Proactively trigger a clean session checkpoint (`sessionResumptionUpdate.newHandle`) or persist the active `FactStore` to Redis so reconnecting clients resume without losing context.
 
-## Sizing
+---
 
-Each active call occupies a slot for its entire duration. This is not
-request/response traffic where concurrency multiplies throughput.
+## 4. IAM permissions for Vertex AI Live API
 
-```text
-instances_needed ≈ peak_concurrent_calls / concurrency_per_instance
-```
-
-Set `--concurrency` to what one instance can genuinely carry (audio processing is
-CPU-bound; measure it), keep `--min-instances 1` to avoid cold starts on the
-first call, and load-test at your real peak before launch.
-
-## HTTPS and WSS
-
-A browser on an HTTPS page can only open a **secure** WebSocket (`wss://`). Serve
-the backend over HTTPS so it returns `wss://` URLs. Cloud Run gives you a managed
-HTTPS endpoint automatically.
-
-## CORS
-
-If your UI is hosted on a different origin than the backend (it usually is),
-configure the backend to **allow that origin**. A missing CORS allowance is the
-most common "it works locally but not in production" bug.
-
-## Credentials
-
-**On Vertex AI (recommended), you ship no API key at all.** Cloud Run and GKE
-workloads authenticate as their **service account** through Application Default
-Credentials: Grant that account `roles/aiplatform.user` and the SDK finds the
-credentials automatically. Nothing to mount, nothing to leak.
+Your Cloud Run runtime service account needs the **Vertex AI User** role (`roles/aiplatform.user`) to open `BidiGenerateContent` WebSocket sessions:
 
 ```bash
-gcloud run deploy voice-backend \
-  --service-account="voice-backend@$PROJECT_ID.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding your-project-id \
+  --member="serviceAccount:your-runtime-sa@your-project-id.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
 ```
-
-For **Google AI Studio in production**, pass your API key via Secret Manager rather
-than baking it into the container image:
-
-```bash
-gcloud run deploy voice-backend \
-  --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest"
-```
-
-## Keep the docs out of the app image
-
-This documentation site is deployed **separately** to GitHub Pages and is
-excluded from the application container and Cloud Build context. Your runtime
-image should contain only the server (and, if applicable, the built client).
