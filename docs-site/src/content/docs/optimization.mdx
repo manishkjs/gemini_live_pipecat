@@ -18,7 +18,7 @@ By combining three complementary patterns across the call lifecycle, you can fla
 
 ## Pillar 1: Native sliding-window compression (The 15-minute ceiling breaker)
 
-By default, an uncompressed audio session accumulates ~3,167 audio tokens per minute and hits the hard uncompressed-audio session ceiling at **15 minutes**. Worse, by Minute 3 (Turn 19), every new turn is re-reading 10,000+ historical audio tokens.
+By default, an uncompressed audio session accumulates ~1,840 carried tokens per minute at 6 turns/min (~235 audio tokens of caller speech and played model audio plus ~72 transcript text tokens per turn) and hits the hard uncompressed-audio session ceiling at **15 minutes**. Worse, by Minute 6 (Turn 37), every new turn is re-reading 11,000+ historical tokens.
 
 Adding `contextWindowCompression` with a `SlidingWindow` to your `LiveConnectConfig` instructs the Gemini Live server to automatically truncate the oldest turns once the context crosses your `trigger_tokens` threshold, while always preserving your `system_instruction`.
 
@@ -43,7 +43,7 @@ config = types.LiveConnectConfig(
 ```
 
 ### Choosing your `trigger_tokens` and `target_tokens`
-- **High-efficiency telephony default (`5,000 / 3,500`)**: Set `trigger_tokens=5000`, `target_tokens=3500` to flush stale `$3.00/1M` caller audio early and keep Time-to-First-Audio-Byte fast (keep your pinned `systemInstruction` + tool schemas under ~1,500 tokens so they fit comfortably inside the 3,500-token target window). Pair with **Pillar 3 (FactStore)** so critical details from Minute 1 survive FIFO eviction.
+- **High-efficiency telephony default (`5,000 / 3,500`)**: Set `trigger_tokens=5000`, `target_tokens=3500` to flush stale `$3.00/1M` carried audio (caller + played model speech) early and keep Time-to-First-Audio-Byte fast (keep your pinned `systemInstruction` + tool schemas under ~1,500 tokens so they fit comfortably inside the 3,500-token target window). Pair with **Pillar 3 (FactStore)** so critical details from Minute 1 survive FIFO eviction.
 - **Extended raw-context window (`16,000 / 10,000`)**: If your workflow does not maintain a client-side `FactStore` and needs 4 to 5 minutes of verbatim unpruned audio history in the window, increase `trigger_tokens=16000` and `target_tokens=10000`.
 
 ---
@@ -103,7 +103,7 @@ async def handle_advance_phase(session, tool_call, next_phase: str):
 
 ## Pillar 3: Lossless history pruning & session rotation
 
-When Pillar 1 (`SlidingWindow`) drops old audio turns at the `5,000-token` boundary, any facts spoken in Turn 1 (such as the caller's name, postal code, or stated symptom) fall out of the raw audio window. Raw audio tokens (`$3.00/1M`, ~1,668 tok/min) are **4× more expensive per token** and **6× more verbose** than a text transcript (`$0.75/1M` text input).
+When Pillar 1 (`SlidingWindow`) drops old audio turns at the `5,000-token` boundary, any facts spoken in Turn 1 (such as the caller's name, postal code, or stated symptom) fall out of the raw audio window. Carried audio tokens (`$3.00/1M`, ~1,500–1,668 tok/min) are **4× to 6× more expensive per token** and **6× more verbose** than a text transcript (`$0.50/1M` on 2.5 Native Audio, `$0.75/1M` on 3.1 Flash Live).
 
 By converting older audio turns into compact text transcripts and extracting key facts into a lightweight backend `FactStore` (**under 60 text tokens**), you can let the `5,000-token` sliding window evict stale audio while retaining **100% lossless memory** of every detail the caller shared.
 
@@ -125,7 +125,7 @@ class CallFactStore:
         }
 
     def render_context_summary(self) -> str:
-        # Compact JSON stays under 60 tokens at $0.75/1M text input
+        # Compact JSON stays under 60 tokens at $0.50-$0.75/1M text input
         return (
             "Verified facts from earlier in this call: "
             f"{json.dumps(self.facts, ensure_ascii=False)}"

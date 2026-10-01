@@ -4,7 +4,7 @@
  * Interactive Tokenomics & Cost Explorer for the dedicated /pricing-calculator/ tab.
  * Compares 3 columns side-by-side:
  *   1. Single-Pass Streaming Baseline ($0.023/min)
- *   2. Unmanaged Multi-Turn Duplex (quadratic prompt + raw caller audio history re-billing)
+ *   2. Unmanaged Multi-Turn Duplex (quadratic prompt + carried audio history re-billing)
  *   3. Optimized Gemini Live (5k token sliding window + JIT prompt cards, staying near the $0.02 to $0.03/min offshore contact-center labor target)
  */
 ---
@@ -258,11 +258,11 @@
       const baseOutCost = duration * 0.018;
       const baseStreamCost = baseInCost + baseOutCost;
 
-      // 2. Unmanaged Prompt Re-Billing ($0.75 / 1M text tokens)
+      // 2. Unmanaged Prompt Re-Billing ($0.75 / 1M text tokens on 3.1 Flash Live; $0.50 / 1M on 2.5 Native Audio)
       const unoptPromptCost = (totalTurns * promptTokens * 0.75) / 1000000;
 
       // 3. Unmanaged Conversational History Re-Billing
-      // Each prior turn adds ~235 caller audio tokens ($3.00/M) + ~72 bot text tokens ($0.75/M) = $0.000759/pair
+      // Each prior turn adds ~235 carried audio tokens (caller + played model speech, $3.00/M) + ~72 text tokens ($0.75/M) = $0.000759/pair
       const pairs = (totalTurns * (totalTurns - 1)) / 2;
       const perTurnHistoryCost = ((235 * 3.0) + (72 * 0.75)) / 1000000;
       const unoptHistoryCost = pairs * perTurnHistoryCost;

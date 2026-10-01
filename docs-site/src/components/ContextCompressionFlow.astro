@@ -6,7 +6,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = "5k context compression evicts the $3.00/1M raw caller audio cache before quadratic re-billing compounds across long calls.",
+  caption = "5k context compression evicts the $3.00/1M carried audio history (caller + played model speech) before quadratic re-billing compounds across long calls.",
 } = Astro.props;
 ---
 
@@ -14,8 +14,8 @@ const {
   <svg viewBox="0 0 840 330" role="img" aria-labelledby="ccf-title ccf-desc" class="ccf-svg">
     <title id="ccf-title">Context Window Compression: 5k Compaction vs Uncompressed</title>
     <desc id="ccf-desc">
-      A comparison between an uncompressed session where raw audio cache accumulates unchecked toward the 15-minute ceiling,
-      and 5k compression which flushes older $3.00/M raw audio tokens back to 3,500 tokens,
+      A comparison between an uncompressed session where carried audio history accumulates unchecked toward the 15-minute ceiling,
+      and 5k compression which flushes older $3.00/M carried audio tokens back to 3,500 tokens,
       halting quadratic re-billing and keeping TTFB fast.
     </desc>
 
@@ -26,7 +26,7 @@ const {
     <g class="header-group">
       <text x="36" y="44" class="main-title">Context Compression: Flushing Stale Audio History</text>
       <text x="36" y="64" class="main-subtitle">
-        Raw caller audio costs $3.00/1M tokens (~27.8 tok/s). A 5k trigger flushes stale audio early instead of compounding until the 15-minute ceiling.
+        Carried audio history (caller + played model speech) costs $3.00/1M tokens. A 5k trigger flushes stale audio early instead of compounding until the 15-minute ceiling.
       </text>
     </g>
 
@@ -42,8 +42,8 @@ const {
       <text x="224" y="133" class="block-sub">1.5k tokens</text>
 
       <rect x="268" y="98" width="338" height="44" rx="6" class="bar-audio-growing" />
-      <text x="437" y="121" class="growing-title">Accumulating Caller Audio Cache (~27.8 tok/s)</text>
-      <text x="437" y="133" class="growing-sub">Turn 1 → Turn 19: 10,900+ tokens @ $3.00/M re-billed each turn</text>
+      <text x="437" y="121" class="growing-title">Accumulating Carried Audio History ($3.00/M)</text>
+      <text x="437" y="133" class="growing-sub">Turn 1 → Turn 37: 10,900+ tokens re-billed each turn</text>
 
       <rect x="630" y="94" width="176" height="52" rx="8" class="badge-bg red-badge" />
       <text x="718" y="116" class="badge-value red-txt">12,400 TOKENS</text>

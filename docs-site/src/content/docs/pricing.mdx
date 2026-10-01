@@ -34,12 +34,12 @@ Every time a turn completes (`turnComplete`), the next turn must process:
 
 <TurnSnowballDiagram />
 
-### Modal memory asymmetry: Vertex AI vs. AI Studio
+### Bidirectional audio retention vs. lossless transcript pruning
 
-How historical turns are billed depends on how the session context retains prior audio:
+How historical turns are billed depends on how your session manages prior audio across turns:
 
-- **Raw Audio Retention (Uncompressed Vertex AI Bidi)**: When raw audio tokens remain in the active context window, every historical second of caller speech (~27.8 tok/sec) is re-billed as **Audio Input (`$3.00/1M`)** on Turn 2, Turn 3, Turn 4, and beyond. Over a 10-minute call (60 turns at 6 turns/min), an unmanaged session re-reads hundreds of thousands of historical tokens, pushing the effective cost from **$0.031/min** to **$0.178/min**.
-- **Transcript Collapse / Lossless Pruning**: When historical turns are collapsed into compact text transcripts or structured facts (via [Lossless History Pruning](/gemini_live_pipecat/optimization/#pillar-3-lossless-history-pruning--session-rotation)), historical context drops in token volume by **90%+** and shifts from the **$3.00/1M** audio tier to the **$0.75/1M** text tier.
+- **Unpruned Bidirectional Audio Retention (Default on Vertex AI & Google AI Studio)**: When raw audio tokens remain in the active context window, both **caller speech and played model audio** (~25 tok/sec; budget ~27.8 tok/sec for planning) are retained in session history and re-billed as **Audio Input (`$3.00/1M`)** on Turn 2, Turn 3, Turn 4, and beyond (unless the model turn was truncated by a caller barge-in). Over a 10-minute call (60 turns at 6 turns/min), an unmanaged session re-reads hundreds of thousands of historical tokens, pushing the effective cost from **$0.031/min** to **$0.178/min**.
+- **Transcript Collapse / Lossless Pruning**: When historical turns are collapsed into compact text transcripts or structured facts (via [Lossless History Pruning](/gemini_live_pipecat/optimization/#pillar-3-lossless-history-pruning--session-rotation)), historical context drops in token volume by **90%+** and shifts from the **$3.00/1M** audio tier to the **$0.50/1M–$0.75/1M** text tier (`$0.50/1M` on 2.5 Native Audio, `$0.75/1M` on 3.1 Flash Live).
 
 ---
 
@@ -52,14 +52,14 @@ In the Live WebSocket pipeline, **streaming audio turns do not receive implicit 
 :::
 
 Because there is no automatic cache discount on live WebSocket turns:
-- A bloated **4,500-token system prompt + tool schema** costs `$0.003375` *per turn*. Across an 18-turn (3-minute) call, you pay for 81,000 text input tokens (`$0.061`) just to re-read static instructions.
-- Keeping your active prompt + tool definitions averaging **~500 tokens** via [Dynamic Prompt Cards](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) cuts prompt re-billing to `$0.007` per 3-minute call.
+- A bloated **4,500-token system prompt + tool schema** costs `$0.003375` *per turn* at the Gemini 3.1 Flash Live text rate (`$0.75/1M`; `$0.00225` per turn on 2.5 Native Audio at `$0.50/1M`). Across an 18-turn (3-minute) call, you pay for 81,000 text input tokens (`$0.061` on 3.1 Flash Live, `$0.041` on 2.5 Native Audio) just to re-read static instructions.
+- Keeping your active prompt + tool definitions averaging **~500 tokens** via [Dynamic Prompt Cards](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) cuts prompt re-billing to `$0.007` per 3-minute call on 3.1 Flash Live (`$0.0045` on 2.5 Native Audio).
 
 ---
 
 ## 4. Enterprise TCO: Optimized vs. Unoptimized vs. Offshore BPO
 
-When evaluating Gemini Live for high-volume contact centers, compare the total per-minute run rate against both unoptimized configurations (4.5k prompt, 6 turns/min, unpruned audio) and offshore contact-center labor ($0.02 to $0.03/min):
+When evaluating Gemini Live for high-volume contact centers, compare the total per-minute run rate (modelled at Gemini 3.1 Flash Live text rates) against both unoptimized configurations (4.5k prompt, 6 turns/min, unpruned audio) and offshore contact-center labor ($0.02 to $0.03/min):
 
 | Call Duration | Unmanaged Duplex Session (4.5k prompt, unpruned audio) | Optimized Live Session (JIT Cards + Audio Pruning + 5k Window) | Savings |
 | :--- | :--- | :--- | :--- |

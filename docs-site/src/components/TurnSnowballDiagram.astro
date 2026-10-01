@@ -9,7 +9,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = "Why real-world calls diverge from the $0.023/min streaming rate card: every turn completion or caller barge-in triggers a fresh inference pass that re-bills the active prompt and accumulated raw caller audio.",
+  caption = "Why real-world calls diverge from the $0.023/min streaming rate card: every turn completion or caller barge-in triggers a fresh inference pass that re-bills the active prompt and accumulated carried audio history (caller + played model speech).",
 } = Astro.props;
 ---
 
@@ -17,7 +17,7 @@ const {
   <svg viewBox="0 0 860 390" role="img" aria-labelledby="snow-title snow-desc" class="snow-svg">
     <title id="snow-title">Theoretical Single-Pass Streaming vs. Multi-Turn Duplex Compounding</title>
     <desc id="snow-desc">
-      Left panel shows Theoretical Continuous Streaming where 60 seconds of audio is billed once (~$0.023/min, 3,167 tokens). Right panel shows a Real Multi-Turn Duplex Session with 6 turns in 1 minute, where each turn re-bills the 4,500-token system prompt and accumulating $3.00/M caller audio history, compounding to 38,700 tokens/min (~12x more tokens).
+      Left panel shows Theoretical Continuous Streaming where 60 seconds of audio is billed once (~$0.023/min, 3,167 tokens). Right panel shows a Real Multi-Turn Duplex Session with 6 turns in 1 minute, where each turn re-bills the 4,500-token system prompt and accumulating $3.00/M carried audio history, compounding to ~34,800 tokens/min (~11x more tokens).
     </desc>
 
     <!-- Background Card -->
@@ -26,7 +26,7 @@ const {
     <!-- Top Header -->
     <text x="34" y="42" class="header-title">The Rate Card Gap: Single-Pass Streaming vs. Multi-Turn Duplex</text>
     <text x="34" y="62" class="header-sub">
-      Why a 60-second phone call with 6 conversational turns bills ~12&times; more tokens than 60 seconds of continuous audio.
+      Why a 60-second phone call with 6 conversational turns bills ~11&times; more tokens than 60 seconds of continuous audio.
     </text>
 
     <!-- Divider Line -->
@@ -72,7 +72,7 @@ const {
     <g class="panel-right">
       <rect x="398" y="80" width="434" height="38" rx="8" class="panel-header-red" />
       <text x="414" y="104" class="panel-title-red">2. Real Multi-Turn Duplex Session (6 Turns/Min)</text>
-      <text x="816" y="104" class="panel-badge-red" text-anchor="end">38,700 tok / min</text>
+      <text x="816" y="104" class="panel-badge-red" text-anchor="end">~34,800 tok / min</text>
 
       <!-- Y-axis grid lines -->
       <line x1="438" y1="300" x2="818" y2="300" class="grid-line" />
@@ -85,46 +85,46 @@ const {
       <text x="430" y="194" class="axis-lbl" text-anchor="end">6k</text>
       <text x="430" y="144" class="axis-lbl" text-anchor="end">9k</text>
 
-      <!-- Bars for Turns 1 to 6 -->
+      <!-- Bars for Turns 1 to 6 (4,500 + 278 + (k-1)*307 = 4.8k, 5.1k, 5.4k, 5.7k, 6.0k, 6.3k) -->
       <g class="turn-bar">
-        <rect x="454" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
-        <rect x="454" y="215" width="42" height="5" rx="2" class="bar-audio-orange" />
-        <text x="475" y="208" class="bar-val-red" text-anchor="middle">4.7k</text>
+        <rect x="454" y="218" width="42" height="82" rx="3" class="bar-prompt-red" />
+        <rect x="454" y="213" width="42" height="5" rx="2" class="bar-audio-orange" />
+        <text x="475" y="206" class="bar-val-red" text-anchor="middle">4.8k</text>
         <text x="475" y="318" class="turn-lbl" text-anchor="middle">Turn 1</text>
       </g>
 
       <g class="turn-bar">
-        <rect x="514" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
-        <rect x="514" y="204" width="42" height="16" rx="2" class="bar-audio-orange" />
-        <text x="535" y="197" class="bar-val-red" text-anchor="middle">5.4k</text>
+        <rect x="514" y="218" width="42" height="82" rx="3" class="bar-prompt-red" />
+        <rect x="514" y="207" width="42" height="11" rx="2" class="bar-audio-orange" />
+        <text x="535" y="200" class="bar-val-red" text-anchor="middle">5.1k</text>
         <text x="535" y="318" class="turn-lbl" text-anchor="middle">Turn 2</text>
       </g>
 
       <g class="turn-bar">
-        <rect x="574" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
-        <rect x="574" y="192" width="42" height="28" rx="2" class="bar-audio-orange" />
-        <text x="595" y="185" class="bar-val-red" text-anchor="middle">6.1k</text>
+        <rect x="574" y="218" width="42" height="82" rx="3" class="bar-prompt-red" />
+        <rect x="574" y="201" width="42" height="17" rx="2" class="bar-audio-orange" />
+        <text x="595" y="194" class="bar-val-red" text-anchor="middle">5.4k</text>
         <text x="595" y="318" class="turn-lbl" text-anchor="middle">Turn 3</text>
       </g>
 
       <g class="turn-bar">
-        <rect x="634" y="220" width="42" height="80" rx="3" class="bar-prompt-red pulse-bar" />
-        <rect x="634" y="179" width="42" height="41" rx="2" class="bar-audio-orange pulse-bar" />
-        <text x="655" y="172" class="bar-val-red" text-anchor="middle">6.8k</text>
+        <rect x="634" y="218" width="42" height="82" rx="3" class="bar-prompt-red pulse-bar" />
+        <rect x="634" y="196" width="42" height="22" rx="2" class="bar-audio-orange pulse-bar" />
+        <text x="655" y="189" class="bar-val-red" text-anchor="middle">5.7k</text>
         <text x="655" y="318" class="turn-lbl-alert" text-anchor="middle">Barge-In</text>
       </g>
 
       <g class="turn-bar">
-        <rect x="694" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
-        <rect x="694" y="167" width="42" height="53" rx="2" class="bar-audio-orange" />
-        <text x="715" y="160" class="bar-val-red" text-anchor="middle">7.5k</text>
+        <rect x="694" y="218" width="42" height="82" rx="3" class="bar-prompt-red" />
+        <rect x="694" y="190" width="42" height="28" rx="2" class="bar-audio-orange" />
+        <text x="715" y="183" class="bar-val-red" text-anchor="middle">6.0k</text>
         <text x="715" y="318" class="turn-lbl" text-anchor="middle">Turn 5</text>
       </g>
 
       <g class="turn-bar">
-        <rect x="754" y="220" width="42" height="80" rx="3" class="bar-prompt-red" />
-        <rect x="754" y="154" width="42" height="66" rx="2" class="bar-audio-orange" />
-        <text x="775" y="147" class="bar-val-red" text-anchor="middle">8.2k</text>
+        <rect x="754" y="218" width="42" height="82" rx="3" class="bar-prompt-red" />
+        <rect x="754" y="185" width="42" height="33" rx="2" class="bar-audio-orange" />
+        <text x="775" y="178" class="bar-val-red" text-anchor="middle">6.3k</text>
         <text x="775" y="318" class="turn-lbl" text-anchor="middle">Turn 6</text>
       </g>
 

@@ -95,8 +95,8 @@ A Live session returns **either audio or text** in `generationConfig.responseMod
 | Option | Why it matters |
 | --- | --- |
 | **Media resolution** | Lowering resolution for video or screenshare frames reduces input token consumption. |
-| **Context window compression** | Firing sliding-window eviction at `5,000` tokens (`targetTokens: 3500`) flushes stale caller audio (`$3.00/1M` tokens) before it compounds across turns. |
-| **Thinking level (`minimal`)** | Setting `thinkingConfig.thinkingLevel: "minimal"` minimizes reasoning token overhead (`$4.50/1M` output tokens) and reduces initial audio latency while preserving tool-calling accuracy. |
+| **Context window compression** | Firing sliding-window eviction at `5,000` tokens (`targetTokens: 3500`) flushes stale carried audio (`$3.00/1M` tokens for caller + played model speech) before it compounds across turns. |
+| **Thinking level (`minimal`)** | Setting `thinkingConfig.thinkingLevel: "minimal"` on Gemini 3.1 Flash Live minimizes reasoning token overhead (`$4.50/1M` output tokens) and reduces initial audio latency while preserving tool-calling accuracy. |
 
 :::note
 Wire protocol fields use `camelCase` (`responseModalities`, `thinkingConfig`), whereas the Python `google-genai` SDK accepts `snake_case` equivalents (`response_modalities`, `thinking_config`).

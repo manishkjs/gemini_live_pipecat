@@ -6,7 +6,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = "Client-side lossless pruning replaces $3.00/M raw caller audio with $0.75/M text transcripts (~75% per-token rate reduction, >95% total cost reduction including token shrinkage), while a <60-token FactStore survives sliding-window FIFO eviction.",
+  caption = "Client-side lossless pruning replaces $3.00/M carried audio with $0.50-$0.75/M text transcripts (~75-83% per-token rate reduction, >95% total cost reduction including token shrinkage), while a <60-token FactStore survives sliding-window FIFO eviction.",
 } = Astro.props;
 ---
 
@@ -14,7 +14,7 @@ const {
   <svg viewBox="0 0 840 330" role="img" aria-labelledby="lpf-title lpf-desc" class="lpf-svg">
     <title id="lpf-title">Client-Side Lossless Pruning & Rolling FactStore</title>
     <desc id="lpf-desc">
-      A visualization showing audio-to-text transcript pruning converting $3.00/M raw audio into $0.75/M text transcripts,
+      A visualization showing audio-to-text transcript pruning converting $3.00/M carried audio into $0.50-$0.75/M text transcripts,
       and a rolling JSON FactStore under 60 tokens surviving sliding-window FIFO eviction.
     </desc>
 
@@ -25,7 +25,7 @@ const {
     <g class="header-group">
       <text x="36" y="44" class="main-title">Client-Side Lossless Pruning &amp; FactStore</text>
       <text x="36" y="64" class="main-subtitle">
-        Convert older $3.00/M raw audio into $0.75/M text transcripts while a &lt;60-token FactStore survives FIFO eviction.
+        Convert older $3.00/M carried audio into $0.50-$0.75/M text transcripts while a &lt;60-token FactStore survives FIFO eviction.
       </text>
     </g>
 
@@ -37,7 +37,7 @@ const {
       <rect x="180" y="92" width="430" height="60" rx="8" class="meter-bg" />
 
       <rect x="186" y="98" width="164" height="48" rx="6" class="box-audio-old" />
-      <text x="268" y="118" class="box-audio-title">Raw PCM Audio</text>
+      <text x="268" y="118" class="box-audio-title">Carried Audio</text>
       <text x="268" y="132" class="box-audio-sub">1,800 tokens @ $3.00/M</text>
 
       <text x="372" y="126" class="convert-arrow">→</text>
@@ -45,11 +45,11 @@ const {
 
       <rect x="416" y="98" width="188" height="48" rx="6" class="box-transcript" />
       <text x="510" y="118" class="box-trans-title">Text Transcript</text>
-      <text x="510" y="132" class="box-trans-sub">300 tokens @ $0.75/M (Text)</text>
+      <text x="510" y="132" class="box-trans-sub">300 tok @ $0.50-$0.75/M</text>
 
       <rect x="630" y="92" width="176" height="60" rx="8" class="badge-bg green-badge" />
-      <text x="718" y="117" class="badge-value green-txt">4&times; LOWER RATE</text>
-      <text x="718" y="135" class="badge-sub green-sub">Transcripts @ $0.75/M</text>
+      <text x="718" y="117" class="badge-value green-txt">4-6&times; LOWER RATE</text>
+      <text x="718" y="135" class="badge-sub green-sub">Text @ $0.50-$0.75/M</text>
     </g>
 
     <!-- Lane 2: Rolling FactStore Survival -->
@@ -64,7 +64,7 @@ const {
       <text x="395" y="208" class="evicted-sub">Older dialogue evicted to stay under token budget</text>
 
       <rect x="186" y="222" width="418" height="58" rx="6" class="box-factstore" />
-      <text x="198" y="242" class="fs-code">&#123;"caller_name": "Vikram", "postal_code": "110001", "tier": "AMG GT"&#125;</text>
+      <text x="198" y="242" class="fs-code">&#123;"caller_name": "Alex", "postal_code": "94043", "verified": true, "issue": "router_offline"&#125;</text>
       <text x="198" y="262" class="fs-desc">Persistent JSON FactStore · Survives sliding window · Zero memory loss</text>
 
       <rect x="630" y="192" width="176" height="78" rx="8" class="badge-bg green-badge" />
