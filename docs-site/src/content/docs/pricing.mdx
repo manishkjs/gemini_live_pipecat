@@ -11,13 +11,13 @@ Understanding how Gemini Live bills for streaming audio and multi-turn context i
 
 ## 1. Official Gemini Live API rate card
 
-| Modality / Direction | Tokenization Rate | Price per 1M Tokens | Effective Per-Minute Rate (Single Continuous Pass) |
-| :--- | :--- | :--- | :--- |
-| **Text Input** (System prompt, tool declarations, `clientContent`) | ~4 chars / token | **$0.75 / 1M** | N/A |
-| **Audio Input** (Caller speech + silence streamed to API) | ~27.8 tok/sec (~1,668 tok/min) | **$3.00 / 1M** | **~$0.0050 / min** (~1,668 tokens/min) |
-| **Video / Image Input** (1 FPS screen/camera frames) | 258 tok / frame | **$3.00 / 1M** | **~$0.0464 / min** (@ 1 FPS = 15,480 tokens/min) |
-| **Text Output** | ~4 chars / token | **$3.00 / 1M** | N/A |
-| **Audio Output** (Model 24kHz voice response) | ~25 tok/sec (~1,500 tok/min) | **$12.00 / 1M** | **~$0.0180 / min** (~1,500 tokens/min) |
+| Modality / Direction | Tokenization Rate | Gemini 2.5 Flash Native Audio (per 1M) | Gemini 3.1 Flash Live Preview (per 1M) | Effective Per-Minute Rate (Single Continuous Pass) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Text Input** (System prompt, tool declarations, `clientContent`) | Standard BPE tokens | **$0.50 / 1M** | **$0.75 / 1M** | N/A |
+| **Audio Input** (Caller speech + carried played model audio) | ~25 tok/sec (1,500 tok/min; budget ~27.8 tok/sec / ~1,668 tok/min as a conservative planning figure) | **$3.00 / 1M** | **$3.00 / 1M** | **~$0.0050 / min** (~1,668 tokens/min) |
+| **Video / Image Input** (1 FPS screen/camera frames) | 258 tok / frame | **$3.00 / 1M** | **$3.00 / 1M** | **~$0.0464 / min** (@ 1 FPS = 15,480 tokens/min) |
+| **Text Output & Thinking** | Standard BPE tokens | **$2.00 / 1M** | **$4.50 / 1M** | N/A |
+| **Audio Output** (Model 24kHz voice response) | ~25 tok/sec (~1,500 tok/min) | **$12.00 / 1M** | **$12.00 / 1M** | **~$0.0180 / min** (~1,500 tokens/min) |
 
 :::note[Why a 1-minute call costs more than $0.023 in practice]
 In a single continuous pass with zero turn-taking, 60 seconds of caller audio input (`$0.005`) plus 60 seconds of model audio output (`$0.018`) costs **~$0.023/min** (or **~$0.0115/min** if the caller and agent each speak for 30 seconds). However, in a real multi-turn conversation, previous turns remain in the context window and are re-read on every subsequent turn.
@@ -28,7 +28,7 @@ In a single continuous pass with zero turn-taking, 60 seconds of caller audio in
 ## 2. The multi-turn "Carried Audio Tax" (quadratic growth)
 
 Every time a turn completes (`turnComplete`), the next turn must process:
-1. Your **System Instruction + Tool Declarations** (text input at `$0.75/1M`).
+1. Your **System Instruction + Tool Declarations** (text input at `$0.50/1M` on 2.5 Native Audio or `$0.75/1M` on 3.1 Flash Live; static tool declarations are billed every turn on 3.x).
 2. **All prior turns' audio and text history** accumulated in the session window.
 3. The **new caller audio** for the current turn.
 
@@ -61,7 +61,7 @@ Because there is no automatic cache discount on live WebSocket turns:
 
 When evaluating Gemini Live for high-volume contact centers, compare the total per-minute run rate against both unoptimized configurations (4.5k prompt, 6 turns/min, unpruned audio) and offshore contact-center labor ($0.02 to $0.03/min):
 
-| Call Duration | Unmanaged Duplex Session (4.5k prompt, unpruned audio) | Optimized Live Session (JIT Cards + 5k Sliding Window) | Savings |
+| Call Duration | Unmanaged Duplex Session (4.5k prompt, unpruned audio) | Optimized Live Session (JIT Cards + Audio Pruning + 5k Window) | Savings |
 | :--- | :--- | :--- | :--- |
 | **3-Minute Call** (18 turns) | **$0.246 total** ($0.082/min) | **$0.093 total** ($0.031/min) | **62% reduction** |
 | **10-Minute Call** (60 turns) | **$1.776 total** ($0.178/min) | **$0.312 total** ($0.031/min) | **82% reduction** |
