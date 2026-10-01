@@ -31,6 +31,74 @@ export default defineConfig({
         },
       ],
       customCss: ['./src/styles/custom.css'],
+      head: [
+        {
+          tag: 'script',
+          content: `
+            (function () {
+              const STORAGE_KEY = 'sl-left-sidebar-width';
+              const MIN_W = 180;
+              const MAX_W = 560;
+              const saved = localStorage.getItem(STORAGE_KEY);
+              if (saved) {
+                const px = parseInt(saved, 10);
+                if (!isNaN(px) && px >= MIN_W && px <= MAX_W) {
+                  document.documentElement.style.setProperty('--sl-left-sidebar-width', px + 'px');
+                }
+              }
+              function initSidebarResizer() {
+                if (!document.documentElement.hasAttribute('data-has-sidebar')) return;
+                if (document.querySelector('.sl-sidebar-resizer')) return;
+                const handle = document.createElement('div');
+                handle.className = 'sl-sidebar-resizer';
+                handle.title = 'Drag to resize sidebar (double-click to reset)';
+                handle.setAttribute('role', 'separator');
+                handle.setAttribute('aria-orientation', 'vertical');
+                handle.setAttribute('aria-label', 'Resize navigation sidebar');
+                document.body.appendChild(handle);
+
+                let dragging = false;
+                handle.addEventListener('pointerdown', function (e) {
+                  if (e.button !== 0) return;
+                  dragging = true;
+                  handle.classList.add('is-dragging');
+                  document.body.classList.add('sl-resizing-sidebar');
+                  handle.setPointerCapture(e.pointerId);
+                  e.preventDefault();
+                });
+
+                handle.addEventListener('pointermove', function (e) {
+                  if (!dragging) return;
+                  const clamped = Math.max(MIN_W, Math.min(MAX_W, Math.round(e.clientX)));
+                  document.documentElement.style.setProperty('--sl-left-sidebar-width', clamped + 'px');
+                  try { localStorage.setItem(STORAGE_KEY, String(clamped)); } catch (_) {}
+                });
+
+                function stopDrag(e) {
+                  if (!dragging) return;
+                  dragging = false;
+                  handle.classList.remove('is-dragging');
+                  document.body.classList.remove('sl-resizing-sidebar');
+                  try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+                }
+                handle.addEventListener('pointerup', stopDrag);
+                handle.addEventListener('pointercancel', stopDrag);
+
+                handle.addEventListener('dblclick', function () {
+                  document.documentElement.style.removeProperty('--sl-left-sidebar-width');
+                  try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+                });
+              }
+              if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initSidebarResizer);
+              } else {
+                initSidebarResizer();
+              }
+              document.addEventListener('astro:page-load', initSidebarResizer);
+            })();
+          `,
+        },
+      ],
       sidebar: [
         {
           label: 'Guides',

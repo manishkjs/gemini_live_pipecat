@@ -10,3 +10,64 @@
   --sl-color-accent: #1a73e8;
   --sl-color-accent-high: #0b57d0;
 }
+
+/* Draggable / Resizable Left Sidebar Divider */
+@media (min-width: 50rem) {
+  html[data-has-sidebar] {
+    --sl-content-inline-start: var(--sl-left-sidebar-width, var(--sl-sidebar-width)) !important;
+  }
+
+  #starlight__sidebar.sidebar-pane {
+    width: var(--sl-left-sidebar-width, var(--sl-sidebar-width)) !important;
+  }
+
+  .sl-sidebar-resizer {
+    position: fixed;
+    top: var(--sl-nav-height, 3.5rem);
+    bottom: 0;
+    inset-inline-start: calc(var(--sl-left-sidebar-width, var(--sl-sidebar-width, 18.75rem)) - 4px);
+    width: 8px;
+    cursor: col-resize;
+    z-index: 30;
+    background: transparent;
+    transition: background-color 0.15s ease;
+    touch-action: none;
+  }
+
+  .sl-sidebar-resizer::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 36px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background-color 0.15s ease, height 0.15s ease;
+  }
+
+  .sl-sidebar-resizer:hover,
+  .sl-sidebar-resizer.is-dragging {
+    background-color: color-mix(in srgb, var(--sl-color-accent) 35%, transparent);
+  }
+
+  .sl-sidebar-resizer:hover::after,
+  .sl-sidebar-resizer.is-dragging::after {
+    background-color: var(--sl-color-accent-high);
+    height: 56px;
+  }
+}
+
+@media (max-width: 49.99rem) {
+  .sl-sidebar-resizer {
+    display: none !important;
+  }
+}
+
+body.sl-resizing-sidebar,
+body.sl-resizing-sidebar * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}

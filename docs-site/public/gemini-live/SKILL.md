@@ -77,11 +77,11 @@ description: Technical reference, routing invariants, canonical repository guide
 * **Text-to-Speech**: `roles/texttospeech.client` (`texttospeech.synthesize`).
 * **ADC Quota Project**: User credentials require `gcloud auth application-default set-quota-project <PROJECT_ID>`.
 
-### SSH Tunneling Invariant (Cloudtop VM -> Local Browser)
+### SSH Tunneling Invariant (Linux workstation VM -> Local Browser)
 * **NEVER** use synthetic Uberproxy PEN URLs (breaks WebSocket `wss://` upgrade).
 * **ALWAYS** forward the port over SSH:
   ```bash
-  ssh -L 7860:localhost:7860 <vm_name>.c.googlers.com
+  ssh -L 7860:localhost:7860 <vm_name>workstation.example.com
   ```
   Open `http://localhost:7860/` in Chrome (treated as `isSecureContext === true` for microphone access).
 
@@ -529,7 +529,7 @@ reconcile **exactly (residual 0 on every turn)** under the identical client.
   reports openly (40/162, 44/170, 48/146). So 3.1's "no output text cost" is a
   **reporting gap, not a saving**: the transcript is generated, carried, and
   re-billed as prompt while appearing in neither details block.
-* **Filed as** http://b/560037988 (P2, component 2008740 — Live API,
+* **Filed as** http://upstream tracking issue (P2, component 2008740 — Live API,
   Google DeepMind › API). Open questions: which modality/rate the 620 tokens
   bill at, and when `prompt_tokens_details` will sum to `prompt_token_count`.
 * **Cost-calculator invariant**: any Live pricing module MUST bill
@@ -599,7 +599,7 @@ Like-for-like 4-turn script:
 
 Measured gap **+25.3%**. Billing the 620 unattributed tokens raises it to
 **+29.0%** (text rate) or **+40.1%** (audio rate). Quote the range, not the
-+25.3%, until http://b/560037988 is resolved.
++25.3%, until http://upstream tracking issue is resolved.
 
 * **Audio dominates spend, and the share grows**: audio as % of prompt cost —
   2.5: 79% → 87% → **90%** (T1→T3); 3.1: 62% → 76% → 80% → **84%**.
@@ -695,7 +695,7 @@ Cross-model benchmarks on identical conversational scripts yield distinct profil
 | **Pricing Rates (In / Out)** | Text: $0.50 / $2.00<br>Audio: $3.00 / $12.00 | Text: **$0.75 / $4.50** (+50% / +125%)<br>Audio: $3.00 / $12.00 | Text: $0.50 / $2.00<br>Audio: $2.40 / $9.60 |
 | **Fixed Prompt Scaffolding (T0)** | **225 tokens** (lean, 0 scaffolding) | **501 tokens** (+276 model scaffolding) | **646 tokens** (+421 model scaffolding) |
 | **Pre-Speech Greeting Metering** | **AUDIO: 0** | ⚠️ **Bills ~201 audio tokens** during greeting playback before user speaks | **AUDIO: 0** |
-| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (b/560037988) | 100% exact (residual: 0) |
+| **Usage Metadata Reconciliation** | 100% exact (residual: 0) | ⚠️ **Unbilled Residual (+12.6% to +40%)**: Omits text out; carries output transcript as unbilled prompt (upstream tracking issue) | 100% exact (residual: 0) |
 | **Tool Declaration Accounting** | Omitted from turn prompt tokens | Omitted from turn prompt tokens | ⚠️ **Full Attention**: Serializes OpenAPI schemas into prompt (~500 tok/tool) |
 | **Tool Response Scheduling** | `WHEN_IDLE` | `WHEN_IDLE` | ⚠️ Strictly `None` (passing `WHEN_IDLE` crashes with 1007) |
 | **Tool Dispatch Stability** | Stable, sequential | ⚠️ **Parallel Double-Call Bug**: Rapidly fires duplicate parallel tool calls (`switch_phase` x2), spiking prompt to 11k tokens | Stable, sequential |
