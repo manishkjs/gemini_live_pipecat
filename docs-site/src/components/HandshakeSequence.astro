@@ -2,7 +2,7 @@
 /**
  * Animated handshake sequence: the order of frames on the wire.
  *
- * DuplexFlow shows the steady state. This shows *sequence* — that `setup` goes
+ * DuplexFlow shows the steady state. This shows *sequence*, that `setup` goes
  * first and alone, that nothing may be sent until `setupComplete` arrives, and
  * where interrupted / goAway land in the timeline.
  *
@@ -96,7 +96,7 @@ const stream = [0, 0.35, 0.7, 1.05];
       <polygon points="150,328 161,323 161,333" class="head warn" />
       <circle class="pulse warn" cx="610" cy="328" r="5" />
       <text x="122" y="332" class="num">⑤</text>
-      <text x="380" y="345" class="note warn">user barged in — flush playback</text>
+      <text x="380" y="345" class="note warn">user barged in: flush playback</text>
     </g>
 
     <!-- ⑥ goAway -->
@@ -105,7 +105,7 @@ const stream = [0, 0.35, 0.7, 1.05];
       <polygon points="150,368 161,363 161,373" class="head" />
       <circle class="pulse" cx="610" cy="368" r="5" />
       <text x="122" y="372" class="num">⑥</text>
-      <text x="380" y="388" class="note">goAway — reconnect with resumption handle</text>
+      <text x="380" y="388" class="note">goAway: reconnect with resumption handle</text>
     </g>
   </svg>
 
@@ -119,53 +119,53 @@ const stream = [0, 0.35, 0.7, 1.05];
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .actor {
     font-size: 13px;
     font-weight: 600;
     text-anchor: middle;
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
   }
   .lifeline {
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
     stroke-dasharray: 3 5;
   }
 
-  .arrow { stroke: var(--sl-color-gray-5); stroke-width: 1.5; }
-  .head { fill: var(--sl-color-gray-5); }
-  .arrow.ok, .head.ok { stroke: #34a853; fill: #34a853; }
-  .arrow.ok { stroke: #34a853; }
-  .arrow.green, .head.green { stroke: #34a853; fill: #34a853; }
-  .arrow.warn, .head.warn { stroke: #ea4335; fill: #ea4335; }
+  .arrow { stroke: var(--gl-track-border); stroke-width: 1.5; }
+  .head { fill: var(--gl-track-border); }
+  .arrow.ok, .head.ok { stroke: var(--gl-green-text); fill: var(--gl-green-text); }
+  .arrow.ok { stroke: var(--gl-green-text); }
+  .arrow.green, .head.green { stroke: var(--gl-green-text); fill: var(--gl-green-text); }
+  .arrow.warn, .head.warn { stroke: var(--gl-red-text); fill: var(--gl-red-text); }
 
   .label {
     font-size: 12.5px;
     text-anchor: middle;
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
     font-family: var(--sl-font-mono, ui-monospace, monospace);
   }
-  .label.ok, .label.green { fill: #34a853; }
-  .label.warn { fill: #ea4335; }
+  .label.ok, .label.green { fill: var(--gl-green-text); }
+  .label.warn { fill: var(--gl-red-text); }
 
   .note {
     font-size: 11px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-3);
+    fill: var(--gl-text-muted);
     font-style: italic;
   }
-  .note.warn { fill: #ea4335; font-style: normal; }
+  .note.warn { fill: var(--gl-red-text); font-style: normal; }
 
   .num {
     font-size: 13px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
   }
 
   .gate-line {
-    stroke: #34a853;
+    stroke: var(--gl-green-text);
     stroke-width: 1.5;
     stroke-dasharray: 6 4;
     opacity: 0.5;
@@ -173,7 +173,7 @@ const stream = [0, 0.35, 0.7, 1.05];
   .gate-text {
     font-size: 10.5px;
     text-anchor: end;
-    fill: #34a853;
+    fill: var(--gl-green-text);
     opacity: 0.85;
   }
 
@@ -200,8 +200,8 @@ const stream = [0, 0.35, 0.7, 1.05];
 
   /* Travelling pulses for the one-shot frames. */
   .pulse { fill: var(--sl-color-accent); }
-  .pulse.ok { fill: #34a853; }
-  .pulse.warn { fill: #ea4335; }
+  .pulse.ok { fill: var(--gl-green-text); }
+  .pulse.warn { fill: var(--gl-red-text); }
   .s1 .pulse { animation: go-right 12s linear infinite; }
   .s2 .pulse { animation: go-left 12s linear infinite; }
   .s5 .pulse { animation: go-left 12s linear infinite; }
@@ -226,7 +226,7 @@ const stream = [0, 0.35, 0.7, 1.05];
     animation: travel-right 1.4s linear infinite, gate 12s linear infinite;
   }
   .pkt.down {
-    fill: #34a853;
+    fill: var(--gl-green-text);
     animation: travel-left 1.4s linear infinite, gate 12s linear infinite;
   }
   @keyframes travel-right {

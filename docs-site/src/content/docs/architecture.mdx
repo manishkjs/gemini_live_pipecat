@@ -9,61 +9,51 @@ import SessionLifecycle from '../../components/SessionLifecycle.astro';
 import MessageReplay from '../../components/MessageReplay.astro';
 import { Aside } from '@astrojs/starlight/components';
 
-Gemini Live is **stateful and bidirectional**. Four concepts explain almost
-everything you will see in production: two input channels, the turn
-lifecycle, interruptions, and session resumption.
+Gemini Live is **stateful and bidirectional**. Four concepts govern every production voice session: two input channels, the turn lifecycle, interruptions, and session resumption.
 
 ## Continuous conversation over a single socket
 
 <DuplexFlow />
 
-There is no "send request, await response" loop. Audio moves in both directions
-continuously over a single WebSocket, and the model can start speaking before you
-stop.
+Audio moves in both directions continuously over one persistent WebSocket. There is no request/response polling loop, and the model can begin speaking as soon as server-side Voice Activity Detection (VAD) detects the end of a user turn.
 
 ## Two input channels
 
 | Channel | Purpose | Enters history? | Interrupts model? |
 | --- | --- | --- | --- |
-| **`realtimeInput`** | Continuous microphone/camera stream | No | No |
-| **`clientContent`** | Explicit turn-based messages | Yes | Yes |
+| **`realtimeInput`** | Continuous microphone or camera stream | Yes (user speech turns) | Triggers server VAD |
+| **`clientContent`** | Explicit turn-based messages or context injection | Yes | **Yes (unconditionally)** |
 
-Send live microphone audio as `realtimeInput`. Use `clientContent` only for
-explicit turns you want committed to conversational history.
+Send live microphone audio on `realtimeInput`. Use `clientContent` only for explicit text turns or silent server-side context updates (`turnComplete: false`).
 
-<Aside type="caution">
-Do not swap these channels. Microphone audio sent as `clientContent` interrupts
-the model on every chunk and bloats context. A user turn sent as `realtimeInput`
-is never saved to session history.
+<Aside type="caution" title="Do not send mic audio on clientContent">
+Every `clientContent` message unconditionally interrupts any active model generation. Streaming microphone chunks over `clientContent` cuts the model off on every packet.
 </Aside>
 
 ## The turn lifecycle
 
-Three server signals govern playback:
+Three server signals govern turn state and audio playback:
 
-| Signal | What it actually means |
-| --- | --- |
-| **`generationComplete`** | The model finished generating tokens. Your playback buffer may still hold seconds of audio. |
-| **`turnComplete`** | The logical end of the turn. |
-| **`interrupted`** | The user barged in. Discard queued audio immediately. |
+| Signal | What it means | How your client should react |
+| --- | --- | --- |
+| **`generationComplete`** | The model finished generating tokens on the server. | Stop showing a "thinking/generating" indicator, **but keep the speaker state active** until your local audio playout queue drains. |
+| **`turnComplete`** | The logical turn has concluded on the wire. | Flush your per-turn transcript buffer, record `usageMetadata` once, and mark the turn complete in logs. |
+| **`interrupted`** | Server VAD detected user barge-in during model output. | Immediately discard all unplayed audio chunks in your local playback queue. |
 
-The gap between `generationComplete` and `turnComplete` is where most "the agent talks over me" bugs occur.
+The gap between `generationComplete` and local buffer drain is often 1 to 3 seconds. If you transition UI state or fire post-speech actions on `generationComplete` instead of waiting for the audio queue to finish playing, your UI will claim the agent is silent while it is still speaking.
 
 ## Interruptions (barge-in)
 
 <BargeIn />
 
-Conversational voice requires callers to talk over the agent. When the server detects
-speech during playback, it sends `interrupted`. The audio you must discard
-is audio **you have already received**. If you only stop requesting new chunks,
-the agent keeps talking from the local playout buffer.
+When a caller speaks over the agent, the server sends `interrupted` and halts downstream generation. However, your client has already received several seconds of generated audio ahead of real-time playback. If you do not flush that local buffer, the agent continues talking over the caller.
 
-Handle it with an immediate stop:
+Flush the playback queue immediately on `interrupted`:
 
 ```javascript
 function onInterrupted() {
-  playbackQueue.length = 0;   // drop unplayed chunks
-  currentSource?.stop();      // cut off active playback immediately
+  playbackQueue.length = 0;   // discard buffered PCM chunks
+  currentSource?.stop();      // stop active Web Audio node immediately
 }
 ```
 
@@ -71,27 +61,18 @@ function onInterrupted() {
 
 <SessionLifecycle />
 
-The server closes sessions proactively roughly every 10 to 15 minutes. This is
-expected protocol behavior. It emits a `sessionResumptionUpdate` containing a handle,
-then closes with code `1008`. Treat this close as routine rotation rather than a crash.
+The server rotates WebSocket connections roughly every **10 to 15 minutes**. Shortly before closing, it emits a `sessionResumptionUpdate` frame containing a `newHandle` and `lastConsumedClientMessageIndex`, then closes the socket with code `1008`. Treat a `1008` close following a resumption update as routine rotation, never as a fatal crash.
 
-To resume cleanly:
+To resume without losing conversation context:
 
-1. Enable resumption in `setup`.
-2. Number and buffer every message you send.
-3. The server reports the last index it safely received. Discard buffered messages up to that index.
-4. On reconnect, open a new socket with the stored handle, then replay the remaining buffer before sending new turns.
-5. If the handle expired, start a fresh session.
+1. Enable `sessionResumption: {}` in your initial `setup` frame.
+2. Assign a monotonically increasing index to each outbound client message and hold unconfirmed messages in a ring buffer.
+3. Whenever `sessionResumptionUpdate` arrives, store `newHandle` and drop buffered messages up to `lastConsumedClientMessageIndex`.
+4. When the socket closes, open a new WebSocket passing `handle: newHandle` in `setup.sessionResumption`, wait for `setupComplete`, and replay any remaining unconfirmed messages before sending new turns.
+5. If a handle has expired (over 2 hours old), open a fresh session and re-hydrate state from your application's FactStore.
 
 <MessageReplay />
 
 <Aside type="tip">
-Higher-level frameworks like Pipecat handle resumption state machines automatically. See
-[Choosing a framework](/gemini_live_pipecat/frameworks/). On a raw WebSocket, you implement
-this message replay queue directly.
+Frameworks like Pipecat manage session resumption and message replay automatically (see [Choosing a framework](/gemini_live_pipecat/frameworks/)). When building directly on a raw WebSocket, implement this replay buffer in your session state machine.
 </Aside>
-
-## Jitter buffering
-
-Networks deliver audio packets unevenly. A small playout buffer (queuing a few chunks and playing them at a steady cadence) trades minimal latency for smooth, glitch-free audio. See
-[Audio engineering](/gemini_live_pipecat/audio-engineering/) for buffer tuning.

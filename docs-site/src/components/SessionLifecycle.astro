@@ -12,7 +12,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'The socket dies every 10–15 minutes. The conversation does not — the handle carries it across.',
+  caption = 'The socket closes every 10 to 15 minutes. The conversation continues across sockets via the resumption handle.',
 } = Astro.props;
 ---
 
@@ -45,7 +45,7 @@ const {
     <g class="marker close">
       <line x1="360" y1="138" x2="360" y2="164" />
       <circle cx="360" cy="168" r="5" />
-      <text x="362" y="188">close 1008 — routine</text>
+      <text x="362" y="188">close 1008 (routine)</text>
     </g>
 
     <!-- the gap -->
@@ -83,7 +83,7 @@ const {
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .arc {
@@ -102,7 +102,7 @@ const {
 
   .sock-label {
     font-size: 11px;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -110,7 +110,7 @@ const {
 
   .track {
     fill: none;
-    stroke: var(--sl-color-gray-5);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
   }
   .fill {
@@ -137,9 +137,9 @@ const {
     100%      { transform: scaleX(1); opacity: 1; }
   }
 
-  .marker line { stroke: var(--sl-color-gray-5); stroke-width: 1.5; }
-  .marker circle { fill: var(--sl-color-gray-5); }
-  .marker text { font-size: 11px; fill: var(--sl-color-gray-4); }
+  .marker line { stroke: var(--gl-track-border); stroke-width: 1.5; }
+  .marker circle { fill: var(--gl-track-border); }
+  .marker text { font-size: 11px; fill: var(--gl-text-muted); }
   .marker.handle text { text-anchor: middle; }
 
   .marker.handle, .marker.close, .marker.replay {
@@ -156,27 +156,27 @@ const {
   }
 
   .marker.handle circle { fill: var(--sl-color-accent); }
-  .marker.close circle  { fill: #ea4335; }
-  .marker.close text    { fill: #ea4335; }
-  .marker.replay circle { fill: #34a853; }
-  .marker.replay text   { fill: #34a853; }
+  .marker.close circle  { fill: var(--gl-red-text); }
+  .marker.close text    { fill: var(--gl-red-text); }
+  .marker.replay circle { fill: var(--gl-green-text); }
+  .marker.replay text   { fill: var(--gl-green-text); }
 
   .gap-label {
     font-size: 11px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-3);
+    fill: var(--gl-text-muted);
     font-family: var(--sl-font-mono, ui-monospace, monospace);
     animation: pop 9s linear infinite;
     animation-delay: 0.9s;
   }
 
   .axis-line {
-    stroke: var(--sl-color-gray-6);
+    stroke: var(--gl-track-bg);
     stroke-width: 1;
   }
   .axis {
     font-size: 10.5px;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
   }
   .axis.mid { text-anchor: middle; }
   .axis.end { text-anchor: end; }
@@ -184,7 +184,7 @@ const {
   .verdict {
     font-size: 12px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-2);
+    fill: var(--gl-text-secondary);
     font-weight: 500;
   }
 

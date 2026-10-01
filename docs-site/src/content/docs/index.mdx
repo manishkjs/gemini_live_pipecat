@@ -15,84 +15,104 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 ## Speech in, speech out in real time
 
-The **Gemini Live API** is a stateful, bidirectional streaming API. You open a single WebSocket, stream microphone audio in, and receive generated speech back as it is produced, with natural turn-taking and barge-in interruption.
+The **Gemini Live API** is a stateful, bidirectional streaming API. Open a single WebSocket, stream 16 kHz microphone audio in, and receive 24 kHz generated speech back as it is produced, with built-in turn-taking and barge-in interruption.
 
-This documentation is a practical engineering guide covering the wire protocol, failure modes, and production patterns needed to run voice agents reliably.
+This guide covers the wire protocol, client audio engineering, unit economics, and production patterns required to run voice agents reliably at scale.
 
-<CardGrid stagger>
+### Start here
+
+<CardGrid>
   <LinkCard
     title="Getting started"
     href="/gemini_live_pipecat/getting-started/"
-    description="Prerequisites, endpoints, and your first end-to-end voice turn."
+    description="Endpoints, authentication, and a 60-line script that produces your first spoken reply."
   />
   <LinkCard
     title="Voice Studio"
     href="/gemini_live_pipecat/voice-playground/"
-    description="Talk to a live agent in your browser and compare native vs. cascade with zero code."
+    description="Talk to a live agent in your browser and compare native duplex vs. cascade pipelines."
   />
+  <LinkCard
+    title="Gemini Live Skill"
+    href="/gemini_live_pipecat/gemini-live-skill/"
+    description="Condensed production cheat sheet and downloadable SKILL.md for AI coding agents."
+  />
+</CardGrid>
+
+### Core concepts
+
+<CardGrid>
   <LinkCard
     title="Architecture"
     href="/gemini_live_pipecat/architecture/"
-    description="The duplex model, turn lifecycle, interruptions, and session resumption."
+    description="Input channels, turn lifecycle signals, barge-in buffers, and session resumption."
   />
   <LinkCard
     title="Configuration reference"
     href="/gemini_live_pipecat/gemini-live-configuration/"
-    description="Every wire envelope and setup option in one reference page."
+    description="Every wire envelope, setup field, VAD knob, and modality rule in one reference."
   />
   <LinkCard
     title="Audio engineering"
     href="/gemini_live_pipecat/audio-engineering/"
-    description="AudioWorklets, jitter buffers, backpressure, and instant barge-in."
+    description="AudioWorklets, adaptive jitter buffers, WebSocket backpressure, and local VAD."
   />
   <LinkCard
     title="Tools & function calling"
     href="/gemini_live_pipecat/tools/"
-    description="Non-blocking tool execution and the five failure modes that freeze an agent."
+    description="Non-blocking tool dispatch, barge-in cancellation, and five ways tool calls freeze."
   />
   <LinkCard
     title="Choosing a framework"
     href="/gemini_live_pipecat/frameworks/"
-    description="Compare raw WebSockets, Pipecat, and LiveKit, and when to add a media server."
+    description="Raw WebSockets vs. Pipecat vs. LiveKit, WebRTC SFU proxies, and native vs. cascade."
   />
+</CardGrid>
+
+### Economics & optimization
+
+<CardGrid>
   <LinkCard
     title="Telephony pricing & tokenomics"
     href="/gemini_live_pipecat/pricing/"
-    description="How per-minute rates map to token bills, and how to verify costs on your traffic."
+    description="How per-minute rates map to token bills, why multi-turn calls compound, and how to audit usage."
   />
   <LinkCard
     title="Pricing calculator"
     href="/gemini_live_pipecat/pricing-calculator/"
-    description="Interactive multi-turn duplex simulator comparing uncompacted vs. optimized call costs."
-  />
-  <LinkCard
-    title="Latency & telemetry"
-    href="/gemini_live_pipecat/latency-and-telemetry/"
-    description="Measure what callers actually feel, and avoid the metric traps that hide delay."
+    description="Interactive simulator comparing single-pass, unmanaged duplex, and optimized call costs."
   />
   <LinkCard
     title="Optimization patterns"
     href="/gemini_live_pipecat/optimization/"
-    description="Keep long sessions cheap and responsive using context compression and JIT cards."
+    description="Flatten call costs with 5k context compression, JIT prompt cards, and lossless audio pruning."
+  />
+</CardGrid>
+
+### Operate in production
+
+<CardGrid>
+  <LinkCard
+    title="Latency & telemetry"
+    href="/gemini_live_pipecat/latency-and-telemetry/"
+    description="Measure user-perceived TTFB and avoid the 2 ms frame-interval measurement trap."
   />
   <LinkCard
     title="Deployment"
     href="/gemini_live_pipecat/deployment/"
-    description="Ship a WebSocket voice backend to Cloud Run or GKE with WSS and CORS."
+    description="Deploy stateful WebSocket voice backends to Cloud Run or GKE with session affinity."
   />
   <LinkCard
     title="Troubleshooting"
     href="/gemini_live_pipecat/troubleshooting/"
-    description="Close codes, echo loops, and interrupted-greeting recovery."
+    description="Decode 1006/1007/1008 close codes, fix echo loops, and recover interrupted greetings."
   />
 </CardGrid>
 
-:::tip[Two ways to run speech]
-Gemini Live supports **native audio** (one model performs speech-to-speech) and a
-**cascade** pipeline (Speech-to-Text -> LLM -> Text-to-Speech). This guide covers both.
-See [Architecture](/gemini_live_pipecat/architecture/) for how to choose.
+:::tip[Native duplex or STT-LLM-TTS cascade?]
+Gemini Live supports **native audio** (one model performs speech-to-speech) alongside traditional **cascade** pipelines (Speech-to-Text -> LLM -> Text-to-Speech). See [Choosing a framework -> Native S2S vs. cascaded STT -> LLM -> TTS](/gemini_live_pipecat/frameworks/#2-native-s2s-vs-cascaded-stt--llm--tts-inside-frameworks) for the architectural and cost tradeoffs.
 :::

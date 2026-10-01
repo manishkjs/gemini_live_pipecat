@@ -22,7 +22,7 @@ const {
     <title id="mr-title">Send buffer confirmation and replay after reconnect</title>
     <desc id="mr-desc">
       The client buffers every message it sends. The server periodically confirms
-      the last index it safely received — here, message seven — so messages up to
+      the last index it safely received, here, message seven, so messages up to
       that point can be discarded. When the socket drops, the client reconnects
       with its resumption handle and replays the remaining unconfirmed messages,
       eight and nine, before sending anything new.
@@ -66,9 +66,9 @@ const {
 
     <!-- phase caption -->
     <text x="380" y="232" class="phase buffering">Buffering every message you send</text>
-    <text x="380" y="232" class="phase acked">Server confirms through 7 — discard 1–7</text>
-    <text x="380" y="232" class="phase dropped">Connection lost — 8 and 9 never landed</text>
-    <text x="380" y="232" class="phase replayed">Replayed 8 and 9 — now safe to send new</text>
+    <text x="380" y="232" class="phase acked">Server confirms through 7: discard 1 to 7</text>
+    <text x="380" y="232" class="phase dropped">Connection lost: 8 and 9 never landed</text>
+    <text x="380" y="232" class="phase replayed">Replayed 8 and 9: now safe to send new</text>
 
     <line x1="60" y1="256" x2="700" y2="256" class="rule" />
     <text x="380" y="278" class="verdict">
@@ -86,25 +86,25 @@ const {
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .actor {
     font-size: 13px; font-weight: 600;
-    text-anchor: middle; fill: var(--sl-color-white);
+    text-anchor: middle; fill: var(--gl-text-primary);
   }
   .section {
-    font-size: 11px; fill: var(--sl-color-gray-4);
+    font-size: 11px; fill: var(--gl-text-muted);
     text-transform: uppercase; letter-spacing: 0.06em;
   }
 
   /* ── the wire: alive, then dead, then alive again ── */
   .wire {
-    stroke: var(--sl-color-gray-5); stroke-width: 1.5; stroke-dasharray: 3 5;
+    stroke: var(--gl-track-border); stroke-width: 1.5; stroke-dasharray: 3 5;
     animation: wire-alive 10s linear infinite;
   }
   .wire-dead {
-    stroke: #ea4335; stroke-width: 1.5; stroke-dasharray: 2 8;
+    stroke: var(--gl-red-text); stroke-width: 1.5; stroke-dasharray: 2 8;
     opacity: 0;
     animation: wire-dead 10s linear infinite;
   }
@@ -120,7 +120,7 @@ const {
   }
 
   .wire-status { font-size: 11.5px; text-anchor: middle; font-weight: 600; opacity: 0; }
-  .wire-status.drop { fill: #ea4335; animation: show 10s linear infinite; --a: 37%; }
+  .wire-status.drop { fill: var(--gl-red-text); animation: show 10s linear infinite; --a: 37%; }
   .wire-status.back { fill: var(--sl-color-accent); animation: show-back 10s linear infinite; }
   @keyframes show {
     0%, 36%   { opacity: 0; }
@@ -135,7 +135,7 @@ const {
 
   /* ── server confirmation ── */
   .ack-pulse {
-    fill: #34a853; opacity: 0;
+    fill: var(--gl-green-text); opacity: 0;
     animation: ack-travel 10s linear infinite;
   }
   @keyframes ack-travel {
@@ -145,7 +145,7 @@ const {
     30%, 100% { transform: translateX(-412px); opacity: 0; }
   }
   .ack-text {
-    font-size: 11.5px; text-anchor: middle; fill: #34a853; opacity: 0;
+    font-size: 11.5px; text-anchor: middle; fill: var(--gl-green-text); opacity: 0;
     font-family: var(--sl-font-mono, ui-monospace, monospace);
     animation: ack-label 10s linear infinite;
   }
@@ -178,13 +178,13 @@ const {
 
   /* ── buffer slots ── */
   .slot rect {
-    fill: var(--sl-color-gray-6);
-    stroke: var(--sl-color-gray-5);
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-track-border);
     stroke-width: 1.5;
   }
   .slot text {
     font-size: 12px; text-anchor: middle;
-    fill: var(--sl-color-white); font-weight: 500;
+    fill: var(--gl-text-primary); font-weight: 500;
   }
   .slot { opacity: 0; }
   .m7 { animation: slot-7 10s linear infinite; }
@@ -206,18 +206,18 @@ const {
   }
   .m8 rect, .m9 rect { stroke: var(--sl-color-accent); }
 
-  .hint { font-size: 11px; fill: var(--sl-color-gray-3); opacity: 0; }
-  .hint.confirmed { fill: #34a853; animation: ack-label 10s linear infinite; }
+  .hint { font-size: 11px; fill: var(--gl-text-muted); opacity: 0; }
+  .hint.confirmed { fill: var(--gl-green-text); animation: ack-label 10s linear infinite; }
   .hint.pending { animation: replay-label 10s linear infinite; }
 
   /* ── phase captions ── */
   .phase {
     font-size: 12.5px; text-anchor: middle;
-    fill: var(--sl-color-white); font-weight: 500; opacity: 0;
+    fill: var(--gl-text-primary); font-weight: 500; opacity: 0;
   }
   .buffering { animation: p1 10s linear infinite; }
-  .acked     { animation: p2 10s linear infinite; fill: #34a853; }
-  .dropped   { animation: p3 10s linear infinite; fill: #ea4335; }
+  .acked     { animation: p2 10s linear infinite; fill: var(--gl-green-text); }
+  .dropped   { animation: p3 10s linear infinite; fill: var(--gl-red-text); }
   .replayed  { animation: p4 10s linear infinite; fill: var(--sl-color-accent); }
 
   @keyframes p1 { 0%,2% {opacity:0} 6%,18% {opacity:1} 20%,100% {opacity:0} }
@@ -225,10 +225,10 @@ const {
   @keyframes p3 { 0%,38% {opacity:0} 42%,56% {opacity:1} 60%,100% {opacity:0} }
   @keyframes p4 { 0%,64% {opacity:0} 68%,86% {opacity:1} 90%,100% {opacity:0} }
 
-  .rule { stroke: var(--sl-color-gray-6); stroke-width: 1; }
+  .rule { stroke: var(--gl-track-bg); stroke-width: 1; }
   .verdict {
     font-size: 12px; text-anchor: middle;
-    fill: var(--sl-color-gray-2); font-weight: 500;
+    fill: var(--gl-text-secondary); font-weight: 500;
   }
 
   /* Static frame: caught at the replay, the moment that matters most. */

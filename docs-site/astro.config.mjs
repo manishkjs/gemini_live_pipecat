@@ -9,11 +9,6 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
   site: 'https://manishkjs.github.io',
   base: '/gemini_live_pipecat',
-  // Allow remote dev hosts / IDE proxies to reach the local dev and preview
-  // servers. Only affects local serving, never the built static output that
-  // ships to GitHub Pages. Set DEV_ALLOWED_HOSTS (comma-separated) if you
-  // develop on a remote VM behind a proxy; otherwise any host is allowed
-  // locally, which is safe because this never touches the published site.
   vite: {
     server: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
     preview: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
@@ -31,13 +26,22 @@ export default defineConfig({
         },
       ],
       customCss: ['./src/styles/custom.css'],
+      head: [
+        {
+          tag: 'script',
+          attrs: {
+            src: '/gemini_live_pipecat/sidebar-resizer.js',
+            defer: true,
+          },
+        },
+      ],
       sidebar: [
         {
           label: 'Guides',
           items: [
             { label: 'Getting started', slug: 'getting-started' },
-            { label: 'Gemini Live Skill', slug: 'gemini-live-skill' },
             { label: 'Voice Studio', slug: 'voice-playground' },
+            { label: 'Gemini Live Skill', slug: 'gemini-live-skill' },
           ],
         },
         {

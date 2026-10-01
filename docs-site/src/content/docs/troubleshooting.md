@@ -1,145 +1,48 @@
 ---
-title: Troubleshooting
-description: Close codes, self-interruption loops, duplicate greetings, and the interrupted-introduction recovery protocol.
+title: Troubleshooting & Common Pitfalls
+description: Quick diagnosis and fixes for common audio, connection, VAD, tool calling, and billing issues in Gemini Live.
 ---
 
-The most common production issues and how to read them.
+Use this symptom-to-fix reference to diagnose common issues during Gemini Live development and production rollout.
 
-## WebSocket close codes
+---
 
-| Code | Meaning | Resumable? |
-| --- | --- | --- |
-| `1000` | Normal closure | Yes: Reconnect with your resumption handle |
-| `1006` | Abnormal closure (no clean handshake) | Yes: Reconnect and replay unconfirmed messages |
-| `1007` | Invalid frame payload (modality violation, bad voice name) | No: Fix payload schema or configuration |
-| `1008` | Policy violation **or routine session rotation** | **Context dependent (see below)** |
-| `1011` | Server-side error | Yes: Retry with exponential backoff |
+## 1. Audio & playback issues
 
-:::caution[`1008` means two completely different things]
-- **Routine rotation.** The server ends sessions roughly every **10–15 minutes**.
-  It emits a `sessionResumptionUpdate` first, *then* closes with `1008`. This is
-  expected. Reconnect with the handle and replay unconfirmed messages.
-- **Genuine policy violation.** The model is gated on your surface, or your
-  project lacks access. No amount of retrying will help.
+| Symptom | Root Cause | Fix |
+| :--- | :--- | :--- |
+| **Model voice sounds slow, deep, or demon-pitched** | Playing **24kHz** PCM model output through an `AudioContext` or telephony stream configured for **16kHz** or **8kHz**. | Initialize your playback `AudioContext({ sampleRate: 24000 })`, or downsample 24kHz → 8kHz (with an anti-aliasing filter) before sending to PSTN telephony. |
+| **Model voice sounds fast or "chipmunk"-pitched** | Playing **24kHz** PCM model output at **44.1kHz** or **48kHz** without resampling. | Explicitly pass `24000` when creating the `AudioBuffer`: `ctx.createBuffer(1, samples.length, 24000)`. |
+| **Loud static / white noise instead of speech** | Byte-order (endianness) mismatch or float32 vs. int16 buffer confusion. | Gemini Live sends and receives **16-bit signed little-endian PCM (`int16`)**. Convert `Int16Array` samples to `Float32Array` by dividing by `32768.0` before Web Audio playback. |
+| **Model never responds to caller audio** | Sending `audio/webm`, `audio/mp3`, or 8kHz G.711 `mulaw` directly to Gemini Live without transcoding. | Transcode inbound audio to raw `audio/pcm;rate=16000` (16-bit, mono, little-endian) and stream via `sendRealtimeInput`. |
 
-**How to tell them apart:** if you received a resumption update shortly before
-the close, it was rotation. If the socket died on the very first turn, it is
-access. Treating rotation as fatal makes every long call look broken; treating
-gating as transient produces an infinite reconnect loop.
-:::
+---
 
-## The connection closes right after `setup`
+## 2. Interruption (barge-in) & VAD issues
 
-Almost always an invalid `setup` frame. Check, in this order:
+| Symptom | Root Cause | Fix |
+| :--- | :--- | :--- |
+| **Model interrupts itself as soon as it starts speaking** | Acoustic echo: speaker audio is bleeding back into the user's microphone without Echo Cancellation (AEC). | Enable browser AEC (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`) or test with headphones. |
+| **Old audio keeps playing for 2–3 seconds after user barges in** | Client audio queue isn't flushed on `serverContent.interrupted == True`. | Listen for `serverContent.interrupted` and immediately stop/disconnect all scheduled `AudioBufferSourceNode` instances in your playback queue. |
+| **Model cuts off the caller mid-sentence when they pause to think** | `endOfSpeechSensitivity` is too high or `silenceDurationMs` is too short. | Increase `silenceDurationMs` to `600`–`800` ms and set `endOfSpeechSensitivity="END_SENSITIVITY_LOW"`. |
+| **Model ignores short caller replies like *"Yes"* or *"No"*** | `startOfSpeechSensitivity` is set to `LOW` or `prefixPaddingMs` is too high. | Set `startOfSpeechSensitivity="START_SENSITIVITY_HIGH"` and `prefixPaddingMs=100`. |
 
-- **Voice name**: Case-sensitive. `Aoede` works; `aoede` closes the socket.
-- **Response modalities**: `["AUDIO", "TEXT"]` is invalid and returns `1007`.
-  Use `["AUDIO"]` plus output transcription.
-- **Model name**: A typo, or a model not available in your project or region.
-- **Model path form**: Vertex requires the full
-  `projects/…/locations/…/publishers/google/models/…` path, not a bare name.
+---
 
-## `1006` immediately, with no server response
+## 3. Connection & WebSocket lifecycle errors
 
-The WebSocket **upgrade** never completed. The model never saw you.
+| Symptom | Root Cause | Fix |
+| :--- | :--- | :--- |
+| **WebSocket closes immediately after connecting (`1007` / `1008`)** | Sending `realtimeInput` audio chunks before sending `setup` (or sending `setup` twice), or specifying both `AUDIO` and `TEXT` in `responseModalities`. | Wait for `setupComplete` before streaming audio, and set `responseModalities: ["AUDIO"]` (enable transcripts via `inputAudioTranscription` / `outputAudioTranscription`). |
+| **Call drops at ~10 minutes (`goAway` / `1001`)** | Underlying Vertex AI / AI Studio WebSocket connection lifetime limit (~10 minutes). | Enable `sessionResumption` in `LiveConnectConfig`, store the latest `sessionResumptionUpdate.newHandle`, and reconnect automatically when `goAway` arrives. |
+| **Call terminates at 15 minutes even with `sessionResumption`** | Uncompressed audio sessions have a hard 15-minute context ceiling. | Enable `contextWindowCompression` (`SlidingWindow`) in `LiveConnectConfig` to allow unlimited session duration. |
 
-- **Proxies and web-preview URLs** frequently drop WS upgrades. If you are
-  developing on a remote VM, forward the port over SSH and hit `localhost`
-  instead of the proxy hostname:
+---
 
-  ```bash
-  ssh -L 7860:localhost:7860 user@your-dev-vm
-  ```
+## 4. Prompting, tool calling & cost anomalies
 
-- **Mixed content**: An HTTPS page cannot open a `ws://` socket. It must be
-  `wss://`.
-- **Missing auth header**: A bearer token in a query string where the server
-  expects a header fails at upgrade time.
-
-## The agent interrupts itself in a loop
-
-Speaker output is bleeding into the microphone, so server VAD "hears the user"
-the moment the agent speaks.
-
-1. Enable **`echoCancellation: true`** in `getUserMedia`. This fixes it the vast
-   majority of the time.
-2. Test with headphones: If the loop disappears, acoustic echo is confirmed.
-3. Lower VAD sensitivity to `LOW` on both start and end of speech.
-
-See [Audio engineering](/gemini_live_pipecat/audio-engineering/).
-
-## The agent greets you twice, or talks over itself at the start
-
-You are emitting the opening turn twice. In frameworks with a context aggregator,
-pushing **both** a context frame and a run frame produces two parallel
-generations, because the aggregator already emits context when the run frame arrives.
-
-Push **only** the run frame to trigger the greeting.
-
-## The user interrupts the introduction and never hears it
-
-By default the model resumes from where it was cut off, so a user who barges in
-during the opening greeting never learns who they are talking to. Fix it in your
-application, with a one-shot latch:
-
-```python
-introduction_complete = False
-introduction_restart_injected = False   # single-shot: prevents a greeting loop
-cumulative_output_text = ""
-```
-
-1. Append every output-transcription fragment to `cumulative_output_text`. When
-   the intro's closing phrase appears (for example *"how can I assist you
-   today"*), set `introduction_complete = True`.
-2. On `interrupted`, if the introduction never completed and you have not already
-   injected a restart, send a hidden context turn asking the model to deliver the
-   full introduction again, then set the latch.
-3. Never inject more than once. Without the latch, a user who interrupts twice
-   traps the agent in a greeting loop.
-
-## "It works, but the model seems wrong"
-
-Some backends **silently fall back** to a default model when you request one that
-is not on their allowlist. Log the **effective** model the server used, not the
-one you asked for.
-
-If a connection closes with `1008` during setup, verify that your model name
-matches the provider format (`gemini-3.1-flash-live-preview` or
-`projects/…/locations/…/publishers/google/models/gemini-3.1-flash-live-preview`),
-that the API is enabled on your Cloud project, and that your quota tier or
-service account has access to the requested model.
-
-## Audio sounds sped up or slowed down
-
-A **sample-rate mismatch**. Input must be 16 kHz; output is 24 kHz. Playing one
-at the other's rate produces chipmunks or a slow drawl. Resample explicitly, and
-verify each direction independently.
-
-## The agent talks over the user
-
-Your client is not honoring **`interrupted`**. On that signal, immediately flush
-all buffered-but-unplayed audio. Note that `generationComplete` is *not* the same signal. The model has stopped generating, but your playback queue may still hold seconds
-of audio.
-
-## Nothing happens after connecting
-
-You are probably sending audio **before `setupComplete`**. Gate all sends on the
-handshake acknowledgement.
-
-## First turn is silent or choppy
-
-Check your **jitter buffer**. Playing the first chunk instantly gives the lowest
-latency and the worst smoothness; too deep a buffer makes the first response feel
-sluggish. Queue a few chunks, then play at a steady cadence.
-
-## Your latency numbers look impossibly good
-
-If STT latency reads around **2 ms**, you are measuring the audio frame interval,
-not speech latency. See [the 2 ms
-trap](/gemini_live_pipecat/latency-and-telemetry/#the-2-ms-trap).
-
-## Long sessions crash or degrade
-
-Enable **context window compression**. Without it, a long call eventually
-overflows the context window. Also confirm session resumption is actually
-implemented, not just declared in `setup`.
+| Symptom | Root Cause | Fix |
+| :--- | :--- | :--- |
+| **Model reads stage directions aloud (e.g., *"laughs"*, *"pause"*)** | Using square brackets like `[laugh]` or `[SYSTEM UPDATE]` in the prompt or `clientContent`. | Remove all square brackets from prompts and dynamic phase cards; write natural unbracketed guidance instead. |
+| **Injecting a `clientContent` message cuts off the model mid-sentence** | By design, sending `clientContent` interrupts any active model generation. | Only send `clientContent` after `turnComplete`, or return dynamic guidance inside a `toolResponse` with `scheduling=WHEN_IDLE` or `SILENT`. |
+| **Per-minute cost climbs from `$0.031/min` in Minute 1 to `$0.178/min` in Minute 10** | Quadratic Carried Audio Tax: every turn re-reads all prior audio turns and a large static system prompt. | Implement the [3-Pillar Optimization Architecture](/gemini_live_pipecat/optimization/) (SlidingWindow + Dynamic Prompt Cards + FactStore Pruning). |

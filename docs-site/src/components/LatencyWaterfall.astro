@@ -12,7 +12,7 @@ interface Props {
   caption?: string;
 }
 const {
-  caption = 'Indicative shape, not a benchmark — your numbers will differ. The structure is the point: cascade stages are serial, so they add up.',
+  caption = 'Indicative shape rather than a fixed benchmark: cascade stages run in series, so their latencies add up.',
 } = Astro.props;
 
 const ticks = [0, 250, 500, 750, 1000];
@@ -23,9 +23,9 @@ const ticks = [0, 250, 500, 750, 1000];
     <title id="wf-title">Latency comparison: native audio versus a cascade pipeline</title>
     <desc id="wf-desc">
       Native speech-to-speech produces first audio in roughly 640 milliseconds as
-      a single stage. A cascade runs three serial stages — speech-to-text at
+      a single stage. A cascade runs three serial stages, speech-to-text at
       about 210 milliseconds, the language model at about 380, and text-to-speech
-      at about 190 — totalling roughly 780 milliseconds before the user hears
+      at about 190, totalling roughly 780 milliseconds before the user hears
       anything.
     </desc>
 
@@ -76,19 +76,19 @@ const ticks = [0, 250, 500, 750, 1000];
     margin-top: 0.6rem;
     text-align: center;
     font-size: 0.85rem;
-    color: var(--sl-color-gray-3);
+    color: var(--gl-text-muted);
   }
 
   .row-label {
     font-size: 13px;
     font-weight: 600;
     text-anchor: end;
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
   }
   .row-sub {
     font-size: 10.5px;
     text-anchor: end;
-    fill: var(--sl-color-gray-4);
+    fill: var(--gl-text-muted);
   }
 
   .bar {
@@ -96,7 +96,7 @@ const ticks = [0, 250, 500, 750, 1000];
     transform-origin: left center;
     stroke-width: 1;
   }
-  .bar.native { fill: #34a853; fill-opacity: 0.45; stroke: #34a853; }
+  .bar.native { fill: var(--gl-green-text); fill-opacity: 0.45; stroke: var(--gl-green-text); }
   .bar.stt { fill: var(--sl-color-accent); fill-opacity: 0.3; stroke: var(--sl-color-accent); }
   .bar.llm { fill: var(--sl-color-accent); fill-opacity: 0.45; stroke: var(--sl-color-accent); }
   .bar.tts { fill: var(--sl-color-accent); fill-opacity: 0.6; stroke: var(--sl-color-accent); }
@@ -104,7 +104,7 @@ const ticks = [0, 250, 500, 750, 1000];
   .bar-text {
     font-size: 11.5px;
     text-anchor: middle;
-    fill: var(--sl-color-white);
+    fill: var(--gl-text-primary);
     font-weight: 500;
   }
   .bar-text.sm { font-size: 10.5px; }
@@ -146,17 +146,17 @@ const ticks = [0, 250, 500, 750, 1000];
 
   .hear circle { fill: currentColor; }
   .hear text { font-size: 11px; fill: currentColor; font-weight: 500; }
-  .hear.native-hear { color: #34a853; animation-delay: 0.4s; }
+  .hear.native-hear { color: var(--gl-green-text); animation-delay: 0.4s; }
   .hear.cascade-hear { color: var(--sl-color-accent); animation-delay: 0.75s; }
 
-  .axis-line { stroke: var(--sl-color-gray-5); stroke-width: 1; }
-  .tick { stroke: var(--sl-color-gray-5); stroke-width: 1; }
-  .tick-label { font-size: 10px; text-anchor: middle; fill: var(--sl-color-gray-4); }
-  .axis-title { font-size: 10.5px; text-anchor: middle; fill: var(--sl-color-gray-4); }
+  .axis-line { stroke: var(--gl-track-border); stroke-width: 1; }
+  .tick { stroke: var(--gl-track-border); stroke-width: 1; }
+  .tick-label { font-size: 10px; text-anchor: middle; fill: var(--gl-text-muted); }
+  .axis-title { font-size: 10.5px; text-anchor: middle; fill: var(--gl-text-muted); }
   .verdict {
     font-size: 12px;
     text-anchor: middle;
-    fill: var(--sl-color-gray-2);
+    fill: var(--gl-text-secondary);
     font-weight: 500;
   }
 
