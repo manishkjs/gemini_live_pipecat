@@ -1,133 +1,161 @@
 ---
-title: Prompt Optimization & Context Anatomy
-description: How Gemini Live assembles the model prompt from top to bottom, how to minimize per-turn token re-billing, where to place static rules vs. mutable session state, and how to write prompts that hold up under real-time streaming audio.
+title: Prompt optimization
+description: How Gemini Live builds the prompt on every turn, where each kind of instruction belongs, and how to write short prompts that work well with live audio.
 ---
 
 import PromptAnatomyDiagram from '../../components/PromptAnatomyDiagram.astro';
 
-Writing and optimizing prompts for a full-duplex native audio model is fundamentally different from prompting a text chatbot. In Gemini Live, `systemInstruction`, `tools`, conversation history, and dynamic context updates are not independent settings: they occupy **fixed positions** inside the model prompt on every inference pass, and everything in the active window is re-evaluated on every turn.
+A voice agent prompt behaves differently from a chatbot prompt. In Gemini Live, your `systemInstruction`, your `tools`, the conversation so far, and any updates you send during the call all end up in one prompt. Each piece has a fixed place in it.
 
-Understanding that positional layout explains **why static prompt bloat compounds across turns**, **why tail context steers the current turn most strongly**, and **how mid-session updates affect latency and prefix caching**.
+The model reads that whole prompt again on every turn, and you pay for it again on every turn. So the order matters. It tells you what to keep short and where to put instructions that change during a call.
 
 ---
 
-## 1. How the model prompt is constructed (top to bottom)
+## 1. How Gemini Live builds the prompt
 
-When Gemini Live processes a turn, it assembles the model context in ordered positional blocks:
+On every turn, Gemini Live stacks the prompt in this order, top to bottom:
 
 ```text
-ROLE_SYSTEM:
-  1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+ROLE_SYSTEM                   (set by Google, you can't change it)
+  1. Spoken-dialog rules      Built-in rules for talking out loud
+  2. Voice sample             About 224 to 239 audio tokens for the voiceName you picked
 
-ROLE_DEVELOPER:
-  3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
-  4. <developer instruction>                   <- setup.systemInstruction (maps to ROLE_DEVELOPER, after tools)
-------------------------------------------------- [Prefix Cache Boundary]
-ROLE_USER / ROLE_ASSISTANT:
-  5. <conversation history>                    <- Prior clientContent & realtimeInput turns (audio + transcripts;
-                                                  barge-in turns are truncated to only the audio the caller actually heard)
+ROLE_DEVELOPER                (set by you when the session starts)
+  3. Tool definitions         setup.tools (comes first)
+  4. Your instructions        setup.systemInstruction (comes after the tools)
+----------------------------- reuse line: the server can reuse everything above between turns
+ROLE_USER / ROLE_ASSISTANT
+  5. Conversation so far      Earlier turns, kept as audio plus transcripts.
+                              If the caller cut the agent off, only the audio
+                              they heard is kept.
+ROLE_CONTEXT
+  6. Time and location        Added by the server
 
-ROLE_CONTEXT:
-  6. <time and location>                       <- Server-injected runtime metadata (from session timezone / location)
+ROLE_USER
+  7. What the caller just said    The latest caller turn (audio plus transcript)
 
-ROLE_USER:
-  7. <current user turn>                       <- Active endpointed caller utterance (<audio> + transcript)
-
-ROLE_CONTEXT:
-  8. <client / session context>                <- Tail context (phase state, FactStore, WHEN_IDLE updates)
+ROLE_CONTEXT
+  8. Session updates          What you send during the call (current step, saved facts)
 ```
 
-<PromptAnatomyDiagram />
+The `ROLE_*` labels describe how the server orders the prompt. You won't see them in the API.
 
-### Four architectural consequences for prompt optimization
+A few terms come up a lot on this page:
 
-1. **Why public `systemInstruction` lives in `ROLE_DEVELOPER` (after `tools`)**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 large tool schemas (`~2,500+` tokens), they sit ahead of your `systemInstruction` inside `ROLE_DEVELOPER` and are re-billed on every turn. Keeping declared tools pruned to 1 to 5 active schemas (`CallSlots`) cuts per-turn text input tokens and prevents tool definitions from crowding out your persona and turn-taking rules.
-2. **Tail context is the last thing the model reads (Recency Steering)**:
-   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, twenty turns of accumulated audio and transcript history eventually separate your opening instructions from the caller's latest sentence. By contrast, tail context placed at the end of the prompt sits immediately after `<current user turn>`. It carries the strongest attention weight for the current turn and is the right place for state that changes during a call (current conversation phase, verified caller facts, or active cart state).
-3. **`systemInstruction` and `tools` form the prefix-cached preamble**:
-   Both `tools` (serialized first) and `systemInstruction` (serialized second) live inside `ROLE_DEVELOPER` at the start of the token sequence. Updating either `systemInstruction` or `tools` mid-session invalidates the prefix cache for the remainder of the session, whereas updating tail context after the conversation history preserves the cached prefix.
-4. **Barge-in truncates history to what the caller actually heard, and session resumption replays pre-tokenized chunks**:
-   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a caller barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending `"—"` to the partial transcript so the model knows the caller never heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server replays pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
+- Reuse line: the server keeps its work on the top part of the prompt so it doesn't redo it every turn. The diagram below calls that top part the preamble and the line the prefix cache boundary. This makes replies faster. It doesn't make them cheaper, because those tokens are still billed on every turn.
+- Session updates: text you add at the very bottom of the prompt while the call is running. Examples are a step card (the instructions for the current step of the call, also called a phase card) and a short list of facts you've saved about the caller. Some docs call this "tail context".
+- `WHEN_IDLE`: a scheduling option on a tool response. The update is delivered after the model finishes speaking, so it doesn't cut the model off.
 
-### Decision matrix: Where each piece of information belongs
+<PromptAnatomyDiagram caption="The fixed setup (tools, then your instructions) sits at the top, above the reuse line. Updates you send during the call sit at the very bottom, right after what the caller just said." />
 
-| Information Type | Where to Place It | Update Cadence | Token & Prefix Cache Impact |
+### What this means for your prompt
+
+#### Your instructions aren't at the very top
+
+`ROLE_SYSTEM` belongs to the server. It holds Google's spoken-dialog rules and the voice sample for your `voiceName`. Your `systemInstruction` goes into `ROLE_DEVELOPER`, right after your tool definitions. Fifteen to twenty large tool schemas can put 2,500 or more tokens in front of your instructions, and you pay for them on every turn. Declare only the tools the call needs, ideally 1 to 5.
+
+#### The bottom of the prompt has the most pull
+
+Your instructions sit at the top. After twenty turns, a lot of audio and transcript sits between them and the caller's latest words. Session updates go at the very bottom, right after what the caller just said, so the model tends to follow them closely in its next reply. Put things that change during the call there: the current step, facts you've confirmed, or what's in the caller's cart.
+
+#### Changing the top block means rebuilding it
+
+Your tools and instructions form the block above the reuse line. If you change either one, the server has to rebuild that block. Adding session updates at the bottom leaves it alone.
+
+#### The server decides what the caller heard
+
+Only the Live server knows the exact moment a caller cut in. When that happens, it drops the unplayed part of the agent's audio from history and ends the partial transcript with `"—"`. That way the model knows the caller never heard the rest of the sentence. The server also handles this when a dropped connection picks up where it left off with `SessionResumptionConfig`: it restores the saved history directly instead of processing the raw audio again.
+
+### Where each piece of information goes
+
+| What it is | Where to put it | How often it changes | Effect |
 | :--- | :--- | :--- | :--- |
-| **Agent persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`) | Set once at session start (`~300–500 tokens`) | Cached in preamble |
-| **Core tool schemas (`functionDeclarations`)** | `setup.tools` (`ROLE_DEVELOPER`) | Set once at session start (or updated sparingly on major phase shifts) | Cached in preamble (updating invalidates cache) |
-| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Tail context (`FunctionResponse` with `scheduling=WHEN_IDLE` or between-turn context update) | On phase transition (`3 to 5 times` per call) | Preserves preamble prefix cache |
-| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | Tail context (`<60 tokens` compact JSON/text summary) | Updated after key facts are captured | Preserves preamble prefix cache |
-| **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
+| Persona, tone, speaking pace, language and grammar rules | `setup.systemInstruction` | Once, at the start (about 300 to 500 tokens) | Part of the reused top block |
+| Tool definitions (`functionDeclarations`) | `setup.tools` | Once, at the start | Part of the reused top block. Changing it means a rebuild |
+| Rules for the current step, such as "Step 2: verify identity" | Session update: a tool response with `scheduling=WHEN_IDLE`, or a `clientContent` message between turns | When the step changes, about 3 to 5 times per call | Top block stays as it is |
+| Confirmed caller facts, such as name, postal code, or ticket ID | Session update, as a short summary under 60 tokens | After you capture a new fact | Top block stays as it is |
+| Large catalogs or policy documents (over 1,000 tokens) | Behind a lookup tool that returns a short summary (about 25 tokens) the agent can say out loud | Only when needed | Nothing added to the fixed prompt |
 
 ---
 
-## 2. How to structure a lean `<500-token` `systemInstruction`
+## 2. Keep `systemInstruction` under 500 tokens
 
-In a 10-turn voice call, a bloated 4,000-token `systemInstruction` generates 40,000 billed text input tokens (`$0.020–$0.030` in static text re-billing alone). A production voice `systemInstruction` stays under **500 tokens** and is organized into four compact blocks:
+You pay for `systemInstruction` again on every turn. A 4,000-token instruction in a 10-turn call adds up to 40,000 billed text tokens, which is `$0.020` to `$0.030` for the instruction alone. Keep yours under 500 tokens and split it into four short blocks:
 
 ```text
-1. PERSONA & ACOUSTIC DELIVERY
+1. PERSONA AND DELIVERY
 You are Maya, a senior technical support specialist at Cymbal Fiber.
-Speak in a warm, calm, conversational tone. Keep every response to 1 or 2 short sentences (15 to 35 words), then pause so the caller can reply.
+Speak in a warm, calm, conversational tone. Keep every reply to 1 or 2 short sentences (15 to 35 words), then pause so the caller can answer.
 Read confirmation numbers, postal codes, and phone numbers one digit at a time ("four, two, nine").
 
-2. LANGUAGE PINNING & ACOUSTIC FILTERING
-Speak exclusively in English. Every word you output must remain in English regardless of background noise, coughs, or caller accent.
-The caller may be in a noisy environment. Ignore background conversations, side chatter, and non-directed sounds.
+2. LANGUAGE AND BACKGROUND NOISE
+Speak only in English. Keep every word in English, even if you hear background noise, coughs, or a strong accent.
+The caller may be somewhere noisy. Ignore background conversations, side chatter, and sounds not directed at you.
 
-3. POSITIVE TOOL & TURN RULES
-Speak the opening greeting first without calling any tools.
-When you invoke a tool on later turns, first speak a brief natural acknowledgment ("Let me check your line status right now."), then emit the tool call and stop speaking. Your sole job after emitting a tool call is to listen.
+3. TOOL AND TURN RULES
+Say the opening greeting first, without calling any tools.
+On later turns, when you call a tool, first say a short acknowledgment ("Let me check your line status right now."), then make the tool call and stop talking. After a tool call, your only job is to listen.
 
-4. OPENING PHASE (STEP 1: GREETING & INTENT)
+4. OPENING STEP (GREETING AND REASON FOR CALLING)
 a) Greet the caller briefly and ask how you can help today.
-b) Listen to their complete answer.
-c) Call lookup_customer_account with their stated issue and wait for the tool response before advancing.
+b) Listen to their full answer.
+c) Call lookup_customer_account with the issue they described, and wait for the result before moving on.
 ```
 
-### Why each block is written this way
+### Why it's written this way
 
-#### A. Positive behavioral framing beats negative prohibitions
-Under real-time audio streaming, negative instructions (*"Do NOT narrate tool calls"*, *"Do NOT ask two questions at once"*, *"Never repeat yourself"*) frequently backfire because they prime token attention on the forbidden action. Rewrite prohibitions into positive actions that tell the model what to do next:
+#### Say what to do, not what to avoid
 
-| Fragile Negative Prompt | Production Positive Rewrite |
+Rules like *"Do NOT narrate tool calls"* or *"Never repeat yourself"* often backfire in live audio, because naming the unwanted action keeps it front of mind for the model. Tell the model what to do next instead:
+
+| Instead of this | Write this |
 | :--- | :--- |
-| *"Do NOT announce when you are calling a function or read out parameter names."* | *"Before invoking a tool, speak one natural sentence ('Let me check that for you.'), emit the tool call, and immediately stop speaking."* |
-| *"Never ask multiple questions in the same turn or give long paragraphs."* | *"Ask exactly one question per turn, keep your reply under 30 words, and wait for the caller to answer."* |
-| *"Do not switch languages if you hear background noise."* | *"Speak exclusively in English on every turn, even if background voices or accents sound like another language."* |
+| *"Do NOT announce when you are calling a function or read out parameter names."* | *"Before you call a tool, say one natural sentence ('Let me check that for you.'), make the call, and stop talking."* |
+| *"Never ask multiple questions in the same turn or give long paragraphs."* | *"Ask one question per turn, keep your reply under 30 words, and wait for the caller to answer."* |
+| *"Do not switch languages if you hear background noise."* | *"Speak only in English on every turn, even if background voices or accents sound like another language."* |
 
-#### B. Guard Turn 0 against autonomous tool calls
-Without an explicit opening boundary (*"Speak the opening greeting first without calling any tools"*), autonomous tool-calling models frequently invoke `switch_phase` or lookup tools on Turn 0 before speaking the greeting—injecting a 500+ token phase card before the caller has said a single word and more than doubling Turn 1 tokens (`488 -> 1,254 tokens`).
+#### Stop the agent from calling tools before it says hello
 
-#### C. Prescriptive `a -> b -> c` sequences prevent turn-boundary guessing
-When a phase requires asking a question and calling a tool, spell out the exact turn boundary using lettered steps (`a, b, c`) so the model does not call the tool before the caller answers.
+Turn 0 is the moment before the caller has said anything. Without a clear opening rule (*"Say the opening greeting first, without calling any tools"*), the model may call `switch_phase` or a lookup tool on Turn 0, before it greets the caller. That can load a 500-token step card before the caller speaks and roughly double the prompt tokens for Turn 1 (from 488 to 1,023 in one measured session).
 
-#### D. Single source of truth (no duplicate instructions)
-If a phase directive or follow-up question is delivered dynamically via a tool response or tail context update, **remove that instruction from the base `systemInstruction`**. Keeping the same instruction in both the top preamble and the bottom tail context causes the model to deliver the prompt twice.
+#### Spell out each step with a, b, c
 
----
+When a step involves asking a question and then calling a tool, write the order out as lettered steps. Otherwise the model may call the tool before the caller has answered.
 
-## 3. Acoustic traps that break native audio sessions
+#### Say each instruction once
 
-Native speech-to-speech models process text instructions directly in the acoustic domain. Avoid these three failure modes:
-
-1. **Never use square brackets (`[PAUSE]`, `[SYSTEM_NOTE]`, `[EMPATHETIC]`)**:
-   Native audio models frequently treat bracketed tags as literal words to read aloud (*"bracket system note bracket"*) or shift into exaggerated theatrical prosody. Always use plain conversational prose (`"System update for agent: ..."`).
-2. **Never instruct the model to `"stay silent"` or `"produce no audio"` for a full turn**:
-   When a Gemini Live model generates zero audio tokens for an entire turn, the backend suppresses `inputAudioTranscription` events for that turn as well, blinding your server-side transcript logger and state machine. If the client needs silence while background work runs, gate audio or use `FunctionResponseScheduling.SILENT` on the tool response instead of prompting the model to produce zero audio.
-3. **Never send `clientContent` while the model is actively speaking**:
-   Sending a `BidiGenerateContentClientContent` message during active model generation unconditionally interrupts and cuts off the model's in-flight speech, even when `turn_complete=False` is set (`turn_complete=False` only prevents starting a new response turn; it does not prevent interrupting an active one). Always wait for `turnComplete` (or return updates inside a `FunctionResponse` with `scheduling=WHEN_IDLE`).
+If a tool response or session update already gives the instructions for a step, take that instruction out of `systemInstruction`. When the same instruction appears at both the top and the bottom of the prompt, the model may say it twice.
 
 ---
 
-## 4. Steering mid-session: Tail context & phase cards
+## 3. Audio traps to avoid
 
-To steer the model across a multi-step call without bloating `ROLE_DEVELOPER` or invalidating the prefix cache:
+Native audio models turn your text instructions straight into speech. Some habits from text prompting cause trouble here:
 
-1. **Keep `setup.systemInstruction` and `setup.tools` fixed** across ordinary turns so the preamble remains prefix-cacheable.
-2. **Inject phase transitions and `FactStore` updates at the tail** (either inside a `FunctionResponse` with `scheduling=WHEN_IDLE` or via `clientContent` with `turn_complete=False` immediately after `turnComplete`).
-3. **Repeat persona grammar rules inside multilingual phase cards**: In gendered languages (such as Hindi, Spanish, or French), a tail-injected phase card becomes the most recent instruction before generation. Include a 1-line persona grammar header in each phase card so the model never drifts from its assigned speaker gender.
+### Don't use square brackets
 
-See [Optimization Patterns](/gemini_live_pipecat/optimization/) for the complete Python implementation of dynamic phase cards (`Pillar 2`) and the `<60-token` rolling `FactStore` (`Pillar 3`).
+Avoid tags such as `[PAUSE]`, `[SYSTEM_NOTE]`, or `[EMPATHETIC]`. The model may read them out loud (*"bracket system note bracket"*) or switch to an over-acted voice. Write plain sentences instead, like `"System update for agent: ..."`.
+
+### Don't ask the model to stay silent for a whole turn
+
+If the model produces no audio for a turn, the server also skips the caller's input transcription for that turn. Your transcript log and state machine then miss what the caller said. If you need silence while background work runs, mute the audio on your side, or send the tool response with `FunctionResponseScheduling.SILENT`.
+
+### Don't send `clientContent` while the model is talking
+
+A `clientContent` message sent mid-reply cuts the model off. Setting `turn_complete=False` doesn't prevent this. It only stops the message from starting a new reply. Wait for `turnComplete` first, or put the update in a tool response with `scheduling=WHEN_IDLE`.
+
+---
+
+## 4. Guiding the call with session updates
+
+To take a call through several steps without growing the top block:
+
+1. Keep `setup.systemInstruction` and `setup.tools` the same for the whole call.
+2. Send step changes and saved facts as session updates. Either return them in a tool response with `scheduling=WHEN_IDLE`, or send them with `clientContent` (`turn_complete=False`) right after `turnComplete`.
+3. In languages with grammatical gender, such as Hindi, Spanish, or French, add a one-line grammar reminder to every step card. The newest card is the last thing the model reads before it replies, so leaving the reminder out can make the agent switch the gender it uses for itself.
+
+:::note
+Tool scheduling (`WHEN_IDLE`, `SILENT`) only works for tools declared with `behavior=NON_BLOCKING`, on a model that supports asynchronous tools, such as Gemini 2.5 Flash Native Audio. Otherwise the scheduling value is ignored. Gemini 3.1 Flash Live waits for each tool response before it speaks again and doesn't support scheduling, so send session updates with `clientContent` right after `turnComplete` instead.
+:::
+
+See [Optimization patterns](/gemini_live_pipecat/optimization/) for working Python code for step cards (Pillar 2) and a short running fact summary (Pillar 3).
