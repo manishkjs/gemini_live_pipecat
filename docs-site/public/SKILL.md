@@ -1,25 +1,27 @@
 ---
-name: gemini-live
+name: gemini-live-external
 description: >-
-  Production engineering reference for building real-time voice-to-voice (V2V)
-  AI agents with the Gemini Live API (Gemini 2.5 Flash Native Audio & Gemini 3.1
-  Flash Live) and Pipecat. Covers all 25 architectural domains: bidirectional
-  WebSocket protocol and compatibility guards, STT/TTS cascaded routing, IAM and
-  local SSH tunneling, Pipecat 1.2+ Silero VAD and receive-loop invariants,
-  diagnostic ring buffers, latency formulas, non-blocking tool calling with
-  AntiCancel shields and CallSlots pruning, guided state machines, persona
-  grammar headers, sub-millisecond BM25/Redis RAG, Frontcar/Downcar memory banks,
-  Live token accounting (bidirectional audio accumulation, barge-in truncation,
-  SlidingWindow 5000/3500 compression, FactStore, Turn-0 cold-start guards, and
-  7 counter-intuitive truths), Cloud Run deployment, Web Audio AudioWorklet
-  isolation, onTurnComplete 300ms debounce, prompt engineering, greeting
-  recovery, Silent Conductor UI navigation, framework trade-offs, and multi-tier
-  Voice QA.
+  Customer-safe and public GitHub documentation guide for building production
+  voice-to-voice (V2V) AI agents with the Gemini Live API (Gemini 2.5 Flash
+  Native Audio & Gemini 3.1 Flash Live) and Pipecat. Covers all 25 architectural
+  domains: bidirectional WebSocket protocol and compatibility guards, STT/TTS
+  cascaded routing, IAM and local SSH tunneling, Pipecat 1.2+ Silero VAD and
+  receive-loop invariants, diagnostic ring buffers, latency formulas, non-blocking
+  tool calling with AntiCancel shields and CallSlots pruning, guided state
+  machines, persona grammar headers, sub-millisecond BM25/Redis RAG, Frontcar/Downcar
+  memory banks, Live token accounting (bidirectional audio accumulation, barge-in
+  truncation, SlidingWindow 5000/3500 compression, FactStore, Turn-0 cold-start
+  guards, and 7 counter-intuitive truths), Cloud Run deployment, Web Audio
+  AudioWorklet isolation, onTurnComplete 300ms debounce, prompt engineering,
+  greeting recovery, Silent Conductor UI navigation, framework trade-offs, and
+  multi-tier Voice QA. Use ONLY when authoring external customer-facing guides,
+  public GitHub documentation, or docs-site artifacts. For all internal workflows,
+  use gemini-live-internal.
 ---
 
 # Gemini Live API & Pipecat Production Engineering Reference (Complete 25-Section Handbook)
 
-> **Installation**: Save this file to `.agents/skills/gemini-live/SKILL.md` or `~/.gemini/config/skills/gemini-live/SKILL.md` so your coding agent automatically enforces all 25 Gemini Live protocol, audio, tool-calling, and token-optimization invariants.
+> **Skill Routing Rule**: Use `gemini-live-external` **only** when generating external customer-facing documentation, public GitHub repository content, or `docs-site/` files. For all internal engineering, debugging, benchmarking, and analysis, always use **`gemini-live-internal`**.
 
 ---
 
@@ -956,13 +958,57 @@ source.addEventListener('ended', () => {
 
 ---
 
-## 18. Prompt Optimization & System Instruction Design Playbook
+## 18. Prompt Optimization, Positional Prompt Anatomy & System Instruction Playbook
 
-### A. Pre-Connect Complete SI vs. Mid-Session Interruptions
-* Any `sendClientContent` call during an active generation turn interrupts model speech.
+### A. Positional Prompt Anatomy (How the Model Prompt Is Constructed)
+In a Gemini Live session, `systemInstruction`, `tools`, conversation history, and dynamic context updates are not independent settings: they occupy **fixed positions** inside the model prompt on every inference pass. Understanding those positions explains both how strongly an update steers the current turn and whether it invalidates the prefix cache:
+
+```text
+ROLE_SYSTEM:
+  1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
+  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+
+ROLE_DEVELOPER:
+  3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
+  4. <developer instruction>                   <- setup.systemInstruction (maps to ROLE_DEVELOPER, after tools)
+------------------------------------------------- [Prefix Cache Boundary]
+ROLE_USER / ROLE_ASSISTANT:
+  5. <conversation history>                    <- Prior clientContent & realtimeInput turns (audio + transcripts;
+                                                  barge-in turns are truncated to only the audio the caller actually heard)
+
+ROLE_CONTEXT:
+  6. <time and location>                       <- Server-injected runtime metadata (from session timezone / location)
+
+ROLE_USER:
+  7. <current user turn>                       <- Active endpointed caller utterance (<audio> + transcript)
+
+ROLE_CONTEXT:
+  8. <client / session context>                <- Tail context (phase state, FactStore, WHEN_IDLE updates)
+```
+
+#### Four Architectural Consequences of This Layout
+1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`)**:
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the ~`224–239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15–20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1–5 active schemas (`CallSlots`).
+2. **Tail Context Is the Last Thing the Model Sees (Recency Steering)**:
+   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. By contrast, tail context sits immediately after `<current user turn>`, making it the last thing the model reads before generating speech and the strongest lever for state that changes during a session (active conversation phase, verified caller facts, or live cart state).
+3. **`systemInstruction` and `tools` Form the Prefix-Cached Preamble**:
+   Inside `ROLE_DEVELOPER`, `<function declarations>` (`tools`) are placed first, followed by `<developer instruction>` (`systemInstruction`). Because both sit in the preamble at the start of the token sequence, mutating either `systemInstruction` or `tools` mid-session invalidates the prefix cache for the rest of the session, whereas updating tail context after the conversation history preserves the cached prefix.
+4. **Barge-In Truncates History to What the Caller Actually Heard & Session Resumption Uses Pre-Tokenized History**:
+   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a user barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending `"—"` to the partial transcript so the model never assumes the caller heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server resumes from pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
+
+| Information Type | Where to Place It | Update Cadence | Prefix Cache Impact |
+| :--- | :--- | :--- | :--- |
+| **Persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`) | Set once at session start | Cached in preamble |
+| **Core tool schemas (`functionDeclarations`)** | `setup.tools` (`ROLE_DEVELOPER`) | Set once at session start (or updated sparingly on major phase shifts) | Cached in preamble (updating invalidates cache) |
+| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Tail context (`FunctionResponse` with `scheduling=WHEN_IDLE` or between-turn context update) | On phase transition (`3 to 5 times` per call) | Preserves preamble prefix cache |
+| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | Tail context (`<60 tokens` compact JSON/text summary) | Updated after key facts are captured | Preserves preamble prefix cache |
+| **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
+
+### B. Pre-Connect Complete SI vs. Mid-Session Interruptions
+* Any `sendClientContent` call during an active generation turn interrupts model speech (even when `turn_complete=False` is set).
 * **Rule**: Never stream or append large instructional blocks mid-session while the bot is speaking. Await any asynchronous user profile lookups *before* opening the WebSocket, assemble the initial System Instruction (`Persona + Rules + Grounding Context`), and connect once.
 
-### B. Numbered Sequential Phases & Prescriptive Tool Flows
+### C. Numbered Sequential Phases & Prescriptive Tool Flows
 * Organize multi-step interactions into numbered phases (`STEP 1: VERIFICATION`, `STEP 2: DISCOVERY`, `STEP 3: RESOLUTION`).
 * Spell out explicit, step-by-step tool execution sequences (`a, b, c, d`) so the model never guesses turn boundaries:
   ```text
@@ -973,13 +1019,13 @@ source.addEventListener('ended', () => {
   d) Listen to their complete response before advancing to Step 3.
   ```
 
-### C. Positive Behavioral Framing over Negative Prohibitions
+### D. Positive Behavioral Framing over Negative Prohibitions
 * Negative instructions (*"Do NOT narrate tool calls"*, *"Do NOT repeat yourself"*) frequently fail under audio streaming pressure due to token attention priming.
 * Use **positive behavioral framing** that defines the model's exact role after an action:
   - **Instead of**: `"Never narrate or announce when you call a function."`
   - **Use**: `"When you invoke a tool, stop speaking immediately and remain silent. Your sole job after emitting a tool call is to listen."`
 
-### D. Language Pinning & Acoustic Noise Guardrails
+### E. Language Pinning & Acoustic Noise Guardrails
 * Native audio models can code-switch when exposed to regional caller accents, coughs, or background office chatter.
 * Include explicit language-pinning and acoustic-filtering directives in every production System Instruction:
   ```text
@@ -987,14 +1033,14 @@ source.addEventListener('ended', () => {
   ACOUSTIC FILTERING: The caller is in a noisy environment. Ignore background conversations, side chatter, and non-directed sounds.
   ```
 
-### E. Single Source of Truth (Anti-Duplicate Delivery)
-* If a follow-up action or prompt card is injected dynamically via background context or tool responses, **remove that instruction from the base System Instruction**. Duplicating instructions in both the root SI and runtime context causes the model to deliver the same message twice.
+### F. Single Source of Truth (Anti-Duplicate Delivery)
+* If a follow-up action or prompt card is injected dynamically via tail context or tool responses, **remove that instruction from the base System Instruction**. Duplicating instructions in both the root SI and runtime context causes the model to deliver the same message twice.
 
-### F. The `"Stay Silent"` Transcription Trap
+### G. The `"Stay Silent"` Transcription Trap
 * **Never instruct the Gemini Live model to `"stay silent"` or `"produce no audio"` for a full turn.**
 * When the model generates zero audio output for a turn, the Gemini Live backend suppresses `inputAudioTranscription` events as well, breaking server-side transcript loggers, phase trackers, and Conductor parsers.
 
-### G. Natural Language Prefixes over Bracket Tags
+### H. Natural Language Prefixes over Bracket Tags
 * Avoid bracketed metadata tags like `[SCRIPT]`, `[SYSTEM_NOTE]`, or `[CONTEXT]` in injected text. Native audio models frequently vocalize bracketed words aloud. Use natural-language prefixes such as `"System update for agent: ..."`.
 
 ---

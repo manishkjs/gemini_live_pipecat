@@ -1,0 +1,290 @@
+---
+/**
+ * PromptAnatomyDiagram.astro
+ * Animated visualization of the top-to-bottom positional anatomy of a Gemini Live model prompt:
+ *   1. Preamble Zone (ROLE_SYSTEM + ROLE_DEVELOPER: tools -> system_instruction) [Prefix-Cached]
+ *   2. History Zone (ROLE_USER / ROLE_ASSISTANT + server ROLE_CONTEXT time/location) [Sliding Window]
+ *   3. Tail Steering Zone (ROLE_USER current turn + ROLE_CONTEXT mutable session state) [Highest Recency Weight, Cache-Safe]
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Positional anatomy of a Gemini Live inference pass: static tools and system instructions sit in the prefix-cached preamble at the top, while mutable session state sits at the very bottom after the current caller turn where it steers the response strongest without invalidating the prefix cache.",
+} = Astro.props;
+---
+
+<figure class="pad-wrapper">
+  <svg viewBox="0 0 860 470" role="img" aria-labelledby="pad-title pad-desc" class="pad-svg">
+    <title id="pad-title">Gemini Live Model Prompt Positional Anatomy</title>
+    <desc id="pad-desc">
+      Top-to-bottom stack of the six positional slots in a Gemini Live prompt: ROLE_SYSTEM preamble, ROLE_DEVELOPER containing function declarations followed by system_instruction inside the prefix-cached boundary, ROLE_USER and ROLE_ASSISTANT conversation history, server-injected ROLE_CONTEXT time and location, ROLE_USER current caller turn, and tail ROLE_CONTEXT client state at the very bottom.
+    </desc>
+
+    <!-- Outer Card -->
+    <rect x="10" y="10" width="840" height="450" rx="14" class="card-bg" />
+
+    <!-- Header -->
+    <text x="34" y="42" class="header-title">How Gemini Live Constructs the Model Prompt (Top to Bottom)</text>
+    <text x="34" y="62" class="header-sub">
+      Why prompt position determines both attention strength and prefix-cache performance across turns.
+    </text>
+
+    <!-- ================= LEFT COLUMN: THE 6 POSITIONAL PROMPT SLOTS ================= -->
+
+    <!-- Bracket 1: Prefix-Cached Preamble -->
+    <rect x="30" y="80" width="490" height="134" rx="10" class="zone-preamble" />
+    <text x="46" y="100" class="zone-tag blue-tag">1. PREAMBLE ZONE (PREFIX-CACHED)</text>
+
+    <!-- Slot 1: ROLE_SYSTEM -->
+    <rect x="46" y="108" width="458" height="36" rx="6" class="slot-box slot-muted" />
+    <text x="58" y="130" class="slot-role muted-role">ROLE_SYSTEM</text>
+    <text x="200" y="130" class="slot-val">&lt;model preamble &amp; voice config&gt; (server-internal)</text>
+
+    <!-- Slot 2: ROLE_DEVELOPER -->
+    <rect x="46" y="150" width="458" height="54" rx="6" class="slot-box slot-blue" />
+    <text x="58" y="172" class="slot-role blue-role">ROLE_DEVELOPER</text>
+    <text x="200" y="170" class="slot-val-bold">1. &lt;function declarations&gt; (setup.tools)</text>
+    <text x="200" y="190" class="slot-val-bold">2. &lt;developer instruction&gt; (setup.systemInstruction)</text>
+
+    <!-- Cache Boundary Line -->
+    <line x1="30" y1="224" x2="520" y2="224" class="cache-line" />
+    <rect x="180" y="215" width="190" height="18" rx="4" class="cache-pill" />
+    <text x="275" y="227" class="cache-pill-txt" text-anchor="middle">PREFIX CACHE BOUNDARY</text>
+
+    <!-- Bracket 2: Rolling Conversation History -->
+    <rect x="30" y="240" width="490" height="96" rx="10" class="zone-history" />
+    <text x="46" y="260" class="zone-tag amber-tag">2. ROLLING HISTORY ZONE (SLIDING WINDOW 5K / 3.5K)</text>
+
+    <!-- Slot 3: ROLE_USER / ROLE_ASSISTANT -->
+    <rect x="46" y="268" width="458" height="30" rx="6" class="slot-box slot-amber" />
+    <text x="58" y="287" class="slot-role amber-role">USER / ASSISTANT</text>
+    <text x="200" y="287" class="slot-val">&lt;prior turns: carried audio + text transcripts&gt;</text>
+
+    <!-- Slot 4: Server ROLE_CONTEXT -->
+    <rect x="46" y="302" width="458" height="26" rx="6" class="slot-box slot-muted" />
+    <text x="58" y="319" class="slot-role muted-role">ROLE_CONTEXT</text>
+    <text x="200" y="319" class="slot-val">&lt;time and location&gt; (server-injected)</text>
+
+    <!-- Bracket 3: Active Turn & Recency Tail -->
+    <rect x="30" y="346" width="490" height="98" rx="10" class="zone-tail" />
+    <text x="46" y="366" class="zone-tag green-tag">3. ACTIVE TURN &amp; RECENCY TAIL (STRONGEST STEERING)</text>
+
+    <!-- Slot 5: Current User Turn -->
+    <rect x="46" y="374" width="458" height="28" rx="6" class="slot-box slot-amber" />
+    <text x="58" y="392" class="slot-role amber-role">ROLE_USER</text>
+    <text x="200" y="392" class="slot-val">&lt;current caller audio / text turn&gt;</text>
+
+    <!-- Slot 6: Client Context / Tail State -->
+    <rect x="46" y="406" width="458" height="30" rx="6" class="slot-box slot-green pulse-tail" />
+    <text x="58" y="425" class="slot-role green-role">ROLE_CONTEXT</text>
+    <text x="200" y="425" class="slot-val-green">&lt;mutable session state / phase card / FactStore&gt;</text>
+
+    <!-- ================= RIGHT COLUMN: ARCHITECTURAL CONSEQUENCES ================= -->
+
+    <!-- Callout 1: Keep Preamble Static -->
+    <g class="callout-card">
+      <rect x="544" y="80" width="286" height="134" rx="10" class="callout-blue" />
+      <text x="560" y="104" class="callout-title blue-role">Why Preamble Must Stay Static</text>
+      <text x="560" y="124" class="callout-body">Tools and systemInstruction sit at</text>
+      <text x="560" y="141" class="callout-body">the very start of the prompt.</text>
+      <text x="560" y="161" class="callout-body">Put immutable persona, voice rules,</text>
+      <text x="560" y="178" class="callout-body">and core safety here. Mutating</text>
+      <text x="560" y="195" class="callout-highlight-blue">either invalidates the prefix cache.</text>
+    </g>
+
+    <!-- Callout 2: Middle Dilution Warning -->
+    <g class="callout-card">
+      <rect x="544" y="240" width="286" height="96" rx="10" class="callout-amber" />
+      <text x="560" y="264" class="callout-title amber-role">Why Monolithic Prompts Drift</text>
+      <text x="560" y="284" class="callout-body">As 20+ turns of audio accumulate</text>
+      <text x="560" y="301" class="callout-body">in the middle, fine-grained phase</text>
+      <text x="560" y="318" class="callout-highlight-amber">rules buried at the top lose weight.</text>
+    </g>
+
+    <!-- Callout 3: Tail Context Wins -->
+    <g class="callout-card">
+      <rect x="544" y="346" width="286" height="98" rx="10" class="callout-green" />
+      <text x="560" y="370" class="callout-title green-role">Why Tail Context Steers Best</text>
+      <text x="560" y="390" class="callout-body">Sits directly after the caller's</text>
+      <text x="560" y="407" class="callout-body">utterance: the last thing the model</text>
+      <text x="560" y="424" class="callout-highlight-green">reads + 0 cache invalidation.</text>
+    </g>
+  </svg>
+  {caption && <figcaption class="pad-caption">{caption}</figcaption>}
+</figure>
+
+<style>
+  .pad-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .pad-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 14px;
+    box-shadow: var(--gl-shadow);
+    font-family: var(--sl-font, system-ui, sans-serif);
+  }
+  .card-bg {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.5;
+  }
+  .header-title {
+    font-size: 16px;
+    font-weight: 700;
+    fill: var(--gl-text-primary);
+  }
+  .header-sub {
+    font-size: 12.5px;
+    fill: var(--gl-text-secondary);
+  }
+  .zone-preamble {
+    fill: var(--gl-blue-bg);
+    stroke: var(--gl-blue-border);
+    stroke-width: 1.25;
+  }
+  .zone-history {
+    fill: var(--gl-amber-bg);
+    stroke: var(--gl-amber-border);
+    stroke-width: 1.25;
+  }
+  .zone-tail {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.5;
+  }
+  .zone-tag {
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+  }
+  .blue-tag, .blue-role {
+    fill: var(--gl-blue-text);
+  }
+  .amber-tag, .amber-role {
+    fill: var(--gl-amber-text);
+  }
+  .green-tag, .green-role {
+    fill: var(--gl-green-text);
+  }
+  .muted-role {
+    fill: var(--gl-text-muted);
+  }
+  .slot-box {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-card-border);
+    stroke-width: 1;
+  }
+  .slot-blue {
+    stroke: var(--gl-blue-border);
+  }
+  .slot-amber {
+    stroke: var(--gl-amber-border);
+  }
+  .slot-green {
+    stroke: var(--gl-green-border);
+    stroke-width: 1.5;
+  }
+  .slot-role {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .slot-val {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    fill: var(--gl-text-secondary);
+  }
+  .slot-val-bold {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--gl-text-primary);
+  }
+  .slot-val-green {
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 11px;
+    font-weight: 700;
+    fill: var(--gl-green-text);
+  }
+  .cache-line {
+    stroke: var(--gl-blue-text);
+    stroke-width: 1.5;
+    stroke-dasharray: 5 4;
+  }
+  .cache-pill {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-blue-border);
+    stroke-width: 1.2;
+  }
+  .cache-pill-txt {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    fill: var(--gl-blue-text);
+  }
+  .callout-blue {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-blue-border);
+    stroke-width: 1.25;
+  }
+  .callout-amber {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-amber-border);
+    stroke-width: 1.25;
+  }
+  .callout-green {
+    fill: var(--gl-card-bg-elevated);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.5;
+  }
+  .callout-title {
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .callout-body {
+    font-size: 11.5px;
+    fill: var(--gl-text-secondary);
+  }
+  .callout-highlight-blue {
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: var(--gl-blue-text);
+  }
+  .callout-highlight-amber {
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: var(--gl-amber-text);
+  }
+  .callout-highlight-green {
+    font-size: 11.5px;
+    font-weight: 700;
+    fill: var(--gl-green-text);
+  }
+  @keyframes tailPulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.72;
+    }
+  }
+  .pulse-tail {
+    animation: tailPulse 2.6s ease-in-out infinite;
+  }
+  .pad-caption {
+    margin-top: 0.65rem;
+    font-size: 0.85rem;
+    color: var(--gl-text-muted);
+    text-align: center;
+    line-height: 1.45;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-tail {
+      animation: none !important;
+    }
+  }
+</style>
