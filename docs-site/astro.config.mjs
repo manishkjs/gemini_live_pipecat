@@ -49,7 +49,6 @@ export default defineConfig({
           items: [
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Configuration reference', slug: 'gemini-live-configuration' },
-            { label: 'Prompt engineering', slug: 'prompt-engineering' },
             { label: 'Audio engineering', slug: 'audio-engineering' },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
@@ -61,6 +60,7 @@ export default defineConfig({
             { label: 'Telephony pricing & tokenomics', slug: 'pricing' },
             { label: 'Pricing calculator', slug: 'pricing-calculator' },
             { label: 'Optimization patterns', slug: 'optimization' },
+            { label: 'Prompt optimization', slug: 'prompt-optimization' },
           ],
         },
         {
