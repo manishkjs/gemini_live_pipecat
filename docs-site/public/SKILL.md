@@ -1246,15 +1246,15 @@ await session.send_client_content(
     turn_complete=False)
 ```
 
-Verified working on `gemini-3.8-live` and `gemini-3.5-flash-live-preview`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
+Verified working on `gemini-3.8-live` and `gemini-3.5-live-preview`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
 
 **2. Supported: reconnect to change tools.** The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
 
 **3. Reachable on the wire, but unsupported: `contextUpdate`.**
-A `contextUpdate` client message exists on the Vertex AI Live WebSocket and does accept a `tools` field, which swaps or clears the active tool declarations in place. On `gemini-3.8-live` it genuinely works. It is still the wrong thing to ship on:
+A `contextUpdate` client message exists on the Vertex AI Live WebSocket and does accept a `tools` field, which swaps or clears the active tool declarations in place. On `gemini-3.8-live` and `gemini-3.5-live-preview` it works in our tests. It is still the wrong thing to ship on:
 
 > [!WARNING]
-> `contextUpdate` appears in **no public documentation** and in **no released version of the `google-genai` SDK**. Using it means hand-constructing raw JSON frames and reaching into the SDK's private WebSocket object. There is no published support commitment, no compatibility guarantee, and no deprecation policy attached to it. Field numbers and behaviour already differ between Vertex AI and Google AI Studio, and behaviour differs between model versions: on `gemini-3.5-flash-live-preview` a `tools` update is accepted and then **silently ignored**, with no error to tell you it did nothing. `gemini-live-2.5-flash-native-audio` closes the connection outright. Treat it as unsupported. If a customer needs in-place tool swapping as a product requirement, raise it with your Google account team rather than shipping on an undocumented frame.
+> `contextUpdate` appears in **no public documentation** and in **no released version of the `google-genai` SDK**. Using it means hand-constructing raw JSON frames and reaching into the SDK's private WebSocket object. There is no published support commitment, no compatibility guarantee, and no deprecation policy attached to it. Field numbers and behaviour already differ between Vertex AI and Google AI Studio, and behaviour differs between model builds: in our tests one Gemini 3.5 Live preview build accepted a `tools` update and then **silently ignored** it, with no error to tell you it did nothing, and `gemini-live-2.5-flash-native-audio` closes the connection outright. Even where it works, the model occasionally called a tool that had just been removed, copying an earlier call from the conversation history, so you would still have to check every tool call against the current list. Treat it as unsupported. If a customer needs in-place tool swapping as a product requirement, raise it with your Google account team rather than shipping on an undocumented frame.
 
 **Rule of thumb for customer architectures:** use `role="system"` client content for persona, phase, and policy changes, and Managed Session Cycling when the tool set itself has to change. Both are documented, both survive SDK upgrades.
 
