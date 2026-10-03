@@ -1246,6 +1246,36 @@ When the user navigates to a new context (new product category, new document, or
 
 ---
 
+### C. Mid-Session Instruction & Tool Updates: What Is Supported vs. What Is Merely Reachable
+
+Long voice calls change shape. The caller gets verified, moves from browsing to checkout, or switches language. You then want a different persona and a different tool set without dropping the WebSocket. There are three ways to do that and they are not equally safe.
+
+**1. Supported and documented: change the system instruction mid-session.**
+Send a `clientContent` turn with `role="system"` and `turn_complete=False`. The model picks up the new instructions on its next turn. No reconnect, no dead air, no microphone re-prompt.
+
+```python
+await session.send_client_content(
+    turns=types.Content(role="system", parts=[types.Part(text="Phase: Checkout. Confirm totals before charging.")]),
+    turn_complete=False)
+```
+
+Verified working on `gemini-3.8-live` and `gemini-3.5-flash-live-preview`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
+
+**2. Supported: reconnect to change tools.** The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
+
+**3. Reachable on the wire, but unsupported: `contextUpdate`.**
+A `contextUpdate` client message exists on the Vertex AI Live WebSocket and does accept a `tools` field, which swaps or clears the active tool declarations in place. On `gemini-3.8-live` it genuinely works. It is still the wrong thing to ship on:
+
+<Aside type="caution" title="`contextUpdate` is not a supported API">
+
+`contextUpdate` appears in **no public documentation** and in **no released version of the `google-genai` SDK**. Using it means hand-constructing raw JSON frames and reaching into the SDK's private WebSocket object. There is no published support commitment, no compatibility guarantee, and no deprecation policy attached to it. Field numbers and behaviour already differ between Vertex AI and Google AI Studio, and behaviour differs between model versions: on `gemini-3.5-flash-live-preview` a `tools` update is accepted and then **silently ignored**, with no error to tell you it did nothing. `gemini-live-2.5-flash-native-audio` closes the connection outright. Treat it as unsupported. If a customer needs in-place tool swapping as a product requirement, raise it with your Google account team rather than shipping on an undocumented frame.
+
+</Aside>
+
+**Rule of thumb for customer architectures:** use `role="system"` client content for persona, phase, and policy changes, and Managed Session Cycling when the tool set itself has to change. Both are documented, both survive SDK upgrades.
+
+---
+
 ## 23. Voice-Driven UI Navigation: Silent Conductor Split Architecture
 
 When building hands-free voice navigation across complex UI trees or multi-filter catalogs:
