@@ -149,3 +149,54 @@ lookup_order_decl = types.FunctionDeclaration(
 Rather than stuffing 25 tools and 5,000 tokens of instructions into a single monolithic prompt, use a lightweight **Router / Triage configuration** and swap active instructions when the conversation transitions to a specialized workflow (such as Billing, Technical Support, or Cancellations).
 
 See [Optimization Patterns: Dynamic Prompt Cards & Phase Gates](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) for the full state-machine implementation that keeps active prompt tokens averaging ~500 tokens per turn without dropping the WebSocket connection.
+
+---
+
+## 7. Changing tools and instructions during a call
+
+A call often moves through stages. First you verify the caller, then you fix their problem, then you wrap up. Each stage needs different instructions and often different tools. Here is what you can change without hanging up, and how.
+
+| What you want to change | How | Supported? |
+| :-- | :-- | :-- |
+| The instructions | Send `clientContent` with `role="system"` and `turn_complete=False` | **Yes**, documented |
+| The tool list | Open a new session with the new `setup.tools` | **Yes**, documented |
+| The tool list, without reconnecting | Raw `contextUpdate` frame | **No.** Reachable, but not documented or supported |
+
+### Change the instructions: send a system turn
+
+```python
+await session.send_client_content(
+    turns=types.Content(
+        role="system",
+        parts=[types.Part(text="Stage: checkout. Read the total back before you charge the card.")],
+    ),
+    turn_complete=False,
+)
+```
+
+The model follows the new instructions from its next reply. The socket stays open, so the caller hears no gap and the browser doesn't ask for the microphone again. We tested this on `gemini-3.8-live` and `gemini-3.5-flash-live-preview`. Google documents it in [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
+
+Send it after `turnComplete`, not while the model is talking. A `clientContent` message sent mid-reply cuts the model off.
+
+### Change the tools: reconnect without dropping the caller
+
+The supported way to swap tools is a new session with a new `setup.tools`. Done carelessly, that means half a second of silence and a fresh microphone prompt. Done well, the caller doesn't notice:
+
+1. Keep the browser `AudioContext` and microphone stream alive. Close only the WebSocket.
+2. Keep a short running summary of the call (key facts plus the last few turns).
+3. Open the new session with the persona, that summary, and the new tools.
+
+[Session Architecture: Managed Session Cycling](/gemini_live_pipecat/gemini-live-skill/#b-the-managed-session-cycling-pattern) walks through each step.
+
+### What about `contextUpdate`?
+
+The Vertex AI Live WebSocket accepts a `contextUpdate` message with a `tools` field. On `gemini-3.8-live` it does swap or clear the tool list in place, with no reconnect. It's tempting. Don't build a product on it yet.
+
+:::caution[`contextUpdate` is exposed, but not documented or supported]
+- **No documentation.** No public Google page describes it.
+- **No SDK support.** No released version of `google-genai` has a method for it. You have to write raw JSON to the SDK's private WebSocket object, which can break on any SDK upgrade.
+- **No support commitment.** It comes with no compatibility promise and no deprecation notice period.
+- **It fails silently on some models.** On `gemini-3.5-flash-live-preview` the server accepts the frame and then ignores it. No error comes back, and the old tools keep firing. `gemini-live-2.5-flash-native-audio` closes the connection instead.
+
+If changing tools without reconnecting is a hard requirement for your product, ask your Google account team. Until then, use a system turn for instructions and session cycling for tools.
+:::
