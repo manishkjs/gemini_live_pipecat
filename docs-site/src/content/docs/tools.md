@@ -174,7 +174,7 @@ await session.send_client_content(
 )
 ```
 
-The model follows the new instructions from its next reply. The socket stays open, so the caller hears no gap and the browser doesn't ask for the microphone again. We tested this on `gemini-3.8-live` and `gemini-3.5-live-preview`. Google documents it in [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
+The model follows the new instructions from its next reply. The socket stays open, so the caller hears no gap and the browser doesn't ask for the microphone again. We tested this on `gemini-3.8-live`. Google documents it in [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
 
 Send it after `turnComplete`, not while the model is talking. A `clientContent` message sent mid-reply cuts the model off.
 
@@ -190,13 +190,13 @@ The supported way to swap tools is a new session with a new `setup.tools`. Done 
 
 ### What about `contextUpdate`?
 
-The Vertex AI Live WebSocket accepts a `contextUpdate` message with a `tools` field. On `gemini-3.8-live` and `gemini-3.5-live-preview` it does swap or clear the tool list in place, with no reconnect. It's tempting. Don't build a product on it yet.
+The Vertex AI Live WebSocket accepts a `contextUpdate` message with a `tools` field. On `gemini-3.8-live` it does swap or clear the tool list in place, with no reconnect. It's tempting. Don't build a product on it yet.
 
 :::caution[`contextUpdate` is exposed, but not documented or supported]
 - **No documentation.** No public Google page describes it.
 - **No SDK support.** No released version of `google-genai` has a method for it. You have to write raw JSON to the SDK's private WebSocket object, which can break on any SDK upgrade.
 - **No support commitment.** It comes with no compatibility promise and no deprecation notice period.
-- **It can fail silently.** In our tests one Gemini 3.5 Live preview build accepted the frame and then ignored it. No error came back, and the old tools kept firing. `gemini-live-2.5-flash-native-audio` closes the connection instead.
+- **It can fail silently.** The server never confirms the update. If a model ignores it, no error comes back and the old tools keep firing. `gemini-live-2.5-flash-native-audio` rejects it and closes the connection.
 - **Removed tools can still be called.** Even where it works, the model sometimes called a tool it had just lost, copying an earlier call from the conversation. You would have to check every tool call against the current list before running it.
 
 If changing tools without reconnecting is a hard requirement for your product, ask your Google account team. Until then, use a system turn for instructions and session cycling for tools.
