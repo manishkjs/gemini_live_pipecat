@@ -69,7 +69,7 @@ export default defineConfig({
                 { label: 'Pillar 4: Cached TTS', slug: 'optimization/cached-tts' },
               ],
             },
-            { label: 'Prompt optimization', slug: 'prompt-optimization' },
+            { label: 'How to write a better prompt', slug: 'prompt-optimization' },
           ],
         },
         {
