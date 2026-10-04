@@ -616,9 +616,16 @@ class TestRoundOneBlockers(unittest.TestCase):
     def test_card_four_asks_the_model_to_send_answers_it_already_heard(self):
         self.assertIn("already answered", TARA_CARD_BY_NUMBER[4].directive)
 
-    def test_card_eight_can_still_change_a_flight(self):
-        self.assertIn("SearchTool", TOOL_GROUP_BY_CARD[8])
-        self.assertIn("SearchTool", TARA_CARD_BY_NUMBER[8].directive)
+    def test_a_card_drops_the_tools_whose_job_is_done(self):
+        # context_update replaces the whole tool list: a card sends only what it still needs.
+        lang = "SelectLanguageTool"
+        self.assertEqual(set(TOOL_GROUP_BY_CARD[3]), {lang, "SearchTool", "FlightActionTool"})
+        for card in (4, 5, 6, 7):  # the trip is built: no search; a change picks an offered flight
+            self.assertEqual(set(TOOL_GROUP_BY_CARD[card]), {lang, "TravellerDetailsTool", "FlightActionTool"})
+        self.assertEqual(set(TOOL_GROUP_BY_CARD[8]), {lang, "PaymentTool"})  # details confirmed at review
+        for card in range(4, 9):
+            self.assertNotIn("SearchTool", TARA_CARD_BY_NUMBER[card].directive)
+            self.assertNotIn("CheckAirportTool", TARA_CARD_BY_NUMBER[card].directive)
 
 
 class _FakeWS:
@@ -1034,6 +1041,25 @@ class TestTaraArchitecture(unittest.TestCase):
         self._call(llm, "FlightActionTool", {"action": "GET_DETAILS", "flight_id": "F1"}, order)
         later = frames[2:]
         self.assertTrue(all("tools" not in f for f in later if self.arch.engine.active_card == 3))
+
+    def test_the_result_points_at_the_card_instead_of_repeating_it(self):
+        # The card already rides in the system instruction; a full copy in the result only
+        # grows the history (~550-680 tokens per card change).
+        llm, frames, order = self._live()
+        self._call(llm, "SelectLanguageTool", {"language": "Hindi"}, order)
+        result = order[-1][1]
+        self.assertIn("Prompt card 2 of 8", result["prompt_card"])
+        self.assertIn("system instruction", result["prompt_card"])
+        self.assertLess(len(result["prompt_card"]) // 4, 40)
+        self.assertIn("Session state:", self._si(frames[0]))  # the full card is in the SI
+
+    def test_static_models_still_get_the_full_card_in_the_result(self):
+        llm = _FakeLLM()
+        self.arch.bind_live_model("gemini-3.5-flash-live-preview", vertex=True)
+        self.arch.register_handlers(llm)
+        out = []
+        self._call(llm, "SelectLanguageTool", {"language": "Hindi"}, out)
+        self.assertIn("Session state:", out[-1][1]["prompt_card"])
 
     def test_card_one_keeps_the_setup_instruction(self):
         llm, frames, order = self._live()

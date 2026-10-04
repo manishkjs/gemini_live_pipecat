@@ -962,6 +962,14 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         dynamic = instruction.partition("CURRENT PROMPT CARD\n")[2] if instruction else None
         logger.info(trace.context_update(self.swapper.frames, tools, instruction, dynamic, card_changed))
 
+    @staticmethod
+    def _point_at_instruction(result: Dict[str, Any], card: int) -> Dict[str, Any]:
+        """The full card already rides in the live system instruction (sent just before this
+        result); repeating it here would only grow the history by ~550-680 tokens per card."""
+        from persona_prompt_cards.tara_cards import TARA_CARD_BY_NUMBER
+        title = TARA_CARD_BY_NUMBER[card].title
+        return {**result, "prompt_card": f"Prompt card {card} of 8 ({title}) is now in your system instruction. Follow it."}
+
     def _live_instruction(self) -> Optional[str]:
         """The system instruction a 3.8 session should hold now: None on card 1 (the setup SI
         greets) and on models without ``context_update``."""
@@ -1041,6 +1049,8 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
             elif instruction is not None:
                 await self.swapper.register(self._llm, self.swapper.desired, system_instruction=instruction)
             self._trace_frame(frames, after != before)
+            if instruction is not None and self.swapper.instruction == instruction and "prompt_card" in result:
+                result = self._point_at_instruction(result, after)
         logger.info(trace.tool_result(name, result))
         if tools is not None:
             await self._announce_card(after, tools)

@@ -118,8 +118,9 @@ _RESEND_LINES = {"trim": RESEND_AFTER_TRIM, "new_session": RESEND_NEW_SESSION}
 
 _FLIGHT_CHANGE_LINE = (
     "The flights in session state are already selected. Never ask the caller to select a flight again. If the "
-    "caller asks to change a flight, call FlightActionTool with SELECT_FLIGHT and the flight_id of the one they "
-    "name, say the new total exactly as the tool gives it, then continue this step."
+    "caller asks to change a flight, call FlightActionTool with SELECT_FLIGHT and the flight_id of one of the "
+    "flights already offered, say the new total exactly as the tool gives it, then continue this step. For a "
+    "flight that was not offered, say in one line that you can switch only to a flight already offered."
 )
 
 
@@ -189,7 +190,7 @@ _CARD_LIST = [
         "passenger_mix: ask whether everyone is an adult or some are children. All adults: includes_children false. Some children: includes_children true and child_count. child_count: ask how many children. Count infants as children in the number, but never say the word infant. child_date_of_birth: ask that child's date of birth.",
         "confirm_passenger_count: read ask_say and wait for a yes before any name.",
         "If the caller already answered a question of this step earlier, call TravellerDetailsTool with that answer now instead of asking again.",
-        "Tools for this step: TravellerDetailsTool; FlightActionTool and SearchTool only for a flight change.",
+        "Tools for this step: TravellerDetailsTool; FlightActionTool only for a flight change.",
         "This step ends when the tool moves to passenger_details.",
     ])),
     _card(5, "BMT_05_NAME", "Traveller name, age and gender", "\n".join([
@@ -204,7 +205,7 @@ _CARD_LIST = [
         "For an unclear letter, offer one city cue, for example M for Mumbai or N for Nagpur. \"eks\" is X, \"double L\" is L L, \"zed\" is Z, \"aitch\" is H, \"wai\" is Y. A polite \"ji\" is not G.",
         "If spelling_changed is false, do not spell. Ask the caller to say and spell each word.",
         "Send age and gender only as the caller states them. Use gender_say for the gender options. Never guess gender. Send date_of_birth for age 12 or below.",
-        "Tools for this step: TravellerDetailsTool, on every caller reply; FlightActionTool and SearchTool only for a flight change.",
+        "Tools for this step: TravellerDetailsTool, on every caller reply; FlightActionTool only for a flight change.",
         "This step ends when the tool moves to phone_choice.",
     ])),
     _card(6, "BMT_06_CONTACT", "WhatsApp number and email", "\n".join([
@@ -214,7 +215,7 @@ _CARD_LIST = [
         "confirm_phone: read phone_digits one digit at a time, then ask. Yes is phone_confirmed true. No is phone_confirmed false, or the corrected phone_number.",
         "email: send it as you heard it. \"at the rate\" and \"at\" mean @, \"dot\" means a full stop. The tool checks the format and returns an error if it is incomplete; then ask again for only the missing part.",
         "confirm_email: spell email_readback.local_spell letter by letter, say \"at\", then say email_readback.domain_say as words, for example \"gmail dot com\". Keep the domain exactly as the tool gives it, even with a typo. A yes is email_confirmed true. If the caller changes the email, send the new email without email_confirmed.",
-        "Tools for this step: TravellerDetailsTool, on every caller reply; FlightActionTool and SearchTool only for a flight change.",
+        "Tools for this step: TravellerDetailsTool, on every caller reply; FlightActionTool only for a flight change.",
         "This step ends when the tool moves to review_details.",
     ])),
     _card(7, "BMT_07_REVIEW", "Review on WhatsApp", "\n".join([
@@ -224,17 +225,18 @@ _CARD_LIST = [
         "Yes: details_confirmed true. Anything wrong: details_confirmed false with the correction. If they have not said what is wrong, ask which detail.",
         "After a correction the tool sends the details again. Wait for a yes on the new message.",
         "retry_traveller_whatsapp: say note_say if present, then ask whether to try again (retry_whatsapp true) or use another number. Never say the details were sent after a failure.",
-        "Tools for this step: TravellerDetailsTool; FlightActionTool and SearchTool only for a flight change.",
+        "Tools for this step: TravellerDetailsTool; FlightActionTool only for a flight change.",
         "This step ends when the tool's next names PaymentTool.",
     ])),
     _card(8, "BMT_08_PAYMENT", "Payment", "\n".join([
-        _FLIGHT_CHANGE_LINE,
+        "The flights and traveller details in session state were confirmed at review and are in the payment link.",
         "Goal: send the payment link and finish politely.",
         "Call PaymentTool now, in this same turn, with the action from the PaymentTool entry in the last result's next.",
-        "For a question about payment, call PaymentTool with INFORMATION. If the caller wants to add a traveller or change a detail, call TravellerDetailsTool instead.",
+        "For a question about payment, call PaymentTool with INFORMATION.",
+        "If the caller wants to change a flight or a detail now, say in one line that the link carries the details they confirmed and a change needs a new booking once this one is done.",
         "Tell the caller where the payment link was sent. The booking is confirmed only after payment succeeds.",
         "When the caller is done, thank them and wish them a good trip. Do not end the call yourself.",
-        "Tools for this step: PaymentTool, and TravellerDetailsTool for a change; FlightActionTool and SearchTool only for a flight change.",
+        "Tools for this step: PaymentTool.",
     ])),
 ]
 
@@ -278,7 +280,7 @@ STEP_INSTRUCTIONS: Dict[str, str] = {
     "confirm_email": "Spell email_readback.local_spell, say at, say email_readback.domain_say as words, then ask whether it is correct.",
     "review_details": "Say heads_up and ask_say only. Do not read or spell names.",
     "retry_traveller_whatsapp": "Say note_say if present, then ask whether to retry or use another number. Never say the details were sent.",
-    "complete": "Call PaymentTool now with the action in the PaymentTool entry of next. For a change or another traveller, call TravellerDetailsTool.",
+    "complete": "Call PaymentTool now with the action in the PaymentTool entry of next.",
     "payment_sent": "Say heads_up. The booking is confirmed only after payment succeeds. Then ask whether they need anything else.",
 }
 

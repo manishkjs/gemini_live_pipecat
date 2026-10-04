@@ -4266,3 +4266,35 @@
 @media (prefers-reduced-motion: reduce) {
   .tool-toast-fade { animation: none; }
 }
+
+/* Resizable Live Diagnostics Log: drag handle under the terminal */
+.log-resize-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+  margin-top: 4px;
+  border-radius: 6px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+  transition: background 0.15s ease;
+}
+.log-resize-handle:hover,
+.log-resize-handle:focus-visible {
+  background: rgba(56, 189, 248, 0.08);
+}
+.log-resize-grip {
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.45);
+  transition: background 0.15s ease, width 0.15s ease;
+}
+.log-resize-handle:hover .log-resize-grip,
+.log-resize-handle:focus-visible .log-resize-grip,
+.log-resize-handle:active .log-resize-grip {
+  width: 64px;
+  background: #38bdf8;
+}

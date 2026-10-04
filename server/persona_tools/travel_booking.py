@@ -254,21 +254,24 @@ def function_schemas(names: Optional[List[str]] = None):
     return result
 
 
-# The tools each card registers when ``context_update`` can swap them: exactly the card's
-# "Tools for this step" line, plus SelectLanguageTool (the base SI allows a language switch at
-# any time). A card and its tools arrive in the same tool call (``live_tool_swapper``), so no
-# card has to carry the next card's tools ahead of time.
+# The tools each card registers when ``context_update`` can swap them. A context_update
+# REPLACES the declared list, so each card sends only what it still needs and the tools that
+# already built the session drop out: search and airport lookup once a flight is chosen,
+# traveller details once the review is confirmed. SelectLanguageTool stays on every card (the
+# base SI allows a language switch at any time; ~146 tokens). From card 4 a flight change picks
+# one of the flights already offered (FlightActionTool, ~182 tokens); SearchTool (~763) is gone.
+# A card and its tools arrive in the same tool call (``live_tool_swapper``).
 _LANG = ("SelectLanguageTool",)
-_CHANGE = ("SearchTool", "FlightActionTool")  # a flight change from card 4 on (base SI)
+_TRAVELLER_STEP = _LANG + ("TravellerDetailsTool", "FlightActionTool")
 TOOL_GROUP_BY_CARD: Dict[int, Tuple[str, ...]] = {
     1: _LANG,
     2: _LANG + ("SearchTool", "CheckAirportTool"),
     3: _LANG + ("FlightActionTool", "SearchTool"),
-    4: _LANG + ("TravellerDetailsTool",) + _CHANGE,
-    5: _LANG + ("TravellerDetailsTool",) + _CHANGE,
-    6: _LANG + ("TravellerDetailsTool",) + _CHANGE,
-    7: _LANG + ("TravellerDetailsTool",) + _CHANGE,
-    8: _LANG + ("PaymentTool", "TravellerDetailsTool") + _CHANGE,
+    4: _TRAVELLER_STEP,
+    5: _TRAVELLER_STEP,
+    6: _TRAVELLER_STEP,
+    7: _TRAVELLER_STEP,
+    8: _LANG + ("PaymentTool",),
 }
 
 
@@ -1336,8 +1339,8 @@ class TravelBookingEngine:
             self._name_read_back[extra["passenger_index"]] = (heard.first_name, heard.last_name)
         payload: Dict[str, Any] = {"status": status, "instruction": STEP_INSTRUCTIONS[step], "data": {"step": step}}
         if step == "complete":
-            payload["next"] = [{"when": "Now", "tool": "PaymentTool", "arguments": {"action": "PROCEED"}},
-                               {"when": "The caller wants to change a detail or add a traveller", "tool": "TravellerDetailsTool"}]
+            # Card 8 declares PaymentTool only: the details were confirmed at review.
+            payload["next"] = [{"when": "Now", "tool": "PaymentTool", "arguments": {"action": "PROCEED"}}]
         else:
             payload["next"] = [{"when": "The caller answers, confirms, or corrects this step", "tool": "TravellerDetailsTool"}]
         payload.update(extra or {})
@@ -1744,8 +1747,7 @@ class TravelBookingEngine:
             "instruction": STEP_INSTRUCTIONS["payment_sent"],
             "data": {"step": "payment_sent", "booking_ref": s.booking_ref, "amount_say": rupees(s.total_fare()),
                      "booking_status": "pending payment"},
-            "next": [{"when": "The caller asks about payment", "tool": "PaymentTool", "arguments": {"action": "INFORMATION"}},
-                     {"when": "The caller wants to change a detail", "tool": "TravellerDetailsTool"}],
+            "next": [{"when": "The caller asks about payment", "tool": "PaymentTool", "arguments": {"action": "INFORMATION"}}],
         }, card=8)
 
     # -- telemetry -----------------------------------------------------------

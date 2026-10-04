@@ -2,6 +2,14 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { diagnosticHeaders } from "@/lib/session-diagnostics";
+import {
+  LOG_HEIGHT,
+  LOG_HEIGHT_STORAGE_KEY,
+  clampLogHeight,
+  dragLogHeight,
+  keyLogHeight,
+  toggleLogHeight,
+} from "@/lib/log-resize";
 import { totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
 import {
   X,
@@ -97,6 +105,35 @@ export default function ObservabilityDrawer({
   const [telemetryError, setTelemetryError] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
+  // Resizable log: drag the handle under it, arrow keys/Home/End on the handle, double-click to expand.
+  const [logHeight, setLogHeight] = useState<number>(() => {
+    if (typeof window === "undefined") return LOG_HEIGHT.initial;
+    const saved = Number(window.localStorage.getItem(LOG_HEIGHT_STORAGE_KEY));
+    return saved ? clampLogHeight(saved, window.innerHeight) : LOG_HEIGHT.initial;
+  });
+  const logDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  useEffect(() => {
+    window.localStorage.setItem(LOG_HEIGHT_STORAGE_KEY, String(logHeight));
+  }, [logHeight]);
+  const onLogHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    logDragRef.current = { startY: e.clientY, startHeight: logHeight };
+  }, [logHeight]);
+  const onLogHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = logDragRef.current;
+    if (!drag) return;
+    setLogHeight(dragLogHeight(drag.startHeight, drag.startY, e.clientY, window.innerHeight));
+  }, []);
+  const onLogHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    logDragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  }, []);
+  const onLogHandleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (keyLogHeight(LOG_HEIGHT.initial, e.key, window.innerHeight) === null) return;
+    e.preventDefault();
+    setLogHeight((h) => keyLogHeight(h, e.key, window.innerHeight) ?? h);
+  }, []);
 
   // Poll diagnostic logs and trace info
   useEffect(() => {
@@ -678,6 +715,7 @@ export default function ObservabilityDrawer({
 
               <div
                 className="log-terminal"
+                style={{ height: logHeight, maxHeight: "none" }}
                 ref={logScrollRef}
                 onScroll={(e) => {
                   const el = e.currentTarget;
@@ -703,6 +741,24 @@ export default function ObservabilityDrawer({
                     );
                   })
                 )}
+              </div>
+              <div
+                className="log-resize-handle"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize diagnostics log"
+                aria-valuemin={LOG_HEIGHT.min}
+                aria-valuenow={logHeight}
+                tabIndex={0}
+                title="Drag to resize · double-click to expand or restore"
+                onPointerDown={onLogHandlePointerDown}
+                onPointerMove={onLogHandlePointerMove}
+                onPointerUp={onLogHandlePointerUp}
+                onPointerCancel={onLogHandlePointerUp}
+                onKeyDown={onLogHandleKeyDown}
+                onDoubleClick={() => setLogHeight((h) => toggleLogHeight(h, window.innerHeight))}
+              >
+                <span className="log-resize-grip" aria-hidden="true" />
               </div>
             </div>
           </div>
