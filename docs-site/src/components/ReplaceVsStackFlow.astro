@@ -1,0 +1,443 @@
+---
+/**
+ * Animated walkthrough of the two Gemini Live memory regions:
+ * Region 1 (Top System Slot: systemInstruction + tools) overwrites in place (783 tok/turn) and survives SlidingWindow(5000).
+ * Region 2 (Conversation History: role="user" or full cards in tool responses) stacks every card (2,493 tok/turn) and gets evicted at 5,000 tokens.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Measured on Vertex AI across 3 card swaps (~570 tokens/card): replacing systemInstruction in Region 1 keeps prompt tokens at 783/turn and survives 5,000-token compaction (0/7 greeting replays), while sending cards as role='user' in Region 2 stacks to 2,493/turn and loses the active card when history compacts (6/7 greeting replays).",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 860 420" role="img" aria-labelledby="rvs-title rvs-desc" class="rvs-svg">
+    <title id="rvs-title">Region 1 In-Place Replacement vs. Region 2 History Stacking Across 4 Cards and SlidingWindow Compaction</title>
+    <desc id="rvs-desc">
+      Two-lane animated comparison across Card 1, Card 2, Card 3, Card 4, and 5,000-token SlidingWindow compaction.
+      Top lane (Region 2 History Stacking with role="user"): Cards 1, 2, 3, and 4 accumulate in history, climbing from 585 to 1,214 to 1,853 to 2,493 tokens per turn, and get wiped when SlidingWindow trims old turns (6 of 7 replies replay the opening greeting).
+      Bottom lane (Region 1 In-Place Replacement with role="system" or context_update): Each new card overwrites the previous card in the top system slot, staying flat at 585, 647, 713, and 783 tokens per turn, and survives SlidingWindow compaction untouched (0 of 7 greeting replays).
+    </desc>
+
+    <!-- Outer Surface -->
+    <rect x="10" y="10" width="840" height="400" rx="14" class="card-bg" />
+
+    <!-- Header -->
+    <text x="32" y="40" class="main-title">Two Memory Regions: Why Replacing Beats Stacking</text>
+    <text x="32" y="60" class="main-subtitle">
+      Every turn re-bills both regions. Region 1 overwrites in place and survives compaction; Region 2 appends every turn and gets trimmed at 5,000 tokens.
+    </text>
+
+    <!-- Column Headers (Timeline Steps) -->
+    <g class="step-headers">
+      <text x="235" y="88" class="col-hdr">Turn 1 (Card 1)</text>
+      <text x="365" y="88" class="col-hdr">Swap 1 (Card 2)</text>
+      <text x="495" y="88" class="col-hdr">Swap 2 (Card 3)</text>
+      <text x="625" y="88" class="col-hdr">Swap 3 (Card 4)</text>
+      <text x="765" y="88" class="col-hdr-compact">5k Window Trim</text>
+      <line x1="175" y1="98" x2="830" y2="98" class="hdr-line" />
+    </g>
+
+    <!-- Animated Sweep Highlight Bar (Behind Boxes) -->
+    <rect x="180" y="104" width="110" height="288" rx="8" class="sweep-col" />
+
+    <!-- =================================================================
+         LANE 1: STACKING IN REGION 2 (Conversation History - BAD)
+         ================================================================= -->
+    <g class="lane-stack">
+      <rect x="24" y="112" width="142" height="128" rx="10" class="lane-label-red" />
+      <text x="36" y="136" class="lane-tag-red">STACKING (BAD)</text>
+      <text x="36" y="156" class="lane-name">Region 2: History</text>
+      <text x="36" y="175" class="lane-code">role="user" turn</text>
+      <text x="36" y="191" class="lane-code">or full card in tool</text>
+      <text x="36" y="214" class="lane-note-red">Appends &amp; re-bills</text>
+      <text x="36" y="228" class="lane-note-red">every old card</text>
+
+      <!-- Turn 1: 585 tok -->
+      <g class="cell-group">
+        <rect x="183" y="116" width="104" height="120" rx="8" class="cell-bg-red" />
+        <rect x="191" y="184" width="88" height="24" rx="4" class="block-c1" />
+        <text x="235" y="200" class="block-txt">Card 1 (570t)</text>
+        <text x="235" y="226" class="tok-count-red">585 tok/turn</text>
+      </g>
+
+      <!-- Swap 1: 1,214 tok (Card 1 + Card 2) -->
+      <g class="cell-group">
+        <rect x="313" y="116" width="104" height="120" rx="8" class="cell-bg-red" />
+        <rect x="321" y="158" width="88" height="22" rx="4" class="block-stale" />
+        <text x="365" y="173" class="block-txt-stale">Card 1 (stale)</text>
+        <rect x="321" y="184" width="88" height="24" rx="4" class="block-c2" />
+        <text x="365" y="200" class="block-txt">Card 2 (+570t)</text>
+        <text x="365" y="226" class="tok-count-red">1,214 tok/turn</text>
+      </g>
+
+      <!-- Swap 2: 1,853 tok (Card 1 + Card 2 + Card 3) -->
+      <g class="cell-group">
+        <rect x="443" y="116" width="104" height="120" rx="8" class="cell-bg-red" />
+        <rect x="451" y="138" width="88" height="18" rx="3" class="block-stale" />
+        <text x="495" y="150" class="block-txt-stale">Card 1 (stale)</text>
+        <rect x="451" y="160" width="88" height="18" rx="3" class="block-stale" />
+        <text x="495" y="172" class="block-txt-stale">Card 2 (stale)</text>
+        <rect x="451" y="182" width="88" height="24" rx="4" class="block-c3" />
+        <text x="495" y="198" class="block-txt">Card 3 (+570t)</text>
+        <text x="495" y="226" class="tok-count-red">1,853 tok/turn</text>
+      </g>
+
+      <!-- Swap 3: 2,493 tok (Card 1 + 2 + 3 + 4) -->
+      <g class="cell-group">
+        <rect x="573" y="116" width="104" height="120" rx="8" class="cell-bg-red-heavy" />
+        <rect x="581" y="122" width="88" height="15" rx="3" class="block-stale" />
+        <text x="625" y="133" class="block-txt-tiny">Card 1 (stale)</text>
+        <rect x="581" y="140" width="88" height="15" rx="3" class="block-stale" />
+        <text x="625" y="151" class="block-txt-tiny">Card 2 (stale)</text>
+        <rect x="581" y="158" width="88" height="15" rx="3" class="block-stale" />
+        <text x="625" y="169" class="block-txt-tiny">Card 3 (stale)</text>
+        <rect x="581" y="177" width="88" height="26" rx="4" class="block-c4-red" />
+        <text x="625" y="194" class="block-txt">Card 4 (+570t)</text>
+        <text x="625" y="226" class="tok-count-red-bold">2,493 tok/turn</text>
+      </g>
+
+      <!-- Compaction Result: History Evicted -> Greeting Replay! -->
+      <g class="cell-group">
+        <rect x="703" y="116" width="124" height="120" rx="8" class="cell-bg-red-heavy" />
+        <text x="765" y="146" class="outcome-title-red">Cards Evicted!</text>
+        <text x="765" y="166" class="outcome-sub">History trim drops</text>
+        <text x="765" y="181" class="outcome-sub">cards from Region 2.</text>
+        <rect x="715" y="194" width="100" height="32" rx="5" class="pill-red" />
+        <text x="765" y="214" class="pill-txt-red">6/7 Replay "Hello"</text>
+      </g>
+    </g>
+
+    <!-- =================================================================
+         LANE 2: REPLACING IN REGION 1 (Top System Slot - GOOD)
+         ================================================================= -->
+    <g class="lane-replace">
+      <rect x="24" y="258" width="142" height="128" rx="10" class="lane-label-green" />
+      <text x="36" y="282" class="lane-tag-green">REPLACING (BEST)</text>
+      <text x="36" y="302" class="lane-name">Region 1: System Slot</text>
+      <text x="36" y="321" class="lane-code">role="system" or</text>
+      <text x="36" y="337" class="lane-code">context_update</text>
+      <text x="36" y="360" class="lane-note-green">Overwrites old card</text>
+      <text x="36" y="374" class="lane-note-green">&amp; swaps tools in place</text>
+
+      <!-- Turn 1: 585 tok -->
+      <g class="cell-group">
+        <rect x="183" y="262" width="104" height="120" rx="8" class="cell-bg-green" />
+        <rect x="191" y="286" width="88" height="46" rx="5" class="block-green-active" />
+        <text x="235" y="306" class="block-txt-green">Base + Card 1</text>
+        <text x="235" y="322" class="block-sub-green">1 tool (146t)</text>
+        <text x="235" y="368" class="tok-count-green">585 tok/turn</text>
+      </g>
+
+      <!-- Swap 1: 647 tok (Card 1 wiped, Card 2 in place) -->
+      <g class="cell-group">
+        <rect x="313" y="262" width="104" height="120" rx="8" class="cell-bg-green" />
+        <rect x="321" y="286" width="88" height="46" rx="5" class="block-green-active" />
+        <text x="365" y="306" class="block-txt-green">Base + Card 2</text>
+        <text x="365" y="322" class="block-sub-green">Card 1 wiped</text>
+        <text x="365" y="348" class="qna-note">+62t prior Q&amp;A</text>
+        <text x="365" y="368" class="tok-count-green">647 tok/turn</text>
+      </g>
+
+      <!-- Swap 2: 713 tok (Card 2 wiped, Card 3 in place) -->
+      <g class="cell-group">
+        <rect x="443" y="262" width="104" height="120" rx="8" class="cell-bg-green" />
+        <rect x="451" y="286" width="88" height="46" rx="5" class="block-green-active" />
+        <text x="495" y="306" class="block-txt-green">Base + Card 3</text>
+        <text x="495" y="322" class="block-sub-green">Card 2 wiped</text>
+        <text x="495" y="348" class="qna-note">+128t prior Q&amp;A</text>
+        <text x="495" y="368" class="tok-count-green">713 tok/turn</text>
+      </g>
+
+      <!-- Swap 3: 783 tok (Card 3 wiped, Card 4 in place) -->
+      <g class="cell-group">
+        <rect x="573" y="262" width="104" height="120" rx="8" class="cell-bg-green-heavy" />
+        <rect x="581" y="286" width="88" height="46" rx="5" class="block-green-active" />
+        <text x="625" y="306" class="block-txt-green">Base + Card 4</text>
+        <text x="625" y="322" class="block-sub-green">Card 3 wiped</text>
+        <text x="625" y="348" class="qna-note">+198t prior Q&amp;A</text>
+        <text x="625" y="368" class="tok-count-green-bold">783 tok/turn (-69%)</text>
+      </g>
+
+      <!-- Compaction Result: Region 1 Preserved! -->
+      <g class="cell-group">
+        <rect x="703" y="262" width="124" height="120" rx="8" class="cell-bg-green-heavy" />
+        <text x="765" y="292" class="outcome-title-green">Card Survives!</text>
+        <text x="765" y="312" class="outcome-sub">Region 1 is never</text>
+        <text x="765" y="327" class="outcome-sub">trimmed by window.</text>
+        <rect x="715" y="340" width="100" height="32" rx="5" class="pill-green" />
+        <text x="765" y="360" class="pill-txt-green">0/7 Replay "Hello"</text>
+      </g>
+    </g>
+  </svg>
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .rvs-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font, system-ui, sans-serif);
+  }
+  .diagram-caption {
+    margin-top: 0.65rem;
+    text-align: center;
+    font-size: 0.84rem;
+    color: var(--gl-text-muted);
+    line-height: 1.45;
+  }
+  .card-bg {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.5;
+  }
+  .main-title {
+    fill: var(--gl-text-primary);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .main-subtitle {
+    fill: var(--gl-text-muted);
+    font-size: 11px;
+  }
+  .col-hdr {
+    fill: var(--gl-text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .col-hdr-compact {
+    fill: var(--gl-amber-text);
+    font-size: 11px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .hdr-line {
+    stroke: var(--gl-card-border);
+    stroke-width: 1;
+  }
+  .lane-label-red {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .lane-label-green {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.2;
+  }
+  .lane-tag-red {
+    fill: var(--gl-red-text);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+  }
+  .lane-tag-green {
+    fill: var(--gl-green-text);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+  }
+  .lane-name {
+    fill: var(--gl-text-primary);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .lane-code {
+    fill: var(--gl-text-secondary);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 9.5px;
+  }
+  .lane-note-red {
+    fill: var(--gl-red-text);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .lane-note-green {
+    fill: var(--gl-green-text);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .cell-bg-red {
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1;
+  }
+  .cell-bg-red-heavy {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.4;
+  }
+  .cell-bg-green {
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1;
+  }
+  .cell-bg-green-heavy {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.4;
+  }
+  .block-c1,
+  .block-c2,
+  .block-c3,
+  .block-c4-red {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .block-stale {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1;
+    stroke-dasharray: 3 2;
+  }
+  .block-txt {
+    fill: var(--gl-text-primary);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .block-txt-stale {
+    fill: var(--gl-red-text);
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+  .block-txt-tiny {
+    fill: var(--gl-red-text);
+    font-size: 8px;
+    text-anchor: middle;
+  }
+  .block-green-active {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.4;
+  }
+  .block-txt-green {
+    fill: var(--gl-text-primary);
+    font-size: 10px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .block-sub-green {
+    fill: var(--gl-green-text);
+    font-size: 8.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+  .qna-note {
+    fill: var(--gl-text-muted);
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+  .tok-count-red {
+    fill: var(--gl-red-text);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .tok-count-red-bold {
+    fill: var(--gl-red-text);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 10px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+  .tok-count-green {
+    fill: var(--gl-green-text);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .tok-count-green-bold {
+    fill: var(--gl-green-text);
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 9.5px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+  .outcome-title-red {
+    fill: var(--gl-red-text);
+    font-size: 11px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+  .outcome-title-green {
+    fill: var(--gl-green-text);
+    font-size: 11px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+  .outcome-sub {
+    fill: var(--gl-text-secondary);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .pill-red {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .pill-green {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.2;
+  }
+  .pill-txt-red {
+    fill: var(--gl-red-text);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .pill-txt-green {
+    fill: var(--gl-green-text);
+    font-size: 9.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+
+  /* Animated column sweep */
+  .sweep-col {
+    fill: var(--gl-blue-bg);
+    stroke: var(--gl-blue-border);
+    stroke-width: 1;
+    animation: rvsSweep 10s ease-in-out infinite;
+  }
+
+  @keyframes rvsSweep {
+    0%, 15% {
+      transform: translateX(0px);
+    }
+    20%, 35% {
+      transform: translateX(130px);
+    }
+    40%, 55% {
+      transform: translateX(260px);
+    }
+    60%, 75% {
+      transform: translateX(390px);
+    }
+    80%, 95% {
+      transform: translateX(530px);
+    }
+    100% {
+      transform: translateX(0px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sweep-col {
+      animation: none;
+      transform: translateX(390px);
+    }
+  }
+</style>

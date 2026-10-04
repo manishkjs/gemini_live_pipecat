@@ -1287,8 +1287,9 @@ On Vertex AI `gemini-3.8-live`, the WebSocket accepts a `context_update` (`conte
 - Per-card tool registration: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `2,198` schema tokens), each card registers only the tools it still needs (Card 1 greeting registers only `SelectLanguageTool` at `146` tokens; Cards 2–3 register search/selection tools at `1,091` tokens; Cards 4–7 drop `SearchTool` and keep `1,048` tokens; Card 8 registers only `SelectLanguageTool` + `PaymentTool` at `244` tokens).
 - Compaction-proof prompt cards: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: 6 of 7 replies after a compaction replayed the greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `context_update.systemInstruction` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
 
-> [!WARNING]
-> `context_update` appears in no public documentation yet and in no released version of the `google-genai` SDK. Using it means sending raw JSON frames over the SDK's underlying WebSocket (`session._ws.send(json.dumps(...))`). There is no published support commitment, no compatibility guarantee, and no server acknowledgement frame. Behaviour differs by platform and model: it works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`), is gated and ignored on Google AI Studio, and closes the connection with `1007` on `gemini-live-2.5-flash-native-audio`. Also, because removing a tool declaration does not remove earlier `function_call` turns from conversation history, the model can occasionally imitate an earlier call to a removed tool, so always check incoming tool calls against `swapper.accepts(tool_name)`.
+:::caution
+`context_update` appears in no public documentation yet and in no released version of the `google-genai` SDK. Using it means sending raw JSON frames over the SDK's underlying WebSocket (`session._ws.send(json.dumps(...))`). There is no published support commitment, no compatibility guarantee, and no server acknowledgement frame. Behaviour differs by platform and model: it works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`), is gated and ignored on Google AI Studio, and closes the connection with `1007` on `gemini-live-2.5-flash-native-audio`. Also, because removing a tool declaration does not remove earlier `function_call` turns from conversation history, the model can occasionally imitate an earlier call to a removed tool, so always check incoming tool calls against the current step's active tool list before executing them.
+:::
 
 #### WebSocket wire payloads (`context_update`)
 Every populated field in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
@@ -1337,121 +1338,72 @@ Every populated field in `context_update` replaces (does not merge) the previous
 }
 ```
 
-#### Production Python implementation (`LiveToolSwapper`)
+#### Minimal Python helper (`send_context_update` + tool handler)
 
 ```python
 import json
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from google.genai import types
 
-CONTEXT_UPDATE_TOOL_MODELS = frozenset({"gemini-3.8-live"})
+
+async def send_context_update(
+    session,
+    system_instruction: str,
+    tool_declarations: list[dict],
+) -> None:
+    """Replace systemInstruction and active tools in place on Vertex AI gemini-3.8-live.
+
+    Pass tool_declarations=[] to clear all tools (sends {"tools": {}}).
+    """
+    frame = {
+        "context_update": {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "tools": (
+                {"tools": [{"functionDeclarations": tool_declarations}]}
+                if tool_declarations
+                else {}
+            ),
+        }
+    }
+    await session._ws.send(json.dumps(frame))
 
 
-def supports_context_update(model: Optional[str], vertex: bool) -> bool:
-    name = (model or "").strip().removeprefix("google/")
-    return bool(vertex) and name in CONTEXT_UPDATE_TOOL_MODELS
-
-
-def context_update_frame(
-    declarations: Optional[List[Dict[str, Any]]] = None,
-    system_instruction: Optional[str] = None,
-) -> Dict[str, Any]:
-    update: Dict[str, Any] = {}
-    if declarations is not None:
-        update["tools"] = (
-            {"tools": [{"functionDeclarations": declarations}]}
-            if declarations
-            else {}
+async def on_tool_call(session, tool_call, active_tool_names: set[str], run_step):
+    # 1. Guard against the model imitating an old tool call from earlier history turns
+    if tool_call.name not in active_tool_names:
+        await session.send_tool_response(
+            function_responses=[
+                types.FunctionResponse(
+                    id=tool_call.id,
+                    name=tool_call.name,
+                    response={"error": f"{tool_call.name} is not active in this step."},
+                )
+            ]
         )
-    if system_instruction is not None:
-        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-    return {"context_update": update}
+        return
 
+    # 2. Run business logic -> get next card text + session state and next card's tools
+    next_instruction, next_tool_decls, next_tool_names = run_step(
+        tool_call.name, tool_call.args or {}
+    )
+    active_tool_names.clear()
+    active_tool_names.update(next_tool_names)
 
-@dataclass(frozen=True)
-class ToolRegistration:
-    declared: Tuple[str, ...]
-    added: Tuple[str, ...]
-    removed: Tuple[str, ...]
-    status: str  # "sent" | "unchanged" | "pending"
+    # 3. Swap systemInstruction + tools while the model is paused waiting on this tool result
+    await send_context_update(session, next_instruction, next_tool_decls)
 
-
-class LiveToolSwapper:
-    """Replaces a Live session's declared tools and systemInstruction per card."""
-
-    def __init__(
-        self,
-        declarations_for: Callable[[Sequence[str]], List[Dict[str, Any]]],
-        initial: Iterable[str],
-    ) -> None:
-        self._declarations_for = declarations_for
-        self.active: Tuple[str, ...] = tuple(initial)
-        self.pending: Optional[Tuple[str, ...]] = None
-        self.instruction: Optional[str] = None
-        self.pending_instruction: Optional[str] = None
-
-    @property
-    def desired(self) -> Tuple[str, ...]:
-        return self.pending if self.pending is not None else self.active
-
-    def accepts(self, tool_name: str) -> bool:
-        """Guard against the model imitating a removed tool from earlier turn history."""
-        return tool_name in self.desired
-
-    async def register(
-        self,
-        session: Any,
-        names: Iterable[str],
-        system_instruction: Optional[str] = None,
-    ) -> ToolRegistration:
-        """Call inside the blocking tool handler BEFORE returning the FunctionResponse."""
-        wanted = tuple(names)
-        before = self.desired
-        added = tuple(n for n in wanted if n not in before)
-        removed = tuple(n for n in before if n not in wanted)
-        self.pending = None if wanted == self.active else wanted
-        if system_instruction is not None:
-            self.pending_instruction = (
-                None if system_instruction == self.instruction else system_instruction
+    # 4. Return a 1-line pointer instead of repeating the 600-token card in history
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(
+                id=tool_call.id,
+                name=tool_call.name,
+                response={"status": "ok", "guidance": "Follow the current step in your system instruction."},
             )
-        if self.pending is None and self.pending_instruction is None:
-            return ToolRegistration(wanted, added, removed, "unchanged")
-        tools_changed = self.pending is not None
-        sent = await self._send(session)
-        if not tools_changed:
-            return ToolRegistration(wanted, added, removed, "unchanged")
-        return ToolRegistration(wanted, added, removed, "sent" if sent else "pending")
-
-    async def flush(self, session: Any) -> bool:
-        """Call at turnComplete to retry any update whose WebSocket send failed."""
-        if self.pending is None and self.pending_instruction is None:
-            return False
-        return await self._send(session)
-
-    def setup_tools(self) -> Tuple[str, ...]:
-        """Tools to pass in LiveConnectConfig on reconnect so the session never resets to Card 1."""
-        self.active, self.pending = self.desired, None
-        return self.active
-
-    async def _send(self, session: Any) -> bool:
-        ws = getattr(session, "_ws", None)
-        if ws is None:
-            return False
-        names, instruction = self.pending, self.pending_instruction
-        declarations = self._declarations_for(names) if names is not None else None
-        try:
-            await ws.send(json.dumps(context_update_frame(declarations, instruction)))
-        except Exception:
-            return False
-        if instruction is not None:
-            self.instruction, self.pending_instruction = instruction, None
-        if names is not None:
-            self.active, self.pending = names, None
-        return True
+        ]
+    )
 ```
 
-Rule of thumb for customer architectures: for officially supported and documented behaviour across SDK upgrades, use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes. When using `context_update` on Vertex AI `gemini-3.8-live` for per-card tool pruning and compaction-proof system instructions, gate it behind `supports_context_update(model, vertex)`, send it inside the blocking tool handler before returning the `FunctionResponse`, enforce `swapper.accepts()` on incoming tool calls, and keep `setup_tools()` wired for reconnects.
+Rule of thumb for customer architectures: for officially supported and documented behaviour across SDK upgrades, use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes. When using `context_update` on Vertex AI `gemini-3.8-live` for per-card tool pruning and compaction-proof system instructions, send it inside the blocking tool handler before returning the `FunctionResponse` and check incoming tool calls against `active_tool_names`.
 
 ---
 

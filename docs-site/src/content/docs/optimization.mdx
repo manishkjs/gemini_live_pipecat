@@ -1,491 +1,63 @@
 ---
-title: Optimization Patterns (Cost & Latency)
-description: Four production patterns for Gemini Live voice sessions. Three cut multi-turn costs by 62–82% and stop latency from growing on long calls. The fourth, cached TTS, removes the cost of lines that never change.
+title: Optimization Patterns (4-Pillar Overview)
+description: Four production patterns for Gemini Live voice sessions, each on its own dedicated page. Three cut multi-turn costs by 62–82% and stop latency from growing on long calls; the fourth removes the cost of fixed lines like greetings.
 ---
 
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+import OptimizationPillarTabs from '../../components/OptimizationPillarTabs.astro';
 import CallLifecycleTimeline from '../../components/CallLifecycleTimeline.astro';
-import ContextCompressionFlow from '../../components/ContextCompressionFlow.astro';
-import PromptCardFunnel from '../../components/PromptCardFunnel.astro';
-import LosslessPruningFlow from '../../components/LosslessPruningFlow.astro';
-import CachedTtsFlow from '../../components/CachedTtsFlow.astro';
+
+<OptimizationPillarTabs active="overview" />
 
 As shown in [Token Economics & Pricing](/gemini_live_pipecat/pricing/), an unmanaged Gemini Live session gets progressively more expensive and slower with every turn because historical audio and static system instructions are re-billed on every turn.
 
-By combining the first three patterns across the call lifecycle, you can flatten quadratic token growth into a predictable **~$0.031/min** linear run rate while keeping end-to-end voice latency under 600ms even on 60-minute calls. The fourth pattern, cached TTS, removes the cost and wait of lines that are the same on every call, such as the greeting.
+By combining the first three pillars across the call lifecycle, you flatten quadratic token growth into a predictable `~$0.031/min` linear run rate while keeping end-to-end voice latency under 600ms even on 60-minute calls. The fourth pillar, cached TTS, removes the cost and wait of lines that are the same on every call.
 
 <CallLifecycleTimeline />
 
+<div class="hero-card">
+  <span class="badge badge-blue">Key Architectural Takeaways</span>
+  <h3>Two rules that save the most tokens on multi-step calls</h3>
+  <p>
+    <strong>1. Replace instructions in place, don't stack cards in history:</strong> A prompt card sent as a <code>role="user"</code> turn or inside a tool result stays in conversation history and is billed again on every later turn (<code>2,493 tokens/turn</code> after 3 swaps). Sending it as a system instruction (<code>role="system"</code> or <code>context_update</code>) overwrites the old card in place (<code>783 tokens/turn</code>) and survives 5,000-token sliding-window compaction.
+  </p>
+  <p>
+    <strong>2. Swap per-card tools and instructions with no reconnect:</strong> On Vertex AI <code>gemini-3.8-live</code>, the WebSocket accepts a mid-session <code>context_update</code> message that replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place. See <a href="/gemini_live_pipecat/optimization/prompt-cards/">Pillar 2: Dynamic Prompt Cards &amp; Per-Card Tools</a> for the animated walkthrough and 8-card flight-booking breakdown.
+  </p>
+</div>
+
+## Choose a Pillar
+
+<CardGrid>
+  <LinkCard
+    title="Pillar 1: Sliding-Window Compression"
+    description="Set trigger_tokens=5000 and target_tokens=3500 to flush stale carried audio ($3.00/1M) while keeping systemInstruction intact."
+    href="/gemini_live_pipecat/optimization/sliding-window/"
+  />
+  <LinkCard
+    title="Pillar 2: Dynamic Prompt Cards & Per-Card Tools"
+    description="Animated walkthrough of Region 1 (Replace) vs. Region 2 (Stack), mid-speech timing, and swapping per-card tools via context_update."
+    href="/gemini_live_pipecat/optimization/prompt-cards/"
+  />
+  <LinkCard
+    title="Pillar 3: Lossless Fact Pruning (FactStore)"
+    description="Extract spoken caller details into a sub-60-token JSON summary so 5,000-token window eviction never drops facts from Minute 1."
+    href="/gemini_live_pipecat/optimization/history-pruning/"
+  />
+  <LinkCard
+    title="Pillar 4: Cached TTS & Compliance Guardrails"
+    description="Play pre-generated 24kHz PCM clips for fixed greetings and hold lines, plus 200ms jitter-buffer compliance filtering."
+    href="/gemini_live_pipecat/optimization/cached-tts/"
+  />
+</CardGrid>
+
 ---
 
-## Pillar 1: Native sliding-window compression (The 15-minute ceiling breaker)
+## Summary across all 4 Pillars
 
-By default, an uncompressed audio session accumulates ~1,840 carried tokens per minute at 6 turns/min (~235 audio tokens of caller speech and played model audio plus ~72 transcript text tokens per turn) and hits the hard uncompressed-audio session ceiling at **15 minutes**. Worse, by Minute 6 (Turn 37), every new turn is re-reading 11,000+ historical tokens.
-
-Adding `contextWindowCompression` with a `SlidingWindow` to your `LiveConnectConfig` instructs the Gemini Live server to automatically truncate the oldest turns once the context crosses your `trigger_tokens` threshold, while always preserving your `system_instruction`.
-
-<ContextCompressionFlow />
-
-### Production configuration
-
-```python
-from google.genai import types
-
-config = types.LiveConnectConfig(
-    response_modalities=[types.Modality.AUDIO],
-    context_window_compression=types.ContextWindowCompressionConfig(
-        # Start pruning oldest turns once the context reaches 5,000 tokens
-        trigger_tokens=5000,
-        sliding_window=types.SlidingWindow(
-            # Retain the most recent 3,500 tokens (Pinned SOP + active turns)
-            target_tokens=3500
-        ),
-    ),
-)
-```
-
-### Choosing your `trigger_tokens` and `target_tokens`
-- **High-efficiency telephony default (`5,000 / 3,500`)**: Set `trigger_tokens=5000`, `target_tokens=3500` to flush stale `$3.00/1M` carried audio (caller + played model speech) early and keep Time-to-First-Audio-Byte fast (keep your pinned `systemInstruction` + tool schemas under ~1,500 tokens so they fit comfortably inside the 3,500-token target window). Pair with **Pillar 3 (FactStore)** so critical details from Minute 1 survive FIFO eviction.
-- **Extended raw-context window (`16,000 / 10,000`)**: If your workflow does not maintain a client-side `FactStore` and needs 4 to 5 minutes of verbatim unpruned audio history in the window, increase `trigger_tokens=16000` and `target_tokens=10000`.
-
----
-
-## Pillar 2: Dynamic prompt cards & phase gates (The Silent Conductor)
-
-In a multi-turn call, your system prompt and tool schemas are re-read on every turn. If you load a monolithic 4,500-token system prompt covering Greeting, KYC Verification, Troubleshooting, Billing, Upsell, and Cancellation at Turn 1, you pay to re-read all 4,500 tokens on every turn, even when the caller hangs up in the first 5 seconds.
-
-Instead, start the session with a compact 120-token opening card (plus base scaffolding, keeping active prompt tokens averaging ~500 tokens across phases) and inject modular phase cards only when the conversation enters a new stage.
-
-<PromptCardFunnel />
-
-### Implementation rules for `clientContent` and phase updates
-1. Only inject between turns: A `clientContent` frame with `turn_complete=True` sent while the model is speaking cuts off the current reply. A `turn_complete=False` update usually lets the reply finish but only applies from the next turn, so it cannot steer a reply in flight. Return phase cards inside a `toolResponse` (`scheduling=WHEN_IDLE`) or inject them via `clientContent` (`turn_complete=False`) right after receiving `turnComplete`.
-2. Never use square brackets: As documented in [Configuration reference -> Prompting for native audio models](/gemini_live_pipecat/gemini-live-configuration/#prompting-for-native-audio-models), native audio models treat bracketed text as vocal stage directions or read them aloud. Use natural, unbracketed prose.
-3. Replace rather than stack: Send a phase card as a system-instruction update (`send_client_content(turns=Content(role="system", ...), turn_complete=False)`, or `context_update` on Vertex AI `gemini-3.8-live` when the tools change too). It overwrites the previous instruction, so each turn pays for one card. A card sent as a `role="user"` turn or inside a tool result stays in history and is billed again on every later turn. Measured on Vertex AI after three swaps of a ~570-token card: 783 prompt tokens per turn with `role="system"` or `context_update`, versus 2,493 with `role="user"`. Because the update replaces the whole instruction, re-send your base rules with every card. Code pattern A below (card inside the tool response) works on every model but stacks; on Vertex AI prefer a `role="system"` update or code pattern B.
-
-### Code pattern A: Advancing phase cards via a tool response (all models)
-
-```python
-from google.genai import types
-
-PHASE_CARDS = {
-    "kyc_verification": (
-        "Current conversation phase: Identity Verification. "
-        "Ask the caller for their date of birth and billing postal code. "
-        "Once verified via verify_caller_identity, advance to troubleshooting."
-    ),
-    "troubleshooting": (
-        "Current conversation phase: Technical Troubleshooting. "
-        "Check router telemetry first, then guide the caller through one step at a time."
-    ),
-    "resolution": (
-        "Current conversation phase: Resolution & Wrap-Up. "
-        "Confirm the issue is resolved, read back the ticket number, and wish the caller a good day."
-    ),
-}
-
-async def handle_advance_phase(session, tool_call, next_phase: str):
-    card_instructions = PHASE_CARDS.get(next_phase, "")
-    # Return the phase instructions inside a WHEN_IDLE toolResponse
-    # so the model absorbs the new phase rules without interrupting active speech
-    await session.send(
-        input=types.LiveClientToolResponse(
-            function_responses=[
-                types.FunctionResponse(
-                    id=tool_call.id,
-                    name="advance_conversation_phase",
-                    response={"active_phase": next_phase, "guidance": card_instructions},
-                    scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
-                )
-            ]
-        )
-    )
-```
-
-### Per-card tool registration & instruction updates via `context_update` (Vertex AI `gemini-3.8-live`)
-
-In a multi-step voice workflow, sending prompt cards in tool responses leaves two problems unsolved:
-1. Unused tools are still billed on every turn. On `gemini-3.8-live`, every declared tool schema is tokenized and billed on every model generation. In our 8-card flight-booking concierge (6 tools totaling 2,198 schema tokens), declaring all 6 tools at `setup` means paying for `SearchTool` (~763 tokens) and `TravellerDetailsTool` (~862 tokens) even on the greeting turn and on the final payment turn.
-2. History-only cards vanish when the sliding window compacts. When [Pillar 1 (`SlidingWindow`)](#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) trims older turns at the 5,000-token threshold, it drops conversation history (including any prompt cards that were delivered only in tool responses or `clientContent`) while keeping `systemInstruction`. When a history-only card gets trimmed mid-call, the model falls back to the opening `setup.systemInstruction` and replays the Turn-1 greeting. Measured live on `gemini-3.8-live`: 6 of 7 replies after a compaction replayed the opening greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived inside `systemInstruction`.
-
-On Vertex AI `gemini-3.8-live`, the WebSocket accepts a mid-session `context_update` client message that replaces both the declared `tools` list and `systemInstruction` in place, with no reconnect:
-
-| Card(s) in the booking flow | Step | Tools registered for this card | Tool schema tokens / turn |
+| Pillar | What it fixes | Mechanism | Measured impact |
 | :--- | :--- | :--- | :--- |
-| Card 1 | Greeting & language choice | `SelectLanguageTool` | 146 tokens (vs. 2,198 for all 6) |
-| Card 2 | Route & date intake | `SelectLanguageTool`, `SearchTool`, `CheckAirportTool` | 1,091 tokens |
-| Card 3 | Flight selection & refinement | `SelectLanguageTool`, `FlightActionTool`, `SearchTool` | 1,091 tokens |
-| Cards 4–7 | Traveller count, names, WhatsApp & email review | `SelectLanguageTool`, `TravellerDetailsTool`, `FlightActionTool` (`SearchTool` dropped) | 1,048 tokens (down from 1,811) |
-| Card 8 | Payment link & wrap-up | `SelectLanguageTool`, `PaymentTool` (`TravellerDetailsTool` dropped) | 244 tokens (down from 1,910) |
-| Farewell | Talk-only closing (optional) | `tools: {}` (present-but-empty wrapper clears all tools) | 0 tool tokens |
-
-#### How a card and its tools arrive together
-Send the `context_update` frame inside the blocking tool handler that advances the card, right before returning the `FunctionResponse`:
-1. The model calls a blocking tool (for example `SelectLanguageTool` or `FlightActionTool`) and pauses waiting for your `FunctionResponse`.
-2. Your server updates its authoritative `CallState`, builds the refreshed `systemInstruction` (base rules with the opening greeting replaced by an `IN CALL` header + the active prompt card + the live `Session state:` snapshot), and sends `context_update` with that card's `tools` and `systemInstruction`.
-3. Your server then returns the `FunctionResponse` with a one-line pointer (`"Prompt card 4 of 8 is now in your system instruction. Follow it."`) instead of repeating the 600-token card body in history.
-4. Because the model was blocked waiting on the tool result, the `context_update` never lands mid-speech, and the generation that reads the tool result already has the new card's tools (verified 5/5 in live trials on Vertex AI `gemini-3.8-live`).
-
-:::caution[`context_update` is exposed on the wire, but not yet in public documentation or the SDK]
-- No released version of `google-genai` has a typed method for `context_update`, and no public Google documentation page describes it yet. You send it as raw JSON over the SDK session's WebSocket (`session._ws.send(json.dumps(...))`).
-- It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes with `1007`. Gate it with `supports_context_update(model, vertex)` so other models fall back to declaring the full tool set at `setup` and carrying cards in tool responses.
-- Every `context_update` replaces (does not merge) the declared tools. Keep global tools (like `SelectLanguageTool`) in every card's tuple. Sending `"tools": {}` (an empty wrapper object) clears all tools; omitting the `"tools"` key leaves the current tools unchanged.
-- The server sends no confirmation frame when `context_update` succeeds. Because removing a tool declaration does not erase earlier `function_call` turns from history, the model can occasionally imitate an old call. Check `swapper.accepts(tool_name)` before executing a tool.
-:::
-
-### Code pattern B: Per-card tool and `systemInstruction` swapper (`context_update`)
-
-```python
-import copy
-import json
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
-from google.genai import types
-
-# Vertex AI Live models that honour mid-session context_update tool & SI swaps:
-CONTEXT_UPDATE_TOOL_MODELS = frozenset({"gemini-3.8-live"})
-
-
-def supports_context_update(model: Optional[str], vertex: bool) -> bool:
-    """True only for Vertex AI sessions on a model that applies context_update."""
-    name = (model or "").strip().removeprefix("google/")
-    return bool(vertex) and name in CONTEXT_UPDATE_TOOL_MODELS
-
-
-def context_update_frame(
-    declarations: Optional[List[Dict[str, Any]]] = None,
-    system_instruction: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build the raw WebSocket frame to replace declared tools, systemInstruction, or both.
-
-    - declarations=[...] -> replaces active tools with the given list
-    - declarations=[]    -> sends {"tools": {}} to clear all active tools
-    - declarations=None  -> omits "tools" so existing tools stay untouched
-    """
-    update: Dict[str, Any] = {}
-    if declarations is not None:
-        update["tools"] = (
-            {"tools": [{"functionDeclarations": declarations}]}
-            if declarations
-            else {}
-        )
-    if system_instruction is not None:
-        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-    return {"context_update": update}
-
-
-# Map each prompt card to the exact tools it still needs.
-# SelectLanguageTool stays on every card so the caller can switch languages at any time.
-_LANG = ("SelectLanguageTool",)
-_TRAVELLER_STEP = _LANG + ("TravellerDetailsTool", "FlightActionTool")
-
-TOOL_GROUP_BY_CARD: Dict[int, Tuple[str, ...]] = {
-    1: _LANG,                                           # 146 schema tokens
-    2: _LANG + ("SearchTool", "CheckAirportTool"),      # 1,091 schema tokens
-    3: _LANG + ("FlightActionTool", "SearchTool"),      # 1,091 schema tokens
-    4: _TRAVELLER_STEP,                                 # 1,048 schema tokens (SearchTool dropped)
-    5: _TRAVELLER_STEP,
-    6: _TRAVELLER_STEP,
-    7: _TRAVELLER_STEP,
-    8: _LANG + ("PaymentTool",),                        # 244 schema tokens
-}
-
-
-@dataclass(frozen=True)
-class ToolRegistration:
-    declared: Tuple[str, ...]
-    added: Tuple[str, ...]
-    removed: Tuple[str, ...]
-    status: str  # "sent" | "unchanged" | "pending"
-
-
-class LiveToolSwapper:
-    """Replaces a Live session's declared tools and systemInstruction per card."""
-
-    def __init__(
-        self,
-        declarations_for: Callable[[Sequence[str]], List[Dict[str, Any]]],
-        initial: Iterable[str],
-    ) -> None:
-        self._declarations_for = declarations_for
-        self.active: Tuple[str, ...] = tuple(initial)
-        self.pending: Optional[Tuple[str, ...]] = None
-        self.instruction: Optional[str] = None
-        self.pending_instruction: Optional[str] = None
-
-    @property
-    def desired(self) -> Tuple[str, ...]:
-        return self.pending if self.pending is not None else self.active
-
-    def accepts(self, tool_name: str) -> bool:
-        """Guard against the model imitating a removed tool from earlier turn history."""
-        return tool_name in self.desired
-
-    async def register(
-        self,
-        session: Any,
-        names: Iterable[str],
-        system_instruction: Optional[str] = None,
-    ) -> ToolRegistration:
-        """Call inside the blocking tool handler BEFORE returning the FunctionResponse."""
-        wanted = tuple(names)
-        before = self.desired
-        added = tuple(n for n in wanted if n not in before)
-        removed = tuple(n for n in before if n not in wanted)
-        self.pending = None if wanted == self.active else wanted
-        if system_instruction is not None:
-            self.pending_instruction = (
-                None if system_instruction == self.instruction else system_instruction
-            )
-        if self.pending is None and self.pending_instruction is None:
-            return ToolRegistration(wanted, added, removed, "unchanged")
-        tools_changed = self.pending is not None
-        sent = await self._send(session)
-        if not tools_changed:
-            return ToolRegistration(wanted, added, removed, "unchanged")
-        return ToolRegistration(wanted, added, removed, "sent" if sent else "pending")
-
-    async def flush(self, session: Any) -> bool:
-        """Call at turnComplete to retry any update whose WebSocket send failed."""
-        if self.pending is None and self.pending_instruction is None:
-            return False
-        return await self._send(session)
-
-    def setup_tools(self) -> Tuple[str, ...]:
-        """Tools to pass in LiveConnectConfig on reconnect so the session never resets to Card 1."""
-        self.active, self.pending = self.desired, None
-        return self.active
-
-    async def _send(self, session: Any) -> bool:
-        ws = getattr(session, "_ws", None)
-        if ws is None:
-            return False
-        names, instruction = self.pending, self.pending_instruction
-        declarations = self._declarations_for(names) if names is not None else None
-        try:
-            await ws.send(json.dumps(context_update_frame(declarations, instruction)))
-        except Exception:
-            return False  # stays pending for flush() or setup_tools() on reconnect
-        if instruction is not None:
-            self.instruction, self.pending_instruction = instruction, None
-        if names is not None:
-            self.active, self.pending = names, None
-        return True
-```
-
-#### Wiring `swapper.register()` inside your tool handler
-
-```python
-async def handle_tool_call(
-    session,
-    tool_call,
-    engine,
-    swapper: Optional[LiveToolSwapper],
-):
-    # 1. Guard against calls to tools that were removed in an earlier card swap
-    if swapper is not None and not swapper.accepts(tool_call.name):
-        await session.send_tool_response(
-            function_responses=[
-                types.FunctionResponse(
-                    id=tool_call.id,
-                    name=tool_call.name,
-                    response={"error": f"{tool_call.name} is not active in this step."},
-                )
-            ]
-        )
-        return
-
-    # 2. Run business logic and advance server-owned CallState / active card number
-    card_before = engine.active_card
-    result = engine.handle(tool_call.name, tool_call.args or {})
-    card_after = engine.active_card
-
-    # 3. On Vertex gemini-3.8-live, push the card + live state into systemInstruction
-    #    and swap the declared tools BEFORE returning the FunctionResponse
-    if swapper is not None:
-        live_si = engine.build_live_system_instruction()  # Base SI (IN CALL) + Card + Session state
-        await swapper.register(
-            session,
-            TOOL_GROUP_BY_CARD[card_after],
-            system_instruction=live_si,
-        )
-        if card_after != card_before:
-            # Don't repeat the 600-token card in history when it already lives in systemInstruction
-            result = {
-                **result,
-                "prompt_card": (
-                    f"Prompt card {card_after} of 8 is now in your system instruction. Follow it."
-                ),
-            }
-
-    # 4. Return the tool response; the next generation already has the new card and tools
-    await session.send_tool_response(
-        function_responses=[
-            types.FunctionResponse(
-                id=tool_call.id,
-                name=tool_call.name,
-                response=result,
-            )
-        ]
-    )
-```
-
----
-
-## Pillar 3: Lossless history pruning & session rotation
-
-When Pillar 1 (`SlidingWindow`) drops old audio turns at the `5,000-token` boundary, any facts spoken in Turn 1 (such as the caller's name, postal code, or stated symptom) fall out of the raw audio window. Carried audio tokens (`$3.00/1M`, ~1,500–1,668 tok/min) are **4× to 6× more expensive per token** and **6× more verbose** than a text transcript (`$0.50/1M` on 2.5 Native Audio, `$0.75/1M` on 3.1 Flash Live).
-
-By converting older audio turns into compact text transcripts and extracting key facts into a lightweight backend `FactStore` (**under 60 text tokens**), you can let the `5,000-token` sliding window evict stale audio while retaining **100% lossless memory** of every detail the caller shared.
-
-<LosslessPruningFlow />
-
-### Code pattern: Maintaining a `<60-token` `FactStore` across window eviction
-
-```python
-import json
-from google.genai import types
-
-class CallFactStore:
-    def __init__(self):
-        self.facts = {
-            "caller_name": None,
-            "postal_code": None,
-            "verified": False,
-            "issue": None,
-        }
-
-    def render_context_summary(self) -> str:
-        # Compact JSON stays under 60 tokens at $0.50-$0.75/1M text input
-        return (
-            "Verified facts from earlier in this call: "
-            f"{json.dumps(self.facts, ensure_ascii=False)}"
-        )
-
-# Inject after turnComplete so the FactStore survives FIFO sliding-window eviction:
-async def inject_fact_summary_between_turns(session, fact_store: CallFactStore):
-    await session.send(
-        input=types.LiveClientContent(
-            turns=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=fact_store.render_context_summary())]
-                )
-            ],
-            turn_complete=False,  # Append to context without triggering a new spoken turn
-        )
-    )
-```
-
----
-
-## Pillar 4: Cached TTS for lines that never change
-
-Some lines are the same on every call: the greeting, "One moment while I check that," or the goodbye. Gemini Live still generates them fresh each time. You pay output audio tokens for them, the caller waits for the model to start talking, and the audio stays in the history where it's billed again on later turns.
-
-You can make these lines once with Gemini TTS, save the audio, and play the saved clip instead.
-
-This works because Gemini Live and Gemini TTS use the same prebuilt voice names (for example Aoede, Puck, Kore, and Charon) and the same audio format: 24kHz, 16-bit, mono PCM. Chirp 3 HD voices use the same names too, such as `en-US-Chirp3-HD-Aoede`. If you use Chirp 3 HD through Cloud Text-to-Speech, request `LINEAR16` audio at 24,000 Hz. Then a saved clip can play in a Live call without any format conversion. The two models generate speech separately, so the voice can sound slightly different. Listen to both side by side before you ship.
-
-<CachedTtsFlow />
-
-### Where cached audio helps
-
-#### The greeting
-
-1. When the call connects, add the greeting text to Gemini Live's history as a `role="model"` turn with `send_client_content(turn_complete=False)`. Do this before any caller audio reaches the session, so the model knows it already said hello before it can reply to anything.
-2. Play the saved greeting clip. There's no model call, so the caller hears it right away.
-3. If the caller cuts in, stop the clip. The model's history still holds the full greeting. It's harmless if the model thinks the caller heard the whole hello.
-
-Many bots send a text turn like "Hello" at connect time so the model speaks first. Skip that here, or the model will greet the caller a second time.
-
-#### Wait lines during tool calls
-
-Your media server can play a short clip like "Let me check that for you" while a tool runs. Gemini Live isn't involved, so the clip costs no tokens. Stop the clip as soon as model audio arrives. If you use this, remove the "say a short acknowledgment before calling a tool" rule from your prompt, or the caller will hear two acknowledgments.
-
-#### Repeated replies in a cascaded pipeline
-
-In a cascaded pipeline (speech-to-text, then an LLM, then TTS), lines like "Could you spell that for me?" come up often. Cache the TTS audio under a key made from the normalized text, the voice, the TTS model, and settings like language, speed, and pitch. Don't save audio from a reply that the caller interrupted, or the cache will keep a cut-off clip.
-
-### What a cached greeting saves
-
-These numbers assume an 8-second greeting (about 25 words, like the one in the code below) and a 10-turn call. Audio is about 25 tokens per second, so the greeting is about 200 audio tokens.
-
-| | Generated by Gemini Live | Cached clip plus text in history |
-| :--- | :--- | :--- |
-| Wait before the caller hears anything | The model's response time (see [Latency](/gemini_live_pipecat/latency-and-telemetry/)) | A memory or Redis read |
-| Greeting output on Turn 1 | About 200 audio tokens at `$12.00/1M` = `$0.0024` | 0 tokens. You pay for the TTS clip once, when you make it |
-| Greeting carried into turns 2 to 10 | About 200 audio tokens per turn at `$3.00/1M` = `$0.0054` over 9 turns | Only the greeting text (about 30 tokens), which the generated greeting also carries as its transcript |
-| Caller hangs up during the greeting | You still paid for the greeting audio | No greeting output cost |
-
-That's about `$0.0078` saved per 10-turn call, or about `$780` per 100,000 calls. If [Pillar 1](#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) drops the greeting from the window sooner, the carried part of the savings is smaller.
-
-### Code pattern A: Add the greeting to history, then play it
-
-This version uses the `google-genai` SDK directly. `play_chunk` is your own function that sends audio to the caller. Run `play_cached_greeting` as a task right after the session opens. Have your caller-audio loop wait on `caller_audio_ok` before it sends the first chunk, so the greeting is in history before the model can hear anything and the caller can still talk over the clip.
-
-```python
-import asyncio
-from google.genai import types
-
-GREETING_TEXT = (
-    "Hi, thanks for calling Cymbal Fiber. This is Maya, your virtual assistant. "
-    "This call may be recorded for quality. How can I help you today?"
-)
-SAMPLE_RATE = 24_000
-CHUNK_BYTES = SAMPLE_RATE * 2 // 50  # 16-bit mono: 960 bytes = 20ms
-
-
-async def play_cached_greeting(session, play_chunk, greeting_pcm: bytes,
-                               caller_interrupted: asyncio.Event,
-                               caller_audio_ok: asyncio.Event):
-    """Tell Gemini Live it already greeted the caller, then play the saved clip."""
-    # Send this first, so the model knows it said hello
-    # before any caller audio can trigger a reply.
-    await session.send_client_content(
-        turns=types.Content(role="model", parts=[types.Part(text=GREETING_TEXT)]),
-        turn_complete=False,  # add to history without asking for a reply
-    )
-    caller_audio_ok.set()  # safe to forward caller audio from here on
-    for start in range(0, len(greeting_pcm), CHUNK_BYTES):
-        if caller_interrupted.is_set():
-            break  # the caller started talking, so stop the clip
-        await play_chunk(greeting_pcm[start:start + CHUNK_BYTES])
-```
-
-### Code pattern B: Cache TTS in a Pipecat cascade
-
-The community package [`pipecat-tts-cache`](https://github.com/omChauhanDev/pipecat-tts-cache) wraps any Pipecat TTS service. It builds the cache key for you and skips saving audio when an `InterruptionFrame` arrives. Check its README for the Pipecat versions it supports before you upgrade Pipecat.
-
-```python
-# pip install "pipecat-tts-cache[redis]"
-from pipecat.services.google.tts import GoogleHttpTTSService
-from pipecat_tts_cache import TTSCacheMixin
-from pipecat_tts_cache.backends import RedisCacheBackend
-
-
-class CachedGoogleTTS(TTSCacheMixin, GoogleHttpTTSService):
-    pass
-
-
-tts = CachedGoogleTTS(
-    settings=CachedGoogleTTS.Settings(voice="en-US-Chirp3-HD-Aoede"),
-    cache_backend=RedisCacheBackend(
-        redis_url="redis://localhost:6379/0",
-        key_prefix="pipecat:tts:",
-    ),
-    cache_ttl=604800,  # keep clips for one week
-)
-```
-
-The Redis backend stores audio with Python `pickle`, so point it at a private Redis instance that only your bot can write to.
-
----
-
-## Pre-speech compliance guardrails (200ms jitter buffer)
-
-In strictly regulated industries (banking collections, healthcare triage, insurance underwriting), compliance teams sometimes ask: *"How do we guarantee the native audio model never speaks a prohibited phrase or leaks PII?"*
-
-Because Gemini Live emits `outputTranscription` chunks concurrently with `inlineData` audio frames:
-1. Hold outbound 24kHz PCM audio frames in a **150ms to 200ms ring buffer** in your media gateway (Pipecat `FrameProcessor` or custom WebSocket proxy).
-2. Run a fast deterministic regex / Aho-Corasick guardrail check against the streaming `outputTranscription` text.
-3. If a prohibited pattern is detected, immediately flush the 200ms ring buffer before the audio reaches the telephony socket and trigger a corrective prompt or human transfer.
+| <span id="pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker">[Pillar 1: Sliding Window](/gemini_live_pipecat/optimization/sliding-window/)</span> | Unbounded carried audio (`~1,840 tok/min`) &amp; 15-min ceiling | `SlidingWindow(5000 / 3500)` FIFO turn eviction | Caps active context at 3,500–5,000 tokens |
+| <span id="pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor">[Pillar 2: Prompt Cards &amp; Tools](/gemini_live_pipecat/optimization/prompt-cards/)</span> | Paying for all phase prompts &amp; all tool schemas on every turn | `role="system"` or `context_update` in-place replacement | `783 tok/turn` vs. `2,493` stacked; `146–1,091` tool tok vs. `2,198` |
+| <span id="pillar-3-lossless-history-pruning--session-rotation">[Pillar 3: Lossless Fact Pruning](/gemini_live_pipecat/optimization/history-pruning/)</span> | Caller details from Turn 1 lost when `SlidingWindow` trims audio | `<60-token` `FactStore` synced into `systemInstruction` | 90%+ history reduction at `$0.50–$0.75/1M` text rate |
+| <span id="pre-speech-compliance-guardrails-200ms-jitter-buffer">[Pillar 4: Cached TTS &amp; Guardrails](/gemini_live_pipecat/optimization/cached-tts/)</span> | Paying `$12/1M` + `$3/1M` carried audio for identical greetings | Seed `role="model"` text turn + stream cached 24kHz PCM | `$0.0078` saved per 10-turn call (`$780` per 100k calls) |

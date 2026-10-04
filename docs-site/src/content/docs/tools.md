@@ -304,5 +304,5 @@ async def advance_card_and_tools(
     )
 ```
 
-For the full production `LiveToolSwapper` class (including per-card tool groups, client-side `accepts()` gating against history-imitated tool calls, `turnComplete` retry, and reconnect tool preservation), see [Optimization Patterns -> Per-card tool registration & instruction updates via `context_update`](/gemini_live_pipecat/optimization/#per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live).
+For the animated walkthrough of how Gemini Live stores instructions versus history, the 8-step flight-booking breakdown, and the complete tool-handler code, see [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/).
 
