@@ -44,5 +44,5 @@ Use this symptom-to-fix reference to diagnose common issues during Gemini Live d
 | Symptom | Root Cause | Fix |
 | :--- | :--- | :--- |
 | **Model reads stage directions aloud (e.g., *"laughs"*, *"pause"*)** | Using square brackets like `[laugh]` or `[SYSTEM UPDATE]` in the prompt or `clientContent`. | Remove all square brackets from prompts and dynamic phase cards; write natural unbracketed guidance instead. |
-| **Injecting a `clientContent` message cuts off the model mid-sentence** | By design, sending `clientContent` interrupts any active model generation. | Only send `clientContent` after `turnComplete`, or return dynamic guidance inside a `toolResponse` with `scheduling=WHEN_IDLE` or `SILENT`. |
+| **Injecting a `clientContent` message cuts off the model mid-sentence** | A `clientContent` with `turnComplete: true` is a new user turn and interrupts active generation. | Only send `clientContent` after `turnComplete`, or return dynamic guidance inside a `toolResponse` with `scheduling=WHEN_IDLE` or `SILENT`. |
 | **Per-minute cost climbs from `$0.031/min` in Minute 1 to `$0.178/min` in Minute 10** | Quadratic Carried Audio Tax: every turn re-reads all prior audio turns and a large static system prompt. | Implement the [3-Pillar Optimization Architecture](/gemini_live_pipecat/optimization/) (SlidingWindow + Dynamic Prompt Cards + FactStore Pruning). |

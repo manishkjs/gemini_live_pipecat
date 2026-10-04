@@ -18,7 +18,7 @@ before the handshake completes; all other frames follow `setupComplete`.
 | Frame | When you send it | Enters history? |
 | --- | --- | --- |
 | `setup` | **First frame only**, alone, before anything else | N/A |
-| `clientContent` | Explicit turn-based input or context injection; unconditionally interrupts active output | Yes |
+| `clientContent` | Explicit turn-based input or context injection; interrupts active output when `turnComplete: true` | Yes |
 | `realtimeInput` | Continuous audio, video, or activity signals | Yes (user turns) |
 | `toolResponse` | The result of a function the model requested via `toolCall` | Yes |
 
