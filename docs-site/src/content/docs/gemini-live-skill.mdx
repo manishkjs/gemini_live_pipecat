@@ -387,7 +387,7 @@ class PhaseDefinition:
 3. **Hysteresis & Confidence Gate**: Only transition states if `confidence >= 0.70` and the target phase transition is valid.
 
 ### C. JIT Prompt Yielding (`clientContent`) & Mid-Speech Collision Invariant
-* **Critical Protocol Truth (`BidiGenerateContentClientContent` Interruption Hazard)**: Sending `BidiGenerateContentClientContent` during active model generation **unconditionally interrupts** the model's in-flight speech (`turn_complete=False` only avoids starting a new response turn; it does *not* prevent cutting off active audio generation).
+* **Mid-speech updates (measured)**: A `clientContent` with `turn_complete=True` is a new user turn and interrupts the reply. A `turn_complete=False` update (`role="system"` or `role="user"`) sent mid-reply did not cut off speech in 14 of 16 runs on Vertex AI `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`. The reply finished and the update applied from the next turn. Two early runs ended the reply early, so keep the guard below: queue transitions while the bot is speaking and flush them when it stops.
 * **Mid-Speech Guard & Queue Flushing**: Always queue phase transitions that occur while `self._is_bot_speaking` is true, and flush them inside `on_bot_stopped_speaking` with `turn_complete=False`:
 ```python
 async def transition_to(self, target_phase: int, trigger_reason: str):
@@ -450,7 +450,7 @@ async def _push_user_transcription(self, text: str, result=None):
 ## 10. Speaker Persona & Grammatical Agreement across Prompt Cards
 
 ### A. The JIT Prompt Card Persona Drift Trap
-When Prompt Cards are injected Just-In-Time via `send_client_content(turn_complete=False)`, the prompt card becomes the most recent instruction in context. If speaker identity and grammatical gender constraints are omitted from the card, multilingual models frequently drift into default masculine Hindi verb forms (*"बता रहा हूँ"*, *"देता हूँ"*).
+When Prompt Cards are swapped in Just-In-Time as a system-instruction update (`role="system"`, see §22.C), the new card replaces the previous instruction entirely. If speaker identity and grammatical gender constraints are omitted from the card, multilingual models frequently drift into default masculine Hindi verb forms (*"बता रहा हूँ"*, *"देता हूँ"*).
 
 ### B. Mandatory Prompt Card Header Standard
 Every dynamically yielded Prompt Card must include the speaker identity and grammatical agreement rules using natural-language prefixes (never square brackets, which native audio models can vocalize aloud):
@@ -478,7 +478,7 @@ directive_text = (
   2. **L2 Cloud Memorystore Valkey / Redis (`~1.0ms`)**: Use a regional GCP Memorystore instance in `us-central1` for cross-instance shared state and normalized query hash keys (`cymbal:sheet_rag:*`).
   3. **Graceful Fallback**: If L2 Redis is unreachable, fall back immediately to the local L1 RAM BM25 index without blocking the live voice stream.
 * **Proactive vs. Reactive RAG Injection**:
-  - **Proactive Background RAG (Between Turns)**: Inject retrieved context silently via `LiveClientContent(turns=[Content(role="user", parts=[Part.from_text("System context update: ...")])], turn_complete=False)`. Because `turn_complete=False`, the model absorbs the context without generating unsolicited speech.
+  - **Proactive Background RAG (Between Turns)**: Refresh retrieved context inside the system instruction with `send_client_content(turns=Content(role="system", ...), turn_complete=False)` carrying base rules + current card + the retrieved snippet. It replaces the previous snippet, so you pay for one snippet per turn. Avoid `Content(role="user", parts=[Part.from_text("System context update: ...")])`: that note stays in history and is billed again on every later turn (measurements in §22.C).
   - **Reactive On-Demand RAG (User Asks a Specific Question)**: Expose a non-blocking `search_knowledge_base` tool returning `FunctionResponse(..., scheduling="WHEN_IDLE")`.
 
 ---
@@ -513,11 +513,11 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
 * **The 5,000-Token Trigger Invariant**: Vertex AI Live enforces a minimum threshold of **5,000 tokens** (`trigger_tokens=5000`, `target_tokens=3500`) for sliding-window context compression.
 * **The Lean SI Mismatch**:
   - In an optimized voice pipeline, the root System Instruction (SI) is intentionally compact (`~225 to 500` tokens) containing only core persona, tone, grammatical rules, and safety boundaries.
-  - Because the Live protocol is append-only, every injected prompt card and every turn of user and bot speech accumulates in session history until the `5,000`-token trigger is reached (typically around Turn 7 to 12).
+  - Every turn of user and bot speech accumulates in session history until the `5,000`-token trigger is reached (typically around Turn 7 to 12). Prompt cards accumulate too when sent as `role="user"` turns or tool results. Sent as a system-instruction update, each card replaces the previous one instead (§22.C).
 * **The Dual-Engine Solution**:
   1. **Early Turns (Lean Static SI + Dynamic JIT Prompt Cards)**:
      - Keep the root SI under `500` tokens (`120` tokens for the opening card, `~500` tokens average across phases).
-     - Yield Phase Directives and compliance scripts Just-In-Time via `send_client_content(turn_complete=False)` only when entering a new conversation phase.
+     - Yield Phase Directives and compliance scripts Just-In-Time as a system-instruction update (`role="system"`, or `context_update` on Vertex AI `gemini-3.8-live`) only when entering a new conversation phase, so each card replaces the last one.
      - Never stuff static multi-page decision trees or unused tool schemas into the root SI.
   2. **Long Calls (Sliding-Window Compression `5000 / 3500` + `FactStore`)**:
      - Once total context reaches `5,000` tokens, `SlidingWindow(target_tokens=3500)` automatically evicts the oldest dialogue turns (including their accumulated user and model audio tokens) while preserving the initial `system_instruction`.
@@ -543,7 +543,7 @@ Standardize spoken introductions by stripping conversational framing (*"My name 
 * **The Context Amnesia Footgun**: When sliding-window compaction evicts early dialogue turns, the model can forget facts stated in Turns 1 to 3 (such as customer name, pin code, or loan amount) unless those facts are preserved cleanly.
 * **The `FactStore` Invariant**:
   - Detect compaction via `current_prompt < (last_prompt - 150)`.
-  - Maintain a compact `< 60-token` JSON `FactStore` of extracted entities plus a capped window of recent transcript lines, and inject them via `send_client_content(turns=[Content(...)], turn_complete=False)`.
+  - Maintain a compact `< 60-token` JSON `FactStore` of extracted entities and keep it in a `Session state:` block of the system instruction, refreshed with each update, so it survives compaction and never stacks. After a compaction, re-seed a capped window of recent transcript lines once via `send_client_content(turns=[Content(...)], turn_complete=False)`.
 * **The 10-Turn Cap Rule**:
   - Never re-inject the entire session transcript on a 30-turn call (which would inject `1,250+` text tokens and defeat compression).
   - **Strictly cap injected dialogue to the last 10 turns** (`history[-10:]`):
@@ -1018,7 +1018,7 @@ ROLE_CONTEXT:
 | **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
 
 ### B. Pre-Connect Complete SI vs. Mid-Session Interruptions
-* Any `sendClientContent` call during an active generation turn interrupts model speech (even when `turn_complete=False` is set).
+* A `sendClientContent` with `turn_complete=True` during an active generation turn interrupts model speech. A `turn_complete=False` update usually does not (14 of 16 measured runs), but it only takes effect from the next turn, so it cannot steer a reply already in flight.
 * **Rule**: Never stream or append large instructional blocks mid-session while the bot is speaking. Await any asynchronous user profile lookups *before* opening the WebSocket, assemble the initial System Instruction (`Persona + Rules + Grounding Context`), and connect once.
 
 ### C. Numbered Sequential Phases & Prescriptive Tool Flows
@@ -1259,7 +1259,24 @@ await session.send_client_content(
     turn_complete=False)
 ```
 
-Verified working on `gemini-3.8-live`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
+Verified working on `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
+
+**Cost: an instruction update replaces, a `role="user"` note stacks.** Every turn bills the whole prompt again. A `role="system"` update (or `context_update.systemInstruction`) overwrites the previous instruction, so it is billed once per turn at its current size. A `role="user"` turn with `turn_complete=False` stays in conversation history and is billed again on every later turn. Measured on Vertex AI, a fresh session per method, three consecutive swaps of a ~570-token instruction (English, then French, German, Spanish), the same question after each swap:
+
+| Update method | `prompt_token_count` per turn | Growth per swap |
+|---|---|---|
+| `role="system"` client content (`gemini-3.8-live`) | 585, 647, 713, 783 | ~65 (only the previous question and answer) |
+| `context_update.systemInstruction` (`gemini-3.8-live`) | 585, 643, 709, 786 | ~65 |
+| `role="system"` client content (`gemini-live-2.5-flash-native-audio`) | 585, 653, 709, 764 | ~60 |
+| `role="user"` client content, `turn_complete=False` (`gemini-3.8-live`) | 585, 1214, 1853, 2493 | ~635 (the full card, every time) |
+
+What this means in practice:
+- Swap prompt cards, session facts, and refreshed retrieval context into the system instruction. Keep `role="user"` notes to one line.
+- The update replaces the whole instruction. Re-send your base rules (persona, voice, safety) plus the current card every time. Anything you leave out is gone.
+- Conversation history is not touched. Earlier turns, tool calls, and tool results stay, so return a one-line pointer from tool handlers instead of the card text.
+- An update sent while the model was speaking did not cut off the reply in 14 of 16 runs on these two models. The reply finished under the old instruction and the new one applied from the next turn. Still send updates between turns or inside the blocking tool handler.
+- On `gemini-live-2.5-flash-native-audio`, put the whole instruction in a single text part. On `gemini-3.8-live`, a `role="system"` message must contain exactly one turn.
+- On any other model (including `gemini-3.1-flash-live-preview` on Google AI Studio), check before relying on it: swap a large instruction three times and watch `usage_metadata.prompt_token_count`. Growth of only the last question and answer means replace. Growth by the instruction size means it stacks.
 
 **2. Supported: reconnect to change tools.** The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
 
