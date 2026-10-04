@@ -158,9 +158,9 @@ A call often moves through stages. First you verify the caller, then you fix the
 
 | What you want to change | How | Supported? |
 | :-- | :-- | :-- |
-| The instructions | Send `clientContent` with `role="system"` and `turn_complete=False` | **Yes**, documented |
-| The tool list | Open a new session with the new `setup.tools` | **Yes**, documented |
-| Both the tool list and `systemInstruction` in place, without reconnecting | Raw `context_update` frame on Vertex AI `gemini-3.8-live` | **No.** Exposed on the wire, but not yet documented or in the SDK |
+| The instructions | Send `clientContent` with `role="system"` and `turn_complete=False` | Yes, documented |
+| The tool list | Open a new session with the new `setup.tools` | Yes, documented |
+| Both the tool list and `systemInstruction` in place, without reconnecting | Raw `context_update` frame on Vertex AI `gemini-3.8-live` | No (exposed on the wire, not yet documented or in the SDK) |
 
 ### Change the instructions: send a system turn
 
@@ -174,9 +174,9 @@ await session.send_client_content(
 )
 ```
 
-The model follows the new instructions from its next reply. The socket stays open, so the caller hears no gap and the browser doesn't ask for the microphone again. We tested this on `gemini-3.8-live`. Google documents it in [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
+The model follows the new instructions from its next reply. A `role="system"` turn overwrites the previous system instruction in place (unlike a `role="user"` note, which stays in history and is billed again on every later turn), so include your base persona rules alongside the current stage instructions each time. The socket stays open, the caller hears no gap, and the browser doesn't ask for the microphone again. We tested this on `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`; see [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session).
 
-Send it after `turnComplete`, not while the model is talking. A `clientContent` message sent mid-reply cuts the model off.
+Send the update after `turnComplete`, not while the model is talking. A `clientContent` frame with `turn_complete=True` cuts the model off mid-reply; with `turn_complete=False`, the current reply usually finishes (14 of 16 measured runs), and the new instruction takes effect on the next turn.
 
 ### Change the tools: reconnect without dropping the caller
 
@@ -193,16 +193,15 @@ The supported way to swap tools is a new session with a new `setup.tools`. Done 
 The Vertex AI Live WebSocket accepts a `context_update` (`contextUpdate`) client message with two public fields: `tools` and `systemInstruction`. On `gemini-3.8-live`, sending it inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
 
 :::caution[`context_update` is exposed on the wire, but not yet documented or supported]
-- **No public documentation yet.** No public Google page describes `context_update`.
-- **No SDK method yet.** No released version of `google-genai` has a helper for it. You write raw JSON to the SDK session's underlying WebSocket (`session._ws.send(...)`).
-- **No support commitment.** It comes with no compatibility promise and no deprecation notice period.
-- **Model & platform limits.** It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). It is gated and ignored on Google AI Studio, and `gemini-live-2.5-flash-native-audio` rejects it and closes the connection (`1007`). The server sends no confirmation frame when an update lands.
-- **Removed tools can still be imitated from history.** Removing a tool declaration does not remove earlier `function_call` turns from the conversation history, so the model can occasionally imitate an old call. Always check incoming tool calls against the current card's active tool list before running them.
+- No public Google page describes `context_update` yet, and it comes with no compatibility promise or deprecation notice period.
+- Released versions of `google-genai` do not include a helper for it. You write raw JSON to the SDK session's underlying WebSocket (`session._ws.send(...)`).
+- It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes the connection (`1007`). The server sends no confirmation frame when an update lands.
+- Removing a tool declaration does not remove earlier `function_call` turns from the conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
 :::
 
 #### WebSocket wire payloads (`context_update`)
 
-Every field you include in `context_update` **replaces** (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
+Every field you include in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
 
 ```json
 // 1. Replace both systemInstruction and the active tool list for the next card:

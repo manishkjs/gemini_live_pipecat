@@ -1250,8 +1250,8 @@ When the user navigates to a new context (new product category, new document, or
 
 Long voice calls change shape. The caller gets verified, moves from browsing to checkout, or switches language. You then want a different persona and a different tool set without dropping the WebSocket. There are three ways to do that and they are not equally safe.
 
-**1. Supported and documented: change the system instruction mid-session.**
-Send a `clientContent` turn with `role="system"` and `turn_complete=False`. The model picks up the new instructions on its next turn. No reconnect, no dead air, no microphone re-prompt.
+#### 1. Change the system instruction mid-session (supported and documented)
+Send a `clientContent` turn with `role="system"` and `turn_complete=False`. The model picks up the new instructions on its next turn. The WebSocket stays open, so the caller hears no gap in audio and the browser does not ask for the microphone again.
 
 ```python
 await session.send_client_content(
@@ -1261,7 +1261,8 @@ await session.send_client_content(
 
 Verified working on `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`. See [Update system instructions during a session](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/start-manage-session). This is the mechanism to build on.
 
-**Cost: an instruction update replaces, a `role="user"` note stacks.** Every turn bills the whole prompt again. A `role="system"` update (or `context_update.systemInstruction`) overwrites the previous instruction, so it is billed once per turn at its current size. A `role="user"` turn with `turn_complete=False` stays in conversation history and is billed again on every later turn. Measured on Vertex AI, a fresh session per method, three consecutive swaps of a ~570-token instruction (English, then French, German, Spanish), the same question after each swap:
+##### Cost: an instruction update replaces, a `role="user"` note stacks
+Every turn bills the whole prompt again. A `role="system"` update (or `context_update.systemInstruction`) overwrites the previous instruction, so it is billed once per turn at its current size. A `role="user"` turn with `turn_complete=False` stays in conversation history and is billed again on every later turn. Measured on Vertex AI, a fresh session per method, three consecutive swaps of a ~570-token instruction (English, then French, German, Spanish), the same question after each swap:
 
 | Update method | `prompt_token_count` per turn | Growth per swap |
 |---|---|---|
@@ -1278,21 +1279,19 @@ What this means in practice:
 - On `gemini-live-2.5-flash-native-audio`, put the whole instruction in a single text part. On `gemini-3.8-live`, a `role="system"` message must contain exactly one turn.
 - On any other model (including `gemini-3.1-flash-live-preview` on Google AI Studio), check before relying on it: swap a large instruction three times and watch `usage_metadata.prompt_token_count`. Growth of only the last question and answer means replace. Growth by the instruction size means it stacks.
 
-**2. Supported: reconnect to change tools.** The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
+#### 2. Reconnect to change tools (supported)
+The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
 
-**3. Exposed on the wire (not yet in public docs or the SDK): `context_update` for per-card tools and `systemInstruction`.**
+#### 3. Swap per-card tools and `systemInstruction` in place with `context_update` (exposed on the wire, not yet in public docs or the SDK)
 On Vertex AI `gemini-3.8-live`, the WebSocket accepts a `context_update` (`contextUpdate`) client message with two public fields: `tools` and `systemInstruction`. Sending it inside a blocking tool handler (right before returning the `FunctionResponse`) solves two multi-turn voice problems at once:
-- **Per-card tool registration**: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `2,198` schema tokens), each card registers only the tools it still needs (Card 1 greeting registers only `SelectLanguageTool` at `146` tokens; Cards 2–3 register search/selection tools at `1,091` tokens; Cards 4–7 drop `SearchTool` and keep `1,048` tokens; Card 8 registers only `SelectLanguageTool` + `PaymentTool` at `244` tokens).
-- **Compaction-proof prompt cards**: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: **6 of 7 replies** after a compaction replayed the greeting when the card lived only in history, vs. **0 of 7** when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `context_update.systemInstruction` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
+- Per-card tool registration: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `2,198` schema tokens), each card registers only the tools it still needs (Card 1 greeting registers only `SelectLanguageTool` at `146` tokens; Cards 2–3 register search/selection tools at `1,091` tokens; Cards 4–7 drop `SearchTool` and keep `1,048` tokens; Card 8 registers only `SelectLanguageTool` + `PaymentTool` at `244` tokens).
+- Compaction-proof prompt cards: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: 6 of 7 replies after a compaction replayed the greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `context_update.systemInstruction` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
 
-<Aside type="caution" title="`context_update` is not yet in public documentation or the SDK">
-
-`context_update` appears in **no public documentation yet** and in **no released version of the `google-genai` SDK**. Using it means sending raw JSON frames over the SDK's underlying WebSocket (`session._ws.send(json.dumps(...))`). There is no published support commitment, no compatibility guarantee, and no server acknowledgement frame. Behaviour differs by platform and model: it works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`), is gated and ignored on Google AI Studio, and closes the connection with `1007` on `gemini-live-2.5-flash-native-audio`. Also, because removing a tool declaration does not remove earlier `function_call` turns from conversation history, the model can occasionally imitate an earlier call to a removed tool, so always check incoming tool calls against `swapper.accepts(tool_name)`.
-
-</Aside>
+> [!WARNING]
+> `context_update` appears in no public documentation yet and in no released version of the `google-genai` SDK. Using it means sending raw JSON frames over the SDK's underlying WebSocket (`session._ws.send(json.dumps(...))`). There is no published support commitment, no compatibility guarantee, and no server acknowledgement frame. Behaviour differs by platform and model: it works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`), is gated and ignored on Google AI Studio, and closes the connection with `1007` on `gemini-live-2.5-flash-native-audio`. Also, because removing a tool declaration does not remove earlier `function_call` turns from conversation history, the model can occasionally imitate an earlier call to a removed tool, so always check incoming tool calls against `swapper.accepts(tool_name)`.
 
 #### WebSocket wire payloads (`context_update`)
-Every populated field in `context_update` **replaces** (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
+Every populated field in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
 
 ```json
 // 1. Replace both systemInstruction and the active tool list for the next card:
@@ -1452,7 +1451,7 @@ class LiveToolSwapper:
         return True
 ```
 
-**Rule of thumb for customer architectures:** for officially supported and documented behaviour across SDK upgrades, use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes. When using `context_update` on Vertex AI `gemini-3.8-live` for per-card tool pruning and compaction-proof system instructions, gate it behind `supports_context_update(model, vertex)`, send it inside the blocking tool handler before returning the `FunctionResponse`, enforce `swapper.accepts()` on incoming tool calls, and keep `setup_tools()` wired for reconnects.
+Rule of thumb for customer architectures: for officially supported and documented behaviour across SDK upgrades, use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes. When using `context_update` on Vertex AI `gemini-3.8-live` for per-card tool pruning and compaction-proof system instructions, gate it behind `supports_context_update(model, vertex)`, send it inside the blocking tool handler before returning the `FunctionResponse`, enforce `swapper.accepts()` on incoming tool calls, and keep `setup_tools()` wired for reconnects.
 
 ---
 
