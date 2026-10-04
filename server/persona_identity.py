@@ -18,6 +18,7 @@ PERSONA_ALIASES = {
     "meera": "debt-collector",
     "kabir": "storyteller",
     "aisha": "ai-companion",
+    "tara": "travel-concierge",
 }
 
 
@@ -84,6 +85,14 @@ PERSONA_VOICE_DESIGN_DEFAULTS: dict[str, dict[str, str]] = {
         "accent": "Indian",
         "pitch": "Default",
         "prompt": "Friendly smart-glasses AI companion. Crisp, upbeat, and helpful.",
+    },
+    "travel-concierge": {
+        "voice": "Sulafat",
+        "style": "Warm & Friendly",
+        "pace": "Natural",
+        "accent": "Indian",
+        "pitch": "Default",
+        "prompt": "Calm, bright young woman from Delhi booking flights on a phone call. Patient, clear with fares and dates.",
     },
 }
 

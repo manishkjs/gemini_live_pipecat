@@ -4165,3 +4165,104 @@
 
 
 
+
+/* Tools registered with each prompt card: a small floating toast that fades on its own. */
+.tool-toast {
+  position: fixed;
+  top: 18px;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 32px));
+  z-index: 99998;
+  padding: 9px 12px 10px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.86);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.28);
+  color: #e2e8f0;
+  font-size: 12px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.tool-toast-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  color: #94a3b8;
+}
+
+.tool-toast-card {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  color: #a5b4fc;
+}
+
+.tool-toast-title {
+  color: #f1f5f9;
+  font-weight: 600;
+}
+
+.tool-toast-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.tool-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.tool-chip.is-added {
+  background: rgba(52, 168, 83, 0.22);
+  color: #86efac;
+}
+
+.tool-chip.is-removed {
+  background: rgba(234, 67, 53, 0.16);
+  color: #fca5a5;
+  text-decoration: line-through;
+}
+
+.tool-toast-via {
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: #64748b;
+}
+
+.tool-toast-via.is-pending {
+  color: #fbbf24;
+}
+
+.tool-toast-fade {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 100%;
+  background: linear-gradient(90deg, #4285f4, #34a853, #fbbc05, #ea4335);
+  transform-origin: left;
+  animation-name: tool-toast-drain;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+@keyframes tool-toast-drain {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-toast-fade { animation: none; }
+}

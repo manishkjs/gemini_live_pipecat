@@ -1,4 +1,5 @@
 import { initialPersonaPhase } from "@/lib/personas";
+import { readToolInjection, type ToolInjectionEvent } from "@/lib/tool-injection";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "motion/react";
 import {
@@ -123,6 +124,10 @@ export function useVoiceSession() {
     time?: string;
     vehicle_variant?: string;
   } | null>(null);
+
+  // Tools registered with each prompt card (context_update personas): a small fading toast.
+  const [toolInjection, setToolInjection] = useState<ToolInjectionEvent | null>(null);
+  const dismissToolInjection = useCallback(() => setToolInjection(null), []);
 
   // Context Compression toast event state
   const [compressionEvent, setCompressionEvent] = useState<{
@@ -433,6 +438,8 @@ export function useVoiceSession() {
             if (delivered && (val?.directive || val?.title)) {
               setPhaseDirective(val.directive || val.title);
             }
+            const injected = delivered ? readToolInjection(val) : null;
+            if (injected) setToolInjection(injected);
             setPhaseDelivery(
               ["pending", "sent", "failed"].includes(val?.delivery_status)
                 ? val.delivery_status
@@ -606,6 +613,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
+    toolInjection, dismissToolInjection,
     avatarStream, avatarFallbackNotice, setAvatarFallbackNotice, voiceFallbackNotice, setVoiceFallbackNotice,
     // phase tracking & booking
     currentPhase, visitedPhases, phaseDirective, phaseDelivery, callSlots, confirmedBooking,

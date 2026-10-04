@@ -35,6 +35,14 @@ from persona_prompt_cards.kavya_cards import (
     get_kavya_root_system_instruction,
     get_kavya_monolithic_system_instruction,
 )
+from persona_prompt_cards.tara_cards import (
+    TaraTravelPhaseCard,
+    TARA_TRAVEL_CARDS,
+    get_tara_phase_card,
+    format_tara_prompt_card,
+    get_tara_root_system_instruction,
+    get_tara_monolithic_system_instruction,
+)
 from persona_prompt_cards.abhay_cards import (
     get_abhay_system_instruction,
     get_abhay_signature_instruction,
@@ -77,6 +85,13 @@ __all__ = [
     "format_kavya_prompt_card",
     "get_kavya_root_system_instruction",
     "get_kavya_monolithic_system_instruction",
+    # Tara
+    "TaraTravelPhaseCard",
+    "TARA_TRAVEL_CARDS",
+    "get_tara_phase_card",
+    "format_tara_prompt_card",
+    "get_tara_root_system_instruction",
+    "get_tara_monolithic_system_instruction",
     # Other personas
     "get_abhay_system_instruction",
     "get_abhay_signature_instruction",
@@ -101,6 +116,8 @@ _PHASED = {
               get_ananya_root_system_instruction, get_ananya_monolithic_system_instruction),
     "kavya-glass-buddy": (KAVYA_GLASS_BUDDY_CARDS, get_kavya_phase_card, format_kavya_prompt_card,
               get_kavya_root_system_instruction, get_kavya_monolithic_system_instruction),
+    "travel-concierge": (TARA_TRAVEL_CARDS, get_tara_phase_card, format_tara_prompt_card,
+              get_tara_root_system_instruction, get_tara_monolithic_system_instruction),
 }
 _STATIC = {
     "car-negotiator": (get_abhay_system_instruction, get_abhay_signature_instruction),

@@ -310,6 +310,20 @@ export const PERSONA_VOICE_DESIGN_MAP: Record<string, PersonaVoiceDesign> = {
     ttsPitch: "Default",
     ttsVoicePrompt: "Friendly smart-glasses AI companion. Crisp, upbeat, and helpful.",
   },
+  "travel-concierge": {
+    ttsStyle: "Warm & Friendly",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Calm, bright young woman from Delhi booking flights on a phone call. Patient, clear with fares and dates.",
+  },
+  tara: {
+    ttsStyle: "Warm & Friendly",
+    ttsPaceLabel: "Natural",
+    ttsAccent: "Indian",
+    ttsPitch: "Default",
+    ttsVoicePrompt: "Calm, bright young woman from Delhi booking flights on a phone call. Patient, clear with fares and dates.",
+  },
 };
 
 export function getPersonaVoiceDesign(personaId: string): PersonaVoiceDesign {

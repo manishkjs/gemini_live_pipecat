@@ -23,6 +23,7 @@ import AvatarStagePanel from "./studio/avatar-stage-panel";
 import SettingsDialog from "./studio/settings-dialog";
 import PersonaAvatar from "./studio/persona-avatar";
 import ContextCompressionToast from "./studio/context-compression-toast";
+import ToolInjectionToast from "./studio/tool-injection-toast";
 import "./voice-studio.css";
 
 const PAGE_LOAD_VISIT_ID = newSessionId();
@@ -208,6 +209,8 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
         event={studio.compressionEvent}
         onDismiss={studio.dismissCompressionToast}
       />
+
+      <ToolInjectionToast event={studio.toolInjection} onDismiss={studio.dismissToolInjection} />
 
     {/* THEMED OBSERVABILITY DRAWER */}
     <ObservabilityDrawer

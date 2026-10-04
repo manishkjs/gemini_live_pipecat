@@ -982,6 +982,12 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
         if session_id:
             logger.info(f"Session ID Established: {session_id}")
+        on_ready = getattr(getattr(self, "persona_architecture", None), "on_session_ready", None)
+        if on_ready is not None:
+            try:
+                await on_ready(self, resumed=bool(getattr(self, "_session_resumption_handle", None)))
+            except Exception as exc:
+                logger.warning(f"[Persona] on_session_ready failed: {exc}")
         for kind in ("avatar", "voice"):
             notice = getattr(self, f"_{kind}_fallback_notice", None)
             if not notice:
@@ -1109,8 +1115,18 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                     }
                 }))
 
-                # FactStore: Immediately inject verbatim dialogue transcription logs back into model context
-                await self._inject_transcription_logs()
+                # A persona that keeps server-side state re-sends its own card; the rest get
+                # the verbatim dialogue transcription logs (FactStore) back in context.
+                architecture = getattr(self, "persona_architecture", None)
+                on_compressed = getattr(architecture, "on_context_compressed", None)
+                handled = False
+                if on_compressed is not None:
+                    try:
+                        handled = bool(await on_compressed(self))
+                    except Exception as exc:
+                        logger.warning(f"[Persona] on_context_compressed failed: {exc}")
+                if not handled:
+                    await self._inject_transcription_logs()
 
             if current_prompt > 0:
                 self._last_prompt_tokens = current_prompt
@@ -1203,11 +1219,21 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 
         lang_code = getattr(self, "_language_code", None) or "en-US"
+        architecture = getattr(self, "persona_architecture", None)
         if isinstance(self, GeminiLiveVertexLLMService):
             # Transcription language pinning is Vertex AI Enterprise only.
             from google.genai.types import AudioTranscriptionConfig
-            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
-            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
+            persona_codes = list(getattr(architecture, "transcription_language_codes", None) or [])
+            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
+            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
+
+        # A persona that swaps tools per step declares its current group in every setup,
+        # so a reconnect (resumed or not) starts with the tools the step needs.
+        setup_tools = getattr(architecture, "setup_tools", None)
+        if setup_tools is not None:
+            persona_tools = setup_tools(self.get_llm_adapter())
+            if persona_tools:
+                config.tools = persona_tools
 
         # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
         if getattr(config, "context_window_compression", None):
@@ -1484,6 +1510,8 @@ class StartTriggerProcessor(FrameProcessor):
         self._consecutive_speech_frames = 0
         self._gate_start_time = time.monotonic()
         self._max_gate_duration = 12.0  # Safety timeout
+        #: Messages a persona seeds ahead of the greeting (e.g. its first prompt card).
+        self.opening_messages: list = []
         if self._mic_gated:
             logger.info("[StartTriggerProcessor] Client mic gating enabled for initial greeting turn.")
 
@@ -1519,7 +1547,8 @@ class StartTriggerProcessor(FrameProcessor):
                     self._gate_start_time = time.monotonic()
                     greeting_text = "Hey!" if self.language == "hi-IN" else "Hello!"
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
-                    await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
+                    messages = [*self.opening_messages, {"role": "user", "content": greeting_text}]
+                    await self.push_frame(LLMMessagesAppendFrame(messages=messages))
                     await self.push_frame(LLMRunFrame())
                 return
 
@@ -1660,6 +1689,7 @@ def compose_live_system_prompt(
     gender: str,
     language: str,
     voice: Optional[str] = None,
+    language_directive: bool = True,
 ) -> str:
     """Build the system prompt for a Live session.
 
@@ -1673,11 +1703,16 @@ def compose_live_system_prompt(
 
     A cloned ``voice`` also gets its self-reference grammar rule: its gender is
     fixed by the recording, whatever the persona says.
+
+    ``language_directive=False`` is for a persona whose prompt owns the language
+    policy (Tara starts in Indian English and switches only through a tool).
     """
     base = system_instruction if system_instruction else SYSTEM_PROMPT.replace("female", gender)
     gender_rule = tts_script.voice_gender_rule(voice)
     if gender_rule:
         base = f"{base}\n\n{gender_rule}"
+    if not language_directive:
+        return base
     return f"{base}\n\nIMPORTANT: You must converse in {language} language."
 
 
@@ -1987,7 +2022,10 @@ async def run_agent_live(
             f"{persona_architecture.pattern.value}; client-provided text ignored."
         )
 
-    prompt_text = compose_live_system_prompt(effective_instruction, gender, language, voice)
+    prompt_text = compose_live_system_prompt(
+        effective_instruction, gender, language, voice,
+        language_directive=not getattr(persona_architecture, "owns_language_policy", False),
+    )
 
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
@@ -2143,6 +2181,19 @@ async def run_agent_live(
             )
     model = clean_model
 
+    # Per-step tool swapping (context_update) is model-specific; the architecture decides from
+    # the resolved model whether setup declares its opening group or the full set.
+    bind_live_model = getattr(persona_architecture, "bind_live_model", None)
+    if bind_live_model is not None and bind_live_model(clean_model, vertex=not is_ai_studio):
+        tools_schema = ToolsSchema(standard_tools=list(persona_architecture.get_tool_schemas()))
+        logger.info(
+            f"[ToolSwap] {clean_model} on Vertex: setup declares "
+            f"{[t.name for t in tools_schema.standard_tools]}; other tools arrive per step via context_update."
+        )
+        if tools:
+            # A context_update replaces the whole declared set, so extra tools cannot ride along.
+            logger.warning("[ToolSwap] Client-supplied tools are not declared for this persona while tools swap per step.")
+
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
         gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -2294,6 +2345,9 @@ async def run_agent_live(
         gate_mic_on_greeting=gate_mic_on_greeting,
     )
     llm.start_trigger = start_trigger
+    opening_messages = getattr(persona_architecture, "opening_messages", None)
+    if opening_messages is not None:
+        start_trigger.opening_messages = list(opening_messages())
 
     # Padding only makes sense when local VAD frames actually arrive.
     turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if use_silero else None)
