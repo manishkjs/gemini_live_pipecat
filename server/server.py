@@ -274,7 +274,12 @@ async def persona_prompt(
     effective_engine = engine or "live"
     try:
         if getattr(persona_arch_obj, "has_exclusive_tools", lambda eng="live": False)(effective_engine):
-            raw_tools = list(persona_arch_obj.get_tool_schemas(effective_engine))
+            # Per-card tool sets (Tara on Vertex 3.8): report what the session declares on this phase.
+            preview = getattr(persona_arch_obj, "preview_tool_schemas", None)
+            if preview is not None and effective_engine != "cascade":
+                raw_tools = list(preview(phase))
+            else:
+                raw_tools = list(persona_arch_obj.get_tool_schemas(effective_engine))
         else:
             from pipecat.adapters.schemas.function_schema import FunctionSchema
             from rag_function import search_knowledge_base_schema

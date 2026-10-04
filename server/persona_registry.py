@@ -853,6 +853,22 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
             return function_schemas(list(self.swapper.desired))
         return function_schemas(list(TOOL_NAMES))
 
+    def preview_tool_schemas(self, phase: Optional[str], model: Optional[str] = "gemini-3.8-live",
+                             vertex: bool = True) -> List[Any]:
+        """What a live session declares while on ``phase`` (for the studio's tool panel).
+
+        The panel's endpoint has no session, so ``get_tool_schemas`` (unbound: all six) would
+        overstate it. On Vertex ``gemini-3.8-live`` each card declares only its own group; no
+        phase yet means card 1. Models without ``context_update`` declare all six throughout.
+        """
+        from live_tool_swapper import supports_context_update
+        from persona_prompt_cards.tara_cards import get_tara_phase_card
+        from persona_tools.travel_booking import TOOL_GROUP_BY_CARD, TOOL_NAMES, function_schemas
+        if not supports_context_update(model, vertex):
+            return function_schemas(list(TOOL_NAMES))
+        card = get_tara_phase_card(phase) if phase else None
+        return function_schemas(list(TOOL_GROUP_BY_CARD[card.number if card else 1]))
+
     def setup_tools(self, adapter: Any) -> Optional[List[Any]]:
         """Provider tools for a (re)connect setup, or None to keep Pipecat's own."""
         if self.swapper is None:

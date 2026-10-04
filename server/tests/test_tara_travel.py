@@ -1123,3 +1123,26 @@ class TestTaraTrace(unittest.TestCase):
         result = trace.tool_result("X", {"status": "ok", "prompt_card": card})
         self.assertIn("<System update for agent. Prompt card 5 of 8", result)
         self.assertIn("tokens", result)
+
+
+class TestToolPreview(unittest.TestCase):
+    """The studio's tool panel must show what the session declares for the card it is on."""
+
+    def test_preview_lists_the_card_group_on_gemini_38_vertex(self):
+        from persona_registry import get_persona_architecture
+        arch = get_persona_architecture("travel-concierge")
+        names = lambda phase, **kw: {s.name for s in arch.preview_tool_schemas(phase, **kw)}
+        self.assertEqual(names("BMT_01_LANGUAGE"), {"SelectLanguageTool"})
+        self.assertEqual(names(None), {"SelectLanguageTool"})  # no phase yet: the opening card
+        self.assertEqual(names("BMT_08_PAYMENT"), set(TOOL_GROUP_BY_CARD[8]))
+        self.assertEqual(names("BMT_01_LANGUAGE", model="gemini-3.5-flash-live-preview"), set(TOOL_NAMES))
+        self.assertEqual(names("BMT_01_LANGUAGE", vertex=False), set(TOOL_NAMES))
+
+    def test_persona_prompt_route_reports_one_tool_on_card_one(self):
+        from fastapi.testclient import TestClient
+        import server as server_module
+        client = TestClient(server_module.app)
+        body = client.get("/persona-prompt/travel-concierge?engine=live&phase=BMT_01_LANGUAGE").json()
+        self.assertEqual([t["name"] for t in body["tools"]], ["SelectLanguageTool"])
+        body = client.get("/persona-prompt/travel-concierge?engine=live&phase=BMT_05_NAME").json()
+        self.assertEqual({t["name"] for t in body["tools"]}, set(TOOL_GROUP_BY_CARD[5]))
