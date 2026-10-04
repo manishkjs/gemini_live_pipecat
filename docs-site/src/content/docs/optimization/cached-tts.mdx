@@ -119,3 +119,8 @@ Because Gemini Live emits `outputTranscription` chunks concurrently with `inline
 1. Hold outbound 24kHz PCM audio frames in a 150ms to 200ms ring buffer in your media gateway (Pipecat `FrameProcessor` or custom WebSocket proxy).
 2. Run a fast deterministic regex / Aho-Corasick guardrail check against the streaming `outputTranscription` text.
 3. If a prohibited pattern is detected, flush the 200ms ring buffer before the audio reaches the telephony socket and trigger a corrective prompt or human transfer.
+
+---
+
+Next: [How to write a better prompt ->](/gemini_live_pipecat/prompt-optimization/)
+

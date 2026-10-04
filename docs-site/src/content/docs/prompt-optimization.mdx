@@ -1,6 +1,6 @@
 ---
-title: Prompt optimization
-description: How Gemini Live builds the prompt on every turn, where each kind of instruction belongs, and how to write short prompts that work well with live audio.
+title: How to write a better prompt
+description: How Gemini Live builds the prompt on every turn, how to write a short base instruction, and how to write phase cards for each step of a call.
 ---
 
 import PromptAnatomyDiagram from '../../components/PromptAnatomyDiagram.astro';
@@ -43,8 +43,9 @@ The `ROLE_*` labels describe how the server orders the prompt. You won't see the
 A few terms come up a lot on this page:
 
 - Reuse line: the server keeps its work on the top part of the prompt so it doesn't redo it every turn. The diagram below calls that top part the preamble and the line the prefix cache boundary. This makes replies faster. It doesn't make them cheaper, because those tokens are still billed on every turn.
-- Session updates: text you add at the very bottom of the prompt while the call is running. Examples are a step card (the instructions for the current step of the call, also called a phase card) and a short list of facts you've saved about the caller. Some docs call this "tail context".
-- `WHEN_IDLE`: a scheduling option on a tool response. The update is delivered after the model finishes speaking, so it doesn't cut the model off.
+- Phase card (also called a step card): a short block of instructions (about 100 to 200 tokens) for only the current step of the call, such as verifying identity, searching flights, or collecting passenger names.
+- Session updates: text you add or replace while the call is running, such as the current phase card and a short dictionary of facts you've confirmed about the caller.
+- `WHEN_IDLE`: a scheduling option on a non-blocking tool response. The update is delivered after the model finishes speaking, so it doesn't cut the model off.
 
 <PromptAnatomyDiagram caption="The fixed setup (tools, then your instructions) sits at the top, above the reuse line. Updates you send during the call sit at the very bottom, right after what the caller just said." />
 
@@ -52,15 +53,15 @@ A few terms come up a lot on this page:
 
 #### Your instructions aren't at the very top
 
-`ROLE_SYSTEM` belongs to the server. It holds Google's spoken-dialog rules and the voice sample for your `voiceName`. Your `systemInstruction` goes into `ROLE_DEVELOPER`, right after your tool definitions. Fifteen to twenty large tool schemas can put 2,500 or more tokens in front of your instructions, and you pay for them on every turn. Declare only the tools the call needs, ideally 1 to 5.
+`ROLE_SYSTEM` belongs to the server. It holds Google's spoken-dialog rules and the voice sample for your `voiceName`. Your `systemInstruction` goes into `ROLE_DEVELOPER`, right after your tool definitions. Fifteen to twenty large tool schemas can put 2,500 or more tokens in front of your instructions, and you pay for them on every turn. Declare only the tools the current step needs, ideally 1 to 3.
 
 #### The bottom of the prompt has the most pull
 
-Your instructions sit at the top. After twenty turns, a lot of audio and transcript sits between them and the caller's latest words. Session updates go at the very bottom, right after what the caller just said, so the model tends to follow them closely in its next reply. Put things that change during the call there: the current step, facts you've confirmed, or what's in the caller's cart.
+Your base instructions sit at the top. After twenty turns, a lot of audio and transcript sits between them and the caller's latest words. Place the current phase card and confirmed session state right after your base rules (or at the bottom as a session update) so the model follows the active step closely on its next reply.
 
 #### Changing the top block means rebuilding it
 
-Your tools and instructions form the block above the reuse line. If you change either one, the server has to rebuild that block. Adding session updates at the bottom leaves it alone.
+Your tools and instructions form the block above the reuse line. If you change either one, the server rebuilds that block on that turn. Since you only change phase cards 3 to 6 times during a call, rebuilding on step transitions is fast and saves thousands of billed tokens across the rest of the turns.
 
 #### The server decides what the caller heard
 
@@ -68,19 +69,19 @@ Only the Live server knows the exact moment a caller cut in. When that happens, 
 
 ### Where each piece of information goes
 
-| What it is | Where to put it | How often it changes | Effect |
+| What it is | Where to put it | How often it changes | Size target |
 | :--- | :--- | :--- | :--- |
-| Persona, tone, speaking pace, language and grammar rules | `setup.systemInstruction` | Once, at the start (about 300 to 500 tokens) | Part of the reused top block |
-| Tool definitions (`functionDeclarations`) | `setup.tools` | Once, at the start | Part of the reused top block. Changing it means a rebuild |
-| Rules for the current step, such as "Step 2: verify identity" | Session update: a tool response with `scheduling=WHEN_IDLE`, or a `clientContent` message between turns | When the step changes, about 3 to 5 times per call | Top block stays as it is |
-| Confirmed caller facts, such as name, postal code, or ticket ID | Session update, as a short summary under 60 tokens | After you capture a new fact | Top block stays as it is |
-| Large catalogs or policy documents (over 1,000 tokens) | Behind a lookup tool that returns a short summary (about 25 tokens) the agent can say out loud | Only when needed | Nothing added to the fixed prompt |
+| Persona, tone, speaking pace, language and grammar rules | Base `systemInstruction` | Kept for the whole call | 150 to 300 tokens |
+| Active phase card (rules for the current step only) | Appended to `systemInstruction` (via `role="system"` or `context_update`) or sent as a session update | When the step changes (3 to 6 times per call) | 100 to 200 tokens |
+| Confirmed caller facts (`Session state`: language, route, chosen flight) | 1-line JSON or text block right under the active phase card | Updated whenever a tool confirms a new fact | Under 60 tokens |
+| Tool definitions (`functionDeclarations`) | `setup.tools` (or swapped per card via `context_update` on `gemini-3.8-live`) | At session start or on step change | 1 to 3 tools per step |
+| Large catalogs or policy documents (over 1,000 tokens) | Behind a lookup tool that returns a short speakable summary | Fetched on demand | ~25 tokens per result |
 
 ---
 
-## 2. Keep `systemInstruction` under 500 tokens
+## 2. Keep your base `systemInstruction` under 300–500 tokens
 
-You pay for `systemInstruction` again on every turn. A 4,000-token instruction in a 10-turn call adds up to 40,000 billed text tokens, which is `$0.020` to `$0.030` for the instruction alone. Keep yours under 500 tokens and split it into four short blocks:
+You pay for `systemInstruction` again on every turn. A 4,000-token instruction in a 10-turn call adds up to 40,000 billed text tokens, which is `$0.020` to `$0.030` for the instruction alone. Keep your base rules under 300 to 500 tokens and split them into four short blocks:
 
 ```text
 1. PERSONA AND DELIVERY
@@ -96,7 +97,7 @@ The caller may be somewhere noisy. Ignore background conversations, side chatter
 Say the opening greeting first, without calling any tools.
 On later turns, when you call a tool, first say a short acknowledgment ("Let me check your line status right now."), then make the tool call and stop talking. After a tool call, your only job is to listen.
 
-4. OPENING STEP (GREETING AND REASON FOR CALLING)
+4. CURRENT STEP (PHASE CARD 1: GREETING AND INTENT)
 a) Greet the caller briefly and ask how you can help today.
 b) Listen to their full answer.
 c) Call lookup_customer_account with the issue they described, and wait for the result before moving on.
@@ -116,7 +117,7 @@ Rules like *"Do NOT narrate tool calls"* or *"Never repeat yourself"* often back
 
 #### Stop the agent from calling tools before it says hello
 
-Turn 0 is the moment before the caller has said anything. Without a clear opening rule (*"Say the opening greeting first, without calling any tools"*), the model may call `switch_phase` or a lookup tool on Turn 0, before it greets the caller. That can load a 500-token step card before the caller speaks and roughly double the prompt tokens for Turn 1 (from 488 to 1,023 in one measured session).
+Turn 0 is the moment before the caller has said anything. Without a clear opening rule (*"Say the opening greeting first, without calling any tools"*), the model may call a lookup tool on Turn 0 before it greets the caller. That can load a 500-token step card before the caller speaks and roughly double the prompt tokens for Turn 1 (from 488 to 1,023 in one measured session).
 
 #### Spell out each step with a, b, c
 
@@ -124,13 +125,13 @@ When a step involves asking a question and then calling a tool, write the order 
 
 #### Say each instruction once
 
-If a tool response or session update already gives the instructions for a step, take that instruction out of `systemInstruction`. When the same instruction appears at both the top and the bottom of the prompt, the model may say it twice.
+Never put the same rule in both your base instructions and your tool response. When the same instruction appears twice in the prompt, the model often speaks it twice.
 
 ---
 
 ## 3. Audio traps to avoid
 
-Native audio models turn your text instructions straight into speech. Some habits from text prompting cause trouble here:
+Native audio models turn your text instructions straight into speech. Three habits from text prompting cause trouble here:
 
 ### Don't use square brackets
 
@@ -140,37 +141,72 @@ Avoid tags such as `[PAUSE]`, `[SYSTEM_NOTE]`, or `[EMPATHETIC]`. The model may 
 
 If the model produces no audio for a turn, the server also skips the caller's input transcription for that turn. Your transcript log and state machine then miss what the caller said. If you need silence while background work runs, mute the audio on your side, or send the tool response with `FunctionResponseScheduling.SILENT`.
 
-### Don't send `clientContent` while the model is talking
+### Don't send `clientContent` with `turn_complete=True` while the model is talking
 
-A `clientContent` message with `turn_complete=True` acts as a new user turn and cuts the model off mid-reply. With `turn_complete=False`, the current reply usually finishes (14 of 16 measured runs on Vertex AI `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`), but the update only takes effect on the next turn. Wait for `turnComplete` first, or put the update in a tool response with `scheduling=WHEN_IDLE`.
+A `clientContent` message with `turn_complete=True` acts as a new user turn and cuts the model off mid-reply. With `turn_complete=False`, the current reply usually finishes (14 of 16 measured runs on Vertex AI `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`), but the update only takes effect on the next turn. Send updates inside your blocking tool handler right before returning `FunctionResponse`, or right after `turnComplete`.
 
 ---
 
-## 4. Guiding the call with session updates
+## 4. What is a phase card, and how to write one
 
-To take a call through several steps without growing the top block:
+In a real customer call, the agent moves through distinct steps: greeting, route search, flight selection, passenger names, and payment. If you put the rules for all 8 steps into one giant prompt at Turn 1, the model has to wade through payment rules while it is still saying hello, and you pay to re-read all 8 steps on every turn.
 
-1. Keep `setup.systemInstruction` and `setup.tools` the same for the whole call.
-2. Send step changes and saved facts as session updates. Either return them in a tool response with `scheduling=WHEN_IDLE`, or send them with `clientContent` (`turn_complete=False`) right after `turnComplete`.
-3. In languages with grammatical gender, such as Hindi, Spanish, or French, add a one-line grammar reminder to every step card. The newest card is the last thing the model reads before it replies, so leaving the reminder out can make the agent switch the gender it uses for itself.
+Instead, split your prompt into two parts:
+1. Base rules (about 150 to 300 tokens): who the agent is, how it speaks, and how it handles tools. These stay for the whole call.
+2. One active phase card (about 100 to 200 tokens): the rules for only the step the caller is in right now. Rules that only matter in Step 2 live on Card 2, never in the base prompt.
 
-:::note
-Tool scheduling (`WHEN_IDLE`, `SILENT`) only works for tools declared with `behavior=NON_BLOCKING`, on a model that supports asynchronous tools, such as Gemini 2.5 Flash Native Audio. Otherwise the scheduling value is ignored. Gemini 3.1 Flash Live waits for each tool response before it speaks again and doesn't support scheduling, so send session updates with `clientContent` right after `turnComplete` instead.
-:::
+### Anatomy of a well-written phase card
 
-See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) and [Pillar 3: Lossless History Pruning](/gemini_live_pipecat/optimization/history-pruning/) for working Python code.
+Here is a real phase card (Card 2 of 8, *Trip details and search*) from a production flight-booking voice agent ("Book My Trip"):
 
-### Replacing the instructions and tool list per card with `context_update`
+```text
+HEADER (step number + speaker gender pin)
+Prompt card 2 of 8: Trip details and search.
+You are Tara, a woman. Use feminine verbs for yourself ("dekh leti hu", never "leta hu").
 
-On Vertex AI `gemini-3.8-live`, the WebSocket also accepts a `context_update` client message that replaces `systemInstruction` and the active `tools` list in place without reconnecting.
+GOAL (one sentence)
+Goal: get origin, destination, travel date, and trip type, then search flights.
 
-When a tool call moves the conversation to a new step card, you can send `context_update` inside that blocking tool handler right before returning the `FunctionResponse`:
+STEP RULES (one question at a time)
+- Ask for one missing detail at a time. Search as soon as you have a route and a date. Leave unknown fields empty.
+- Round trip: set trip_type="RT" and ask for the return date before searching.
+- If you are not sure whether a city has an airport, call CheckAirportTool before saying anything about it.
+- If a search returns no flights, say so and ask for another date or time. Do not retry with another city on your own.
 
-1. Set `systemInstruction` to your base rules (with the opening greeting line replaced by an in-call reminder), the current step card, and the live session state. Because sliding-window compression keeps `systemInstruction` when it trims old history turns, the active card and session state never get dropped mid-call.
-2. Set `tools` to only the tool schemas that the current step card needs (or `{}` on a talk-only closing card). You stop paying tool schema tokens on every turn for tools from earlier or later steps.
-3. Return a one-line pointer in the `FunctionResponse` instead of repeating the full step card in the conversation history.
+TOOLS & EXIT CONDITION
+Tools for this step: SearchTool, CheckAirportTool.
+This step ends when SearchTool returns flights.
 
-This is also the cheaper way to change instructions. An instruction update replaces the old one, so every turn pays for one step card. A step card sent as a user message stays in the conversation and is paid for again on every later turn. In our test on Vertex AI, after three card changes each turn cost 783 input tokens with instruction updates and 2,493 with user messages. If you only need to change the instructions (not the tools), the documented `send_client_content(turns=Content(role="system", ...), turn_complete=False)` call replaces them the same way, on both `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`.
+LIVE SESSION STATE & CLOSING REMINDER
+Session state: {"language": "Hindi", "origin": "Delhi", "waiting_for": "destination and travel date"}
+Before you speak: Only Hindi. Feminine verbs for yourself. One to two short sentences, then ask.
+```
 
-`context_update` is exposed on the Vertex AI Live WebSocket today, though it is not yet in Google's public documentation or the `google-genai` SDK. See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/#per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live) and [Changing tools and instructions during a call](/gemini_live_pipecat/tools/#7-changing-tools-and-instructions-during-a-call) for the animated walkthrough, wire format, 8-card flight-booking breakdown, and Python code.
+### Four rules for writing clean phase cards
+
+#### 1. Give every card one goal and one exit condition
+
+Start the card with `Goal: ...` and end it with `This step ends when <Tool> returns`. A single goal keeps the model from jumping ahead (for example, asking for passenger names before a flight is chosen), and naming the tool that ends the step tells the model how to move forward.
+
+#### 2. Include `Session state` with a `"waiting_for"` field on every update
+
+Your server owns the state, not the model's memory. Passing `Session state: {"origin": "Delhi", "waiting_for": "destination and travel date"}` ensures the agent never asks again for something the caller already answered, even after older audio turns are trimmed by the 5,000-token sliding window.
+
+#### 3. Repeat a one-line language and gender reminder in gendered languages
+
+In Hindi, Marathi, Spanish, or French, add a short reminder in the card header or footer (*"Only Hindi. Feminine verbs for yourself."*). Because the model weighs the bottom of the prompt heavily, that one line prevents speaker-gender drift mid-call.
+
+#### 4. List only the tools active on that card
+
+Writing `Tools for this step: SearchTool, CheckAirportTool` matches the exact tool schemas you register for that step.
+
+### How to swap phase cards during a call (without stacking tokens)
+
+When a tool call finishes Step 1 and moves the call to Card 2, replace `systemInstruction` in place (combining `base_rules + current_card + session_state`) rather than sending the card as a `role="user"` message:
+
+- Sending the new card via `role="system"` (`send_client_content(..., turn_complete=False)`) or `context_update` overwrites the old card in place (`783 tokens/turn` after 3 swaps, and survives the 5,000-token sliding window).
+- Sending the new card via `role="user"` or inside a tool result stacks every old card in conversation history (`2,493 tokens/turn` after 3 swaps).
+- On Vertex AI `gemini-3.8-live`, `context_update` also swaps the declared `tools` list at the same time so you only pay schema tokens for the 1 to 3 tools listed on the active card.
+
+See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) for the animated Replace-vs-Stack walkthrough, the 8-card flight-booking token table, and the 30-line Python implementation.
 
