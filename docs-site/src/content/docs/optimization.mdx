@@ -61,7 +61,7 @@ Instead, start the session with a compact **120-token opening card** (plus base 
 1. **Only inject between turns**: Sending a `clientContent` frame while the model is actively generating audio will **interrupt and cut off** the model's current speech. Always return phase cards inside a `toolResponse` (`scheduling=WHEN_IDLE`) or inject them via `clientContent` (`turn_complete=False`) immediately after receiving `turnComplete`.
 2. **Never use square brackets**: As documented in [Configuration reference -> Prompting for native audio models](/gemini_live_pipecat/gemini-live-configuration/#prompting-for-native-audio-models), native audio models treat bracketed text as vocal stage directions or read them aloud. Use natural, unbracketed prose.
 
-### Code pattern: Advancing phase cards via a tool response
+### Code pattern A: Advancing phase cards via a tool response (all models)
 
 ```python
 from google.genai import types
@@ -97,6 +97,234 @@ async def handle_advance_phase(session, tool_call, next_phase: str):
                 )
             ]
         )
+    )
+```
+
+### Per-card tool registration & instruction updates via `context_update` (Vertex AI `gemini-3.8-live`)
+
+In a multi-step voice workflow, sending prompt cards in tool responses solves only half of the problem:
+1. **Unused tools are still billed on every turn**: On `gemini-3.8-live`, every declared tool schema is tokenized and billed on every model generation. In our 8-card flight-booking concierge (6 tools totaling **2,198 schema tokens**), declaring all 6 tools at `setup` means paying for `SearchTool` (~763 tokens) and `TravellerDetailsTool` (~862 tokens) even on the greeting turn and on the final payment turn.
+2. **History-only cards vanish when the sliding window compacts**: When [Pillar 1 (`SlidingWindow`)](#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) trims older turns at the 5,000-token threshold, it drops conversation history (including any prompt cards that were delivered only in tool responses or `clientContent`) while keeping `systemInstruction`. When a history-only card gets trimmed mid-call, the model falls back to the opening `setup.systemInstruction` and replays the Turn-1 greeting. Measured live on `gemini-3.8-live`: **6 of 7 replies** after a compaction replayed the opening greeting when the card lived only in history, vs. **0 of 7** when the active card and session state lived inside `systemInstruction`.
+
+On Vertex AI `gemini-3.8-live`, the WebSocket accepts a mid-session `context_update` client message that replaces **both** the declared `tools` list and `systemInstruction` in place, with no reconnect:
+
+| Card(s) in the booking flow | Step | Tools registered for this card | Tool schema tokens / turn |
+| :--- | :--- | :--- | :--- |
+| **Card 1** | Greeting & language choice | `SelectLanguageTool` | **146 tokens** (vs. 2,198 for all 6) |
+| **Card 2** | Route & date intake | `SelectLanguageTool`, `SearchTool`, `CheckAirportTool` | **1,091 tokens** |
+| **Card 3** | Flight selection & refinement | `SelectLanguageTool`, `FlightActionTool`, `SearchTool` | **1,091 tokens** |
+| **Cards 4–7** | Traveller count, names, WhatsApp & email review | `SelectLanguageTool`, `TravellerDetailsTool`, `FlightActionTool` (`SearchTool` dropped) | **1,048 tokens** (down from 1,811) |
+| **Card 8** | Payment link & wrap-up | `SelectLanguageTool`, `PaymentTool` (`TravellerDetailsTool` dropped) | **244 tokens** (down from 1,910) |
+| **Farewell** | Talk-only closing (optional) | `tools: {}` (present-but-empty wrapper clears all tools) | **0 tool tokens** |
+
+#### How a card and its tools arrive together
+Send the `context_update` frame **inside the blocking tool handler that advances the card, right before returning the `FunctionResponse`**:
+1. The model calls a blocking tool (for example `SelectLanguageTool` or `FlightActionTool`) and pauses waiting for your `FunctionResponse`.
+2. Your server updates its authoritative `CallState`, builds the refreshed `systemInstruction` (base rules with the opening greeting replaced by an `IN CALL` header + the active prompt card + the live `Session state:` snapshot), and sends `context_update` with that card's `tools` and `systemInstruction`.
+3. Your server then returns the `FunctionResponse` with a one-line pointer (`"Prompt card 4 of 8 is now in your system instruction. Follow it."`) instead of repeating the 600-token card body in history.
+4. Because the model was blocked waiting on the tool result, the `context_update` never lands mid-speech, and the generation that reads the tool result already has the new card's tools (verified **5/5** in live trials on Vertex AI `gemini-3.8-live`).
+
+:::caution[`context_update` is exposed on the wire, but not yet in public documentation or the SDK]
+- **Not yet in `google-genai` or public docs**: No released version of `google-genai` has a typed method for `context_update`, and no public Google documentation page describes it yet. You send it as raw JSON over the SDK session's WebSocket (`session._ws.send(json.dumps(...))`).
+- **Model & platform support**: Works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). It is gated/ignored on Google AI Studio and rejected on `gemini-live-2.5-flash-native-audio` (closes with `1007`). Gate it with `supports_context_update(model, vertex)` so other models automatically fall back to declaring the full tool set at `setup` and carrying cards in tool responses.
+- **Full replacement semantics (`tools: {}` to clear)**: Every `context_update` **replaces** (does not merge) the declared tools. Keep global tools (like `SelectLanguageTool`) in every card's tuple. Sending `"tools": {}` (an empty wrapper object) clears all tools; omitting the `"tools"` key leaves the current tools unchanged.
+- **No server acknowledgement & history imitation**: The server sends no confirmation frame when `context_update` succeeds. Also, because removing a tool declaration does not erase earlier `function_call` turns from history, the model can occasionally imitate an old call. Always check `swapper.accepts(tool_name)` before executing a tool.
+:::
+
+### Code pattern B: Per-card tool and `systemInstruction` swapper (`context_update`)
+
+```python
+import copy
+import json
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from google.genai import types
+
+# Vertex AI Live models that honour mid-session context_update tool & SI swaps:
+CONTEXT_UPDATE_TOOL_MODELS = frozenset({"gemini-3.8-live"})
+
+
+def supports_context_update(model: Optional[str], vertex: bool) -> bool:
+    """True only for Vertex AI sessions on a model that applies context_update."""
+    name = (model or "").strip().removeprefix("google/")
+    return bool(vertex) and name in CONTEXT_UPDATE_TOOL_MODELS
+
+
+def context_update_frame(
+    declarations: Optional[List[Dict[str, Any]]] = None,
+    system_instruction: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the raw WebSocket frame to replace declared tools, systemInstruction, or both.
+
+    - declarations=[...] -> replaces active tools with the given list
+    - declarations=[]    -> sends {"tools": {}} to clear all active tools
+    - declarations=None  -> omits "tools" so existing tools stay untouched
+    """
+    update: Dict[str, Any] = {}
+    if declarations is not None:
+        update["tools"] = (
+            {"tools": [{"functionDeclarations": declarations}]}
+            if declarations
+            else {}
+        )
+    if system_instruction is not None:
+        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    return {"context_update": update}
+
+
+# Map each prompt card to the exact tools it still needs.
+# SelectLanguageTool stays on every card so the caller can switch languages at any time.
+_LANG = ("SelectLanguageTool",)
+_TRAVELLER_STEP = _LANG + ("TravellerDetailsTool", "FlightActionTool")
+
+TOOL_GROUP_BY_CARD: Dict[int, Tuple[str, ...]] = {
+    1: _LANG,                                           # 146 schema tokens
+    2: _LANG + ("SearchTool", "CheckAirportTool"),      # 1,091 schema tokens
+    3: _LANG + ("FlightActionTool", "SearchTool"),      # 1,091 schema tokens
+    4: _TRAVELLER_STEP,                                 # 1,048 schema tokens (SearchTool dropped)
+    5: _TRAVELLER_STEP,
+    6: _TRAVELLER_STEP,
+    7: _TRAVELLER_STEP,
+    8: _LANG + ("PaymentTool",),                        # 244 schema tokens
+}
+
+
+@dataclass(frozen=True)
+class ToolRegistration:
+    declared: Tuple[str, ...]
+    added: Tuple[str, ...]
+    removed: Tuple[str, ...]
+    status: str  # "sent" | "unchanged" | "pending"
+
+
+class LiveToolSwapper:
+    """Replaces a Live session's declared tools and systemInstruction per card."""
+
+    def __init__(
+        self,
+        declarations_for: Callable[[Sequence[str]], List[Dict[str, Any]]],
+        initial: Iterable[str],
+    ) -> None:
+        self._declarations_for = declarations_for
+        self.active: Tuple[str, ...] = tuple(initial)
+        self.pending: Optional[Tuple[str, ...]] = None
+        self.instruction: Optional[str] = None
+        self.pending_instruction: Optional[str] = None
+
+    @property
+    def desired(self) -> Tuple[str, ...]:
+        return self.pending if self.pending is not None else self.active
+
+    def accepts(self, tool_name: str) -> bool:
+        """Guard against the model imitating a removed tool from earlier turn history."""
+        return tool_name in self.desired
+
+    async def register(
+        self,
+        session: Any,
+        names: Iterable[str],
+        system_instruction: Optional[str] = None,
+    ) -> ToolRegistration:
+        """Call inside the blocking tool handler BEFORE returning the FunctionResponse."""
+        wanted = tuple(names)
+        before = self.desired
+        added = tuple(n for n in wanted if n not in before)
+        removed = tuple(n for n in before if n not in wanted)
+        self.pending = None if wanted == self.active else wanted
+        if system_instruction is not None:
+            self.pending_instruction = (
+                None if system_instruction == self.instruction else system_instruction
+            )
+        if self.pending is None and self.pending_instruction is None:
+            return ToolRegistration(wanted, added, removed, "unchanged")
+        tools_changed = self.pending is not None
+        sent = await self._send(session)
+        if not tools_changed:
+            return ToolRegistration(wanted, added, removed, "unchanged")
+        return ToolRegistration(wanted, added, removed, "sent" if sent else "pending")
+
+    async def flush(self, session: Any) -> bool:
+        """Call at turnComplete to retry any update whose WebSocket send failed."""
+        if self.pending is None and self.pending_instruction is None:
+            return False
+        return await self._send(session)
+
+    def setup_tools(self) -> Tuple[str, ...]:
+        """Tools to pass in LiveConnectConfig on reconnect so the session never resets to Card 1."""
+        self.active, self.pending = self.desired, None
+        return self.active
+
+    async def _send(self, session: Any) -> bool:
+        ws = getattr(session, "_ws", None)
+        if ws is None:
+            return False
+        names, instruction = self.pending, self.pending_instruction
+        declarations = self._declarations_for(names) if names is not None else None
+        try:
+            await ws.send(json.dumps(context_update_frame(declarations, instruction)))
+        except Exception:
+            return False  # stays pending for flush() or setup_tools() on reconnect
+        if instruction is not None:
+            self.instruction, self.pending_instruction = instruction, None
+        if names is not None:
+            self.active, self.pending = names, None
+        return True
+```
+
+#### Wiring `swapper.register()` inside your tool handler
+
+```python
+async def handle_tool_call(
+    session,
+    tool_call,
+    engine,
+    swapper: Optional[LiveToolSwapper],
+):
+    # 1. Guard against calls to tools that were removed in an earlier card swap
+    if swapper is not None and not swapper.accepts(tool_call.name):
+        await session.send_tool_response(
+            function_responses=[
+                types.FunctionResponse(
+                    id=tool_call.id,
+                    name=tool_call.name,
+                    response={"error": f"{tool_call.name} is not active in this step."},
+                )
+            ]
+        )
+        return
+
+    # 2. Run business logic and advance server-owned CallState / active card number
+    card_before = engine.active_card
+    result = engine.handle(tool_call.name, tool_call.args or {})
+    card_after = engine.active_card
+
+    # 3. On Vertex gemini-3.8-live, push the card + live state into systemInstruction
+    #    and swap the declared tools BEFORE returning the FunctionResponse
+    if swapper is not None:
+        live_si = engine.build_live_system_instruction()  # Base SI (IN CALL) + Card + Session state
+        await swapper.register(
+            session,
+            TOOL_GROUP_BY_CARD[card_after],
+            system_instruction=live_si,
+        )
+        if card_after != card_before:
+            # Don't repeat the 600-token card in history when it already lives in systemInstruction
+            result = {
+                **result,
+                "prompt_card": (
+                    f"Prompt card {card_after} of 8 is now in your system instruction. Follow it."
+                ),
+            }
+
+    # 4. Return the tool response; the next generation already has the new card and tools
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(
+                id=tool_call.id,
+                name=tool_call.name,
+                response=result,
+            )
+        ]
     )
 ```
 

@@ -160,4 +160,15 @@ Tool scheduling (`WHEN_IDLE`, `SILENT`) only works for tools declared with `beha
 
 See [Optimization patterns](/gemini_live_pipecat/optimization/) for working Python code for step cards (Pillar 2) and a short running fact summary (Pillar 3).
 
-Need to replace the instructions themselves, or swap the tool list, partway through a call? See [Changing tools and instructions during a call](/gemini_live_pipecat/tools/#7-changing-tools-and-instructions-during-a-call) for what is supported and what isn't.
+### Replacing the instructions and tool list per card with `context_update`
+
+On Vertex AI `gemini-3.8-live`, the WebSocket also accepts a `context_update` client message that replaces `systemInstruction` and the active `tools` list in place without reconnecting.
+
+When a tool call moves the conversation to a new step card, you can send `context_update` inside that blocking tool handler right before returning the `FunctionResponse`:
+
+1. Set `systemInstruction` to your base rules (with the opening greeting line replaced by an in-call reminder), the current step card, and the live session state. Because sliding-window compression keeps `systemInstruction` when it trims old history turns, the active card and session state never get dropped mid-call.
+2. Set `tools` to only the tool schemas that the current step card needs (or `{}` on a talk-only closing card). You stop paying tool schema tokens on every turn for tools from earlier or later steps.
+3. Return a one-line pointer in the `FunctionResponse` instead of repeating the full step card in the conversation history.
+
+`context_update` is exposed on the Vertex AI Live WebSocket today, though it is not yet in Google's public documentation or the `google-genai` SDK. See [Optimization patterns -> Per-card tool registration & instruction updates via `context_update`](/gemini_live_pipecat/optimization/#per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live) and [Changing tools and instructions during a call](/gemini_live_pipecat/tools/#7-changing-tools-and-instructions-during-a-call) for the wire format, caveats, and full `LiveToolSwapper` code.
+
