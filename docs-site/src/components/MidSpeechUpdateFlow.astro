@@ -1,0 +1,291 @@
+---
+/**
+ * Animated diagram: What happens when a context update arrives mid-speech vs. inside a blocking tool handler.
+ */
+interface Props {
+  caption?: string;
+}
+const {
+  caption = "Sending turn_complete=True while the model is talking interrupts speech immediately. A turn_complete=False update is buffered until the next turn (14/16 runs finished cleanly). Sending context_update inside a blocking tool handler before returning FunctionResponse lands while the model is paused (5/5 runs).",
+} = Astro.props;
+---
+
+<figure class="diagram-wrapper">
+  <svg viewBox="0 0 860 340" role="img" aria-labelledby="msu-title msu-desc" class="msu-svg">
+    <title id="msu-title">Mid-Speech Update Timing: turn_complete=True vs. turn_complete=False vs. Blocking Tool Handler</title>
+    <desc id="msu-desc">
+      Three-lane comparison of when a mid-call instruction or tool update is sent:
+      Lane 1 (turn_complete=True sent mid-speech): Treated as a new user turn; cuts off the model's speech immediately.
+      Lane 2 (turn_complete=False sent mid-speech): Held in the server's pending buffer while the current reply finishes (14 of 16 runs), taking effect on the next turn.
+      Lane 3 (Best practice - sent inside a blocking tool handler before returning FunctionResponse, or after turnComplete): Model is already paused waiting for the tool result, so the new instructions and tools are active on the very next reply (5 of 5 runs).
+    </desc>
+
+    <!-- Outer Surface -->
+    <rect x="10" y="10" width="840" height="320" rx="14" class="card-bg" />
+
+    <!-- Header -->
+    <text x="32" y="40" class="main-title">When You Send an Update Matters: Mid-Speech vs. Between Turns</text>
+    <text x="32" y="60" class="main-subtitle">
+      Why turn_complete=True cuts the model off, why turn_complete=False waits for the next turn, and why blocking tool handlers are race-free.
+    </text>
+
+    <!-- Lane 1: turn_complete=True mid-speech -->
+    <g class="lane-1">
+      <rect x="28" y="80" width="205" height="68" rx="8" class="hdr-red" />
+      <text x="40" y="102" class="tag-red">1. turn_complete=True (Mid-Reply)</text>
+      <text x="40" y="121" class="sub-txt">Treated as a new caller turn</text>
+      <text x="40" y="137" class="sub-txt-red">Aborts speech immediately</text>
+
+      <!-- Audio stream cut off -->
+      <rect x="248" y="88" width="180" height="52" rx="6" class="stream-active" />
+      <text x="338" y="111" class="stream-title">Model speaking reply...</text>
+      <text x="338" y="128" class="stream-sub">Streaming 24kHz audio</text>
+
+      <!-- Interrupt bolt at x=436 -->
+      <rect x="434" y="82" width="142" height="64" rx="6" class="cut-box" />
+      <text x="505" y="106" class="cut-title">CUT OFF MID-WORD</text>
+      <text x="505" y="123" class="cut-sub">interrupted: true</text>
+      <text x="505" y="137" class="cut-sub">Starts new generation</text>
+
+      <rect x="592" y="88" width="238" height="52" rx="6" class="outcome-red" />
+      <text x="711" y="111" class="outcome-red-title">Never use for background updates</text>
+      <text x="711" y="128" class="outcome-sub">Only use when caller wants a new answer</text>
+    </g>
+
+    <!-- Lane 2: turn_complete=False mid-speech -->
+    <g class="lane-2">
+      <rect x="28" y="164" width="205" height="68" rx="8" class="hdr-amber" />
+      <text x="40" y="186" class="tag-amber">2. turn_complete=False (Mid-Reply)</text>
+      <text x="40" y="205" class="sub-txt">Buffered in pending queue</text>
+      <text x="40" y="221" class="sub-txt-amber">Applies on the next turn (14/16)</text>
+
+      <!-- Full reply finishes under old instruction -->
+      <rect x="248" y="172" width="328" height="52" rx="6" class="stream-finish" />
+      <text x="412" y="195" class="stream-title">In-flight reply finishes under old card (14 of 16 runs)</text>
+      <text x="412" y="212" class="stream-sub">Update waits in server buffer until turnComplete</text>
+
+      <rect x="592" y="172" width="238" height="52" rx="6" class="outcome-amber" />
+      <text x="711" y="195" class="outcome-amber-title">New card active on Next Turn</text>
+      <text x="711" y="212" class="outcome-sub">Cannot steer the reply already in flight</text>
+    </g>
+
+    <!-- Lane 3: Blocking tool handler / after turnComplete (Best Practice) -->
+    <g class="lane-3">
+      <rect x="28" y="248" width="205" height="68" rx="8" class="hdr-green" />
+      <text x="40" y="270" class="tag-green">3. Inside Tool Handler (Best)</text>
+      <text x="40" y="289" class="sub-txt">Before FunctionResponse returns</text>
+      <text x="40" y="305" class="sub-txt-green">Zero race condition (5/5 runs)</text>
+
+      <!-- Step A: Model calls tool and pauses -->
+      <rect x="248" y="256" width="150" height="52" rx="6" class="step-box" />
+      <text x="323" y="279" class="stream-title">1. Model calls tool</text>
+      <text x="323" y="296" class="stream-sub">Paused waiting for result</text>
+
+      <!-- Step B: Send context_update -->
+      <rect x="412" y="256" width="164" height="52" rx="6" class="swap-box" />
+      <text x="494" y="279" class="swap-title">2. Send context_update</text>
+      <text x="494" y="296" class="swap-sub">Swaps SI + tools in place</text>
+
+      <!-- Step C: Return FunctionResponse -->
+      <rect x="592" y="256" width="238" height="52" rx="6" class="outcome-green" />
+      <text x="711" y="279" class="outcome-green-title">3. Return 1-line FunctionResponse</text>
+      <text x="711" y="296" class="outcome-sub">Next reply uses new card + new tools (5/5)</text>
+    </g>
+
+    <!-- Animated pulse dot along Lane 3 -->
+    <circle cx="323" cy="256" r="5" class="pulse-dot" />
+  </svg>
+  <figcaption class="diagram-caption">{caption}</figcaption>
+</figure>
+
+<style>
+  .diagram-wrapper {
+    margin: 1.75rem 0;
+    padding: 0;
+  }
+  .msu-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: var(--sl-font, system-ui, sans-serif);
+  }
+  .diagram-caption {
+    margin-top: 0.65rem;
+    text-align: center;
+    font-size: 0.84rem;
+    color: var(--gl-text-muted);
+    line-height: 1.45;
+  }
+  .card-bg {
+    fill: var(--gl-card-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.5;
+  }
+  .main-title {
+    fill: var(--gl-text-primary);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .main-subtitle {
+    fill: var(--gl-text-muted);
+    font-size: 11px;
+  }
+  .hdr-red {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .hdr-amber {
+    fill: var(--gl-amber-bg);
+    stroke: var(--gl-amber-border);
+    stroke-width: 1.2;
+  }
+  .hdr-green {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.2;
+  }
+  .tag-red {
+    fill: var(--gl-red-text);
+    font-size: 10.5px;
+    font-weight: 800;
+  }
+  .tag-amber {
+    fill: var(--gl-amber-text);
+    font-size: 10.5px;
+    font-weight: 800;
+  }
+  .tag-green {
+    fill: var(--gl-green-text);
+    font-size: 10.5px;
+    font-weight: 800;
+  }
+  .sub-txt {
+    fill: var(--gl-text-secondary);
+    font-size: 9.5px;
+  }
+  .sub-txt-red {
+    fill: var(--gl-red-text);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .sub-txt-amber {
+    fill: var(--gl-amber-text);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .sub-txt-green {
+    fill: var(--gl-green-text);
+    font-size: 9.5px;
+    font-weight: 600;
+  }
+  .stream-active,
+  .stream-finish,
+  .step-box {
+    fill: var(--gl-track-bg);
+    stroke: var(--gl-card-border);
+    stroke-width: 1.2;
+  }
+  .stream-title {
+    fill: var(--gl-text-primary);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .stream-sub {
+    fill: var(--gl-text-muted);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .cut-box {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.5;
+  }
+  .cut-title {
+    fill: var(--gl-red-text);
+    font-size: 10px;
+    font-weight: 800;
+    text-anchor: middle;
+  }
+  .cut-sub {
+    fill: var(--gl-text-secondary);
+    font-size: 8.5px;
+    text-anchor: middle;
+  }
+  .swap-box {
+    fill: var(--gl-blue-bg);
+    stroke: var(--gl-blue-border);
+    stroke-width: 1.4;
+  }
+  .swap-title {
+    fill: var(--gl-blue-text);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .swap-sub {
+    fill: var(--gl-text-secondary);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .outcome-red {
+    fill: var(--gl-red-bg);
+    stroke: var(--gl-red-border);
+    stroke-width: 1.2;
+  }
+  .outcome-amber {
+    fill: var(--gl-amber-bg);
+    stroke: var(--gl-amber-border);
+    stroke-width: 1.2;
+  }
+  .outcome-green {
+    fill: var(--gl-green-bg);
+    stroke: var(--gl-green-border);
+    stroke-width: 1.4;
+  }
+  .outcome-red-title {
+    fill: var(--gl-red-text);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .outcome-amber-title {
+    fill: var(--gl-amber-text);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .outcome-green-title {
+    fill: var(--gl-green-text);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-anchor: middle;
+  }
+  .outcome-sub {
+    fill: var(--gl-text-secondary);
+    font-size: 9px;
+    text-anchor: middle;
+  }
+  .pulse-dot {
+    fill: var(--gl-green-text);
+    animation: msuTravel 6s ease-in-out infinite;
+  }
+  @keyframes msuTravel {
+    0%, 15% {
+      transform: translateX(0px);
+    }
+    40%, 60% {
+      transform: translateX(171px);
+    }
+    80%, 100% {
+      transform: translateX(388px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot {
+      animation: none;
+      display: none;
+    }
+  }
+</style>

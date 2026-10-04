@@ -1,0 +1,42 @@
+---
+title: "Pillar 1: Sliding-Window Compression"
+description: Break the 15-minute uncompressed audio ceiling and cap carried audio tokens at 5,000 / 3,500 tokens while preserving systemInstruction.
+---
+
+import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.astro';
+import ContextCompressionFlow from '../../../components/ContextCompressionFlow.astro';
+
+<OptimizationPillarTabs active="pillar-1" />
+
+By default, an uncompressed audio session accumulates ~1,840 carried tokens per minute at 6 turns/min (~235 audio tokens of caller speech and played model audio plus ~72 transcript text tokens per turn) and hits the hard uncompressed-audio session ceiling at 15 minutes. Worse, by Minute 6 (Turn 37), every new turn re-reads 11,000+ historical tokens.
+
+Adding `contextWindowCompression` with a `SlidingWindow` to your `LiveConnectConfig` tells the Gemini Live server to truncate the oldest turns automatically once the context crosses your `trigger_tokens` threshold, while always keeping your `system_instruction` intact.
+
+<ContextCompressionFlow />
+
+## Production configuration
+
+```python
+from google.genai import types
+
+config = types.LiveConnectConfig(
+    response_modalities=[types.Modality.AUDIO],
+    context_window_compression=types.ContextWindowCompressionConfig(
+        # Start pruning oldest turns once the context reaches 5,000 tokens
+        trigger_tokens=5000,
+        sliding_window=types.SlidingWindow(
+            # Retain the most recent 3,500 tokens (Pinned systemInstruction + active turns)
+            target_tokens=3500
+        ),
+    ),
+)
+```
+
+## Choosing `trigger_tokens` and `target_tokens`
+
+- High-efficiency telephony default (`5,000 / 3,500`): Set `trigger_tokens=5000` and `target_tokens=3500` to flush stale `$3.00/1M` carried audio (caller + played model speech) early and keep Time-to-First-Audio-Byte fast. Keep your pinned `systemInstruction` and active tool schemas under ~1,500 tokens so they fit inside the 3,500-token target window. Pair this with [Pillar 2 (Dynamic Prompt Cards)](/gemini_live_pipecat/optimization/prompt-cards/) and [Pillar 3 (Lossless Fact Pruning)](/gemini_live_pipecat/optimization/history-pruning/) so the active step card and facts from Minute 1 stay in `systemInstruction` when old history turns are trimmed.
+- Extended raw-context window (`16,000 / 10,000`): If your workflow does not maintain a server-side `FactStore` and needs 4 to 5 minutes of verbatim unpruned audio history in the window, increase `trigger_tokens=16000` and `target_tokens=10000`.
+
+---
+
+Next: [Pillar 2: Dynamic prompt cards & per-card tool swapping ->](/gemini_live_pipecat/optimization/prompt-cards/)

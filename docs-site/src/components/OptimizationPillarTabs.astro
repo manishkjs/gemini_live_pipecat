@@ -1,0 +1,136 @@
+---
+/**
+ * Horizontal sub-tab navigation bar for the 4 Optimization Pillars.
+ */
+interface Props {
+  active: 'overview' | 'pillar-1' | 'pillar-2' | 'pillar-3' | 'pillar-4';
+}
+
+const { active } = Astro.props;
+
+const tabs = [
+  {
+    id: 'overview',
+    num: 'All',
+    title: 'Overview',
+    sub: '4-Pillar Lifecycle',
+    href: '/gemini_live_pipecat/optimization/',
+  },
+  {
+    id: 'pillar-1',
+    num: 'Pillar 1',
+    title: 'Sliding Window',
+    sub: '5,000 / 3,500 FIFO',
+    href: '/gemini_live_pipecat/optimization/sliding-window/',
+  },
+  {
+    id: 'pillar-2',
+    num: 'Pillar 2',
+    title: 'Prompt Cards & Tools',
+    sub: 'Replace vs. Stack + context_update',
+    href: '/gemini_live_pipecat/optimization/prompt-cards/',
+  },
+  {
+    id: 'pillar-3',
+    num: 'Pillar 3',
+    title: 'Lossless Fact Pruning',
+    sub: '<60-tok FactStore',
+    href: '/gemini_live_pipecat/optimization/history-pruning/',
+  },
+  {
+    id: 'pillar-4',
+    num: 'Pillar 4',
+    title: 'Cached TTS',
+    sub: '0-token fixed lines',
+    href: '/gemini_live_pipecat/optimization/cached-tts/',
+  },
+];
+---
+
+<nav class="opt-tabs not-content" aria-label="Optimization pillars">
+  {
+    tabs.map((tab) => {
+      const isCurrent = tab.id === active;
+      return (
+        <a
+          href={tab.href}
+          class:list={['opt-tab', { 'is-active': isCurrent }]}
+          aria-current={isCurrent ? 'page' : undefined}
+        >
+          <span class="opt-tab-num">{tab.num}</span>
+          <span class="opt-tab-title">{tab.title}</span>
+          <span class="opt-tab-sub">{tab.sub}</span>
+        </a>
+      );
+    })
+  }
+</nav>
+
+<style>
+  .opt-tabs {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin: 0.5rem 0 1.75rem;
+    padding: 0.45rem;
+    border-radius: 0.85rem;
+    background: var(--gl-card-bg);
+    border: 1px solid var(--gl-card-border);
+    box-shadow: var(--gl-shadow);
+  }
+
+  @media (max-width: 52rem) {
+    .opt-tabs {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .opt-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.6rem;
+    text-decoration: none;
+    border: 1px solid transparent;
+    background: transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  }
+
+  .opt-tab:hover {
+    background: var(--gl-card-bg-elevated);
+    border-color: var(--gl-card-border);
+    transform: translateY(-1px);
+  }
+
+  .opt-tab.is-active {
+    background: var(--gl-blue-bg);
+    border-color: var(--gl-blue-border);
+  }
+
+  .opt-tab-num {
+    font-family: var(--sl-font-mono);
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gl-text-muted);
+  }
+
+  .opt-tab.is-active .opt-tab-num {
+    color: var(--gl-blue-text);
+  }
+
+  .opt-tab-title {
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: var(--gl-text-primary);
+    line-height: 1.25;
+  }
+
+  .opt-tab-sub {
+    font-size: 0.72rem;
+    color: var(--gl-text-muted);
+    line-height: 1.25;
+  }
+</style>

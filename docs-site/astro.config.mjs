@@ -59,7 +59,16 @@ export default defineConfig({
           items: [
             { label: 'Telephony pricing & tokenomics', slug: 'pricing' },
             { label: 'Pricing calculator', slug: 'pricing-calculator' },
-            { label: 'Optimization patterns', slug: 'optimization' },
+            {
+              label: 'Optimization patterns',
+              items: [
+                { label: 'Overview (All 4 Pillars)', slug: 'optimization' },
+                { label: 'Pillar 1: Sliding window', slug: 'optimization/sliding-window' },
+                { label: 'Pillar 2: Prompt cards & tools', slug: 'optimization/prompt-cards' },
+                { label: 'Pillar 3: Lossless fact pruning', slug: 'optimization/history-pruning' },
+                { label: 'Pillar 4: Cached TTS', slug: 'optimization/cached-tts' },
+              ],
+            },
             { label: 'Prompt optimization', slug: 'prompt-optimization' },
           ],
         },

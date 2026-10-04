@@ -158,7 +158,7 @@ To take a call through several steps without growing the top block:
 Tool scheduling (`WHEN_IDLE`, `SILENT`) only works for tools declared with `behavior=NON_BLOCKING`, on a model that supports asynchronous tools, such as Gemini 2.5 Flash Native Audio. Otherwise the scheduling value is ignored. Gemini 3.1 Flash Live waits for each tool response before it speaks again and doesn't support scheduling, so send session updates with `clientContent` right after `turnComplete` instead.
 :::
 
-See [Optimization patterns](/gemini_live_pipecat/optimization/) for working Python code for step cards (Pillar 2) and a short running fact summary (Pillar 3).
+See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) and [Pillar 3: Lossless History Pruning](/gemini_live_pipecat/optimization/history-pruning/) for working Python code.
 
 ### Replacing the instructions and tool list per card with `context_update`
 
@@ -172,5 +172,5 @@ When a tool call moves the conversation to a new step card, you can send `contex
 
 This is also the cheaper way to change instructions. An instruction update replaces the old one, so every turn pays for one step card. A step card sent as a user message stays in the conversation and is paid for again on every later turn. In our test on Vertex AI, after three card changes each turn cost 783 input tokens with instruction updates and 2,493 with user messages. If you only need to change the instructions (not the tools), the documented `send_client_content(turns=Content(role="system", ...), turn_complete=False)` call replaces them the same way, on both `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`.
 
-`context_update` is exposed on the Vertex AI Live WebSocket today, though it is not yet in Google's public documentation or the `google-genai` SDK. See [Optimization patterns -> Per-card tool registration & instruction updates via `context_update`](/gemini_live_pipecat/optimization/#per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live) and [Changing tools and instructions during a call](/gemini_live_pipecat/tools/#7-changing-tools-and-instructions-during-a-call) for the wire format, caveats, and full `LiveToolSwapper` code.
+`context_update` is exposed on the Vertex AI Live WebSocket today, though it is not yet in Google's public documentation or the `google-genai` SDK. See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/#per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live) and [Changing tools and instructions during a call](/gemini_live_pipecat/tools/#7-changing-tools-and-instructions-during-a-call) for the animated walkthrough, wire format, 8-card flight-booking breakdown, and Python code.
 
