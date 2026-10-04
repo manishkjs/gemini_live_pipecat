@@ -1,4 +1,4 @@
-"""Register each prompt card's tools in a running Gemini Live session with ``context_update``.
+"""Keep a running Gemini Live session's tools and system instruction current with ``context_update``.
 
 The rule
 --------
@@ -9,6 +9,11 @@ mid-generation, and the generation that reads the card already has exactly the c
 Verified live on Vertex ``gemini-3.8-live``: with only SelectLanguageTool declared, a
 context_update sent before the tool response let the follow-up call PaymentTool in the same
 turn, 5/5 trials, the same as a session that declared PaymentTool from the start.
+
+The same frame also carries the system instruction (base rules + current card + live session
+state), refreshed on every tool call. A sliding-window compaction drops history but keeps the
+system instruction, so the card survives it. Measured live: card in history only, 6 of 7
+replies after a compaction replayed the card-1 greeting; card in the SI, 0 of 7.
 
 What it buys
 ------------
@@ -51,14 +56,24 @@ def supports_context_update(model: Optional[str], vertex: bool) -> bool:
     return bool(vertex) and name in CONTEXT_UPDATE_TOOL_MODELS
 
 
-def context_update_frame(declarations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The raw client frame that replaces the declared tools."""
-    return {"context_update": {"tools": {"tools": [{"functionDeclarations": declarations}]}}}
+def context_update_frame(declarations: Optional[List[Dict[str, Any]]] = None,
+                         system_instruction: Optional[str] = None) -> Dict[str, Any]:
+    """The raw client frame that replaces the declared tools, the system instruction, or both."""
+    update: Dict[str, Any] = {}
+    if declarations is not None:
+        update["tools"] = {"tools": [{"functionDeclarations": declarations}]}
+    if system_instruction is not None:
+        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+    return {"context_update": update}
 
 
 @dataclass(frozen=True)
 class ToolRegistration:
-    """What one card registration did, for logs and the UI."""
+    """What one card registration did, for logs and the UI.
+
+    ``status`` describes the tools only, so the UI's tool toast fires on real tool changes and
+    not on every system instruction refresh.
+    """
 
     declared: Tuple[str, ...]
     added: Tuple[str, ...]
@@ -72,9 +87,14 @@ class ToolRegistration:
 
 
 class LiveToolSwapper:
-    """Tracks the declared tools of one Live session and replaces them per card.
+    """Tracks what one Live session declares (tools and system instruction) and replaces it.
 
     ``declarations_for(names)`` returns wire declarations (dicts) for the given tool names.
+
+    Why the system instruction rides here too: a sliding-window compaction drops history but
+    always keeps the system instruction. A card that lives only in the history vanishes with
+    it, and the model falls back to the setup SI's opening line (measured live: 6 of 7 replies
+    after a compaction replayed the greeting; with the card in the SI, 0 of 7).
     """
 
     def __init__(self, declarations_for: Callable[[Sequence[str]], List[Dict[str, Any]]],
@@ -82,7 +102,13 @@ class LiveToolSwapper:
         self._declarations_for = declarations_for
         self.active: Tuple[str, ...] = tuple(initial)
         self.pending: Optional[Tuple[str, ...]] = None
+        #: The system instruction the session holds (None: still the setup one).
+        self.instruction: Optional[str] = None
+        self.pending_instruction: Optional[str] = None
         self.swaps = 0
+        #: Frames written to the websocket, and what the last one carried (for the trace).
+        self.frames = 0
+        self.last_frame: Dict[str, Any] = {}
         self.label = label
 
     @property
@@ -90,45 +116,64 @@ class LiveToolSwapper:
         """What the session should declare once every pending swap has landed."""
         return self.pending if self.pending is not None else self.active
 
-    async def register(self, llm: Any, names: Iterable[str]) -> ToolRegistration:
-        """Declare ``names`` now. Call it inside the tool call that delivers the card, before
-        returning that call's result."""
+    async def register(self, llm: Any, names: Iterable[str],
+                       system_instruction: Optional[str] = None) -> ToolRegistration:
+        """Declare ``names`` (and ``system_instruction``, when given) now. Call it inside the
+        tool call that delivers the card, before returning that call's result."""
         wanted = tuple(names)
         before = self.desired
         added = tuple(n for n in wanted if n not in before)
         removed = tuple(n for n in before if n not in wanted)
-        if wanted == self.active:
-            self.pending = None
+        self.pending = None if wanted == self.active else wanted
+        if system_instruction is not None:
+            same = system_instruction == self.instruction
+            self.pending_instruction = None if same else system_instruction
+        if self.pending is None and self.pending_instruction is None:
             return ToolRegistration(wanted, added, removed, "unchanged")
-        self.pending = wanted
+        tools_changed = self.pending is not None
         sent = await self._send(llm)
+        if not tools_changed:
+            return ToolRegistration(wanted, added, removed, "unchanged")
         return ToolRegistration(wanted, added, removed, "sent" if sent else "pending")
 
     async def flush(self, llm: Any) -> bool:
         """Retry a swap whose send failed. Called at ``turn_complete``; True when sent."""
-        if self.pending is None:
+        if self.pending is None and self.pending_instruction is None:
             return False
         if getattr(llm, "_mixin_bot_responding", False) or getattr(llm, "_bot_is_responding", False):
             return False  # a retry outside a tool call waits for an idle model
         return await self._send(llm)
 
+    def session_lost(self) -> None:
+        """A new (not resumed) session started from the setup SI: resend ours next time."""
+        if self.instruction is not None and self.pending_instruction is None:
+            self.pending_instruction = self.instruction
+        self.instruction = None
+
     async def _send(self, llm: Any) -> bool:
         session = getattr(llm, "_session", None)
         websocket = getattr(session, "_ws", None)
         if getattr(llm, "_disconnecting", False) or websocket is None:
-            logger.warning(f"[{self.label}] No live websocket; tools stay pending for the next setup.")
+            logger.warning(f"[{self.label}] No live websocket; the update stays pending.")
             return False
-        names = self.pending
+        names, instruction = self.pending, self.pending_instruction
+        declarations = self._declarations_for(names) if names is not None else None
         try:
-            await websocket.send(json.dumps(context_update_frame(self._declarations_for(names))))
+            await websocket.send(json.dumps(context_update_frame(declarations, instruction)))
         except Exception as exc:  # keep it pending: a retry or the next setup carries it
             logger.warning(f"[{self.label}] context_update send failed: {exc}")
             return False
-        previous, self.active, self.pending = self.active, names, None
-        self.swaps += 1
-        added = [n for n in names if n not in previous]
-        removed = [n for n in previous if n not in names]
-        logger.info(f"[{self.label}] Swap {self.swaps}: now {list(names)} (+{added} -{removed}).")
+        self.frames += 1
+        self.last_frame = {"tools": names, "previous_tools": self.active, "instruction": instruction}
+        if instruction is not None:
+            self.instruction, self.pending_instruction = instruction, None
+            logger.debug(f"[{self.label}] System instruction refreshed (~{len(instruction) // 4} tokens).")
+        if names is not None:
+            previous, self.active, self.pending = self.active, names, None
+            self.swaps += 1
+            added = [n for n in names if n not in previous]
+            removed = [n for n in previous if n not in names]
+            logger.info(f"[{self.label}] Swap {self.swaps}: now {list(names)} (+{added} -{removed}).")
         return True
 
     def setup_tools(self) -> Tuple[str, ...]:

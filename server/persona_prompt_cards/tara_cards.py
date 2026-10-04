@@ -361,6 +361,28 @@ def get_tara_root_system_instruction() -> str:
     return _fill(_BASE_SI)
 
 
+IN_CALL = (
+    "IN CALL\n"
+    "The greeting and the language choice are done. Never greet again, never introduce yourself again and "
+    "never ask for the language again. Older turns may be missing from your context: the prompt card and "
+    "session state below are the truth. Continue from \"waiting for\". If the caller's last words are not in "
+    "your context, ask for only what \"waiting for\" needs."
+)
+
+
+def get_tara_live_system_instruction(card_text: str) -> str:
+    """Live, after card 1: the base SI with its greeting replaced by the current card.
+
+    Sent with ``context_update`` on every Tara tool call (Vertex ``gemini-3.8-live``). A
+    sliding-window compaction keeps only the system instruction, so the card and the live
+    session state must live here, not only in the history it trims.
+    """
+    base = _fill(_BASE_SI)
+    head, _, rest = base.partition("\nSTART\n")
+    _, _, tail = rest.partition("\n\n")  # drop the START line, keep ALWAYS
+    return f"{head}\n{IN_CALL}\n\n{tail}\n\nCURRENT PROMPT CARD\n{card_text}"
+
+
 def get_tara_monolithic_system_instruction() -> str:
     """Cascade: base SI plus card 1, because cascade has no greeting-turn seeding.
 

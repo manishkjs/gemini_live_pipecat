@@ -1626,6 +1626,13 @@ class TravelBookingEngine:
         has_name = bool(args.get("first_name_letters") or args.get("last_name_letters"))
         index = self._person_index(args)
         traveller = s.travellers[index - 1]
+        if args.get("name_confirmed") is not None and not has_name and traveller.name_confirmed:
+            # A bare yes/no with a stale index (the model repeats an earlier passenger_index):
+            # it answers the one readback the caller just heard.
+            awaiting = [i for i in self._name_read_back if i in self._pending_name and self._heard_name(i)]
+            if len(awaiting) == 1:
+                index = awaiting[0]
+                traveller = s.travellers[index - 1]
 
         if args.get("age") is not None:
             try:

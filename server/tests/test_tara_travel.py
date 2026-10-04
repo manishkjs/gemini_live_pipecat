@@ -765,6 +765,22 @@ class TestRoundTwoBlockers(unittest.TestCase):
         r = e.handle("TravellerDetailsTool", {"additional_passengers": 1})
         self.assertEqual(r["data"]["step"], "passenger_mix")
 
+    def test_a_yes_with_a_stale_index_confirms_the_name_that_was_read_back(self):
+        # Live e2e 2026-10-04: confirming passenger 2, the model sent passenger_index 1
+        # (already confirmed) six times; each yes re-read passenger 2's spelling.
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 2})
+        e.handle("TravellerDetailsTool", {"includes_children": False})
+        e.handle("TravellerDetailsTool", {"passenger_count_confirmed": True})
+        e.handle("TravellerDetailsTool", name_args(passenger_index=1, age=34, gender="male"))
+        e.handle("TravellerDetailsTool", {"name_confirmed": True, "passenger_index": 1})
+        r = e.handle("TravellerDetailsTool", name_args("PRIYA", passenger_index=2, age=31, gender="female"))
+        self.assertEqual(r["data"]["step"], "confirm_name")
+        e.handle("TravellerDetailsTool", {"name_confirmed": True, "passenger_index": 1})
+        self.assertTrue(e.state.travellers[1].name_confirmed)
+        self.assertNotEqual(e.state.step, "confirm_name")
+
     def test_the_mix_question_names_the_arguments_that_carry_the_answer(self):
         from persona_prompt_cards.tara_cards import STEP_INSTRUCTIONS
         self.assertIn("includes_children false", STEP_INSTRUCTIONS["passenger_mix"])
@@ -822,6 +838,62 @@ class TestLiveToolSwapper(unittest.TestCase):
         run(s.register(_FakeLLM(fail=True), TOOL_GROUP_BY_CARD[4]))
         self.assertEqual(s.setup_tools(), TOOL_GROUP_BY_CARD[4])
         self.assertIsNone(s.pending)
+
+
+class TestInstructionInContext(unittest.TestCase):
+    """A sliding-window compaction keeps only the system instruction. Measured live: with the
+    card in the history only, 6 of 7 replies after a compaction replayed the card-1 greeting;
+    with the card in a context_update system instruction, 0 of 7 did."""
+
+    def test_frame_carries_tools_instruction_or_both(self):
+        si_only = context_update_frame(system_instruction="SI")
+        self.assertEqual(si_only, {"context_update": {"systemInstruction": {"parts": [{"text": "SI"}]}}})
+        both = context_update_frame(wire_declarations(["PaymentTool"]), system_instruction="SI")
+        self.assertEqual(set(both["context_update"]), {"tools", "systemInstruction"})
+        self.assertEqual(set(context_update_frame(wire_declarations(["PaymentTool"]))["context_update"]), {"tools"})
+
+    def test_instruction_rides_with_the_tools_and_is_sent_only_when_it_changes(self):
+        llm = _FakeLLM()
+        s = LiveToolSwapper(wire_declarations, TOOL_GROUP_BY_CARD[1])
+        r = run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2"))
+        self.assertEqual(r.status, "sent")
+        self.assertEqual(set(llm._session._ws.sent[0]["context_update"]), {"tools", "systemInstruction"})
+        r = run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2, origin Delhi"))
+        self.assertEqual(r.status, "unchanged")  # the tools did not change, so no tool toast
+        self.assertEqual(llm._session._ws.sent[1], {"context_update": {"systemInstruction": {
+            "parts": [{"text": "card 2, origin Delhi"}]}}})
+        run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2, origin Delhi"))
+        self.assertEqual(len(llm._session._ws.sent), 2)
+        self.assertEqual(s.instruction, "card 2, origin Delhi")
+
+    def test_a_failed_instruction_send_is_retried_at_turn_complete(self):
+        llm = _FakeLLM(fail=True)
+        s = LiveToolSwapper(wire_declarations, TOOL_GROUP_BY_CARD[2])
+        run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2"))
+        self.assertEqual(s.pending_instruction, "card 2")
+        llm._session._ws.fail = False
+        self.assertTrue(run(s.flush(llm)))
+        self.assertEqual((s.instruction, s.pending_instruction), ("card 2", None))
+        self.assertIn("systemInstruction", llm._session._ws.sent[0]["context_update"])
+
+    def test_a_lost_session_forgets_the_instruction_it_had(self):
+        llm = _FakeLLM()
+        s = LiveToolSwapper(wire_declarations, TOOL_GROUP_BY_CARD[1])
+        run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2"))
+        s.session_lost()  # the new setup carried the base SI again
+        run(s.register(llm, TOOL_GROUP_BY_CARD[2], system_instruction="card 2"))
+        self.assertEqual(len(llm._session._ws.sent), 2)
+
+    def test_live_instruction_drops_the_greeting_and_holds_card_and_state(self):
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        e = engine()
+        to_card(e, 5)
+        si = get_tara_live_system_instruction(e.build_card())
+        self.assertNotIn("Which language would you like", si)
+        self.assertIn("Never greet again", si)
+        self.assertIn("Prompt card 5 of 8", si)
+        self.assertIn("Session state:", si)
+        self.assertIn("ROLE", si)  # the base rules stay
 
 
 class TestTaraArchitecture(unittest.TestCase):
@@ -926,6 +998,66 @@ class TestTaraArchitecture(unittest.TestCase):
         self.assertTrue(llm.directives[-1][0].startswith(RESEND_NEW_SESSION))
         self.assertIn("Prompt card 3 of 8", llm.directives[-1][0])
 
+    def _live(self):
+        frames, order, llm = [], [], _FakeLLM()
+        ws = llm._session._ws
+        real_send = ws.send
+
+        async def send(text):
+            await real_send(text)
+            frames.append(json.loads(text)["context_update"])
+            order.append("frame")
+        ws.send = send
+        self.arch.bind_live_model("gemini-3.8-live", vertex=True)
+        self.arch.register_handlers(llm)
+        return llm, frames, order
+
+    @staticmethod
+    def _si(frame):
+        return frame["systemInstruction"]["parts"][0]["text"]
+
+    def test_every_tool_call_refreshes_the_live_instruction_before_its_result(self):
+        llm, frames, order = self._live()
+        self._call(llm, "SelectLanguageTool", {"language": "Hindi"}, order)
+        kinds = lambda: [o if isinstance(o, str) else o[0] for o in order]
+        self.assertEqual(kinds(), ["frame", "result"])
+        self.assertEqual(set(frames[0]), {"tools", "systemInstruction"})
+        self.assertIn("Prompt card 2 of 8", self._si(frames[0]))
+        self.assertIn("language: Hindi", self._si(frames[0]))
+        self.assertNotIn("Which language would you like", self._si(frames[0]))
+        self._call(llm, "SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi",
+                                       "destination": "Mumbai", "depart_date": FRI}, order)
+        self.assertEqual(kinds()[2:], ["frame", "result"])
+        card_changed = self.arch.engine.active_card != 2
+        self.assertEqual("tools" in frames[1], card_changed)  # tools travel only with a new card
+        self.assertIn("Delhi", self._si(frames[1]))  # the live session state is in the SI
+        self._call(llm, "FlightActionTool", {"action": "GET_DETAILS", "flight_id": "F1"}, order)
+        later = frames[2:]
+        self.assertTrue(all("tools" not in f for f in later if self.arch.engine.active_card == 3))
+
+    def test_card_one_keeps_the_setup_instruction(self):
+        llm, frames, order = self._live()
+        self._call(llm, "SearchTool", {"origin": "Delhi"}, order)  # off-card call on card 1
+        self.assertFalse(any("systemInstruction" in f for f in frames))
+
+    def test_compaction_needs_no_history_resend_once_the_instruction_holds_the_card(self):
+        llm, frames, order = self._live()
+        self._call(llm, "SelectLanguageTool", {"language": "Hindi"}, order)
+        self.assertTrue(run(self.arch.on_context_compressed(llm)))
+        self.assertEqual(llm.directives, [])  # nothing appended to the history
+
+    def test_a_lost_session_gets_the_live_instruction_back(self):
+        llm, frames, order = self._live()
+        run(self.arch.on_session_ready(llm, resumed=False))
+        self._call(llm, "SelectLanguageTool", {"language": "Hindi"}, order)
+        sent = len(frames)
+        run(self.arch.on_session_ready(llm, resumed=True))  # the server kept the context
+        self.assertEqual(len(frames), sent)
+        run(self.arch.on_session_ready(llm, resumed=False))  # setup carried the base SI again
+        self.assertEqual(set(frames[-1]), {"systemInstruction"})
+        self.assertIn("Prompt card 2 of 8", self._si(frames[-1]))
+        self.assertEqual(llm.directives, [])
+
     def test_opening_messages_seed_card_one(self):
         messages = self.arch.opening_messages()
         self.assertEqual(messages[0]["role"], "user")
@@ -960,3 +1092,34 @@ class TestAgentLiveHooks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTaraTrace(unittest.TestCase):
+    def test_state_diff_names_each_changed_field_old_to_new(self):
+        from persona_tools import tara_trace as trace
+        from persona_prompt_cards.tara_cards import render_session_state
+        e = engine()
+        before = trace.state_lines(render_session_state(e.state.snapshot()))
+        to_card(e, 4)
+        after = trace.state_lines(render_session_state(e.state.snapshot()))
+        changes = {label: (old, new) for label, old, new in trace.state_changes(before, after)}
+        self.assertEqual(changes["language"][0], "not given yet")
+        self.assertNotIn("agent name", changes)
+
+    def test_context_update_prints_the_dynamic_part_exactly(self):
+        from persona_tools import tara_trace as trace
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        e = engine()
+        to_card(e, 5)
+        card = e.build_card()
+        si = get_tara_live_system_instruction(card)
+        new_card = trace.context_update(3, {"declared": ["A"], "added": ["A"], "removed": []}, si, card, True)
+        self.assertIn("Prompt card 5 of 8", new_card)
+        self.assertIn("(+['A'] -[])", new_card)
+        same_card = trace.context_update(4, None, si, card, False)
+        self.assertIn("tools: unchanged", same_card)
+        self.assertIn("waiting for:", same_card)
+        self.assertNotIn("Goal:", same_card)  # the directive is printed once per card
+        result = trace.tool_result("X", {"status": "ok", "prompt_card": card})
+        self.assertIn("<System update for agent. Prompt card 5 of 8", result)
+        self.assertIn("tokens", result)

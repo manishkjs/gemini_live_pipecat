@@ -882,19 +882,36 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
 
     async def on_session_ready(self, llm: Any, *, resumed: bool) -> None:
         """A reconnect that lost the context gets the current card back (the setup already
-        declared the current tool group)."""
+        declared the current tool group). On 3.8 the card returns as the live system
+        instruction; elsewhere it is re-sent into the history."""
         self._sessions += 1
         if self._sessions == 1:
             card = self.engine.active_card
             await self._announce_card(card, await self._register_tools(card, via_setup=True))
         elif not resumed and self.engine.active_card > 1:
+            if self.swapper is not None:
+                from loguru import logger
+                self.swapper.session_lost()
+                frames = self.swapper.frames
+                held = await self._refresh_live_instruction(llm)
+                logger.info(f"[Tara] ↻ NEW SESSION (context lost) on card {self.engine.active_card}: "
+                            f"{'live system instruction re-sent' if held else 'falling back to a card resend'}.")
+                self._trace_frame(frames, True)
+                if held:
+                    return
             await self._resend_card(llm, "new_session", "Tara/Card resend (new session)")
 
     async def on_context_compressed(self, llm: Any) -> bool:
-        """Re-send the current card after the sliding window trimmed old turns. Returns True
-        (also when the card is queued until the model goes idle) so the generic transcript
-        re-injection is skipped: session state already holds the facts, in the same "System
-        update for agent" form the base SI trusts."""
+        """After the sliding window trimmed old turns. On 3.8 the card and session state live
+        in the system instruction, which compaction keeps, so nothing is re-sent. Elsewhere the
+        current card is re-sent. Returns True (also when the card is queued until the model goes
+        idle) so the generic transcript re-injection is skipped."""
+        from loguru import logger
+        from persona_tools import tara_trace as trace
+        held = self.swapper is not None and self.swapper.instruction is not None
+        logger.info(trace.compaction(self.engine.active_card, held))
+        if held:
+            return True
         sent = await self._resend_card(llm, "trim", "Tara/Card resend (trim)")
         return sent or getattr(llm, "_last_directive_status", None) == "pending"
 
@@ -909,8 +926,47 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
             from loguru import logger
             logger.warning(f"[Tara] UI event failed: {exc}")
 
-    async def _register_tools(self, number: int, *, via_setup: bool = False) -> Dict[str, Any]:
-        """Declare card ``number``'s tools now and describe it for the UI.
+    def _trace_frame(self, frames_before: int, card_changed: bool) -> None:
+        """Log the context_update frame this tool call actually wrote, if any."""
+        from loguru import logger
+        from persona_tools import tara_trace as trace
+        if self.swapper is None:
+            logger.info("[Tara] ⇢ CONTEXT: static tool set on this model; the card travels in the tool result only.")
+            return
+        if self.swapper.frames == frames_before:
+            logger.info("[Tara] ⇢ CONTEXT_UPDATE: nothing sent (tools and system instruction already current).")
+            return
+        frame = self.swapper.last_frame
+        tools = None
+        if frame.get("tools") is not None:
+            names, previous = frame["tools"], frame.get("previous_tools") or ()
+            tools = {"declared": names, "added": [n for n in names if n not in previous],
+                     "removed": [n for n in previous if n not in names]}
+        instruction = frame.get("instruction")
+        dynamic = instruction.partition("CURRENT PROMPT CARD\n")[2] if instruction else None
+        logger.info(trace.context_update(self.swapper.frames, tools, instruction, dynamic, card_changed))
+
+    def _live_instruction(self) -> Optional[str]:
+        """The system instruction a 3.8 session should hold now: None on card 1 (the setup SI
+        greets) and on models without ``context_update``."""
+        if self.swapper is None or self.engine.active_card == 1:
+            return None
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        return get_tara_live_system_instruction(self.engine.build_card())
+
+    async def _refresh_live_instruction(self, llm: Any) -> bool:
+        """Send the live system instruction (tools unchanged). True when the session holds it."""
+        instruction = self._live_instruction()
+        if instruction is None:
+            return False
+        async with self._lock:
+            await self.swapper.register(llm, self.swapper.desired, system_instruction=instruction)
+        return self.swapper.instruction == instruction
+
+    async def _register_tools(self, number: int, *, via_setup: bool = False,
+                              system_instruction: Optional[str] = None) -> Dict[str, Any]:
+        """Declare card ``number``'s tools (and the live system instruction) now and describe
+        the tools for the UI.
 
         Runs inside the tool call that delivers the card, before its result is returned, so
         the generation that reads the card already has the card's tools.
@@ -922,7 +978,9 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         if via_setup:
             declared = self.swapper.active
             return ToolRegistration(declared, declared, (), "sent", via="setup").as_event(number)
-        return (await self.swapper.register(self._llm, TOOL_GROUP_BY_CARD[number])).as_event(number)
+        registration = await self.swapper.register(
+            self._llm, TOOL_GROUP_BY_CARD[number], system_instruction=system_instruction)
+        return registration.as_event(number)
 
     async def _announce_card(self, number: int, tools: Dict[str, Any]) -> None:
         from diagnostic_buffer import current_session_id
@@ -939,18 +997,35 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
 
     async def run_tool(self, name: str, args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Every call gets a result: all Tara tools are blocking, so a call without one
-        leaves the model silent for the rest of the session. A result that carries a new
-        card registers that card's tools first."""
+        leaves the model silent for the rest of the session. Before the result returns, a new
+        card registers its tools, and on 3.8 every call refreshes the live system instruction
+        (card + session state) in the same ``context_update``."""
+        from loguru import logger
+        from persona_prompt_cards.tara_cards import render_session_state
+        from persona_tools import tara_trace as trace
+        logger.info(trace.tool_call(name, args))
         async with self._lock:
             before = self.engine.active_card
+            step_before = self.engine.state.step
+            state_before = trace.state_lines(render_session_state(self.engine.state.snapshot()))
             try:
                 result = self.engine.handle(name, args or {})
             except Exception as exc:
-                from loguru import logger
                 logger.exception(f"[Tara] {name} failed: {exc}")
                 result = self.engine.failure(name)
             after = self.engine.active_card
-            tools = await self._register_tools(after) if after != before else None
+            state_after = trace.state_lines(render_session_state(self.engine.state.snapshot()))
+            logger.info(trace.session_state((before, after), (step_before, self.engine.state.step),
+                                            trace.state_changes(state_before, state_after)))
+            instruction = self._live_instruction()
+            frames = self.swapper.frames if self.swapper is not None else 0
+            tools = None
+            if after != before:
+                tools = await self._register_tools(after, system_instruction=instruction)
+            elif instruction is not None:
+                await self.swapper.register(self._llm, self.swapper.desired, system_instruction=instruction)
+            self._trace_frame(frames, after != before)
+        logger.info(trace.tool_result(name, result))
         if tools is not None:
             await self._announce_card(after, tools)
         else:
