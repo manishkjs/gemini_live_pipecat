@@ -57,7 +57,7 @@ A few terms come up a lot on this page:
 
 #### The bottom of the prompt has the most pull
 
-Your base instructions sit at the top. After twenty turns, a lot of audio and transcript sits between them and the caller's latest words. Place the current phase card and confirmed session state right after your base rules (or at the bottom as a session update) so the model follows the active step closely on its next reply.
+Your base instructions sit at the top. After twenty turns, a lot of audio and transcript sits between them and the caller's latest words. Keep your base rules compact (150 to 300 tokens) and append the active phase card plus a one-line `Session state` summary right after those base rules (or send a short session update at the bottom of the prompt) so the active step stays clear and close to the model's attention.
 
 #### Changing the top block means rebuilding it
 
@@ -79,9 +79,9 @@ Only the Live server knows the exact moment a caller cut in. When that happens, 
 
 ---
 
-## 2. Keep your base `systemInstruction` under 300–500 tokens
+## 2. Keep your base `systemInstruction` under 500 tokens
 
-You pay for `systemInstruction` again on every turn. A 4,000-token instruction in a 10-turn call adds up to 40,000 billed text tokens, which is `$0.020` to `$0.030` for the instruction alone. Keep your base rules under 300 to 500 tokens and split them into four short blocks:
+You pay for `systemInstruction` again on every turn. A 4,000-token instruction in a 10-turn call adds up to 40,000 billed text tokens, which is `$0.020` to `$0.030` for the instruction alone. Keep your base rules under 500 tokens and split them into four short blocks:
 
 ```text
 1. PERSONA AND DELIVERY
@@ -157,48 +157,48 @@ Instead, split your prompt into two parts:
 
 ### Anatomy of a well-written phase card
 
-Here is a real phase card (Card 2 of 8, *Trip details and search*) from a production flight-booking voice agent ("Cymbal Travel"):
+Here is a real phase card (Card 2 of 8, *Route and travel date intake*) from a production flight-booking voice agent ("Cymbal Travel"):
 
 ```text
 HEADER (step number + speaker gender pin)
-Prompt card 2 of 8: Trip details and search.
-You are Tara, a woman. Use feminine verbs for yourself ("dekh leti hu", never "leta hu").
+Prompt card 2 of 8: Route and travel date intake.
+You are Maya, a female booking specialist at Cymbal Travel. Use feminine forms for yourself on every turn (for example, "estoy lista", never "estoy listo").
 
 GOAL (one sentence)
-Goal: get origin, destination, travel date, and trip type, then search flights.
+Goal: collect departure city, arrival city, travel date, and journey type, then search flights.
 
 STEP RULES (one question at a time)
 - Ask for one missing detail at a time. Search as soon as you have a route and a date. Leave unknown fields empty.
-- Round trip: set trip_type="RT" and ask for the return date before searching.
-- If you are not sure whether a city has an airport, call CheckAirportTool before saying anything about it.
+- Round trip: set journey_type="round_trip" and ask for the return date before searching.
+- If you are not sure whether a city has an airport, call resolve_airport_code before saying anything about it.
 - If a search returns no flights, say so and ask for another date or time. Do not retry with another city on your own.
 
 TOOLS & EXIT CONDITION
-Tools for this step: SearchTool, CheckAirportTool.
-This step ends when SearchTool returns flights.
+Tools for this step: set_call_language, find_available_flights, resolve_airport_code.
+This step ends when find_available_flights returns flight options.
 
 LIVE SESSION STATE & CLOSING REMINDER
-Session state: {"language": "Hindi", "origin": "Delhi", "waiting_for": "destination and travel date"}
-Before you speak: Only Hindi. Feminine verbs for yourself. One to two short sentences, then ask.
+Session state: {"language": "Spanish", "origin": "Madrid", "waiting_for": "destination and travel date"}
+Before you speak: Only Spanish. Feminine forms for yourself ("estoy lista"). One to two short sentences, then ask.
 ```
 
 ### Four rules for writing clean phase cards
 
 #### 1. Give every card one goal and one exit condition
 
-Start the card with `Goal: ...` and end it with `This step ends when <Tool> returns`. A single goal keeps the model from jumping ahead (for example, asking for passenger names before a flight is chosen), and naming the tool that ends the step tells the model how to move forward.
+Start the card with `Goal: ...` and end it with `This step ends when <tool_name> returns`. A single goal keeps the model from jumping ahead (for example, asking for passenger names before a flight is chosen), and naming the tool that ends the step tells the model how to move forward.
 
 #### 2. Include `Session state` with a `"waiting_for"` field on every update
 
-Your server owns the state, not the model's memory. Passing `Session state: {"origin": "Delhi", "waiting_for": "destination and travel date"}` ensures the agent never asks again for something the caller already answered, even after older audio turns are trimmed by the 5,000-token sliding window.
+Your server owns the state, not the model's memory. Passing `Session state: {"origin": "Madrid", "waiting_for": "destination and travel date"}` ensures the agent never asks again for something the caller already answered, even after older audio turns are trimmed by the 5,000-token sliding window.
 
 #### 3. Repeat a one-line language and gender reminder in gendered languages
 
-In Hindi, Marathi, Spanish, or French, add a short reminder in the card header or footer (*"Only Hindi. Feminine verbs for yourself."*). Because the model weighs the bottom of the prompt heavily, that one line prevents speaker-gender drift mid-call.
+In gendered languages, add a short reminder in the card header or footer (for example, *"Only Spanish. Feminine forms for yourself ('estoy lista')."* in Spanish or French where adjectives and participles inflect, or feminine verb forms in Hindi and Marathi). Because the model weighs the bottom of the prompt heavily, that one line prevents speaker-gender drift mid-call.
 
 #### 4. List only the tools active on that card
 
-Writing `Tools for this step: SearchTool, CheckAirportTool` matches the exact tool schemas you register for that step.
+Writing `Tools for this step: set_call_language, find_available_flights, resolve_airport_code` matches the exact tool schemas you register for that step.
 
 ### How to swap phase cards during a call (without stacking tokens)
 
@@ -208,5 +208,5 @@ When a tool call finishes Step 1 and moves the call to Card 2, replace `systemIn
 - Sending the new card via `role="user"` or inside a tool result stacks every old card in conversation history (`2,493 tokens/turn` after 3 swaps).
 - On Vertex AI `gemini-3.8-live`, `context_update` also swaps the declared `tools` list at the same time so you only pay schema tokens for the 1 to 3 tools listed on the active card.
 
-See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) for the animated Replace-vs-Stack walkthrough, the 8-card flight-booking token table, and the 30-line Python implementation.
+See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) for the animated Replace-vs-Stack walkthrough, the 8-card flight-booking token table, and the Python implementation.
 

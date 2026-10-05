@@ -26,7 +26,7 @@ const {
     <!-- Header -->
     <text x="32" y="40" class="main-title">When You Send an Update Matters: Mid-Speech vs. Between Turns</text>
     <text x="32" y="60" class="main-subtitle">
-      Why turn_complete=True cuts the model off, why turn_complete=False waits for the next turn, and why blocking tool handlers are race-free.
+      Why turn_complete=True cuts the model off, why turn_complete=False waits for the next turn, and why blocking tool handlers avoid mid-speech cutoffs.
     </text>
 
     <!-- Lane 1: turn_complete=True mid-speech -->
@@ -74,7 +74,7 @@ const {
       <rect x="28" y="248" width="205" height="68" rx="8" class="hdr-green" />
       <text x="40" y="270" class="tag-green">3. Inside Tool Handler (Best)</text>
       <text x="40" y="289" class="sub-txt">Before FunctionResponse returns</text>
-      <text x="40" y="305" class="sub-txt-green">Zero race condition (5/5 runs)</text>
+      <text x="40" y="305" class="sub-txt-green">No mid-speech cutoff (5/5 runs)</text>
 
       <!-- Step A: Model calls tool and pauses -->
       <rect x="248" y="256" width="150" height="52" rx="6" class="step-box" />
