@@ -8,7 +8,7 @@ import LosslessPruningFlow from '../../../components/LosslessPruningFlow.astro';
 
 <OptimizationPillarTabs active="pillar-3" />
 
-When [Pillar 1 (`SlidingWindow`)](/gemini_live_pipecat/optimization/sliding-window/) drops old audio turns at the 5,000-token boundary, any facts spoken in Turn 1 (such as the caller's name, postal code, or stated symptom) fall out of the raw audio window. Carried audio tokens (`$3.00/1M`, ~1,500–1,668 tok/min) are 4x to 6x more expensive per token and 6x more verbose than a text transcript (`$0.50/1M` on 2.5 Native Audio, `$0.75/1M` on 3.1 Flash Live and 3.8 Live).
+When [Pillar 1 (`SlidingWindow`)](/gemini_live_pipecat/optimization/sliding-window/) drops old audio turns at the 5,000-token boundary, any facts spoken in Turn 1 (such as the caller's name, postal code, or stated symptom) fall out of the raw audio window. Carried audio plus auto-transcripts (`~1,840 tokens/minute`, or `235 audio + 72 text = 307 tokens` per 10-second exchange) accumulate quickly, and audio tokens (`$3.00/1M`) cost 4x to 6x more per token and take ~3.3x more tokens than the equivalent text (`$0.50/1M` on 2.5 Native Audio, `$0.75/1M` on 3.1 Flash Live and 3.8 Live).
 
 By extracting key facts into a lightweight backend `FactStore` (under 60 text tokens) and folding that summary into your `systemInstruction` on each step transition (see [Pillar 2](/gemini_live_pipecat/optimization/prompt-cards/)), you let the 5,000-token sliding window evict stale audio while retaining every detail the caller shared.
 

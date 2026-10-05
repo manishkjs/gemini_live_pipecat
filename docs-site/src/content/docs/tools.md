@@ -24,8 +24,8 @@ await session.send(
     input=types.LiveClientToolResponse(
         function_responses=[
             types.FunctionResponse(
-                id=tool_call.id,
-                name=tool_call.name,
+                id=function_call.id,
+                name=function_call.name,
                 response={"result": {"status": "confirmed", "order_id": "ORD-9921"}}
             )
         ]
@@ -52,7 +52,7 @@ await session.send(
     input=types.LiveClientToolResponse(
         function_responses=[
             types.FunctionResponse(
-                id=tool_call.id,
+                id=function_call.id,
                 name="prefetch_customer_profile",
                 response={"tier": "Platinum", "open_tickets": 1},
                 scheduling=types.FunctionResponseScheduling.SILENT,
@@ -93,17 +93,17 @@ Never bind the lifecycle of state-mutating tool executions to the audio playback
 ```python
 import asyncio
 
-async def handle_tool_call(session, tool_call):
+async def handle_tool_call(session, function_call):
     # Shield the database/API execution from audio barge-in cancellation
-    result = await asyncio.shield(execute_backend_api(tool_call.name, tool_call.args))
+    result = await asyncio.shield(execute_backend_api(function_call.name, function_call.args))
     
     # Always deliver the toolResponse so the model's context stays consistent
     await session.send(
         input=types.LiveClientToolResponse(
             function_responses=[
                 types.FunctionResponse(
-                    id=tool_call.id,
-                    name=tool_call.name,
+                    id=function_call.id,
+                    name=function_call.name,
                     response={"result": result}
                 )
             ]
@@ -215,21 +215,21 @@ Every field you include in `context_update` replaces (does not merge) the previo
         {
           "functionDeclarations": [
             {
-              "name": "SelectLanguageTool",
-              "description": "Saves the caller's language for the rest of the call.",
+              "name": "set_call_language",
+              "description": "Records the caller's preferred spoken language for the session.",
               "parameters": {
                 "type": "OBJECT",
-                "properties": { "language": { "type": "STRING" } },
-                "required": ["language"]
+                "properties": { "language_code": { "type": "STRING" } },
+                "required": ["language_code"]
               }
             },
             {
-              "name": "PaymentTool",
-              "description": "Sends the payment link after traveller details are confirmed.",
+              "name": "dispatch_checkout_link",
+              "description": "Sends the checkout link once the itinerary and passenger manifest are confirmed.",
               "parameters": {
                 "type": "OBJECT",
-                "properties": { "action": { "type": "STRING", "enum": ["PROCEED", "REVIEW"] } },
-                "required": ["action"]
+                "properties": { "delivery_channel": { "type": "STRING", "enum": ["sms", "email"] } },
+                "required": ["delivery_channel"]
               }
             }
           ]
@@ -279,7 +279,7 @@ def context_update_frame(
 
 async def advance_card_and_tools(
     session,
-    tool_call,
+    function_call,
     card_declarations: List[Dict[str, Any]],
     updated_system_instruction: str,
     tool_result: Dict[str, Any],
@@ -296,8 +296,8 @@ async def advance_card_and_tools(
     await session.send_tool_response(
         function_responses=[
             types.FunctionResponse(
-                id=tool_call.id,
-                name=tool_call.name,
+                id=function_call.id,
+                name=function_call.name,
                 response=tool_result,
             )
         ]

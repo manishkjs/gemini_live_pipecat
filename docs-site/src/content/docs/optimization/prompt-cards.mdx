@@ -37,7 +37,7 @@ Start the session with a compact 120-token opening card (keeping active prompt t
 A Gemini Live session has two memory regions that are sent to the model and billed on every turn:
 
 - Region 1 (Top System Slot: `systemInstruction` and `tools`): Overwritten in place whenever you send a `role="system"` turn or `context_update`. When [Pillar 1 (`SlidingWindow`)](/gemini_live_pipecat/optimization/sliding-window/) trims old history at 5,000 tokens, Region 1 is never evicted.
-- Region 2 (Conversation History: caller/agent audio, tool results, and `role="user"` turns): Append-only. Every card you drop into Region 2 stays there and is billed again on every later turn until the 5,000-token window trims it, at which point the card disappears and the model falls back to Turn 1's opening greeting.
+- Region 2 (Conversation History: caller/agent audio, tool results, and `role="user"` turns): Append-only. Every card you drop into Region 2 stays there and is billed again on every later turn until the 5,000-token window trims it, at which point the card disappears and the model falls back to Turn 1's opening greeting (6 of 7 measured runs).
 
 <ReplaceVsStackFlow />
 
@@ -53,7 +53,7 @@ We tested three consecutive swaps of a ~570-token instruction card on Vertex AI,
 | `role="user"` client content or full card in tool result | `585 -> 1,214 -> 1,853 -> 2,493` | ~635 tok (every old card stays) | No (`6 of 7` replayed Turn-1 greeting) |
 
 <div class="hero-card">
-  <span class="badge badge-purple">Two Golden Rules for Your Code</span>
+  <span class="badge badge-purple">Two Rules for Your Handler</span>
   <h3>What in-place replacement means when you write your handler</h3>
   <p>
     <strong>Rule 1: Always send <code>base_rules + current_card + session_state</code> together.</strong> Because a system-instruction update overwrites Region 1 completely, anything you leave out is gone. Keep your base voice/persona rules (~150 tokens) and append the current step card plus the latest <code>Session state</code> dictionary every time you update <code>systemInstruction</code>.
@@ -126,31 +126,31 @@ When you send an update matters just as much as how you format it:
 
 ### Example: Breaking down an 8-step flight-booking voice agent
 
-To see why swapping tools per card saves so many tokens, consider a real flight-booking voice agent (**"Cymbal Travel"**) that guides a caller from greeting to payment. Across the whole call, the agent uses 6 tools:
+To see why swapping tools per card saves so many tokens, consider a real flight-booking voice agent (**"Cymbal Travel"**) that guides a caller from greeting to payment. Across the whole call, the agent uses 6 tools (measured on Vertex AI `gemini-3.8-live` as the `usage_metadata.prompt_token_count` delta above a zero-tool session):
 
-1. `SelectLanguageTool` (146 schema tokens): records the caller's preferred language.
-2. `CheckAirportTool` (182 schema tokens): resolves a city name to an IATA airport code.
-3. `SearchTool` (763 schema tokens): searches outbound and return flights by date, time, or fare calendar.
-4. `FlightActionTool` (182 schema tokens): selects a flight, refines filters, or reopens route search.
-5. `TravellerDetailsTool` (862 schema tokens): validates passenger counts, full names, WhatsApp number, and email.
-6. `PaymentTool` (98 schema tokens): sends the checkout link once details are confirmed.
+1. `set_call_language` (`93` billed tokens): records the caller's preferred spoken language for the session.
+2. `resolve_airport_code` (`44` billed tokens): resolves a city or region name to an IATA airport code.
+3. `find_available_flights` (`511` billed tokens): queries outbound and return flights by date, time window, or fare tier.
+4. `update_selected_itinerary` (`164` billed tokens): locks in a chosen flight leg, updates cabin filters, or reopens route search.
+5. `save_passenger_manifest` (`457` billed tokens): validates passenger counts, legal names, mobile number, and email address.
+6. `dispatch_checkout_link` (`57` billed tokens): sends the checkout link once the itinerary and passenger manifest are confirmed.
 
-If you declare all 6 tools in `setup.tools`, Gemini 3.8 Live bills all **2,198 tool-schema tokens on every single turn** of the call, even on Turn 1 when the agent is only asking which language the caller prefers, and on the final turn when passenger details are already done.
+If you declare all 6 tools in `setup.tools`, Gemini 3.8 Live bills all **1,326 tool-schema tokens on every single turn** of the call (`93 + 44 + 511 + 164 + 457 + 57 = 1,326` in `usage_metadata.prompt_token_count`, or `~2,198` tokens if counted as raw serialized JSON text), even on Turn 1 when the agent is only asking which language the caller prefers, and on the final turn when passenger details are already done.
 
 With `context_update`, each of the 8 prompt cards registers only the tools needed for that step:
 
-| Prompt card in the flight-booking call | What happens in this step | Tools registered for this card | Tool tokens billed per turn |
+| Prompt card in the flight-booking call | What happens in this step | Tools registered for this card | Tool tokens billed per turn (`gemini-3.8-live`) |
 | :--- | :--- | :--- | :--- |
-| Card 1 | Greeting &amp; language choice | `SelectLanguageTool` | `146 tokens` (vs. 2,198 for all 6) |
-| Card 2 | Route &amp; travel date intake | `SelectLanguageTool`, `SearchTool`, `CheckAirportTool` | `1,091 tokens` |
-| Card 3 | Flight selection &amp; filter refinement | `SelectLanguageTool`, `FlightActionTool`, `SearchTool` | `1,091 tokens` |
-| Cards 4–7 | Passenger count, names, WhatsApp &amp; email | `SelectLanguageTool`, `TravellerDetailsTool`, `FlightActionTool` (`SearchTool` dropped) | `1,048 tokens` (down from 1,811) |
-| Card 8 | Payment link &amp; confirmation | `SelectLanguageTool`, `PaymentTool` (`TravellerDetailsTool` dropped) | `244 tokens` (down from 1,910) |
-| Farewell | Talk-only closing | `tools: {}` (empty wrapper clears all tools) | `0 tool tokens` |
+| Card 1 | Greeting &amp; language choice | `set_call_language` | `93 tokens` (vs. 1,326 for all 6) |
+| Card 2 | Route &amp; travel date intake | `set_call_language`, `find_available_flights`, `resolve_airport_code` | `648 tokens` (`93 + 511 + 44`) |
+| Card 3 | Flight selection &amp; filter refinement | `set_call_language`, `update_selected_itinerary`, `find_available_flights` | `768 tokens` (`93 + 164 + 511`) |
+| Cards 4–7 | Passenger count, names, phone &amp; email | `set_call_language`, `save_passenger_manifest`, `update_selected_itinerary` (`find_available_flights` &amp; `resolve_airport_code` dropped) | `714 tokens` (down from 1,225 with `find_available_flights`) |
+| Card 8 | Checkout link &amp; confirmation | `set_call_language`, `dispatch_checkout_link` (`save_passenger_manifest` &amp; `update_selected_itinerary` dropped) | `150 tokens` (down from 771 on Cards 4–7 + checkout) |
+| Optional farewell (after Card 8) | Talk-only closing | `tools: {}` (empty wrapper clears all tools) | `0 tool tokens` |
 
-### Simplified Python pattern (30 lines, zero boilerplate)
+### Python pattern: `send_context_update` and tool handler
 
-You do not need a complex wrapper class to use `context_update`. Inside your blocking tool handler, send the `context_update` JSON frame on `session._ws` right before returning the `FunctionResponse`:
+You do not need a wrapper class to use `context_update`. Inside your blocking tool handler, send the `context_update` JSON frame on `session._ws` right before returning the `FunctionResponse`:
 
 ```python
 import json
@@ -179,15 +179,16 @@ async def send_context_update(
     await session._ws.send(json.dumps(frame))
 
 
-async def on_tool_call(session, tool_call, active_tool_names: set[str], run_step):
+async def on_tool_call(session, function_call, active_tool_names: set[str], run_step):
+    # function_call is one item from server_message.tool_call.function_calls
     # 1. Guard against the model imitating an old tool call from earlier history turns
-    if tool_call.name not in active_tool_names:
+    if function_call.name not in active_tool_names:
         await session.send_tool_response(
             function_responses=[
                 types.FunctionResponse(
-                    id=tool_call.id,
-                    name=tool_call.name,
-                    response={"error": f"{tool_call.name} is not active in this step."},
+                    id=function_call.id,
+                    name=function_call.name,
+                    response={"error": f"{function_call.name} is not active in this step."},
                 )
             ]
         )
@@ -195,7 +196,7 @@ async def on_tool_call(session, tool_call, active_tool_names: set[str], run_step
 
     # 2. Run your business logic -> get next card text, session state, and next card's tools
     next_instruction, next_tool_decls, next_tool_names = run_step(
-        tool_call.name, tool_call.args or {}
+        function_call.name, function_call.args or {}
     )
     active_tool_names.clear()
     active_tool_names.update(next_tool_names)
@@ -207,8 +208,8 @@ async def on_tool_call(session, tool_call, active_tool_names: set[str], run_step
     await session.send_tool_response(
         function_responses=[
             types.FunctionResponse(
-                id=tool_call.id,
-                name=tool_call.name,
+                id=function_call.id,
+                name=function_call.name,
                 response={"status": "ok", "guidance": "Follow the current step in your system instruction."},
             )
         ]
@@ -218,7 +219,7 @@ async def on_tool_call(session, tool_call, active_tool_names: set[str], run_step
 :::caution[`context_update` is exposed on the wire, but not yet in public documentation or the SDK]
 - No released version of `google-genai` has a typed helper for `context_update`, and no public Google documentation page describes it yet. You write raw JSON to `session._ws.send(...)`.
 - It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes with `1007` (use `role="system"` client content on 2.5 instead).
-- Every `context_update` replaces (does not merge) the declared tools. Keep global tools like `SelectLanguageTool` in every card's list, and send `"tools": {}` when you want to clear all tools.
+- Every `context_update` replaces (does not merge) the declared tools. Keep global tools like `set_call_language` in every card's list, and send `"tools": {}` when you want to clear all tools.
 :::
 
 ---
