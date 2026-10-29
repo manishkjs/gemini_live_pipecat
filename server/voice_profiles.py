@@ -264,42 +264,90 @@ class _Profile(NamedTuple):
 
 
 MAX_PROFILES = 1000
-_profiles: Dict[str, _Profile] = {}
-_lock = threading.Lock()
 
 
-def _purge_expired(now: float) -> None:
-    """Callers must hold the lock."""
-    for profile_id in [pid for pid, p in _profiles.items() if p.expires_at <= now]:
-        del _profiles[profile_id]
+class VoiceProfileStore:
+    """Single-use credential store with optional cross-instance shared backend."""
+
+    def __init__(self, shared_store=None):
+        self._profiles: Dict[str, _Profile] = {}
+        self._lock = threading.Lock()
+        self._shared = shared_store
+
+    def _purge_expired(self, now: float) -> None:
+        for profile_id in [pid for pid, p in self._profiles.items() if p.expires_at <= now]:
+            del self._profiles[profile_id]
+
+    def register(self, voice_cloning_key: Optional[str], ttl_seconds: int = PROFILE_TTL_SECONDS) -> Optional[str]:
+        if not voice_cloning_key or not voice_cloning_key.strip():
+            return None
+        now = time.time()
+        clean = voice_cloning_key.strip()
+        profile_id = f"{_PREFIX}{secrets.token_urlsafe(24)}"
+        with self._lock:
+            self._purge_expired(now)
+            while len(self._profiles) >= MAX_PROFILES:
+                oldest_id = next(iter(self._profiles))
+                del self._profiles[oldest_id]
+            self._profiles[profile_id] = _Profile(clean, now + ttl_seconds)
+        shared = self._shared
+        if shared is not None:
+            try:
+                shared.register_voice_profile(profile_id, clean, ttl_seconds, now_wall=now)
+            except BaseException:
+                with self._lock:
+                    self._profiles.pop(profile_id, None)
+                raise
+        return profile_id
+
+    def consume(self, profile_id: Optional[str]) -> Optional[str]:
+        if not profile_id:
+            return None
+        now = time.time()
+        if self._shared is not None:
+            with self._lock:
+                self._purge_expired(now)
+                self._profiles.pop(profile_id, None)
+            return self._shared.consume_voice_profile(profile_id, now_wall=now)
+        with self._lock:
+            self._purge_expired(now)
+            profile = self._profiles.pop(profile_id, None)
+        if profile is None:
+            return None
+        return profile.key
+
+    def active_count(self) -> int:
+        now = time.time()
+        with self._lock:
+            self._purge_expired(now)
+            return len(self._profiles)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._profiles.clear()
+        if self._shared is not None:
+            self._shared.clear_voice_profiles()
+
+
+from shared_session_store import build_default_shared_store as _build_default_shared_store
+
+_default_profile_store = VoiceProfileStore(shared_store=_build_default_shared_store())
+_profiles = _default_profile_store._profiles
+_lock = _default_profile_store._lock
+
+
+def configure_shared_store(shared_store=None) -> None:
+    _default_profile_store._shared = shared_store
 
 
 def register(voice_cloning_key: Optional[str], ttl_seconds: int = PROFILE_TTL_SECONDS) -> Optional[str]:
     """Store a cloning key and return an opaque id, or None for empty input."""
-    if not voice_cloning_key or not voice_cloning_key.strip():
-        return None
-    now = time.time()
-    profile_id = f"{_PREFIX}{secrets.token_urlsafe(24)}"
-    with _lock:
-        _purge_expired(now)
-        while len(_profiles) >= MAX_PROFILES:
-            oldest_id = next(iter(_profiles))
-            del _profiles[oldest_id]
-        _profiles[profile_id] = _Profile(voice_cloning_key.strip(), now + ttl_seconds)
-    return profile_id
+    return _default_profile_store.register(voice_cloning_key, ttl_seconds=ttl_seconds)
 
 
 def consume(profile_id: Optional[str]) -> Optional[str]:
     """Redeem an id for its key. Single use: a second call returns None."""
-    if not profile_id:
-        return None
-    now = time.time()
-    with _lock:
-        _purge_expired(now)
-        profile = _profiles.pop(profile_id, None)
-    if profile is None:
-        return None
-    return profile.key
+    return _default_profile_store.consume(profile_id)
 
 
 def is_profile_id(value: Optional[str]) -> bool:
@@ -309,13 +357,10 @@ def is_profile_id(value: Optional[str]) -> bool:
 
 def active_count() -> int:
     """Number of unredeemed, unexpired profiles. For tests and diagnostics."""
-    now = time.time()
-    with _lock:
-        _purge_expired(now)
-        return len(_profiles)
+    return _default_profile_store.active_count()
 
 
 def clear() -> None:
     """Drop every profile. For tests."""
-    with _lock:
-        _profiles.clear()
+    _default_profile_store.clear()
+

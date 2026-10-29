@@ -32,6 +32,7 @@ import {
   usesExternalTts,
   supportsCascadeAudioInput,
   buildPersonaPromptUrl,
+  parseToolsOverride,
 } from "@/lib/voice-session";
 import {
   normalizeAvatarPortraitFile,
@@ -319,14 +320,17 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   const [backendToolsJson, setBackendToolsJson] = useState<string>("");
   const [backendToolsTokens, setBackendToolsTokens] = useState<number>(0);
   const [backendPrompt, setBackendPrompt] = useState<string>("");
+  const [toolsEditable, setToolsEditable] = useState<boolean>(true);
 
   useEffect(() => {
     if (!settingsOpen) return;
     let cancelled = false;
     fetch(buildPersonaPromptUrl(settings, currentPhase))
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: { prompt?: string; tools?: any[]; tools_token_count?: number }) => {
+      .then((data: { prompt?: string; tools?: any[]; tools_token_count?: number; tools_editable?: boolean }) => {
         if (cancelled) return;
+        const canEditTools = data.tools_editable !== false;
+        setToolsEditable(canEditTools);
         if (data.prompt?.trim()) {
           setBackendPrompt(data.prompt.trim());
         } else {
@@ -345,6 +349,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
       })
       .catch(() => {
         if (!cancelled) {
+          setToolsEditable(true);
           setBackendTools([]);
           setBackendToolsJson("");
           setBackendToolsTokens(0);
@@ -356,15 +361,24 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
   }, [settingsOpen, settings.personaId, settings.engine, settings.model, settings.backendUrl, settings.tone, settings.language, currentPhase]);
 
   const effectivePresetPrompt = backendPrompt || getPersonaPrompt(persona, settings.tone);
-  const effectiveToolsText = settings.toolsJson?.trim() ? settings.toolsJson : backendToolsJson;
-  const effectiveToolsTokens = settings.toolsJson?.trim()
+  const effectiveToolsText = toolsEditable && settings.toolsJson?.trim() ? settings.toolsJson : backendToolsJson;
+  const effectiveToolsTokens = toolsEditable && settings.toolsJson?.trim()
     ? estimateTokens(settings.toolsJson)
     : backendToolsTokens;
+  const toolsValidationError = (() => {
+    if (!toolsEditable || !settings.toolsJson?.trim()) return null;
+    try {
+      parseToolsOverride(settings.toolsJson);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Invalid tool definitions JSON";
+    }
+  })();
   const effectiveToolCount = (() => {
-    if (settings.toolsJson?.trim()) {
+    if (toolsEditable && settings.toolsJson?.trim()) {
       try {
-        const parsed = JSON.parse(settings.toolsJson);
-        return Array.isArray(parsed) ? parsed.length : 1;
+        const parsed = parseToolsOverride(settings.toolsJson);
+        return parsed.length;
       } catch {
         return backendTools.length;
       }
@@ -1423,12 +1437,17 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   >
                     {effectiveToolCount} {effectiveToolCount === 1 ? "tool" : "tools"} · {effectiveToolsTokens.toLocaleString()} tokens
                   </span>
-                  {settings.toolsJson && (
+                  {!toolsEditable && (
+                    <span className="customized-indicator-pill" title="Tools swap per conversation card via context_update on Vertex Gemini 3.8 Live">
+                      Managed per-card
+                    </span>
+                  )}
+                  {toolsEditable && settings.toolsJson && (
                     <span className="customized-indicator-pill">Customized</span>
                   )}
                 </div>
                 <div className="instructions-btn-group">
-                  {!settings.toolsJson && backendToolsJson && (
+                  {toolsEditable && !settings.toolsJson && backendToolsJson && (
                     <Button
                       type="button"
                       variant="outline"
@@ -1441,7 +1460,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                       <span>Customize / Edit tools</span>
                     </Button>
                   )}
-                  {settings.toolsJson && (
+                  {toolsEditable && settings.toolsJson && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -1460,22 +1479,34 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                 id="tools-json"
                 value={effectiveToolsText}
                 onFocus={() => {
-                  if (!settings.toolsJson && backendToolsJson) {
+                  if (toolsEditable && !settings.toolsJson && backendToolsJson) {
                     update("toolsJson", backendToolsJson);
                   }
                 }}
-                onChange={(e) => update("toolsJson", e.target.value)}
-                disabled={active}
+                onChange={(e) => {
+                  if (toolsEditable) {
+                    update("toolsJson", e.target.value);
+                  }
+                }}
+                disabled={active || !toolsEditable}
                 placeholder='[{"name": "get_weather", "description": "Get weather", "properties": {"city": {"type": "string"}}, "required": ["city"]}]'
                 rows={7}
                 style={{ fontFamily: "ui-monospace, monospace", fontSize: "12px", resize: "vertical", minHeight: "150px" }}
               />
               <div className="instructions-footer">
-                <p className="field-hint">
-                  {settings.toolsJson
-                    ? `${effectiveToolCount} tool definition(s) · ${effectiveToolsTokens.toLocaleString()} tokens · Custom OpenAPI tool configuration active.`
-                    : `${effectiveToolCount} active backend tool(s) (${backendTools.map((t) => t.name).join(", ") || "none"}) · ${effectiveToolsTokens.toLocaleString()} tokens. Click inside or 'Customize / Edit tools' to modify.`}
-                </p>
+                {toolsValidationError ? (
+                  <p className="field-hint" style={{ color: "#f87171" }}>
+                    {toolsValidationError}
+                  </p>
+                ) : (
+                  <p className="field-hint">
+                    {!toolsEditable
+                      ? `${effectiveToolCount} active card tool(s) (${backendTools.map((t) => t.name).join(", ") || "none"}) · ${effectiveToolsTokens.toLocaleString()} tokens. Tools swap automatically per conversation card on Vertex Gemini 3.8 Live.`
+                      : settings.toolsJson
+                        ? `${effectiveToolCount} tool definition(s) · ${effectiveToolsTokens.toLocaleString()} tokens · Replaces backend defaults cleanly in Live and Cascade.`
+                        : `${effectiveToolCount} active backend tool(s) (${backendTools.map((t) => t.name).join(", ") || "none"}) · ${effectiveToolsTokens.toLocaleString()} tokens. Click inside or 'Customize / Edit tools' to modify.`}
+                  </p>
+                )}
               </div>
             </div>
 

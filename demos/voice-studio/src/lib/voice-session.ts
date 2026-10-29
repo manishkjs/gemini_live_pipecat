@@ -438,10 +438,11 @@ export const CASCADE_LLM_MODEL_GROUPS: { label: string; options: [string, string
     ],
   },
   {
-    label: "AI Studio (Gemini LLM)",
+    label: "AI Studio (Gemini & Gemma LLM)",
     options: [
       ["gemini-3.5-flash-lite-aistudio", "gemini-3.5-flash-lite (AI Studio)"],
       ["gemini-3.8-flash-aistudio", "gemini-3.8-flash (AI Studio)"],
+      ["gemma-4-26b-a4b-it-aistudio", "gemma-4-26b-a4b-it (AI Studio - Free Tier)"],
     ],
   },
 ];
@@ -852,6 +853,57 @@ export function buildConnectUrl(settings: SessionSettings): URL {
   return url;
 }
 
+const VALID_TOOL_NAME_RE = /^[A-Za-z_][A-Za-z0-9_.\-:]{0,63}$/;
+
+export function arePersonaToolsEditable(settings: SessionSettings): boolean {
+  if (settings.engine !== "live") return true;
+  const personaId = String(settings.personaId || "");
+  if (personaId !== "travel-concierge" && personaId !== "tara") return true;
+  const requiresVertexGemini38 =
+    isAvatarActive(settings) ||
+    isGeminiClonedVoice(settings.voice) ||
+    Boolean(isLiveCustomVoice(settings.voice) && settings.customVoiceAudio?.trim());
+  if (requiresVertexGemini38) return false;
+  const rawModel = (settings.model || "gemini-3.8-live").trim();
+  if (rawModel.toLowerCase().includes("aistudio")) return true;
+  const cleanModel = rawModel.replace(/^google\//, "");
+  return cleanModel !== "gemini-3.8-live";
+}
+
+export function parseToolsOverride(toolsJson: string): Record<string, unknown>[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(toolsJson);
+  } catch {
+    throw new Error("Tool definitions must be valid JSON (expected an array of tool objects).");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Tool definitions must be a JSON array of tool objects.");
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < parsed.length; i++) {
+    const item = parsed[i];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Tool definition at index ${i} must be an object.`);
+    }
+    const rawName = (item as Record<string, unknown>).name;
+    if (typeof rawName !== "string" || !rawName.trim()) {
+      throw new Error(`Tool definition at index ${i} must include a non-empty "name".`);
+    }
+    const name = rawName.trim();
+    if (!VALID_TOOL_NAME_RE.test(name)) {
+      throw new Error(
+        `Invalid tool name "${name}": must start with a letter or underscore and contain only letters, digits, "_", ".", ":", or "-" (max 64 chars).`,
+      );
+    }
+    if (seen.has(name)) {
+      throw new Error(`Duplicate tool declaration "${name}" in tool definitions.`);
+    }
+    seen.add(name);
+  }
+  return parsed as Record<string, unknown>[];
+}
+
 export function buildConnectRequest(settings: SessionSettings) {
   const instructions = buildSessionInstructions(settings);
   const body: Record<string, unknown> = {};
@@ -860,12 +912,8 @@ export function buildConnectRequest(settings: SessionSettings) {
     body.prompt_source = "preset";
     body.persona_tone = settings.tone;
   }
-  if (settings.toolsJson?.trim()) {
-    try {
-      body.tools = JSON.parse(settings.toolsJson);
-    } catch {
-      body.tools = settings.toolsJson;
-    }
+  if (arePersonaToolsEditable(settings) && settings.toolsJson?.trim()) {
+    body.tools = parseToolsOverride(settings.toolsJson.trim());
   }
   if (settings.contextCompression) {
     const rawTokens = settings.contextCompressionTokens ?? 5000;

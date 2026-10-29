@@ -147,24 +147,72 @@ async def websocket_endpoint(
 ):
     await websocket.accept()
     _safe_print("WebSocket connection accepted")
-    if connection_id:
-        if not session_access.consume_join(session_id, connection_id):
-            await websocket.close(code=1008, reason="Invalid or expired connection")
-            return
-    else:
-        # Raw websocket clients get an isolated anonymous scope; a supplied ID
-        # cannot impersonate a session created through /connect.
-        session_id = str(uuid4())
+    from shared_session_store import SharedStoreError
+
+    if system_instruction is not None:
+        system_instruction = system_instruction.strip() or None
+    if tools is not None and not tools.strip():
+        tools = None
+
     if bot_type not in diagnostic_buffer.BOT_TYPES:
         await websocket.close(code=1008, reason="Unknown bot_type")
         return
-    diagnostic_buffer.bind_session(session_id, bot_type)
-    stored_instruction = session_access.take_instructions(session_id)
-    system_instruction = stored_instruction or system_instruction
-    avatar_custom_image = session_access.take_avatar_custom_image(session_id)
-    custom_voice_audio = session_access.take_custom_voice_audio(session_id)
-    custom_voice_key = voice_profiles.consume(voice_profile_id)
+
+    opened_session = False
     try:
+        if connection_id:
+            try:
+                joined = await asyncio.to_thread(session_access.consume_join, session_id, connection_id)
+            except SharedStoreError as store_err:
+                _safe_print(f"Shared session store error during consume_join: {store_err}")
+                await websocket.close(code=1011, reason="Session store temporarily unavailable")
+                return
+            if not joined:
+                await websocket.close(code=1008, reason="Invalid or expired connection")
+                return
+            try:
+                handoff = await asyncio.to_thread(session_access.take_handoff, session_id)
+                custom_voice_key = (
+                    await asyncio.to_thread(voice_profiles.consume, voice_profile_id)
+                    if voice_profile_id
+                    else None
+                )
+                await asyncio.to_thread(session_access.open_connection, session_id)
+                opened_session = True
+            except SharedStoreError as store_err:
+                _safe_print(f"Shared session store error during handoff: {store_err}")
+                await websocket.close(code=1011, reason="Session store temporarily unavailable")
+                return
+        else:
+            # Raw websocket clients get an isolated anonymous scope counted against MAX_SESSIONS
+            # without issuing shared-store RPCs or impersonating a /connect session.
+            session_id = str(uuid4())
+            try:
+                session_access.open_anonymous_connection(session_id)
+                opened_session = True
+            except RuntimeError:
+                await websocket.close(code=1013, reason="Session capacity reached")
+                return
+            handoff = {
+                "instructions": None,
+                "tools": None,
+                "avatar_custom_image": None,
+                "custom_voice_audio": None,
+            }
+            custom_voice_key = (
+                await asyncio.to_thread(voice_profiles.consume, voice_profile_id)
+                if voice_profile_id
+                else None
+            )
+
+        diagnostic_buffer.bind_session(session_id, bot_type)
+        stored_instruction = handoff["instructions"]
+        system_instruction = stored_instruction or system_instruction
+        stored_tools = handoff["tools"]
+        effective_tools = stored_tools if stored_tools is not None else tools
+        avatar_custom_image = handoff["avatar_custom_image"]
+        custom_voice_audio = handoff["custom_voice_audio"]
+
         if bot_type == "gemini-live":
             run_agent_live = await asyncio.to_thread(load_pipeline, bot_type)
             await run_agent_live(
@@ -175,7 +223,7 @@ async def websocket_endpoint(
                 system_instruction=system_instruction,
                 tts=tts,
                 tts_pace=tts_pace,
-                tools=tools,
+                tools=effective_tools,
                 vad=vad,
                 vad_mode=vad_mode,
                 context_compression=context_compression,
@@ -205,6 +253,7 @@ async def websocket_endpoint(
                 tts_pitch=tts_pitch,
                 tts_pace_label=tts_pace_label,
                 system_instruction=system_instruction,
+                tools=effective_tools,
                 skip_stt=skip_stt,
                 vad=vad,
                 vad_mode=vad_mode,
@@ -230,6 +279,13 @@ async def websocket_endpoint(
                 await websocket.send_bytes(payload if isinstance(payload, bytes) else payload.encode("utf-8"))
         except Exception:
             pass
+    finally:
+        if opened_session:
+            try:
+                if session_access.release_local_connection(session_id):
+                    await asyncio.to_thread(session_access.clear_shared_handoff, session_id)
+            except Exception as close_err:
+                _safe_print(f"Error closing session connection: {close_err}")
 
 
 
@@ -253,7 +309,6 @@ async def persona_prompt(
     In cascade engine, the monolithic prompt is always returned.
     """
     from persona_registry import (
-        ArchitecturePattern,
         get_persona_architecture,
         is_persona_ui_editable,
         resolve_persona_architecture,
@@ -273,42 +328,27 @@ async def persona_prompt(
 
     persona_arch_obj = get_persona_architecture(persona_id)
     effective_engine = engine or "live"
+    uses_live_tool_swap = False
     try:
         if getattr(persona_arch_obj, "has_exclusive_tools", lambda eng="live": False)(effective_engine):
             # Per-card tool sets (Tara on Vertex 3.8): report what the session declares on this phase.
             preview = getattr(persona_arch_obj, "preview_tool_schemas", None)
             if preview is not None and effective_engine != "cascade":
+                from live_tool_swapper import supports_context_update
                 if model:
                     # The session's model and gateway decide whether tools swap per card.
                     from agent_live import resolve_live_model_gateway
                     is_ai_studio, clean_model = resolve_live_model_gateway(model)
+                    uses_live_tool_swap = supports_context_update(clean_model, not is_ai_studio)
                     raw_tools = list(preview(phase, model=clean_model, vertex=not is_ai_studio))
                 else:
+                    uses_live_tool_swap = supports_context_update("gemini-3.8-live", True)
                     raw_tools = list(preview(phase))
             else:
                 raw_tools = list(persona_arch_obj.get_tool_schemas(effective_engine))
         else:
-            from pipecat.adapters.schemas.function_schema import FunctionSchema
-            from rag_function import search_knowledge_base_schema
-            raw_tools = [
-                FunctionSchema(
-                    name="get_current_time",
-                    description="Get the current time.",
-                    properties={
-                        "is_explicit_request": {
-                            "type": "boolean",
-                            "description": (
-                                "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                                "- Explaining schedules or timelines.\n"
-                                "- Mentioning time casually in conversation."
-                            ),
-                        }
-                    },
-                    required=["is_explicit_request"],
-                ),
-                search_knowledge_base_schema,
-            ]
-            raw_tools.extend(persona_arch_obj.get_tool_schemas(effective_engine))
+            from tool_catalog import build_default_tool_schemas
+            raw_tools = build_default_tool_schemas(persona_arch_obj, effective_engine)
     except Exception:
         raw_tools = []
 
@@ -332,6 +372,7 @@ async def persona_prompt(
         "persona_id": persona_id,
         "architecture": architecture.value,
         "editable": editable,
+        "tools_editable": not uses_live_tool_swap,
         "prompt": composed or "",
         "phase": phase if engine != "cascade" else None,
         "engine": engine,
@@ -343,6 +384,7 @@ async def persona_prompt(
 MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024
 MAX_AVATAR_IMAGE_B64_CHARS = 7_000_000  # ~5 MB binary
 MAX_VOICE_AUDIO_B64_CHARS = 4_000_000   # ~3 MB binary
+MAX_WS_URL_TOOLS_CHARS = 2048
 
 
 @app.post("/connect")
@@ -358,6 +400,11 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     # Finish reading and validating the request before allocating any handles.
     # Invalid requests must not occupy a session slot for the four-hour TTL.
     instructions = params_dict.pop("system_instruction", None)
+    if instructions is not None:
+        instructions = instructions.strip() or None
+    serialized_tools = params_dict.pop("tools", None)
+    if serialized_tools is not None and not serialized_tools.strip():
+        serialized_tools = None
 
     content_length = request.headers.get("content-length")
     if content_length:
@@ -418,9 +465,57 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         if raw_instruction:
             instructions = raw_instruction
 
-        if "tools" in body:
+        avatar_custom_image = body.get("avatar_custom_image")
+        custom_voice_audio = body.get("custom_voice_audio")
+        if avatar_custom_image and len(avatar_custom_image) > MAX_AVATAR_IMAGE_B64_CHARS:
+            raise HTTPException(status_code=413, detail="Custom avatar image exceeds 5 MB limit")
+        if custom_voice_audio and len(custom_voice_audio) > MAX_VOICE_AUDIO_B64_CHARS:
+            raise HTTPException(status_code=413, detail="Custom voice sample exceeds 3 MB limit")
+
+        from tool_catalog import (
+            _strip_additional_properties,
+            normalize_tool_definitions,
+            uses_per_card_live_tool_swap,
+        )
+
+        effective_avatar_enabled = (
+            bool(body["avatar_enabled"])
+            if "avatar_enabled" in body
+            else params_dict.get("avatar_enabled", "").lower() == "true"
+        )
+        managed_per_card = uses_per_card_live_tool_swap(
+            params_dict.get("persona_id"),
+            bot_type=bot_type,
+            model=params_dict.get("model"),
+            avatar_enabled=effective_avatar_enabled,
+            voice=params_dict.get("voice"),
+            has_custom_voice_audio=bool(custom_voice_audio and custom_voice_audio.strip()),
+        )
+
+        if "tools" in body and body["tools"] is not None:
             tools_data = body["tools"]
-            params_dict["tools"] = json.dumps(tools_data) if isinstance(tools_data, (dict, list)) else str(tools_data)
+            normalize_tool_definitions(tools_data)
+            if managed_per_card:
+                serialized_tools = None
+            else:
+                cleaned_tools = (
+                    _strip_additional_properties(tools_data)
+                    if isinstance(tools_data, (dict, list))
+                    else _strip_additional_properties(json.loads(str(tools_data).strip()))
+                )
+                serialized_tools = json.dumps(cleaned_tools)
+                if len(serialized_tools) <= MAX_WS_URL_TOOLS_CHARS:
+                    params_dict["tools"] = serialized_tools
+        elif serialized_tools is not None:
+            normalize_tool_definitions(serialized_tools)
+            if managed_per_card:
+                serialized_tools = None
+            else:
+                cleaned_tools = _strip_additional_properties(json.loads(str(serialized_tools).strip()))
+                serialized_tools = json.dumps(cleaned_tools)
+                if len(serialized_tools) <= MAX_WS_URL_TOOLS_CHARS:
+                    params_dict["tools"] = serialized_tools
+
         for field in ("context_compression", "thinking", "vad", "avatar_enabled"):
             if field in body:
                 params_dict[field] = "true" if body[field] else "false"
@@ -437,17 +532,11 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             params_dict["vad_mode"] = body["vad_mode"]
         if "avatar_name" in body and body["avatar_name"]:
             params_dict["avatar_name"] = body["avatar_name"]
-        avatar_custom_image = body.get("avatar_custom_image")
-        custom_voice_audio = body.get("custom_voice_audio")
-        if avatar_custom_image and len(avatar_custom_image) > MAX_AVATAR_IMAGE_B64_CHARS:
-            raise HTTPException(status_code=413, detail="Custom avatar image exceeds 5 MB limit")
-        if custom_voice_audio and len(custom_voice_audio) > MAX_VOICE_AUDIO_B64_CHARS:
-            raise HTTPException(status_code=413, detail="Custom voice sample exceeds 3 MB limit")
         for field in ("tts_style", "tts_accent", "tts_pitch", "tts_pace_label", "tts_voice_prompt"):
             if field in body and body[field]:
                 params_dict[field] = body[field]
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid session configuration")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid session configuration: {exc}")
 
     # Dynamically determine WebSocket scheme (ws vs wss) and host
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
@@ -455,32 +544,47 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
     host = request.headers.get("x-forwarded-host", request.url.netloc)
 
     try:
-        session_id, viewer_token, connection_id = session_access.issue(
-            params_dict.get("session_id"),
-            request.headers.get("x-session-token"),
-            instructions=instructions,
-            avatar_custom_image=avatar_custom_image,
-            custom_voice_audio=custom_voice_audio,
+        session_id, viewer_token, connection_id = await asyncio.to_thread(
+            lambda: session_access.issue(
+                params_dict.get("session_id"),
+                request.headers.get("x-session-token"),
+                instructions=instructions,
+                tools=serialized_tools,
+                avatar_custom_image=avatar_custom_image,
+                custom_voice_audio=custom_voice_audio,
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
+    from shared_session_store import SharedStoreError
+
     profile_id = None
     try:
         params_dict.update(session_id=session_id, connection_id=connection_id)
         # Exchange credentials for a one-use handle only after validation.
         if clone_key:
-            profile_id = voice_profiles.register(clone_key)
+            profile_id = await asyncio.to_thread(voice_profiles.register, clone_key)
             if profile_id:
                 params_dict["voice_profile_id"] = profile_id
         ws_url = f"{ws_scheme}://{host}/ws?{urlencode(params_dict)}"
         return {"ws_url": ws_url, "session_id": session_id, "diagnostic_token": viewer_token}
+    except SharedStoreError as exc:
+        try:
+            await asyncio.to_thread(voice_profiles.consume, profile_id)
+            await asyncio.to_thread(session_access.discard, session_id)
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
         # These handles have not reached the caller. Release both on failure.
-        voice_profiles.consume(profile_id)
-        session_access.discard(session_id)
+        try:
+            await asyncio.to_thread(voice_profiles.consume, profile_id)
+            await asyncio.to_thread(session_access.discard, session_id)
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail="Unable to prepare session")
 
 
@@ -488,8 +592,18 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
 async def get_system_prompt():
     return {"system_prompt": SYSTEM_PROMPT}
 
-def diagnostic_session(request: Request, session_id: str = Query(min_length=1, max_length=128)):
-    if not session_access.authorized(session_id, request.headers.get("x-session-token")):
+async def diagnostic_session(request: Request, session_id: str = Query(min_length=1, max_length=128)):
+    from shared_session_store import SharedStoreError
+
+    try:
+        ok = await asyncio.to_thread(
+            session_access.authorized,
+            session_id,
+            request.headers.get("x-session-token"),
+        )
+    except SharedStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not ok:
         raise HTTPException(status_code=403, detail="Session access denied")
     return session_id
 

@@ -18,6 +18,7 @@ _store_path: Optional[str] = _DEFAULT_PATH
 _initial_seed: int = _DEFAULT_SEED
 _count: Optional[int] = None
 _seen_page_loads: "OrderedDict[str, bool]" = OrderedDict()
+_inflight_page_loads: Dict[str, threading.Event] = {}
 _MAX_SEEN_PAGE_LOADS = 2048
 _use_firestore: bool = bool(os.environ.get("K_SERVICE") and os.environ.get("GCP_PROJECT_ID"))
 _firestore_synced: bool = False
@@ -160,6 +161,7 @@ def configure_store(path: Optional[str], initial_seed: int = _DEFAULT_SEED) -> N
         _initial_seed = initial_seed
         _count = None
         _seen_page_loads.clear()
+        _inflight_page_loads.clear()
         _use_firestore = bool(
             path is None and os.environ.get("K_SERVICE") and os.environ.get("GCP_PROJECT_ID")
         )
@@ -189,43 +191,64 @@ def get_visits() -> Dict[str, object]:
 def record_visit(page_load_id: Optional[str] = None) -> Dict[str, object]:
     global _count, _firestore_synced
     clean_id = (page_load_id or "").strip()[:128]
-    with _lock:
-        if clean_id and clean_id in _seen_page_loads:
-            _seen_page_loads.move_to_end(clean_id)
-            if _count is not None:
-                return {"visits": _count, "label": VISIT_LABEL}
-            if not _use_firestore:
-                visits = _load_locked()
-                return {"visits": visits, "label": VISIT_LABEL}
-            already_seen = True
-        else:
-            already_seen = False
+    while True:
+        wait_event: Optional[threading.Event] = None
+        leader_event: Optional[threading.Event] = None
+        with _lock:
+            if clean_id and clean_id in _seen_page_loads:
+                _seen_page_loads.move_to_end(clean_id)
+                if _count is not None:
+                    return {"visits": _count, "label": VISIT_LABEL}
+                if not _use_firestore:
+                    visits = _load_locked()
+                    return {"visits": visits, "label": VISIT_LABEL}
+                already_seen = True
+            elif clean_id and clean_id in _inflight_page_loads:
+                wait_event = _inflight_page_loads[clean_id]
+                already_seen = False
+            else:
+                already_seen = False
+                if not _use_firestore:
+                    visits = _load_locked()
+                    if clean_id:
+                        _seen_page_loads[clean_id] = True
+                        while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
+                            _seen_page_loads.popitem(last=False)
+                    visits += 1
+                    _count = visits
+                    _save_locked(visits)
+                    return {"visits": visits, "label": VISIT_LABEL}
+                if clean_id:
+                    leader_event = threading.Event()
+                    _inflight_page_loads[clean_id] = leader_event
 
-        if not _use_firestore:
-            visits = _load_locked()
-            if clean_id:
-                _seen_page_loads[clean_id] = True
-                while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
-                    _seen_page_loads.popitem(last=False)
-            visits += 1
-            _count = visits
-            _save_locked(visits)
-            return {"visits": visits, "label": VISIT_LABEL}
+        if already_seen:
+            return get_visits()
 
-    if already_seen:
-        return get_visits()
+        if wait_event is not None:
+            # Wait outside _lock for the in-flight request with the same page_load_id, then re-check.
+            wait_event.wait(timeout=5.0)
+            continue
 
-    remote_new = _firestore_increment_visits()
-    with _lock:
-        if remote_new is not None:
-            if clean_id:
-                _seen_page_loads[clean_id] = True
-                while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
-                    _seen_page_loads.popitem(last=False)
-            _count = max(_count or 0, remote_new)
-            _firestore_synced = True
-            _save_locked(_count)
-            return {"visits": _count, "label": VISIT_LABEL}
-        fallback = _count if _count is not None else max(0, _initial_seed)
-        return {"visits": fallback, "label": VISIT_LABEL}
+        try:
+            remote_new = _firestore_increment_visits()
+            with _lock:
+                if remote_new is not None:
+                    if clean_id:
+                        _seen_page_loads[clean_id] = True
+                        while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
+                            _seen_page_loads.popitem(last=False)
+                    _count = max(_count or 0, remote_new)
+                    _firestore_synced = True
+                    _save_locked(_count)
+                    return {"visits": _count, "label": VISIT_LABEL}
+                fallback = _count if _count is not None else max(0, _initial_seed)
+                return {"visits": fallback, "label": VISIT_LABEL}
+        finally:
+            if clean_id and leader_event is not None:
+                with _lock:
+                    if _inflight_page_loads.get(clean_id) is leader_event:
+                        del _inflight_page_loads[clean_id]
+                    leader_event.set()
+
 

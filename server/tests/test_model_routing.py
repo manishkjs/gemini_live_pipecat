@@ -254,7 +254,148 @@ class TestVoiceGender(unittest.TestCase):
             self.assertEqual(out_img.mode, "RGB")
 
 
+class TestGemma4RateLimitFailover(unittest.TestCase):
+    def test_gemma_4_maas_429_queue_full_retries_clears_stale_ttfb_and_fails_over_to_aistudio(self):
+        import asyncio
+        from decimal import Decimal
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, patch
+        import agent
+        from cascade_pricing import CascadeCostLedger
+
+        self.assertEqual(agent.validate_llm_model("gemma-4-26b-a4b-it-aistudio"), "gemma-4-26b-a4b-it-aistudio")
+        self.assertEqual(agent.validate_llm_model("gemma-4-26b-a4b-it"), "gemma-4-26b-a4b-it")
+        self.assertFalse(agent.supports_cascade_audio_input("gemma-4-26b-a4b-it-aistudio"))
+        self.assertFalse(agent.supports_cascade_audio_input("gemma-4-26b-a4b-it-maas"))
+
+        class FakeBaseLLM:
+            def __init__(self):
+                self._settings = SimpleNamespace(model="gemma-4-26b-a4b-it-maas")
+                self._project_id = "demo-proj"
+                self._location = "global"
+                self._my_ttfb_start = None
+                self.base_calls = 0
+
+            async def _stream_content(self, params_from_context):
+                self.base_calls += 1
+                self._my_ttfb_start = 100.0  # Simulate GoogleLLMService starting TTFB timer before RPC
+
+                async def failing_gen():
+                    raise RuntimeError(
+                        '429 Too Many Requests. {\'message\': \'{"error":{"code":429,"message":"The request queue is full.","status":"RESOURCE_EXHAUSTED"}}\'}'
+                    )
+                    yield  # pragma: no cover
+
+                return failing_gen()
+
+        class TestVertexGemma(agent._MeteredGeminiLLMMixin, FakeBaseLLM):
+            _cascade_provider = "vertex"
+
+        async def run_scenario():
+            # 1) Failover succeeds when AI Studio fallback stream yields chunks
+            svc = TestVertexGemma()
+            ledger = CascadeCostLedger("sess-gemma-failover", skip_stt=False)
+            svc._cascade_meter = ledger
+            svc._cost_input_mode = "text"
+
+            fallback_chunk = SimpleNamespace(
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=798,
+                    candidates_token_count=41,
+                    cached_content_token_count=0,
+                    thoughts_token_count=0,
+                    total_token_count=839,
+                    prompt_tokens_details=None,
+                    cache_tokens_details=None,
+                )
+            )
+
+            async def fake_aistudio_stream():
+                yield fallback_chunk
+
+            with patch("asyncio.sleep", new=AsyncMock()), \
+                 patch.object(svc, "_open_gemma_aistudio_fallback", new=AsyncMock(return_value=fake_aistudio_stream())):
+                stream = await svc._stream_content(SimpleNamespace())
+                received = [c async for c in stream]
+
+            self.assertEqual(len(received), 1)
+            self.assertEqual(svc.base_calls, 3)  # Initial attempt + 2 retries before AI Studio failover
+            self.assertEqual(svc._active_turn_model, "gemma-4-26b-a4b-it")
+            snap = ledger.snapshot()
+            llm_stage = snap["stages"][1]
+            self.assertTrue(llm_stage["complete"])
+            self.assertEqual(Decimal(llm_stage["known_usd"]), Decimal("0"))
+            self.assertEqual(llm_stage["rates"][0]["provider"], "gemini")
+            self.assertEqual(llm_stage["rates"][0]["model"], "gemma-4-26b-a4b-it")
+
+            # 2) If no fallback key is available, _my_ttfb_start is cleared so Turn N+1 never inherits a 15.6s stale timer
+            svc_no_fb = TestVertexGemma()
+            with patch("asyncio.sleep", new=AsyncMock()), \
+                 patch.object(svc_no_fb, "_open_gemma_aistudio_fallback", new=AsyncMock(return_value=None)):
+                with self.assertRaisesRegex(RuntimeError, "request queue is full"):
+                    stream2 = await svc_no_fb._stream_content(SimpleNamespace())
+                    async for _ in stream2:
+                        pass
+            self.assertIsNone(svc_no_fb._my_ttfb_start)
+
+            # 3) G1 regression: when open_base raises on stream open (before yielding a generator) AND
+            #    AI Studio fallback ALSO arms _my_ttfb_start then raises, _my_ttfb_start is reset to None
+            #    and the cost ledger stage is marked failed (never stuck 'Awaiting final provider usage').
+            class RaiseOnOpenBase:
+                def __init__(self):
+                    self._settings = SimpleNamespace(model="gemma-4-26b-a4b-it-maas")
+                    self._project_id = "demo-proj"
+                    self._location = "global"
+                    self._my_ttfb_start = None
+                    self.open_calls = 0
+
+                async def _stream_content(self, params_from_context):
+                    self.open_calls += 1
+                    self._my_ttfb_start = 100.0
+                    err = RuntimeError("429 Too Many Requests: The request queue is full.")
+                    err.code = 429
+                    raise err
+
+            class RaiseOnOpenVertexGemma(agent._MeteredGeminiLLMMixin, RaiseOnOpenBase):
+                _cascade_provider = "vertex"
+
+            svc_both_fail = RaiseOnOpenVertexGemma()
+            ledger_fail = CascadeCostLedger("sess-gemma-both-fail", skip_stt=False)
+            svc_both_fail._cascade_meter = ledger_fail
+            svc_both_fail._cost_input_mode = "text"
+
+            async def failing_aistudio_open(_ctx):
+                svc_both_fail._my_ttfb_start = 200.0
+                # Simulate real _open_gemma_aistudio_fallback try/except resetting _my_ttfb_start,
+                # AND verify _open_initial's outer handler also resets even if a custom hook forgot.
+                raise RuntimeError("AI Studio fallback 503 unavailable")
+
+            with patch("asyncio.sleep", new=AsyncMock()), \
+                 patch.object(svc_both_fail, "_open_gemma_aistudio_fallback", side_effect=failing_aistudio_open):
+                with self.assertRaisesRegex(RuntimeError, "AI Studio fallback 503 unavailable"):
+                    await svc_both_fail._stream_content(SimpleNamespace())
+
+            self.assertEqual(svc_both_fail.open_calls, 3)
+            self.assertIsNone(svc_both_fail._my_ttfb_start)
+            fail_stage = ledger_fail.snapshot()["stages"][1]
+            self.assertFalse(fail_stage["complete"])
+            self.assertIn("LLM request failed before final usage", fail_stage["issues"])
+            self.assertNotIn("Awaiting final provider usage", fail_stage["issues"])
+
+            # 4) G2 regression: non-429 errors whose message contains '1429' are NOT treated as rate limits
+            err_400_with_1429 = RuntimeError("400 Bad Request: input token count (1429) exceeds context limit")
+            err_400_with_1429.code = 400
+            self.assertFalse(agent.CustomGoogleVertexLLMService._is_rate_limit_error(err_400_with_1429))
+            plain_1429 = RuntimeError("Invalid argument: prompt has 1429 tokens")
+            self.assertFalse(agent.CustomGoogleVertexLLMService._is_rate_limit_error(plain_1429))
+            real_429 = RuntimeError("429 Too Many Requests: The request queue is full.")
+            self.assertTrue(agent.CustomGoogleVertexLLMService._is_rate_limit_error(real_429))
+
+        asyncio.run(run_scenario())
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

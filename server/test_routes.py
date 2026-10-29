@@ -543,6 +543,216 @@ class TestVisitCounterRoutes(unittest.TestCase):
         r_big = self.client.post("/api/visits", content=b"x" * 5000)
         self.assertEqual(r_big.status_code, 413)
 
+    def test_concurrent_same_page_load_id_increments_firestore_only_once(self):
+        import threading
+        import visit_counter
+        from unittest.mock import patch
+
+        visit_counter._use_firestore = True
+        visit_counter._firestore_synced = True
+        visit_counter._count = 10
+        visit_counter._seen_page_loads.clear()
+        visit_counter._inflight_page_loads.clear()
+
+        entered = threading.Event()
+        release = threading.Event()
+        lock_states = []
+
+        def slow_firestore_inc():
+            lock_states.append(visit_counter._lock.locked())
+            entered.set()
+            release.wait(timeout=3.0)
+            return 11
+
+        results = []
+        with patch.object(visit_counter, "_firestore_increment_visits", side_effect=slow_firestore_inc) as mock_inc:
+            def worker():
+                results.append(visit_counter.record_visit(page_load_id="pl_concurrent_race"))
+
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            self.assertTrue(entered.wait(timeout=2.0))
+            release.set()
+            for t in threads:
+                t.join(timeout=3.0)
+
+            self.assertEqual(mock_inc.call_count, 1)
+            self.assertEqual(lock_states, [False])
+            self.assertEqual(len(results), 8)
+            for res in results:
+                self.assertEqual(res["visits"], 11)
+
+
+class TestCascadePromptAndToolParity(unittest.TestCase):
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        import server
+        import session_access
+
+        session_access._sessions.clear()
+        self.client = TestClient(server.app)
+
+    def tearDown(self):
+        import session_access
+
+        session_access._sessions.clear()
+
+    def test_cascade_prompt_never_appends_conflicting_name_rule_to_custom_or_tara_prompts(self):
+        from agent import compose_cascade_system_prompt
+        from persona_registry import get_persona_architecture
+
+        custom = "Greet the caller warmly and ask for their full name and booking reference."
+        composed_custom = compose_cascade_system_prompt(
+            custom,
+            tts_voice="Aoede",
+            clean_tts_model="google-tts",
+            persona_id="custom",
+        )
+        self.assertIn("ask for their full name", composed_custom)
+        self.assertNotIn("Never ask for the user's name", composed_custom)
+
+        tara_arch = get_persona_architecture("travel-concierge")
+        tara_prompt = tara_arch.compose_system_prompt(None, engine="cascade")
+        composed_tara = compose_cascade_system_prompt(
+            tara_prompt,
+            tts_voice="Kore",
+            clean_tts_model="gemini-3.8-flash-lite-tts",
+            persona_id="travel-concierge",
+        )
+        self.assertNotIn("Never ask for the user's name", composed_tara)
+
+        # Default generic prompt (system_instruction=None) retains SYSTEM_PROMPT's built-in rule and voice gender
+        composed_default = compose_cascade_system_prompt(
+            None,
+            tts_voice="Puck",
+            clean_tts_model="google-tts",
+            persona_id=None,
+        )
+        self.assertIn("male AI assistant", composed_default)
+        self.assertIn("Never ask for the user's name", composed_default)
+
+    def test_tool_overrides_replace_defaults_without_duplicates_in_live_and_cascade(self):
+        import json
+        from unittest.mock import MagicMock
+        from persona_registry import get_persona_architecture
+        from tool_catalog import register_runtime_tool_handlers, resolve_session_tools
+
+        arch = get_persona_architecture("banking-advisor")
+        override_payload = json.dumps([
+            {
+                "name": "get_current_time",
+                "description": "Edited time tool description",
+                "properties": {},
+                "required": [],
+            },
+            {
+                "name": "search_knowledge_base",
+                "description": "Edited KB description",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            {
+                "name": "lookup_wire_transfer",
+                "description": "Custom wire lookup tool",
+                "properties": {"ref": {"type": "string"}},
+                "required": ["ref"],
+            },
+        ])
+
+        for eng in ("live", "cascade"):
+            schemas, overridden = resolve_session_tools(arch, engine=eng, tools_raw=override_payload)
+            self.assertTrue(overridden)
+            names = [s.name for s in schemas]
+            self.assertEqual(names, ["get_current_time", "search_knowledge_base", "lookup_wire_transfer"])
+            self.assertEqual(len(names), len(set(names)))
+            self.assertEqual(schemas[0].description, "Edited time tool description")
+
+            fake_llm = MagicMock()
+            register_runtime_tool_handlers(
+                fake_llm,
+                active_schemas=schemas,
+                persona_architecture=arch,
+                broadcast=MagicMock(),
+                engine=eng,
+            )
+            registered_names = [call.args[0] for call in fake_llm.register_function.call_args_list]
+            self.assertIn("get_current_time", registered_names)
+            self.assertIn("search_knowledge_base", registered_names)
+            self.assertIn("lookup_wire_transfer", registered_names)
+
+    def test_persona_prompt_tools_editable_flag_and_connect_tool_validation(self):
+        import session_access
+
+        # Tara on Vertex Gemini 3.8 Live swaps tools per card -> tools_editable is False
+        r_tara_live = self.client.get("/persona-prompt/travel-concierge?engine=live&model=gemini-3.8-live")
+        self.assertEqual(r_tara_live.status_code, 200)
+        self.assertFalse(r_tara_live.json()["tools_editable"])
+
+        # Tara in Cascade or standard personas in Live allow static tool overrides -> tools_editable is True
+        r_tara_cascade = self.client.get("/persona-prompt/travel-concierge?engine=cascade")
+        self.assertEqual(r_tara_cascade.status_code, 200)
+        self.assertTrue(r_tara_cascade.json()["tools_editable"])
+
+        r_debt_live = self.client.get("/persona-prompt/debt-collector?engine=live&model=gemini-3.8-live")
+        self.assertEqual(r_debt_live.status_code, 200)
+        self.assertTrue(r_debt_live.json()["tools_editable"])
+
+        # Malformed JSON, invalid Gemini tool names, or duplicate tool names in /connect fail with HTTP 400 and allocate no session
+        bad_json = self.client.post("/connect?session_id=bad_tools_1", json={"tools": "{not-valid-json"})
+        self.assertEqual(bad_json.status_code, 400)
+        dup_tools = self.client.post(
+            "/connect?session_id=bad_tools_2",
+            json={"tools": [{"name": "get_current_time"}, {"name": "get_current_time"}]},
+        )
+        self.assertEqual(dup_tools.status_code, 400)
+        bad_name_space = self.client.post(
+            "/connect?session_id=bad_tools_3",
+            json={"tools": [{"name": "get weather"}]},
+        )
+        self.assertEqual(bad_name_space.status_code, 400)
+        bad_name_digit = self.client.post(
+            "/connect?session_id=bad_tools_4",
+            json={"tools": [{"name": "1abc"}]},
+        )
+        self.assertEqual(bad_name_digit.status_code, 400)
+        self.assertFalse(session_access._sessions)
+
+        # T2: Cascade default tools do not declare Live-only get_current_time / search_knowledge_base
+        r_debt_cascade = self.client.get("/persona-prompt/debt-collector?engine=cascade")
+        self.assertEqual(r_debt_cascade.status_code, 200)
+        cascade_tool_names = [t["name"] for t in r_debt_cascade.json()["tools"]]
+        self.assertNotIn("get_current_time", cascade_tool_names)
+        self.assertNotIn("search_knowledge_base", cascade_tool_names)
+
+        # T1: Tara on Vertex Gemini 3.8 Live ignores any static client tools override in /connect
+        tara_override = self.client.post(
+            "/connect?session_id=tara_no_override&bot_type=gemini-live&persona_id=travel-concierge&model=gemini-3.8-live",
+            json={"tools": [{"name": "stale_custom_tool"}]},
+        )
+        self.assertEqual(tara_override.status_code, 200)
+        self.assertNotIn("stale_custom_tool", tara_override.json()["ws_url"])
+        self.assertIsNone(session_access.take_handoff("tara_no_override")["tools"])
+
+        # Large (>2048 char) valid tool override strips additionalProperties and stays in session handoff
+        large_tools = [
+            {
+                "name": f"custom_tool_{i}",
+                "description": "D" * 180,
+                "properties": {"q": {"type": "string", "additionalProperties": False}, "additionalProperties": False},
+                "required": [],
+            }
+            for i in range(15)
+        ]
+        ok_large = self.client.post("/connect?session_id=large_tools_ok", json={"tools": large_tools})
+        self.assertEqual(ok_large.status_code, 200)
+        ws_url = ok_large.json()["ws_url"]
+        self.assertNotIn("custom_tool_0", ws_url)
+        handoff = session_access.take_handoff("large_tools_ok")
+        self.assertIn("custom_tool_14", handoff["tools"])
+        self.assertNotIn("additionalProperties", handoff["tools"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

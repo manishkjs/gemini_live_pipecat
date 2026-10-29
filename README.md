@@ -252,12 +252,23 @@ gcloud run deploy v2v-demo \
   --min-instances 1 \
   --max-instances 100 \
   --concurrency 80 \
+  --session-affinity \
   --timeout 3600 \
   --service-account $SERVICE_ACCOUNT \
   --add-volume=name=voice-keys,type=cloud-storage,bucket=$KEYS_BUCKET,readonly=true \
   --add-volume-mount=volume=voice-keys,mount-path=/keys \
   --set-env-vars="GCP_PROJECT_ID=$PROJECT_ID,GCP_LOCATION=us-central1,USE_VERTEXAI=true,VISIT_COUNTER_DB_ID=v2v-demo-visits,LANGSMITH_PROJECT=gemini-live-pipecat,LANGSMITH_TRACING=true" \
   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,LANGSMITH_API_KEY=LANGSMITH_API_KEY:latest"
+
+# Enable native Firestore TTL cleanup on expires_at for shared sessions, media blobs, and voice profile handles
+for CG in studio_sessions blobs studio_voice_profiles; do
+  gcloud firestore fields ttls update expires_at \
+    --project="$PROJECT_ID" \
+    --database="v2v-demo-visits" \
+    --collection-group="$CG" \
+    --enable-ttl \
+    --async
+done
 ```
 
 ---
