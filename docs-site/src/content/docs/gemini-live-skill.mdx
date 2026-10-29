@@ -4,6 +4,14 @@ description: "Complete 25-section production engineering reference and downloada
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="The whole engineering reference as a single file your coding agent (Claude Code, Cursor, Gemini CLI, Windsurf) can load so it follows these rules automatically."
+  why="It turns this site from reading material into guardrails your engineers' tools enforce while they write code."
+  number="25 sections in one downloadable file."
+  decide="Whether to make this file part of your team's standard agent setup."
+/>
 
 <div class="hero-card">
   <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
@@ -16,10 +24,10 @@ import { Aside } from '@astrojs/starlight/components';
       </p>
     </div>
     <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-      <a href="/gemini_live_pipecat/SKILL.md" download="SKILL.md" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.1rem; border-radius: 8px; background: var(--sl-color-accent); color: #fff; font-weight: 600; text-decoration: none; font-size: 0.9rem;">
+      <a href="/gemini-live/SKILL.md" download="SKILL.md" style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.1rem; border-radius: 8px; background: var(--sl-color-accent); color: #fff; font-weight: 600; text-decoration: none; font-size: 0.9rem;">
         ⬇ Download Full SKILL.md
       </a>
-      <a href="/gemini_live_pipecat/gemini-live/SKILL.md" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--gl-card-border); background: var(--gl-card-bg-elevated); color: var(--gl-text-primary); font-weight: 500; text-decoration: none; font-size: 0.9rem;">
+      <a href="/gemini-live/gemini-live/SKILL.md" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid var(--gl-card-border); background: var(--gl-card-bg-elevated); color: var(--gl-text-primary); font-weight: 500; text-decoration: none; font-size: 0.9rem;">
         View Raw SKILL.md ↗
       </a>
     </div>
@@ -28,7 +36,7 @@ import { Aside } from '@astrojs/starlight/components';
 
 ```bash
 mkdir -p .agents/skills/gemini-live
-curl -fsSL https://manishkjs.github.io/gemini_live_pipecat/SKILL.md \
+curl -fsSL https://manishkjs.github.io/gemini-live/SKILL.md \
   -o .agents/skills/gemini-live/SKILL.md
 ```
 
@@ -65,6 +73,7 @@ When building or migrating between `gemini-live-2.5-flash-native-audio` and `gem
 4. **Thinking Configuration (`thinking_level` vs. `thinking_budget`)**:
    - **Gemini 2.5 Flash Native Audio**: Accepts `ThinkingConfig(thinking_budget=0, include_thoughts=False)` to disable thinking completely.
    - **Gemini 3.1 Flash Live**: Uses discrete `ThinkingLevel` (`"MINIMAL"`, `"LOW"`, `"MEDIUM"`, `"HIGH"`). Never pass `thinking_budget=0` to Gemini 3.1 Live; it degrades multi-step tool parameter copying and slot accuracy in multi-turn tool workflows. Always configure `ThinkingConfig(thinking_level="MINIMAL", include_thoughts=False)`.
+   - **Base Gemini 3.8 Live (`gemini-3.8-live`)**: A non-thinking endpoint. Omit `thinking_config` entirely; reasoning is served by the separate `-thinking` model variants.
 5. **S2ST Interpreter Mode vs. Conversational Agent Mode**:
    - Do not combine `TranslationConfig` (continuous speech-to-speech simultaneous interpretation) with conversational system instructions or function calling. Keep unidirectional S2ST interpreter pipelines and interactive bidirectional voice agents strictly separate.
 6. **Session Lifecycle Rotation (10 to 15 min)**:
@@ -81,7 +90,7 @@ When building or migrating between `gemini-live-2.5-flash-native-audio` and `gem
 ### A. Speech-to-Text (STT) & Reasoning Config Invariants
 * **Live Transcription (`input_audio_transcription` & `output_audio_transcription`)**:
   - Enable both `input_audio_transcription=AudioTranscriptionConfig()` and `output_audio_transcription=AudioTranscriptionConfig()` inside `LiveConnectConfig` so your backend receives real-time user and assistant transcripts alongside native audio streams.
-  - **AI Studio `AudioTranscriptionConfig` Invariant**: The `language_codes` field inside `AudioTranscriptionConfig` is only supported on Vertex AI (`USE_VERTEXAI=true`). Passing `language_codes` in Google AI Studio mode (`GEMINI_API_KEY`) raises:
+  - **AI Studio `AudioTranscriptionConfig` Invariant**: The `language_codes` field inside `AudioTranscriptionConfig` is only supported on Vertex AI (`USE_VERTEXAI=true`). Some `google-genai` releases raise the error below when you pass `language_codes` in Google AI Studio mode (`GEMINI_API_KEY`); newer releases forward the field instead, so do not rely on a client-side error:
     `ValueError: language_codes parameter is only supported in Vertex AI mode, not in Gemini Developer API mode.`
     When operating in AI Studio mode, instantiate `AudioTranscriptionConfig()` with zero arguments.
   - **Model-Generation Thinking Config Invariant (`thinking_budget=0` vs. `ThinkingLevel.MINIMAL`)**:
@@ -90,6 +99,8 @@ When building or migrating between `gemini-live-2.5-flash-native-audio` and `gem
 
     if "2.5" in model_id:
         thinking_cfg = types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+    elif "3.8" in model_id and "thinking" not in model_id:
+        thinking_cfg = None  # base 3.8 Live does not take thinking_level
     else:
         level = getattr(types.ThinkingLevel, "MINIMAL", "minimal")
         thinking_cfg = types.ThinkingConfig(thinking_level=level, include_thoughts=False)
@@ -182,7 +193,7 @@ Grant the runtime service account the following least-privilege IAM roles:
 * **Upstream Silence Blindness Hazard**: Pipecat transports push audio downstream to the LLM, and the LLM emits `TranscriptionFrame`, `UserStartedSpeakingFrame`, and `InterruptionFrame` downstream. Any `FrameProcessor` (such as `UserIdleProcessor`) placed *upstream* of the LLM never sees downstream transcription frames. A short idle timeout (such as 5s) will mistakenly treat active user speech as silence and disconnect the call.
 * **The Solution**: Wire direct activity reporting from the LLM service to the idle processor:
   ```python
-  # agent_live.py
+  # inside your Live LLM service
   if hasattr(self, "user_idle_processor") and self.user_idle_processor:
       self.user_idle_processor.record_activity("speech_transcription")
   ```
@@ -875,7 +886,7 @@ gcloud run deploy gemini-live-agent \
 ### C. Rollout Verification & Health Check Invariant
 Always verify the local test suite before triggering a Cloud Run build, and verify revision readiness after deployment:
 ```bash
-./server/venv/bin/python server/test_routes.py
+python -m pytest
 gcloud run services describe gemini-live-agent --region us-central1 --format="value(status.url,status.latestReadyRevisionName)"
 ```
 
@@ -883,13 +894,13 @@ gcloud run services describe gemini-live-agent --region us-central1 --format="va
 
 ## 15. Branch-First Release Discipline
 
-1. **Canonical Repository Structure**: Keep all voice pipelines, server handlers, and frontend AudioWorklet clients in a single unified repository (`gemini_live_pipecat/`).
+1. **Canonical Repository Structure**: Keep all voice pipelines, server handlers, and frontend AudioWorklet clients in a single unified repository (`gemini-live/`).
 2. **Branch-First Rule**: Develop all new customer POCs and features on a dedicated branch off `main`:
    ```bash
    git checkout main && git pull origin main
    git checkout -b feat/<project-or-feature-name>
    ```
-3. **Pre-Merge Test Gate**: Run `./server/venv/bin/python server/test_routes.py` (must pass 100%).
+3. **Pre-Merge Test Gate**: Run your full test suite (`python -m pytest`, must pass 100%).
 4. **Clean Merge & Remote Cleanup**:
    ```bash
    git checkout main && git pull origin main
@@ -993,28 +1004,29 @@ ROLE_CONTEXT:
   6. <time and location>                       <- Server-injected runtime metadata (from session timezone / location)
 
 ROLE_USER:
-  7. <current user turn>                       <- Active endpointed caller utterance (<audio> + transcript)
+  7. <current turn>                            <- Newest caller utterance (<audio> + transcript), then any
+                                                  toolCall and FunctionResponse that follow it in this turn
 
 ROLE_CONTEXT:
-  8. <client / session context>                <- Tail context (phase state, FactStore, WHEN_IDLE updates)
+  8. <server footer>                           <- Short server-side closing context (public clients cannot write it)
 ```
 
 #### Four Architectural Consequences of This Layout
 1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`)**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the ~`224–239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15–20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1–5 active schemas (`CallSlots`).
-2. **Tail Context Is the Last Thing the Model Sees (Recency Steering)**:
-   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. By contrast, tail context sits immediately after `<current user turn>`, making it the last thing the model reads before generating speech and the strongest lever for state that changes during a session (active conversation phase, verified caller facts, or live cart state).
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
+2. **The Newest Turn Is the Last Thing the Model Sees (Recency Steering)**:
+   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. A tool result returned in the current turn lands at the end of the prompt, right before the model decodes audio, so it carries the most weight for the next reply. Use that slot for short per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`, §18.M), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it. Phase cards belong in `systemInstruction`, replaced in place (§22.C).
 3. **`systemInstruction` and `tools` Form the Prefix-Cached Preamble**:
-   Inside `ROLE_DEVELOPER`, `<function declarations>` (`tools`) are placed first, followed by `<developer instruction>` (`systemInstruction`). Because both sit in the preamble at the start of the token sequence, mutating either `systemInstruction` or `tools` mid-session invalidates the prefix cache for the rest of the session, whereas updating tail context after the conversation history preserves the cached prefix.
+   Inside `ROLE_DEVELOPER`, `<function declarations>` (`tools`) are placed first, followed by `<developer instruction>` (`systemInstruction`). Because both sit in the preamble at the start of the token sequence, updating either one mid-session rebuilds the cached preamble from that point. Swap `tools` only when the card changes. A `systemInstruction` refresh that only updates session state costs the same rebuild, so send it when the card or a confirmed fact changes, not on turns where nothing changed.
 4. **Barge-In Truncates History to What the Caller Actually Heard & Session Resumption Uses Pre-Tokenized History**:
-   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a user barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending `"—"` to the partial transcript so the model never assumes the caller heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server resumes from pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
+   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a user barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending a trailing dash to the partial transcript so the model never assumes the caller heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server resumes from pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
 
 | Information Type | Where to Place It | Update Cadence | Prefix Cache Impact |
 | :--- | :--- | :--- | :--- |
-| **Persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`) | Set once at session start | Cached in preamble |
-| **Core tool schemas (`functionDeclarations`)** | `setup.tools` (`ROLE_DEVELOPER`) | Set once at session start (or updated sparingly on major phase shifts) | Cached in preamble (updating invalidates cache) |
-| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Tail context (`FunctionResponse` with `scheduling=WHEN_IDLE` or between-turn context update) | On phase transition (`3 to 5 times` per call) | Preserves preamble prefix cache |
-| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | Tail context (`<60 tokens` compact JSON/text summary) | Updated after key facts are captured | Preserves preamble prefix cache |
+| **Persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`), plus a one-line `vocal_tone` in every tool result (§18.M) | Set once; repeated in every system-instruction update | Cached in preamble until the next card swap |
+| **Tool schemas (`functionDeclarations`)** | `setup.tools`, then only the current card's tools via `session.send_context_update(tools=[...])` (`google-genai >= 2.32.0`) | On card change (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once |
+| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Inside `systemInstruction`, replaced in place: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`), or `clientContent` with `role="system"` on Vertex AI (§22.C) | On phase transition (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once; history does not grow |
+| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | A `Session state` block inside the same system-instruction update, plus a `<60-token` `call_state` line in each tool result (§18.M) | Updated after key facts are captured | Rides with the card swap |
 | **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
 
 ### B. Pre-Connect Complete SI vs. Mid-Session Interruptions
@@ -1036,7 +1048,7 @@ ROLE_CONTEXT:
 * Negative instructions (*"Do NOT narrate tool calls"*, *"Do NOT repeat yourself"*) frequently fail under audio streaming pressure due to token attention priming.
 * Use **positive behavioral framing** that defines the model's exact role after an action:
   - **Instead of**: `"Never narrate or announce when you call a function."`
-  - **Use**: `"When you invoke a tool, stop speaking immediately and remain silent. Your sole job after emitting a tool call is to listen."`
+  - **Use**: `"After you emit a tool call, end your sentence there. When the result arrives, speak its spoken fields right away."` (Do not tell the model to "remain silent": see §18.G and §18.P.)
 
 ### E. Language Pinning & Acoustic Noise Guardrails
 * Native audio models can code-switch when exposed to regional caller accents, coughs, or background office chatter.
@@ -1047,7 +1059,7 @@ ROLE_CONTEXT:
   ```
 
 ### F. Single Source of Truth (Anti-Duplicate Delivery)
-* If a follow-up action or prompt card is injected dynamically via tail context or tool responses, **remove that instruction from the base System Instruction**. Duplicating instructions in both the root SI and runtime context causes the model to deliver the same message twice.
+* If a follow-up action or prompt card is delivered dynamically (in a system-instruction card update or a tool response), **remove that instruction from the base System Instruction**. Duplicating instructions in both the base rules and the runtime card causes the model to deliver the same message twice.
 
 ### G. The `"Stay Silent"` Transcription Trap
 * **Never instruct the Gemini Live model to `"stay silent"` or `"produce no audio"` for a full turn.**
@@ -1091,6 +1103,63 @@ Enable hardware/browser echo cancellation (`echoCancellation: true` in `getUserM
   4. **The `"Remain Completely Silent"` Companion Trap**: Prompts that pair `<one_time_elements>` with rules to *"remain completely silent"* on noise or out-of-turn audio trigger the §18.G transcription trap (zero model audio output suppresses `inputAudioTranscription` for that turn).
 * **Production Rule**: Pass session initialization parameters in `LiveConnectConfig` (or server-side session state) when opening the WebSocket. Put the opening-turn rule (*"Say the opening greeting first, without calling any tools"*, `~10 tokens`) on **Card 1 (the opening phase card)** so it is replaced as soon as the call moves to Card 2 (see §22.C), or use Seed-First Cached TTS (§20.C) to seed the greeting as a `role="model"` turn (`turn_complete=False`) and stream pre-synthesized audio immediately. For call-ending tools (`end_call`), trigger socket/call teardown on the client only after the spoken goodbye audio buffer has finished playing out.
 
+### M. `FunctionResponse` Payload Contract: Compact Fields, Speakable `*_say` Values & In-Band `vocal_tone`
+Tool results are the last thing the model reads before it generates audio, and they stay in history (billed on every later turn) until `SlidingWindow` trims them. Shape every result for both facts.
+
+* **Where a tool result lands**: The server builds the prompt top to bottom: the preamble (`tools` + `systemInstruction`), the history, then the latest turn (the newest caller utterance and everything after it, including the `FunctionResponse`), then a short server footer, and then the model decodes audio. After 3 to 4 audio turns, the system instruction is thousands of tokens above the decode point, while the newest tool result sits right next to it.
+* **Compact 3-field contract**: Push the full card through `context_update.systemInstruction` (overwrites in place, §22.C) and return only:
+  - `call_state`: under 60 tokens of confirmed facts (`"Language: Hindi | Trip: one-way BLR to DEL ..."`).
+  - `instruction`: one sentence on what to say or ask next.
+  - `prompt_card`: a one-line pointer, for example `"Prompt card 4 of 8 (Return Flight Selection) is now in your system instruction. Follow it."`. The pointer replaces a full card copy and saves about 550 to 680 history tokens per card change. Repeating a ~495-token card in 14 tool results adds about 6,900 history tokens in one call.
+* **Pre-format every spoken value in code (`*_say` / `*_spell`)**: The audio model formats numbers, currencies, 24h times, and alphanumeric names poorly while it speaks. Return `fare_say` (`"₹4,500 (four thousand five hundred rupees)"`, or native script for Hindi and Tamil), `time_say` (`"6:20 AM"` from `"06:20"`), `flight_say` (`"XY 2134"` -> `"X Y two one three four"`), and `first_spell` / `last_spell` (`"S as in Sierra, A as in Alpha ..."`).
+* **Spoken-field whitelist in the base prompt**:
+  ```text
+  Tool results are private guidance. When one arrives, go straight to the new information. Speak only its spoken fields, in the caller's language: facts, ask_say, heads_up, note_say, change, any field ending in _say or _spell (exactly as given), and any field the current step or the instruction tells you to read. Never speak instruction, prompt_card, call_state or vocal_tone.
+  If a result has an error field, do not read it. Fix the argument it names and call the tool once more.
+  ```
+* **In-band `vocal_tone` stops post-tool accent drift**: Reading raw English JSON keys and values right before decoding pulls the voice toward the model's default US English accent. Add one line to every `FunctionResponse.response`, worded like the accent rule in your system instruction:
+  ```python
+  VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
+  response = {**payload, "call_state": state_line, "vocal_tone": VOCAL_TONE}
+  ```
+  List `vocal_tone` in the base prompt's never-speak list (above). In field testing on Indian-English agents, this removed most post-tool accent drift.
+
+### N. Language-Neutral Turn-0 Greeting Stub & the `START` -> `IN_CALL` Swap
+* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0.
+* **Use a stage note plus an opening rule**:
+  ```python
+  GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"
+  START = ("START\n"
+           f'The message "{GREETING_STUB}" only means the call has connected. It is not the caller speaking '
+           "and not a language choice. Do not call a tool for it. Say only: "
+           '"Hello, I am Asha from Cymbal Travel. Which language would you like to talk in?"')
+  IN_CALL = ("IN CALL\n"
+             "The greeting and the language choice are done. Never greet again or ask for the language again. "
+             "Older turns may be missing: the prompt card and session state below are the truth.")
+  ```
+* **Swap `START` for `IN_CALL` after Card 1**: Build the setup instruction with `START`. Build every later system-instruction update with `IN_CALL` in its place. After a `SlidingWindow` trim or a session resumption, the opening turns are gone, and `IN_CALL` keeps the bot from greeting again.
+
+### O. The `{"tools": {}}` Empty-Wrapper Wipeout Trap in `context_update`
+* **Wire semantics**: `context_update.tools` is a wrapper object so the server can tell "no update" from "clear". `tools` absent keeps the current tools. `tools` present, even as an empty object, replaces them, and `{}` means no tools. `{"context_update": {"tools": {}}}` is the explicit clear-all command for talk-only closing cards.
+* **The trap**: A serializer that always writes a default `"tools": {}` when the code only meant to update `systemInstruction` removes every active tool for the rest of the call. The server sends no error or acknowledgment.
+* **Safe builder**: add the `tools` key only when `declarations is not None`, and pass `declarations=[]` only when you really mean to clear:
+  ```python
+  def context_update_frame(declarations=None, system_instruction=None):
+      update = {}
+      if declarations is not None:
+          update["tools"] = {"tools": [{"functionDeclarations": declarations}]} if declarations else {}
+      if system_instruction is not None:
+          update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+      return {"context_update": update}
+  ```
+
+### P. Four Production Audio & Sampling Traps (`gemini-3.8-live`)
+* **Greedy sampling causes a long audio loop**: With `temperature: 0.0` and `top_k: 1`, the audio decoder can lose its end-of-speech signal after a tool call and loop on one sound for about 20 seconds. Keep `temperature` at `0.7` to `0.8` and leave `top_k` / `top_p` unset.
+* **Never write "stay silent and wait" in a prompt**: When the model declines to answer, the server sends no `turnComplete` or reason, so the caller hears dead air. On 3.8, `<no speech>` placeholder text can leak into the output transcript and may be spoken after tool-response turns. This adds to the §18.G transcription trap. Use backchannel recovery (§19.C) or a short reprompt instead.
+* **Never wrap spoken lines in `<verbatim>` XML tags**: Under `<verbatim>...</verbatim>` readback prompts, `gemini-3.8-live` can dump the full text into the output transcript in 1 to 2 frames and send `generationComplete` after less than a second of audio, or none (28% of turns in one test). Put the line in a `*_say` field instead (§18.M).
+* **Gate turns on `turnComplete`, not `generationComplete`**: The server generates audio at about 4x real time and sends `generationComplete` when synthesis ends, while `turnComplete` follows real-time playback. Unmute the mic and advance the state machine on `turnComplete` (§17).
+* **Ban non-lexical fillers ("Hmm...", "Umm...", "Ahh...")**: They can pull female voices down into a deep chest register. Use lexical acknowledgments: "जी", "Sure", "Right".
+
 ---
 
 ## 19. Gemini Live API Turn Management & VAD Tuning (`RealtimeInputConfig`)
@@ -1102,7 +1171,7 @@ Configure server-side turn detection and voice activity parameters within `LiveC
 |---|---|---|
 | `start_of_speech_sensitivity` | `START_SENSITIVITY_LOW` | Eliminates false barge-in triggers from background room noise, typing, or breathing. |
 | `end_of_speech_sensitivity` | `END_SENSITIVITY_LOW` | Allows natural mid-sentence pauses without prematurely cutting the caller off. |
-| `prefix_padding_ms` | `200` | Captures the leading consonant of user speech before VAD onset confirmation. |
+| `prefix_padding_ms` | `200` (keep `200` to `300`) | Required duration of detected speech before start-of-speech is committed. Lower values catch shorter sounds; `600` drops single spelled letters (§19.C). |
 | `silence_duration_ms` | `400` to `800` | Balances responsive turn-taking (`400ms` to `600ms`) with breathing room for thoughtful answers (`800ms`). |
 | `disabled` | `False` | Keep `False` unless implementing custom client-side activity framing (`activity_start` / `activity_end`). |
 
@@ -1123,6 +1192,26 @@ realtime_input_config = types.RealtimeInputConfig(
 * **`TURN_INCLUDES_ALL_INPUT` (Recommended for Barge-In)**: Includes all audio (including periods when the model is speaking) as part of the conversational turn so the model receives full context when interrupted.
 * **`TURN_INCLUDES_ONLY_ACTIVITY`**: Includes only active speech segments. Yields cleaner transcripts in noisy rooms but can clip abrupt barge-in phrases.
 * **`activityHandling: "START_OF_ACTIVITY_INTERRUPTS"`**: Standard duplex setting where detected speech interrupts model output. Pair with `START_SENSITIVITY_LOW` to prevent ambient noise from triggering interruptions.
+
+### C. Backchannel Recovery & `prefix_padding_ms` for Spelled Input
+* **The problem**: Callers say one- or two-word backchannels ("haan", "ji", "accha", "okay") while the bot talks. Server VAD treats them as a barge-in, the model stops, and then waits for a question that never comes.
+* **Recovery pattern**: after an `interrupted` event, buffer the input transcript until a sentence end or the caller stops. If it holds at most 2 words, no digits, and no stop or negation word ("no", "stop", "wait", "nahi", "ruko", "बस"), send a short user turn that asks for a reply now and tells the model the caller only acknowledged it, so it should resume what it was saying. Longer input is a genuine interruption and gets a normal reply.
+  ```python
+  STOP_WORDS = {"no", "stop", "wait", "hold", "pause", "cancel", "nahi", "na", "mat", "ruko", "ruk", "bas",
+                "नहीं", "ना", "मत", "रुको", "रुक", "बस"}
+
+  def is_backchannel(text: str, max_words: int = 2) -> bool:
+      words = [w.strip(".,!?।").lower() for w in text.split()]
+      words = [w for w in words if w]
+      return (0 < len(words) <= max_words
+              and not any(ch.isdigit() for ch in text)
+              and not any(w in STOP_WORDS for w in words))
+  ```
+* **`prefix_padding_ms` semantics**: it is the required duration of detected speech before start-of-speech is committed. Lower values catch shorter sounds. A spoken letter lasts roughly 250 to 450 ms, so `prefix_padding_ms: 600` drops letters during name and email spelling ("S-A-C-H-I-N"). Keep it at `200` to `300` ms on any flow that collects spelled input.
+
+### D. Transcription Language Pinning (`language_codes`) & the Single-Letter Vocabulary Trap
+* **Pin transcript languages on Vertex AI**: pass `AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"])` for both `input_audio_transcription` and `output_audio_transcription`. This stops Hindi transcripts from drifting into Urdu, Arabic, or Cyrillic script. `language_codes` is Vertex-only (see the AI Studio `AudioTranscriptionConfig` Invariant in §2).
+* **Never put single letters (`A` to `Z`) or single digits (`0` to `9`) in a custom vocabulary or phrase hints**: single-character entries bias recognition toward one-character tokens, so short Hindi words such as "जी" (*ji*) are transcribed as "G". Add whole words and names only.
 
 ---
 
@@ -1317,22 +1406,92 @@ What this means in practice:
 #### 2. Reconnect to change tools (supported)
 The documented way to swap the active tool set is a new session with new `setup.tools`, using the Managed Session Cycling Pattern above so the microphone stays alive and the rolling session log carries the conversation across.
 
-#### 3. Swap per-card tools and `systemInstruction` in place with `context_update` (exposed on the wire, not yet in public docs or the SDK)
-On Vertex AI `gemini-3.8-live`, the WebSocket accepts a `context_update` (`contextUpdate`) client message with two public fields: `tools` and `systemInstruction`. Sending it inside a blocking tool handler (right before returning the `FunctionResponse`) solves two multi-turn voice problems at once:
-- Per-card tool registration: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `1,326` billed schema tokens in `usage_metadata.prompt_token_count`: `93 + 44 + 511 + 164 + 457 + 57`, or `~2,198` tokens as raw serialized JSON text), each card registers only the tools it still needs (Card 1 greeting registers only `set_call_language` at `93` tokens; Card 2 registers route-search tools at `648` tokens; Card 3 registers selection/search tools at `768` tokens; Cards 4–7 drop `find_available_flights` and keep `714` tokens, down from `1,225`; Card 8 registers only `set_call_language` + `dispatch_checkout_link` at `150` tokens).
-- Compaction-proof prompt cards: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: 6 of 7 replies after a compaction replayed the greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `context_update.systemInstruction` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
+#### 3. Swap per-card tools and `systemInstruction` in place with `session.send_context_update()` (`google-genai >= 2.32.0`)
+Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `await session.send_context_update(system_instruction=..., tools=...)` replaces `system_instruction`, `tools`, or both in place on `gemini-3.8-live`, sending a `contextUpdate` (`context_update`) client message over the WebSocket. Sending it inside a blocking tool handler (right before returning the `FunctionResponse`) solves two multi-turn voice problems at once:
+- Per-card tool registration: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `1,326` billed schema tokens in `usage_metadata.prompt_token_count`: `93 + 44 + 511 + 164 + 457 + 57`, or `~2,198` tokens as raw serialized JSON text), each card registers only the tools it still needs (Card 1 greeting registers only `set_call_language` at `93` tokens; Card 2 registers route-search tools at `648` tokens; Card 3 registers selection/search tools at `768` tokens; Cards 4 to 7 drop `find_available_flights` and keep `714` tokens, down from `1,225`; Card 8 registers only `set_call_language` + `dispatch_checkout_link` at `150` tokens).
+- Compaction-proof prompt cards: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: 6 of 7 replies after a compaction replayed the greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `send_context_update(system_instruction=...)` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
 
 :::caution
-`context_update` appears in no public documentation yet and in no released version of the `google-genai` SDK. Using it means sending raw JSON frames over the SDK's underlying WebSocket (`session._ws.send(json.dumps(...))`). There is no published support commitment, no compatibility guarantee, and no server acknowledgement frame. Behaviour differs by platform and model: it works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`), is gated and ignored on Google AI Studio, and closes the connection with `1007` on `gemini-live-2.5-flash-native-audio`. Also, because removing a tool declaration does not remove earlier `function_call` turns from conversation history, the model can occasionally imitate an earlier call to a removed tool, so always check incoming tool calls against the current step's active tool list before executing them.
+**Operational rules for `send_context_update`:**
+- **Prefix cache invalidation**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Update them only at major stage transitions (for example, `3 to 8 times` in a multi-step call), not on every turn.
+- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
+- **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`. Pass `tools=[]` (which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) to clear all tools on a talk-only closing card.
+- **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an earlier call to a removed tool. Always check incoming tool calls against the current step's active tool list before executing them.
+- **Model & SDK compatibility**: `session.send_context_update()` is in `google-genai >= 2.32.0` and sends `contextUpdate` on both Vertex AI and the Gemini Developer API. On Vertex AI (`gemini-3.8-live`) it is ungated; on the Gemini Developer API, confirm your API key has server-side `contextUpdate` access before relying on it in production. Legacy `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` with `1007` (use `send_client_content` with `role="system"` on Vertex AI 2.5 instead). If your non-Python SDK release has no context-update helper yet, send the raw `contextUpdate` WebSocket frame below.
 :::
 
-#### WebSocket wire payloads (`context_update`)
-Every populated field in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
+#### Python tool-handler pattern (`session.send_context_update()` in `google-genai >= 2.32.0`)
 
-```json
+```python
+from google.genai import types
+
+VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
+
+
+async def on_tool_call(session, function_call, call: dict, run_step):
+    # call holds per-call state: {"card": 1, "tool_names": {...}, "instruction": "..."}
+    # 1. Guard against the model imitating an old tool call from earlier history turns
+    if function_call.name not in call["tool_names"]:
+        await session.send_tool_response(
+            function_responses=[
+                types.FunctionResponse(
+                    id=function_call.id,
+                    name=function_call.name,
+                    response={
+                        "error": f"{function_call.name} is not active in this step.",
+                        "instruction": "Do not call it again. Continue the current step.",
+                    },
+                )
+            ]
+        )
+        return
+
+    # 2. Run your business logic. step holds the card number and title, the full instruction
+    #    text (base rules + card + session state), the card's tools (functions or types.Tool list,
+    #    or [] on a talk-only card), a one-line call_state, a one-sentence next instruction,
+    #    and any *_say fields to speak.
+    step = run_step(function_call.name, function_call.args or {})
+    card_changed = step.number != call["card"]
+
+    # 3. While the model is paused on this result: swap tools only on a card change, and
+    #    refresh system_instruction only when the card or the session state changed.
+    if card_changed:
+        call["card"], call["tool_names"] = step.number, set(step.tool_names)
+        await session.send_context_update(
+            system_instruction=step.instruction_text,
+            tools=step.tools,  # pass [] on a talk-only closing card to clear all tools
+        )
+    elif step.instruction_text != call["instruction"]:
+        await session.send_context_update(
+            system_instruction=step.instruction_text  # tools=None leaves current tools unchanged
+        )
+    call["instruction"] = step.instruction_text
+
+    # 4. Return the compact contract; the 1-line card pointer only when the card changed
+    response = {
+        **step.spoken_fields,  # e.g. {"ask_say": "How many people are travelling?"}
+        "call_state": step.call_state,  # under 60 tokens of confirmed facts
+        "instruction": step.next_instruction,  # one sentence
+        "vocal_tone": VOCAL_TONE,
+    }
+    if card_changed:
+        response["prompt_card"] = (
+            f"Prompt card {step.number} of 8 ({step.title}) is now in your system instruction. Follow it."
+        )
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(id=function_call.id, name=function_call.name, response=response)
+        ]
+    )
+```
+
+#### Raw WebSocket wire payloads (`contextUpdate` / `context_update` for non-Python runtimes or `google-genai < 2.32.0`)
+Every populated field in `contextUpdate` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty list (`{"tools": {"tools": []}}`) or empty wrapper object (`{"tools": {}}`) clears all tools:
+
+```jsonc
 // 1. Replace both systemInstruction and the active tool list for the next card:
 {
-  "context_update": {
+  "contextUpdate": {
     "systemInstruction": {
       "parts": [{ "text": "Base rules...\n\nCURRENT PROMPT CARD\nStep: Checkout..." }]
     },
@@ -1367,78 +1526,13 @@ Every populated field in `context_update` replaces (does not merge) the previous
 
 // 2. Clear all tools when entering a talk-only farewell card (0 tool schema tokens/turn):
 {
-  "context_update": {
-    "tools": {}
+  "contextUpdate": {
+    "tools": { "tools": [] }
   }
 }
 ```
 
-#### Minimal Python helper (`send_context_update` + tool handler)
-
-```python
-import json
-from google.genai import types
-
-
-async def send_context_update(
-    session,
-    system_instruction: str,
-    tool_declarations: list[dict],
-) -> None:
-    """Replace systemInstruction and active tools in place on Vertex AI gemini-3.8-live.
-
-    Pass tool_declarations=[] to clear all tools (sends {"tools": {}}).
-    """
-    frame = {
-        "context_update": {
-            "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "tools": (
-                {"tools": [{"functionDeclarations": tool_declarations}]}
-                if tool_declarations
-                else {}
-            ),
-        }
-    }
-    await session._ws.send(json.dumps(frame))
-
-
-async def on_tool_call(session, function_call, active_tool_names: set[str], run_step):
-    # 1. Guard against the model imitating an old tool call from earlier history turns
-    if function_call.name not in active_tool_names:
-        await session.send_tool_response(
-            function_responses=[
-                types.FunctionResponse(
-                    id=function_call.id,
-                    name=function_call.name,
-                    response={"error": f"{function_call.name} is not active in this step."},
-                )
-            ]
-        )
-        return
-
-    # 2. Run business logic -> get next card text + session state and next card's tools
-    next_instruction, next_tool_decls, next_tool_names = run_step(
-        function_call.name, function_call.args or {}
-    )
-    active_tool_names.clear()
-    active_tool_names.update(next_tool_names)
-
-    # 3. Swap systemInstruction + tools while the model is paused waiting on this tool result
-    await send_context_update(session, next_instruction, next_tool_decls)
-
-    # 4. Return a 1-line pointer instead of repeating the 600-token card in history
-    await session.send_tool_response(
-        function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name=function_call.name,
-                response={"status": "ok", "guidance": "Follow the current step in your system instruction."},
-            )
-        ]
-    )
-```
-
-Rule of thumb for customer architectures: for officially supported and documented behaviour across SDK upgrades, use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes. When using `context_update` on Vertex AI `gemini-3.8-live` for per-card tool pruning and compaction-proof system instructions, send it inside the blocking tool handler before returning the `FunctionResponse` and check incoming tool calls against `active_tool_names`.
+Rule of thumb for customer architectures: on `gemini-3.8-live`, use `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`) inside your blocking tool handler before returning the `FunctionResponse`, and check incoming tool calls against the current card's tool list. On legacy Vertex AI models that do not support `contextUpdate` (such as `gemini-live-2.5-flash-native-audio`), use `role="system"` client content for instruction updates and Managed Session Cycling for tool changes.
 
 ---
 

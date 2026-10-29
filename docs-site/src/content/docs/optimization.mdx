@@ -6,12 +6,20 @@ description: Four production patterns for Gemini Live voice sessions, each on it
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 import OptimizationPillarTabs from '../../components/OptimizationPillarTabs.astro';
 import CallLifecycleTimeline from '../../components/CallLifecycleTimeline.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="The four patterns that stop cost and latency from growing with call length, with one page each."
+  why="Together the first three turn a cost that compounds every turn into a flat per-minute rate; the fourth removes the cost of lines the agent says on every call."
+  number="62% cheaper on a 3-minute call, 82% cheaper on a 10-minute call, flat at about $0.031 per minute."
+  decide="Which of the four you ship at launch. Sliding window and prompt cards have the largest effect."
+/>
 
 <OptimizationPillarTabs active="overview" />
 
-As shown in [Token Economics & Pricing](/gemini_live_pipecat/pricing/), an unmanaged Gemini Live session gets progressively more expensive and slower with every turn because historical audio and static system instructions are re-billed on every turn.
+As shown in [Token Economics & Pricing](/gemini-live/pricing/), an unmanaged Gemini Live session gets progressively more expensive and slower with every turn because historical audio and static system instructions are re-billed on every turn.
 
-By combining the first three pillars across the call lifecycle, you flatten quadratic token growth into a predictable `~$0.031/min` linear run rate (a 62% cost reduction on a 3-minute, 18-turn call and an 82% reduction on a 10-minute, 60-turn call; see the full breakdown in [Token Economics & Pricing](/gemini_live_pipecat/pricing/) and the [Interactive Cost Calculator](/gemini_live_pipecat/pricing-calculator/)) while keeping end-to-end voice latency under 600ms even on 60-minute calls. The fourth pillar, cached TTS, removes the cost and wait of lines that are the same on every call.
+By combining the first three pillars across the call lifecycle, you flatten quadratic token growth into a predictable `~$0.031/min` linear run rate (a 62% cost reduction on a 3-minute, 18-turn call and an 82% reduction on a 10-minute, 60-turn call; see the full breakdown in [Token Economics & Pricing](/gemini-live/pricing/) and the [Interactive Cost Calculator](/gemini-live/pricing-calculator/)) while keeping end-to-end voice latency under 600ms even on 60-minute calls. The fourth pillar, cached TTS, removes the cost and wait of lines that are the same on every call.
 
 <CallLifecycleTimeline />
 
@@ -19,10 +27,10 @@ By combining the first three pillars across the call lifecycle, you flatten quad
   <span class="badge badge-blue">Key Architectural Takeaways</span>
   <h3>Two rules that save the most tokens on multi-step calls</h3>
   <p>
-    <strong>1. Replace instructions in place, don't stack cards in history:</strong> A prompt card sent as a <code>role="user"</code> turn or inside a tool result stays in conversation history and is billed again on every later turn (<code>2,493 tokens/turn</code> after 3 swaps). Sending it as a system instruction (<code>role="system"</code> or <code>context_update</code>) overwrites the old card in place (<code>783 tokens/turn</code>) and survives 5,000-token sliding-window compaction.
+    <strong>1. Replace instructions in place, don't stack cards in history:</strong> A prompt card sent as a <code>role="user"</code> turn or inside a tool result stays in conversation history and is billed again on every later turn (<code>2,493 tokens/turn</code> after 3 swaps). Sending it as a system instruction (<code>session.send_context_update()</code> or Vertex AI <code>role="system"</code>) overwrites the old card in place (<code>783 tokens/turn</code>) and survives 5,000-token sliding-window compaction.
   </p>
   <p>
-    <strong>2. Swap per-card tools and instructions with no reconnect:</strong> On Vertex AI <code>gemini-3.8-live</code>, the WebSocket accepts a mid-session <code>context_update</code> message that replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place. See <a href="/gemini_live_pipecat/optimization/prompt-cards/">Pillar 2: Dynamic Prompt Cards &amp; Per-Card Tools</a> for the animated walkthrough and 8-card flight-booking breakdown.
+    <strong>2. Swap per-card tools and instructions with no reconnect:</strong> Starting in <code>google-genai 2.32.0</code>, <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place on <code>gemini-3.8-live</code>. See <a href="/gemini-live/optimization/prompt-cards/">Pillar 2: Dynamic Prompt Cards &amp; Per-Card Tools</a> for the animated walkthrough and 8-card flight-booking breakdown.
   </p>
 </div>
 
@@ -32,22 +40,22 @@ By combining the first three pillars across the call lifecycle, you flatten quad
   <LinkCard
     title="Pillar 1: Sliding-Window Compression"
     description="Set trigger_tokens=5000 and target_tokens=3500 to flush stale carried audio ($3.00/1M) while keeping systemInstruction intact."
-    href="/gemini_live_pipecat/optimization/sliding-window/"
+    href="/gemini-live/optimization/sliding-window/"
   />
   <LinkCard
     title="Pillar 2: Dynamic Prompt Cards & Per-Card Tools"
     description="Animated walkthrough of Region 1 (Replace) vs. Region 2 (Stack), mid-speech timing, and swapping per-card tools via context_update."
-    href="/gemini_live_pipecat/optimization/prompt-cards/"
+    href="/gemini-live/optimization/prompt-cards/"
   />
   <LinkCard
     title="Pillar 3: Lossless Fact Pruning (FactStore)"
     description="Extract spoken caller details into a sub-60-token JSON summary so 5,000-token window eviction never drops facts from Minute 1."
-    href="/gemini_live_pipecat/optimization/history-pruning/"
+    href="/gemini-live/optimization/history-pruning/"
   />
   <LinkCard
     title="Pillar 4: Cached TTS & Compliance Guardrails"
     description="Play pre-generated 24kHz PCM clips for fixed greetings and hold lines, plus 200ms jitter-buffer compliance filtering."
-    href="/gemini_live_pipecat/optimization/cached-tts/"
+    href="/gemini-live/optimization/cached-tts/"
   />
 </CardGrid>
 
@@ -57,7 +65,7 @@ By combining the first three pillars across the call lifecycle, you flatten quad
 
 | Pillar | What it fixes | Mechanism | Measured impact |
 | :--- | :--- | :--- | :--- |
-| <span id="pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker">[Pillar 1: Sliding Window](/gemini_live_pipecat/optimization/sliding-window/)</span> | Unbounded carried audio (`~1,840 tok/min`) &amp; 15-min ceiling | `SlidingWindow(5000 / 3500)` FIFO turn eviction | Caps active context at 3,500–5,000 tokens |
-| <span id="pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor">[Pillar 2: Prompt Cards &amp; Tools](/gemini_live_pipecat/optimization/prompt-cards/)</span> | Paying for all phase prompts &amp; all tool schemas on every turn | `role="system"` or `context_update` in-place replacement | `783 tok/turn` vs. `2,493` stacked; `93–768` tool tok (or `0` on farewell) vs. `1,326` |
-| <span id="pillar-3-lossless-history-pruning--session-rotation">[Pillar 3: Lossless Fact Pruning](/gemini_live_pipecat/optimization/history-pruning/)</span> | Caller details from Turn 1 lost when `SlidingWindow` trims audio | `<60-token` `FactStore` synced into `systemInstruction` | Retains Turn-1 facts in `<60` text tokens (`$0.50–$0.75/1M`) after audio eviction |
-| <span id="pre-speech-compliance-guardrails-200ms-jitter-buffer">[Pillar 4: Cached TTS &amp; Guardrails](/gemini_live_pipecat/optimization/cached-tts/)</span> | Paying `$12/1M` + `$3/1M` carried audio for identical greetings | Seed `role="model"` text turn + stream cached 24kHz PCM | `$0.0078` saved per 10-turn call (`$780` per 100k calls) |
+| <span id="pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker">[Pillar 1: Sliding Window](/gemini-live/optimization/sliding-window/)</span> | Unbounded carried audio (`~1,840 tok/min`) &amp; 15-min ceiling | `SlidingWindow(5000 / 3500)` FIFO turn eviction | Caps active context at 3,500–5,000 tokens |
+| <span id="pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor">[Pillar 2: Prompt Cards &amp; Tools](/gemini-live/optimization/prompt-cards/)</span> | Paying for all phase prompts &amp; all tool schemas on every turn | `role="system"` or `context_update` in-place replacement | `783 tok/turn` vs. `2,493` stacked; `93–768` tool tok (or `0` on farewell) vs. `1,326` |
+| <span id="pillar-3-lossless-history-pruning--session-rotation">[Pillar 3: Lossless Fact Pruning](/gemini-live/optimization/history-pruning/)</span> | Caller details from Turn 1 lost when `SlidingWindow` trims audio | `<60-token` `FactStore` synced into `systemInstruction` | Retains Turn-1 facts in `<60` text tokens (`$0.50–$0.75/1M`) after audio eviction |
+| <span id="pre-speech-compliance-guardrails-200ms-jitter-buffer">[Pillar 4: Cached TTS &amp; Guardrails](/gemini-live/optimization/cached-tts/)</span> | Paying `$12/1M` + `$3/1M` carried audio for identical greetings | Seed `role="model"` text turn + stream cached 24kHz PCM | `$0.0078` saved per 10-turn call (`$780` per 100k calls) |

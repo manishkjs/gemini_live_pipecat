@@ -14,7 +14,7 @@ Live API. Built with [Astro](https://astro.build) + [Starlight](https://starligh
 ```bash
 cd docs-site
 npm ci
-npm run dev      # http://localhost:4321/gemini_live_pipecat
+npm run dev      # http://localhost:4321/gemini-live
 npm run build    # outputs to docs-site/dist
 npm run preview  # serve the production build locally
 ```
@@ -26,13 +26,13 @@ the Pages workflow. **One-time setup:** in the GitHub repo, go to
 **Settings -> Pages -> Build and deployment -> Source** and select
 **GitHub Actions**.
 
-Published at: `https://manishkjs.github.io/gemini_live_pipecat/`
+Published at: `https://manishkjs.github.io/gemini-live/`
 
 ## Using a custom domain later
 
 1. In `astro.config.mjs`, set `site` to your domain and `base` to `'/'`.
 2. Add `docs-site/public/CNAME` containing the domain.
-3. Update internal links from `/gemini_live_pipecat/...` to `/...`.
+3. Update internal links from `/gemini-live/...` to `/...`.
 
 ## Content
 

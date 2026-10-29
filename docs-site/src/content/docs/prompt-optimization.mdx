@@ -4,6 +4,14 @@ description: How Gemini Live builds the prompt on every turn, how to write a sho
 ---
 
 import PromptAnatomyDiagram from '../../components/PromptAnatomyDiagram.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How the model's prompt is assembled on every turn, how to keep the standing instructions short, and how to write a short card for each step of a call."
+  why="The whole prompt is read, and billed, again on every turn. Where an instruction sits decides how much it costs and how strongly it steers the reply."
+  number="Base instructions of 150 to 300 tokens plus a step card of 100 to 200 tokens, swapped 3 to 6 times per call."
+  decide="Who owns the prompt as a product artifact, and how step cards are reviewed and versioned."
+/>
 
 A voice agent prompt behaves differently from a chatbot prompt. In Gemini Live, your `systemInstruction`, your `tools`, the conversation so far, and any updates you send during the call all end up in one prompt. Each piece has a fixed place in it.
 
@@ -35,7 +43,7 @@ ROLE_USER
   7. What the caller just said    The latest caller turn (audio plus transcript)
 
 ROLE_CONTEXT
-  8. Session updates          What you send during the call (current step, saved facts)
+  8. Server closing context   Short closing context set by Google (you can't write it)
 ```
 
 The `ROLE_*` labels describe how the server orders the prompt. You won't see them in the API.
@@ -47,7 +55,7 @@ A few terms come up a lot on this page:
 - Session updates: text you add or replace while the call is running, such as the current phase card and a short dictionary of facts you've confirmed about the caller.
 - `WHEN_IDLE`: a scheduling option on a non-blocking tool response. The update is delivered after the model finishes speaking, so it doesn't cut the model off.
 
-<PromptAnatomyDiagram caption="The fixed setup (tools, then your instructions) sits at the top, above the reuse line. Updates you send during the call sit at the very bottom, right after what the caller just said." />
+<PromptAnatomyDiagram caption="The fixed setup (tools, then your instructions) sits at the top, above the reuse line. Step cards you send during the call replace your instructions in that top block; tool results land at the end, right after what the caller just said." />
 
 ### What this means for your prompt
 
@@ -234,5 +242,5 @@ When a tool call finishes Step 1 and moves the call to Card 2, replace `systemIn
 - Sending the new card via `role="user"` or inside a tool result stacks every old card in conversation history (`2,493 tokens/turn` after 3 swaps).
 - On Vertex AI `gemini-3.8-live`, `context_update` also swaps the declared `tools` list at the same time so you only pay schema tokens for the 1 to 3 tools listed on the active card.
 
-See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/) for the animated Replace-vs-Stack walkthrough, the 8-card flight-booking token table, and the Python implementation.
+See [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini-live/optimization/prompt-cards/) for the animated Replace-vs-Stack walkthrough, the 8-card flight-booking token table, and the Python implementation.
 

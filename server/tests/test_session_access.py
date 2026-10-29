@@ -1,0 +1,357 @@
+import unittest
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
+import session_access
+import voice_profiles
+
+
+class TestSessionAccess(unittest.TestCase):
+    def setUp(self):
+        session_access._sessions.clear()
+        voice_profiles.clear()
+
+    def tearDown(self):
+        session_access._sessions.clear()
+        voice_profiles.clear()
+
+    def test_capability_and_join_are_separate_and_join_is_single_use(self):
+        sid, token, join = session_access.issue("A")
+        self.assertTrue(session_access.authorized(sid, token))
+        self.assertFalse(session_access.authorized(sid, join))
+        self.assertFalse(session_access.authorized("B", token))
+        self.assertFalse(session_access.consume_join(sid, token))
+        self.assertTrue(session_access.consume_join(sid, join))
+        self.assertFalse(session_access.consume_join(sid, join))
+        self.assertTrue(session_access.authorized(sid, token))
+
+    def test_existing_session_cannot_be_overwritten(self):
+        _, token, _ = session_access.issue("A")
+        with self.assertRaises(ValueError):
+            session_access.issue("A", "x" * 32)
+        self.assertTrue(session_access.authorized("A", token))
+
+    def test_expiry_and_capacity(self):
+        with patch("session_access.time.monotonic", return_value=0):
+            _, token, join = session_access.issue("A")
+        with patch("session_access.time.monotonic", return_value=301):
+            self.assertFalse(session_access.consume_join("A", join))
+            self.assertTrue(session_access.authorized("A", token))
+        with patch("session_access.time.monotonic", return_value=15000):
+            self.assertFalse(session_access.authorized("A", token))
+            self.assertFalse(session_access._sessions)
+        with patch("session_access.MAX_SESSIONS", 1):
+            session_access.issue("A")
+            with self.assertRaises(RuntimeError):
+                session_access.issue("B")
+
+    def test_real_routes_reject_missing_or_cross_session_access(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        created = client.post("/connect?session_id=A", headers={"X-Session-Token": "a" * 32}, json={})
+        self.assertEqual(created.status_code, 200)
+        self.assertNotIn("a" * 32, created.json()["ws_url"])
+        for path in ("/api/logs", "/api/metrics/latency", "/api/trace/current"):
+            self.assertEqual(client.get(path).status_code, 422)
+            self.assertEqual(client.get(path + "?session_id=A").status_code, 403)
+            self.assertEqual(client.get(path + "?session_id=A", headers={"X-Session-Token": "b" * 32}).status_code, 403)
+        self.assertEqual(client.get("/api/logs?session_id=A", headers={"X-Session-Token": "a" * 32}).status_code, 200)
+        self.assertEqual(client.post("/api/logs/clear").status_code, 422)
+        self.assertEqual(client.post("/api/logs/clear?session_id=A").status_code, 403)
+
+    def test_runtime_preset_matches_preview_and_custom_override_survives(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        query = "/connect?persona_id=storyteller&bot_type=tts-llm-stt&stt_language=hi-IN"
+        response = client.post(query, json={"system_instruction": "stale browser preset", "prompt_source": "preset", "persona_tone": "signature"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertNotIn("system_instruction", data["ws_url"])
+        expected = client.get("/persona-prompt/storyteller?engine=cascade&tone=signature&language=hi-IN").json()["prompt"]
+        self.assertEqual(session_access.take_instructions(data["session_id"]), expected)
+        self.assertIsNone(session_access.take_instructions(data["session_id"]))
+        response = client.post(query, json={"system_instruction": "My own instructions"})
+        self.assertEqual(session_access.take_instructions(response.json()["session_id"]), "My own instructions")
+
+    def test_expired_unclaimed_prompts_are_removed_with_the_session(self):
+        with patch("session_access.time.monotonic", return_value=0):
+            session_access.issue("prompt")
+            session_access.set_instructions("prompt", "Unclaimed prompt")
+        with patch("session_access.time.monotonic", return_value=15000):
+            self.assertIsNone(session_access.take_instructions("prompt"))
+            self.assertFalse(session_access._sessions)
+
+    def test_invalid_requests_do_not_exhaust_capacity_or_reserve_requested_id(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        with patch("session_access.MAX_SESSIONS", 1):
+            for body in ({"system_instruction": 123}, {"custom_voice_key": []},
+                         {"thinking": "false"}, {"prompt_source": []}, ["not an object"]):
+                with self.subTest(body=body):
+                    response = client.post("/connect?session_id=retry", json=body)
+                    self.assertEqual(response.status_code, 400)
+                    self.assertFalse(session_access._sessions)
+                    self.assertEqual(voice_profiles.active_count(), 0)
+            response = client.post("/connect", content="{broken", headers={"Content-Type": "application/json"})
+            self.assertEqual(response.status_code, 400)
+            response = client.post("/connect?bot_type=unknown", json={})
+            self.assertEqual(response.status_code, 400)
+            response = client.post("/connect?persona_id=storyteller&language=unknown",
+                                   json={"prompt_source": "preset"})
+            self.assertEqual(response.status_code, 400)
+            self.assertFalse(session_access._sessions)
+            self.assertEqual(client.post("/connect?session_id=retry", json={}).status_code, 200)
+
+    def test_post_allocation_failure_releases_session_and_clone_profile(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        # Fail after the real profile registry accepted a dummy key.
+        with patch("urllib.parse.urlencode", side_effect=RuntimeError("Unable to build URL")):
+            response = client.post("/connect", json={
+                "system_instruction": "Private prompt", "custom_voice_key": "dummy-clone-key"})
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(session_access._sessions)
+        self.assertEqual(voice_profiles.active_count(), 0)
+        self.assertNotIn("Private prompt", response.text)
+        self.assertNotIn("dummy-clone-key", response.text)
+        with patch("voice_profiles.register", side_effect=RuntimeError("Profile unavailable")):
+            response = client.post("/connect", json={"custom_voice_key": "dummy-clone-key"})
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(session_access._sessions)
+
+    def test_conflict_and_capacity_rejection_preserve_owner_and_allocate_no_profile(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        sid, token, join = session_access.issue("owner", instructions="Owner prompt")
+        with patch("session_access.MAX_SESSIONS", 1):
+            for requested_id, status in (("owner", 409), ("new", 503)):
+                response = client.post(f"/connect?session_id={requested_id}", json={"custom_voice_key": "dummy-key"})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(voice_profiles.active_count(), 0)
+                self.assertEqual(len(session_access._sessions), 1)
+        self.assertTrue(session_access.authorized(sid, token))
+        self.assertTrue(session_access.consume_join(sid, join))
+        self.assertEqual(session_access.take_instructions(sid), "Owner prompt")
+
+    def test_connection_handles_and_settings_survive_atomic_allocation(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+        response = client.post("/connect?bot_type=gemini-live&system_instruction=LegacyPrompt", json={
+            "system_instruction": "Body prompt", "custom_voice_key": "dummy-key",
+            "tools": [{"name": "example"}], "context_compression": False,
+            "context_compression_trigger_tokens": 100, "thinking": True,
+            "thinking_level": "low", "vad": False})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        params = parse_qs(urlparse(data["ws_url"]).query)
+        for private in ("system_instruction", "custom_voice_key"):
+            self.assertNotIn(private, params)
+        self.assertEqual(params["context_compression"], ["false"])
+        self.assertEqual(params["context_compression_trigger_tokens"], ["5000"])
+        self.assertEqual(params["thinking"], ["true"])
+        self.assertEqual(params["thinking_level"], ["low"])
+        self.assertEqual(params["vad"], ["false"])
+        self.assertEqual(params["tools"], ['[{"name": "example"}]'])
+        sid = data["session_id"]
+        self.assertTrue(session_access.authorized(sid, data["diagnostic_token"]))
+        self.assertTrue(session_access.consume_join(sid, params["connection_id"][0]))
+        self.assertEqual(session_access.take_instructions(sid), "Body prompt")
+        self.assertIsNone(session_access.take_instructions(sid))
+        self.assertEqual(voice_profiles.consume(params["voice_profile_id"][0]), "dummy-key")
+        self.assertIsNone(voice_profiles.consume(params["voice_profile_id"][0]))
+        legacy = client.post("/connect?system_instruction=LegacyPrompt", json={}).json()
+        self.assertNotIn("LegacyPrompt", legacy["ws_url"])
+        self.assertEqual(session_access.take_instructions(legacy["session_id"]), "LegacyPrompt")
+
+    def test_default_engine_preset_matches_websocket_cascade_default(self):
+        from fastapi.testclient import TestClient
+        import server
+        from persona_prompt_cards import get_session_preset
+        client = TestClient(server.app)
+        response = client.post("/connect?persona_id=lamborghini-concierge", json={"prompt_source": "preset"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(session_access.take_instructions(response.json()["session_id"]),
+                         get_session_preset("lamborghini-concierge", engine="cascade"))
+
+    def test_instruction_setter_rejects_missing_and_expired_sessions(self):
+        with self.assertRaisesRegex(ValueError, "Unknown or expired session"):
+            session_access.set_instructions("missing", "Prompt")
+        with patch("session_access.time.monotonic", return_value=0):
+            session_access.issue("expired", instructions="Original")
+        with patch("session_access.time.monotonic", return_value=15000):
+            with self.assertRaisesRegex(ValueError, "Unknown or expired session"):
+                session_access.set_instructions("expired", "Replacement")
+        self.assertFalse(session_access._sessions)
+
+    def test_connect_rejects_oversized_media_payloads_with_413(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        over_body = client.post(
+            "/connect?session_id=huge_body",
+            content=b"{}",
+            headers={"Content-Type": "application/json", "Content-Length": str(12 * 1024 * 1024 + 1)},
+        )
+        self.assertEqual(over_body.status_code, 413)
+        self.assertIn("MB", over_body.json()["detail"])
+
+        over_image = client.post(
+            "/connect?session_id=huge_img",
+            json={"avatar_custom_image": "A" * 7_000_001},
+        )
+        self.assertEqual(over_image.status_code, 413)
+        self.assertIn("5 MB", over_image.json()["detail"])
+
+        over_audio = client.post(
+            "/connect?session_id=huge_wav",
+            json={"custom_voice_audio": "A" * 4_000_001},
+        )
+        self.assertEqual(over_audio.status_code, 413)
+        self.assertIn("3 MB", over_audio.json()["detail"])
+        self.assertFalse(session_access._sessions)
+
+    def test_unclaimed_media_blobs_are_released_once_join_expires(self):
+        with patch("session_access.time.monotonic", return_value=0):
+            sid, token, _ = session_access.issue(
+                "media_sess",
+                avatar_custom_image="data:image/png;base64,AAAA",
+                custom_voice_audio="data:audio/wav;base64,BBBB",
+            )
+        with patch("session_access.time.monotonic", return_value=session_access.JOIN_TTL_SECONDS + 1):
+            self.assertTrue(session_access.authorized(sid, token))
+            self.assertIsNone(session_access._sessions[sid].get("avatar_custom_image"))
+            self.assertIsNone(session_access._sessions[sid].get("custom_voice_audio"))
+            self.assertIsNone(session_access.take_avatar_custom_image(sid))
+            self.assertIsNone(session_access.take_custom_voice_audio(sid))
+
+    def test_connect_accepts_null_system_instruction(self):
+        from fastapi.testclient import TestClient
+        import server
+        client = TestClient(server.app)
+
+        null_resp = client.post(
+            "/connect?session_id=null_instr&system_instruction=QueryFallback",
+            json={"system_instruction": None},
+        )
+        self.assertEqual(null_resp.status_code, 200)
+        self.assertEqual(
+            session_access.take_instructions(null_resp.json()["session_id"]),
+            "QueryFallback",
+        )
+
+        control_resp = client.post(
+            "/connect?session_id=str_instr",
+            json={"system_instruction": "hi"},
+        )
+        self.assertEqual(control_resp.status_code, 200)
+        self.assertEqual(
+            session_access.take_instructions(control_resp.json()["session_id"]),
+            "hi",
+        )
+
+    def test_connect_streams_body_and_enforces_byte_limit_without_trusting_content_length(self):
+        from fastapi.testclient import TestClient
+        from starlette.requests import Request
+        import server
+        client = TestClient(server.app)
+
+        chunks_yielded = 0
+
+        async def oversized_stream(self_req):
+            nonlocal chunks_yielded
+            # Yield 20 chunks of 1 MB each; intake must stop as soon as total > 12 MB (13th chunk)
+            for _ in range(20):
+                chunks_yielded += 1
+                yield b"x" * (1024 * 1024)
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", oversized_stream):
+            no_cl = client.post(
+                "/connect?session_id=stream_no_cl",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(no_cl.status_code, 413)
+            self.assertEqual(chunks_yielded, 13)
+
+            chunks_yielded = 0
+            understated_cl = client.post(
+                "/connect?session_id=stream_understated_cl",
+                content=b"{}",
+                headers={"Content-Type": "application/json", "Content-Length": "2"},
+            )
+            self.assertEqual(understated_cl.status_code, 413)
+            self.assertEqual(chunks_yielded, 13)
+
+        # Exact-limit boundary (MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024) across multiple chunks:
+        # 1) Exactly MAX_CONNECT_BODY_BYTES of valid JSON (padded with spaces) across 4 chunks -> 200
+        prefix = b'{"system_instruction":"boundary_ok"}'
+        pad_len = server.MAX_CONNECT_BODY_BYTES - len(prefix)
+        exact_payload = prefix + (b" " * pad_len)
+        chunk_size = 4 * 1024 * 1024
+        exact_chunks = [exact_payload[i : i + chunk_size] for i in range(0, len(exact_payload), chunk_size)]
+
+        async def exact_boundary_stream(self_req):
+            for c in exact_chunks:
+                yield c
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", exact_boundary_stream):
+            exact_resp = client.post(
+                "/connect?session_id=stream_exact_limit",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(exact_resp.status_code, 200)
+            self.assertEqual(
+                session_access.take_instructions(exact_resp.json()["session_id"]),
+                "boundary_ok",
+            )
+
+        # 2) MAX_CONNECT_BODY_BYTES + 1 across multiple chunks -> 413 on the 1-byte overflow chunk
+        plus_one_yielded = 0
+
+        async def boundary_plus_one_stream(self_req):
+            nonlocal plus_one_yielded
+            for c in exact_chunks + [b" ", b"ignored_trailing_chunk"]:
+                plus_one_yielded += 1
+                yield c
+
+        with patch.object(Request, "body", side_effect=AssertionError("request.body() must not be called")), \
+             patch.object(Request, "stream", boundary_plus_one_stream):
+            plus_one_resp = client.post(
+                "/connect?session_id=stream_limit_plus_one",
+                content=b"{}",
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(plus_one_resp.status_code, 413)
+            self.assertEqual(plus_one_yielded, len(exact_chunks) + 1)
+
+        normal_resp = client.post(
+            "/connect?session_id=stream_ok",
+            json={"system_instruction": "streamed ok"},
+        )
+        self.assertEqual(normal_resp.status_code, 200)
+        self.assertFalse(session_access.authorized("stream_no_cl", "x" * 32))
+        self.assertFalse(session_access.authorized("stream_understated_cl", "x" * 32))
+        self.assertFalse(session_access.authorized("stream_limit_plus_one", "x" * 32))
+        self.assertNotIn("stream_no_cl", session_access._sessions)
+        self.assertNotIn("stream_understated_cl", session_access._sessions)
+        self.assertNotIn("stream_limit_plus_one", session_access._sessions)
+
+        for idx, bad_val in enumerate([123, ["a"], {"x": 1}, True]):
+            bad_sid = f"stream_bad_type_{idx}"
+            bad_resp = client.post(
+                f"/connect?session_id={bad_sid}",
+                json={"system_instruction": bad_val},
+            )
+            self.assertEqual(bad_resp.status_code, 400)
+            self.assertNotIn(bad_sid, session_access._sessions)
+
+

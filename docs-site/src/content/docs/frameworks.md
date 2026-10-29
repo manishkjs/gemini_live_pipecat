@@ -3,6 +3,19 @@ title: Orchestration Frameworks
 description: Choosing between the Google GenAI SDK, ADK, Pipecat, and LiveKit for Gemini Live applications.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>The four ways to connect callers to Gemini Live (raw SDK, Google ADK, Pipecat, LiveKit) and why a native speech model beats a three-service chain.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>This is the first architecture decision and the hardest to reverse. It also decides whether you get sub-second replies or a 1 to 2 second pause on every turn.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>A three-stage cascade takes 1,200 to 2,500 ms per turn. The native path stays under a second.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Phone lines and carrier trunks (Pipecat), browser and mobile apps (LiveKit or raw SDK), or multi-agent systems on Google Cloud (Agent Development Kit, ADK).</dd></div>
+  </dl>
+</aside>
+
 When building a Gemini Live application, your first architectural decision is how to connect user devices and telephony trunks to the Gemini Live WebSocket.
 
 ---
@@ -46,5 +59,5 @@ Both Pipecat and LiveKit support two fundamentally different pipeline modes. Mak
 
 While native Speech-to-Speech is the default for 90% of conversational voice agents, two specialized scenarios justify a hybrid or sidecar architecture:
 
-1. **Strict pre-speech compliance filtering**: If a regulated financial or healthcare environment requires inspecting and redacting the exact text transcript *before* the first millisecond of audio is played to the user, you can either use [Pre-speech compliance guardrails (200ms jitter buffer)](/gemini_live_pipecat/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer) on the native stream, or run Gemini Live in `TEXT` output modality paired with an ultra-low-latency streaming TTS.
+1. **Strict pre-speech compliance filtering**: If a regulated financial or healthcare environment requires inspecting and redacting the exact text transcript *before* the first millisecond of audio is played to the user, you can either use [Pre-speech compliance guardrails (200ms jitter buffer)](/gemini-live/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer) on the native stream, or run Gemini Live in `TEXT` output modality paired with an ultra-low-latency streaming TTS.
 2. **Custom cloned brand voices**: If your application mandates a bespoke voice clone not available in the 30+ prebuilt Gemini HD voices, configure `responseModalities: ["TEXT"]` on Gemini Live (preserving native audio input understanding and VAD) and pipe the text output stream into your custom TTS synthesizer.

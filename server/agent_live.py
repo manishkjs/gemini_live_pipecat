@@ -1,4 +1,5 @@
 import os
+import struct
 import websockets
 import json
 import asyncio
@@ -11,7 +12,10 @@ from datetime import datetime
 import time
 
 from rag_function import search_knowledge_base_schema, search_knowledge_base_handler
-from diagnostic_buffer import append_diagnostic_log
+from diagnostic_buffer import append_diagnostic_log, current_session_id
+from turn_telemetry import TurnTracker
+from processors.turn_telemetry import TurnBoundaryProcessor, TurnOriginMixin, ServerAudioTimingProcessor
+from response_identity import ResponseIdentity
 from tracing import GLOBAL_LANGSMITH_TRACER
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -26,32 +30,46 @@ try:
     from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 except ImportError:
     from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams, GeminiModalities
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, GeminiVADParams, InputParams, GeminiModalities
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.services.google.tts import GoogleTTSService
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+import tts_script
+import voice_profiles
 
+
+from collections import deque
+import numpy as np
+
+import base64
 from pipecat_whisker import WhiskerObserver
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import (
     EndTaskFrame,
     Frame,
+    InputAudioRawFrame,
     InterruptionFrame,
     CancelFrame,
     LLMMessagesAppendFrame,
     TextFrame,
+    TTSStoppedFrame,
     OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     InputTransportMessageFrame,
     StartFrame,
     EndFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserSpeakingFrame,
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     TranscriptionFrame,
-    LLMRunFrame
+    LLMRunFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -80,6 +98,25 @@ from google.genai.types import (
 
 SYSTEM_INSTRUCTION = SYSTEM_PROMPT
 
+
+def estimate_tokens(text: str) -> int:
+    """Approximate the token cost of a string.
+
+    Everything this system reports about prompt size is in tokens, because
+    tokens are what gets billed and what fills the context window. Characters
+    are an implementation detail of the encoding and mean nothing to the model.
+
+    The estimate is script-aware on purpose. Latin text runs about 3.8
+    characters per token, but Devanagari runs closer to 1.8 — a single divisor
+    would understate Pragya's Hindi cards by roughly half and make the injected
+    payloads look free when they are not.
+    """
+    if not text:
+        return 0
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    return round(non_ascii / 1.8 + (len(text) - non_ascii) / 3.8)
+
+
 class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
@@ -93,33 +130,526 @@ async def get_current_time(params: FunctionCallParams):
     )
 
 
-class GeminiSessionLoggerMixin:
+# Live closes the socket with 1007 (invalid payload) or 1008 (policy) when it
+# refuses what we sent at setup; those are the only closes custom media can cause.
+_MEDIA_REJECTION_CLOSE_CODES = (1007, 1008)
+_OUTAGE_HINTS = (
+    "quota", "exhausted", "rate limit", "429", "unavailable", "deadline",
+    "timeout", "timed out", "overloaded", "try again",
+)
+_MEDIA_HINTS = {
+    "avatar": ("avatar", "image"),
+    "voice": ("voice", "wav", "audio", "replicated", "speech"),
+}
+
+
+def classify_custom_media_rejection(error: BaseException, *, avatar: bool, voice: bool) -> set:
+    """Name the custom media ("avatar", "voice") a Live connection error blames.
+
+    Only a 1007/1008 close can blame media, and never one that reads like an
+    outage (quota, overload, timeout): those must surface, not be hidden by a
+    silent swap to prebuilt media. A rejection that names a part blames just
+    that part, if the session has it; one that names nothing blames every
+    custom part the session sent.
+    """
+    configured = {part for part, sent in (("avatar", avatar), ("voice", voice)) if sent}
+    text = str(error)
+    if not configured:
+        return set()
+    if getattr(error, "code", None) not in _MEDIA_REJECTION_CLOSE_CODES and not re.match(r"\s*100[78]\b", text):
+        return set()
+    lowered = text.lower()
+    if any(hint in lowered for hint in _OUTAGE_HINTS):
+        return set()
+    named = {part for part, hints in _MEDIA_HINTS.items() if any(hint in lowered for hint in hints)}
+    return named & configured if named else configured
+
+
+def _rejection_detail(error: BaseException) -> str:
+    """The server's own words: "Failed to parse WAV audio", not "1007 None. Failed…"."""
+    details = getattr(error, "details", None)
+    return details if isinstance(details, str) and details.strip() else str(error)
+
+
+MAX_AVATAR_MP4_BUFFER_BYTES = 4 * 1024 * 1024
+_TOP_LEVEL_MP4_BOXES = frozenset(
+    {b"ftyp", b"moov", b"styp", b"sidx", b"emsg", b"prft", b"moof", b"mdat", b"free", b"skip", b"uuid"}
+)
+_SEGMENT_START_BOXES = frozenset({b"ftyp", b"styp", b"moof"})
+
+
+def _is_valid_segment_start(buf: bytearray, offset: int) -> bool:
+    n = len(buf)
+    if offset + 8 > n:
+        return False
+    sz, btype = struct.unpack(">I4s", buf[offset : offset + 8])
+    if btype not in _SEGMENT_START_BOXES or sz < 16 or sz > MAX_AVATAR_MP4_BUFFER_BYTES:
+        return False
+    if btype == b"moof":
+        if offset + 16 <= n:
+            csz, ctype = struct.unpack(">I4s", buf[offset + 8 : offset + 16])
+            if ctype in (b"mfhd", b"traf") and 8 <= csz <= sz - 8:
+                return True
+        if offset + sz + 8 <= n:
+            msz, mtype = struct.unpack(">I4s", buf[offset + sz : offset + sz + 8])
+            if mtype == b"mdat" and 8 <= msz <= MAX_AVATAR_MP4_BUFFER_BYTES:
+                return True
+        return offset == 0 and offset + sz > n and sz <= 65536
+    if btype in (b"ftyp", b"styp") and offset + 12 <= n:
+        if not all(32 <= b <= 126 for b in buf[offset + 8 : offset + 12]):
+            return False
+    return True
+
+
+def _resync_to_segment_start(buf: bytearray, search_from: int = 1) -> bool:
+    n = len(buf)
+    pos = max(0, search_from)
+    while pos + 8 <= n:
+        next_moof = buf.find(b"moof", pos + 4)
+        next_ftyp = buf.find(b"ftyp", pos + 4)
+        candidates = [idx - 4 for idx in (next_moof, next_ftyp) if idx != -1 and idx - 4 >= pos]
+        if not candidates:
+            break
+        cand = min(candidates)
+        if cand + 16 > n:
+            if cand > 0:
+                del buf[:cand]
+            return False
+        if _is_valid_segment_start(buf, cand):
+            if cand > 0:
+                del buf[:cand]
+            return True
+        pos = cand + 1
+    buf.clear()
+    return False
+
+
+def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
+    """Reassemble arbitrary transport slices into complete ISO-BMFF segments.
+
+    Vertex AI Gemini Live Avatar slices its continuous fMP4 byte stream into
+    16 KiB chunks that split `moof` and `mdat` boxes mid-payload. Emitting
+    only complete `ftyp + moov` (is_init=True) and `moof + mdat` (is_init=False)
+    segments guarantees Chrome's MSE SourceBuffer never ingests a truncated box.
+    """
+    if len(buf) < 8:
+        return []
+    if not _is_valid_segment_start(buf, 0):
+        if len(buf) < 16 and buf[4:8] in _SEGMENT_START_BOXES:
+            sz = struct.unpack(">I", buf[:4])[0]
+            if 16 <= sz <= MAX_AVATAR_MP4_BUFFER_BYTES:
+                return []
+        if not _resync_to_segment_start(buf, 1):
+            return []
+
+    pos = 0
+    n = len(buf)
+    boxes: list[tuple[bytes, int, int]] = []
+    discard_corrupt_tail = False
+    while pos + 8 <= n:
+        sz, btype = struct.unpack(">I4s", buf[pos : pos + 8])
+        if sz == 1:
+            if pos + 16 > n:
+                break
+            sz = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
+        if (
+            btype not in _TOP_LEVEL_MP4_BOXES
+            or sz < 8
+            or sz > MAX_AVATAR_MP4_BUFFER_BYTES
+            or (btype == b"moof" and pos + 16 <= n and not _is_valid_segment_start(buf, pos))
+        ):
+            discard_corrupt_tail = True
+            break
+        if pos + sz > n:
+            break
+        boxes.append((btype, pos, pos + sz))
+        pos += sz
+
+    if not boxes:
+        if discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+            _resync_to_segment_start(buf, 1)
+        return []
+
+    emitted: list[tuple[bytes, bool]] = []
+    start_idx = 0
+
+    if boxes[0][0] == b"ftyp":
+        moov_idx = next((i for i, b in enumerate(boxes) if b[0] == b"moov"), None)
+        if moov_idx is None:
+            if discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+                _resync_to_segment_start(buf, 1)
+            return []
+        init_end = boxes[moov_idx][2]
+        emitted.append((bytes(buf[:init_end]), True))
+        start_idx = moov_idx + 1
+        last_mdat_end = max(
+            (b[2] for b in boxes[start_idx:] if b[0] == b"mdat"),
+            default=0,
+        )
+        if last_mdat_end > init_end:
+            emitted.append((bytes(buf[init_end:last_mdat_end]), False))
+            del buf[:last_mdat_end]
+        else:
+            del buf[:init_end]
+        if discard_corrupt_tail:
+            _resync_to_segment_start(buf, 0)
+        return emitted
+
+    last_mdat_end = max((b[2] for b in boxes if b[0] == b"mdat"), default=0)
+    if last_mdat_end > 0:
+        emitted.append((bytes(buf[:last_mdat_end]), False))
+        del buf[:last_mdat_end]
+        if discard_corrupt_tail:
+            _resync_to_segment_start(buf, 0)
+    elif discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+        _resync_to_segment_start(buf, 1)
+    return emitted
+
+
+
+def _iter_mp4_boxes(buf: bytes, start: int = 0, end: Optional[int] = None) -> list[tuple[bytes, int, int]]:
+    if end is None:
+        end = len(buf)
+    pos = start
+    out: list[tuple[bytes, int, int]] = []
+    while pos + 8 <= end:
+        sz, btype = struct.unpack(">I4s", buf[pos : pos + 8])
+        if sz == 1:
+            if pos + 16 > end:
+                break
+            sz = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
+        elif sz < 8 or pos + sz > end:
+            break
+        out.append((btype, pos, pos + sz))
+        pos += sz
+    return out
+
+
+def inspect_avatar_mp4_segment(seg_bytes: bytes) -> dict[str, Any]:
+    """Extract media decode timestamp (tfdt) and active-speech flag from an fMP4 segment.
+
+    Vertex AI Gemini 3.8 Live Avatar streams 24 fps H.264 (track 1, 12288 Hz timescale)
+    and 24 kHz CBR AAC (track 2, 24000 Hz timescale) continuously—including before the
+    first turn and after ``turn_complete``. During active TTS speech (and the ~300 ms
+    natural mouth-closure decay at the end of a phrase), track 2 ``mdat`` payloads encode
+    non-zero waveform samples whose ``zlib``-compressed size is 250–600 bytes. The exact
+    frame where TTS audio ends, track 2 switches to a constant CBR silence filler frame
+    (``01402280a37ff885...``, ``zlib`` size <= 100 bytes), while track 1 continues for
+    ~1.5–1.8 s with unconditioned phantom lip movement before settling into idle rest.
+    """
+    import zlib
+
+    boxes = _iter_mp4_boxes(seg_bytes)
+    saw_moof = False
+    video_tfdt: Optional[float] = None
+    audio_tfdt: Optional[float] = None
+    has_audio: Optional[bool] = None
+
+    for i, (btype, s, e) in enumerate(boxes):
+        if btype != b"moof":
+            continue
+        saw_moof = True
+        track_id: Optional[int] = None
+        tfdt_val: Optional[int] = None
+        for ctype, cs, ce in _iter_mp4_boxes(seg_bytes, s + 8, e):
+            if ctype != b"traf":
+                continue
+            for ttype, ts, te in _iter_mp4_boxes(seg_bytes, cs + 8, ce):
+                if ttype == b"tfhd" and ts + 16 <= te:
+                    track_id = struct.unpack(">I", seg_bytes[ts + 12 : ts + 16])[0]
+                elif ttype == b"tfdt" and ts + 16 <= te:
+                    ver = seg_bytes[ts + 8]
+                    if ver == 1 and ts + 20 <= te:
+                        tfdt_val = struct.unpack(">Q", seg_bytes[ts + 12 : ts + 20])[0]
+                    else:
+                        tfdt_val = struct.unpack(">I", seg_bytes[ts + 12 : ts + 16])[0]
+        if track_id == 1 and tfdt_val is not None:
+            video_tfdt = round(tfdt_val / 12288.0, 4)
+        elif track_id == 2:
+            if tfdt_val is not None:
+                audio_tfdt = round(tfdt_val / 24000.0, 4)
+            if i + 1 < len(boxes) and boxes[i + 1][0] == b"mdat":
+                ms, me = boxes[i + 1][1], boxes[i + 1][2]
+                aac_payload = seg_bytes[ms + 8 : me]
+                if len(aac_payload) >= 64:
+                    frame_active = len(zlib.compress(aac_payload, level=1)) > 120
+                else:
+                    frame_active = any(b != 0 for b in aac_payload)
+                has_audio = bool(has_audio or frame_active)
+
+    return {
+        "is_iso": saw_moof,
+        "has_audio": has_audio,
+        "tfdt": video_tfdt if video_tfdt is not None else audio_tfdt,
+    }
+
+
+class GeminiSessionLoggerMixin(TurnOriginMixin):
     """Mixin to add session ID logging, token usage tracking, and repeat-on-filler."""
+
+    _live_telemetry = True
+
+    @property
+    def response_identity(self):
+        if not hasattr(self, "_response_identity"):
+            self._response_identity = ResponseIdentity(current_session_id())
+        return self._response_identity
+
+    async def broadcast_interruption(self, *args, **kwargs):
+        # Pipecat calls this on Gemini's own barge-in (server_content.interrupted),
+        # WITHOUT running our process_frame(InterruptionFrame) or _handle_interruption().
+        # Gemini then sends turn_complete a few ms later, so record the interruption
+        # and clear Pipecat's _bot_is_responding via _handle_interruption() now.
+        self._awaiting_interrupted_turn_complete = True
+        await self._record_bot_interruption()
+        if hasattr(super(), "_handle_interruption"):
+            await super()._handle_interruption()
+        await super().broadcast_interruption(*args, **kwargs)
+
+    def _begin_output(self):
+        """Mark our response as active and bind it to its input turn.
+
+        Uses ``_mixin_bot_responding``, never Pipecat's private
+        ``_bot_is_responding``: writing that one before ``super()`` suppressed
+        TTSStartedFrame/TTSStoppedFrame/LLMFullResponseEndFrame on every turn.
+        """
+        if not getattr(self, "_mixin_bot_responding", False):
+            self._mixin_bot_responding = True
+            self._response_started_at = time.monotonic()
+        user_idle = getattr(self, "user_idle_processor", None)
+        if user_idle is not None:
+            user_idle._bot_speaking = True
+            user_idle.last_activity = time.monotonic()
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
+        self.response_identity.begin()
+
+    async def _begin_avatar_output(self):
+        """A Live Avatar turn carries only video/mp4: give it what audio turns get."""
+        self._begin_output()
+        await self.stop_ttfb_metrics()
+        origin = getattr(self, "_live_output_turn", None)
+        if origin is not None and hasattr(origin, "audio"):
+            origin.audio()
+        if not getattr(self, "_avatar_speaking", False):
+            self._avatar_speaking = True
+            await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    async def _end_avatar_output(self):
+        self._avatar_last_has_audio = False
+        self._avatar_silent_tail_count = 0
+        user_idle = getattr(self, "user_idle_processor", None)
+        if user_idle is not None:
+            user_idle._bot_speaking = False
+            user_idle.last_activity = time.monotonic()
+        if getattr(self, "_avatar_speaking", False):
+            self._avatar_speaking = False
+            await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    async def _handle_msg_model_turn(self, message):
+        interrupted_turn = bool(getattr(self, "_awaiting_interrupted_turn_complete", False))
+        if getattr(self, "_avatar_enabled", False):
+            sc = getattr(message, "server_content", None)
+            mt = getattr(sc, "model_turn", None) if sc else None
+            parts = getattr(mt, "parts", None) or []
+            has_non_video = False
+            saw_active_video_speech = False
+            saw_silent_video_after_speech = False
+            if not hasattr(self, "_avatar_mp4_buffer"):
+                self._avatar_mp4_buffer = bytearray()
+            for part in parts:
+                inl = getattr(part, "inline_data", None)
+                mime = getattr(inl, "mime_type", "") if inl else ""
+                if inl and mime.startswith("video/mp4") and getattr(inl, "data", None):
+                    self._avatar_mp4_buffer.extend(inl.data)
+                    for seg_bytes, is_init in extract_complete_mp4_segments(self._avatar_mp4_buffer):
+                        b64_str = base64.b64encode(seg_bytes).decode("ascii")
+                        is_decay_or_interrupted = bool(
+                            interrupted_turn or getattr(self, "_avatar_post_turn_decay", False)
+                        )
+                        if is_init:
+                            self._avatar_init_segment = b64_str
+                            seg_has_audio = False
+                            seg_tfdt: Optional[float] = 0.0
+                            self._avatar_last_has_audio = False
+                            self._avatar_silent_tail_count = 0
+                        else:
+                            seg_info = inspect_avatar_mp4_segment(seg_bytes)
+                            seg_tfdt = seg_info["tfdt"]
+                            if not seg_info["is_iso"]:
+                                seg_has_audio = True
+                            elif seg_info["has_audio"] is None:
+                                seg_has_audio = getattr(self, "_avatar_last_has_audio", False)
+                            else:
+                                seg_has_audio = bool(seg_info["has_audio"])
+                                if not interrupted_turn:
+                                    self._avatar_last_has_audio = seg_has_audio
+                            if seg_has_audio:
+                                self._avatar_silent_tail_count = 0
+                                if not is_decay_or_interrupted:
+                                    saw_active_video_speech = True
+                            else:
+                                self._avatar_post_turn_decay = False
+                                if getattr(self, "_avatar_speaking", False):
+                                    self._avatar_silent_tail_count = getattr(self, "_avatar_silent_tail_count", 0) + 1
+                                    if self._avatar_silent_tail_count >= 2:
+                                        saw_silent_video_after_speech = True
+                        seq = getattr(self, "_avatar_seq", 0) + 1
+                        self._avatar_seq = seq
+                        msg_data: Dict[str, Any] = {
+                            "type": "avatar_video",
+                            "data": b64_str,
+                            "is_init": is_init,
+                            "seq": seq,
+                            "has_audio": seg_has_audio,
+                        }
+                        if not is_init and is_decay_or_interrupted:
+                            msg_data["post_turn_decay"] = True
+                        if seg_tfdt is not None:
+                            msg_data["tfdt"] = seg_tfdt
+                        await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                            "label": "rtvi-ai",
+                            "type": "server-message",
+                            "data": msg_data,
+                        }))
+                    # Clear video/mp4 inline_data so stock Pipecat doesn't log 'Unrecognized server_content format video/mp4'
+                    part.inline_data = None
+                elif getattr(part, "text", None) or (inl and mime.startswith("audio/pcm")):
+                    has_non_video = True
+            if saw_active_video_speech:
+                await self._begin_avatar_output()
+            elif saw_silent_video_after_speech:
+                await self._end_avatar_output()
+            if interrupted_turn or not has_non_video:
+                return
+        elif interrupted_turn:
+            return
+
+        self._begin_output()
+        await super()._handle_msg_model_turn(message)
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+            data = frame.message.get("data", {})
+            if data.get("type") == "transcription" and data.get("participant", "").lower() != "user":
+                data = {**data, "response_id": self.response_identity.begin()}
+            elif data.get("type") == "metrics":
+                payload = data.get("payload", {})
+                response_id = self.response_identity.current
+                if payload.get("type") == "usage":
+                    response_id = self.response_identity.completed or response_id
+                data = {**data, "payload": self.response_identity.stamp(payload, response_id=response_id)}
+            frame.message = {**frame.message, "data": data}
+        await super().push_frame(frame, direction)
 
     # ── Repeat-on-filler: intercept at API level ──────────────────────
 
+    def _anchor_ttft_at_speech_end(self):
+        """Local VAD saw the user stop: that is when the user starts waiting."""
+        if getattr(self, "_ttft_reported_for_response", False):
+            return
+        now = time.monotonic()
+        self._my_ttfb_start = now
+        self._ttft_anchored_to_speech_end = True
+        self._last_user_speech_activity_at = now
+
     async def start_ttfb_metrics(self):
-        self._my_ttfb_start = time.time()
+        # Pipecat calls this when the aggregator closes the user turn. Without
+        # local VAD that is SpeechTimeoutUserTurnStopStrategy, ~600 ms after the
+        # transcript, often after the bot already started talking. Never let it
+        # restart a speech-end anchor, and never arm it mid-response.
+        anchored = getattr(self, "_ttft_anchored_to_speech_end", False) and getattr(self, "_my_ttfb_start", None)
+        already_reported = getattr(self, "_ttft_reported_for_response", False)
+        if not anchored and not already_reported and not getattr(self, "_mixin_bot_responding", False):
+            self._my_ttfb_start = time.monotonic()
+            self._ttft_anchored_to_speech_end = False
         await super().start_ttfb_metrics()
-        
+
     async def stop_ttfb_metrics(self):
         await super().stop_ttfb_metrics()
-        if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-            self._current_turn_ttft = time.time() - self._my_ttfb_start
-            logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
-            ttfb_ms = self._current_turn_ttft * 1000.0
-            append_diagnostic_log("⚡ TTFB Latency", f"Bot audio turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
-            
-            # Stream llm_latency metric frame to UI client
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
-                }
-            }))
-            self._my_ttfb_start = None
+        await self._report_ttft()
+
+    async def _report_ttft(self):
+        """Emit one llm_latency per response; falls back to last speech activity if server VAD beat local VAD."""
+        if getattr(self, "_ttft_reported_for_response", False):
+            return
+        start = getattr(self, "_my_ttfb_start", None) or getattr(self, "_last_user_speech_activity_at", None)
+        if not start:
+            return
+        self._my_ttfb_start = None
+        self._ttft_anchored_to_speech_end = False
+        self._last_user_speech_activity_at = None
+        self._ttft_reported_for_response = True
+        self._current_turn_ttft = time.monotonic() - start
+        logger.info(f"Custom TTFT calculation: {self._current_turn_ttft}s")
+        ttfb_ms = self._current_turn_ttft * 1000.0
+        append_diagnostic_log("⚡ Gemini Live TTFB", f"Bot turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
+            }
+        }))
+
+    async def _record_bot_interruption(self):
+        """Record a barge-in once, whichever VAD (local Silero or Gemini) saw it.
+
+        Idempotent: the first caller clears the responding state and releases
+        ``_live_output_turn``, so a follow-up InterruptionFrame is a no-op.
+        """
+        was_responding = bool(
+            getattr(self, "_mixin_bot_responding", False)
+            or getattr(self, "_bot_turn_text_buffer", "").strip()
+        )
+        self._mixin_bot_responding = False
+        self._ttft_reported_for_response = False
+        origin = getattr(self, "_live_output_turn", None)
+        if origin is not None:
+            origin.finish("interrupted")
+        self._live_output_turn = None
+        await self._end_avatar_output()
+        if not was_responding:
+            return
+        if getattr(self, "_avatar_enabled", False):
+            try:
+                await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {"type": "avatar_interrupted"}
+                }))
+            except Exception:
+                pass
+        self._repeat_on_filler_pending = True
+        logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
+
+        interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
+        if interrupted_text:
+            append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+            if not hasattr(self, "_dialogue_history"):
+                self._dialogue_history = []
+            self._dialogue_history.append({
+                "role": "Assistant",
+                "text": f"{interrupted_text} [interrupted]",
+                "timestamp": time.time()
+            })
+            logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
+        self._bot_turn_text_buffer = ""
+
+        metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
+        started = getattr(self, "_response_started_at", None)
+        self._response_started_at = None
+        if started:
+            elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
+            metric_payload['elapsed_ms'] = elapsed_ms
+            append_diagnostic_log("⚡ Interruption", f"Bot interrupted {elapsed_ms} ms into its reply")
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {'type': 'metrics', 'payload': metric_payload}
+        }))
+        await self._end_avatar_output()
 
     # Max wall-clock time a tool lock may suppress interruptions before self-healing.
     # Guards against a handler that raises before emitting FunctionCallResultFrame,
@@ -205,7 +735,7 @@ class GeminiSessionLoggerMixin:
         # NOTE: CancelFrame is deliberately NOT suppressed. It is the pipeline
         # shutdown signal (client disconnect / task cancel); swallowing it leaks
         # the Cloud Run session forever.
-        if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
+        if isinstance(frame, (InterruptionFrame, VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             if self._tools_in_flight():
                 logger.info(
                     f"[AntiCancel] Suppressing interruption ({frame_type_name}) during active tool call "
@@ -214,37 +744,69 @@ class GeminiSessionLoggerMixin:
                 return
 
         if isinstance(frame, InterruptionFrame):
-            if not hasattr(self, '_repeat_on_filler_pending'):
-                self._repeat_on_filler_pending = False
-            self._repeat_on_filler_pending = True
-            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
-            
-            if getattr(self, '_bot_turn_text_buffer', '').strip():
-                interrupted_text = self._bot_turn_text_buffer.strip()
-                append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
-                self._bot_turn_text_buffer = ""
-
-            elapsed_ms = None
-            if hasattr(self, '_my_ttfb_start') and self._my_ttfb_start:
-                elapsed_ms = round((time.time() - self._my_ttfb_start) * 1000.0, 1)
-                append_diagnostic_log("⚡ Interruption", f"Turn interrupted by user after {elapsed_ms} ms")
+            await self._record_bot_interruption()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
+            self._user_is_speaking = True
+            self._activity_end_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
                 self._my_ttfb_start = None
-
-            # Metric Streaming: Interruption
-            metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
-            if elapsed_ms is not None:
-                metric_payload['elapsed_ms'] = elapsed_ms
-
-            await self.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    'type': 'metrics',
-                    'payload': metric_payload
-                }
-            }))
+                self._ttft_anchored_to_speech_end = False
+                self._ttft_reported_for_response = False
+                self._last_user_speech_activity_at = time.monotonic()
+            if getattr(self, "_vad_disabled", False) and not getattr(self, "_activity_start_sent_for_turn", False):
+                self._activity_start_sent_for_turn = True
+                await self._handle_user_started_speaking(frame)
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
+            self._activity_end_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._my_ttfb_start = None
+                self._ttft_anchored_to_speech_end = False
+                self._ttft_reported_for_response = False
+                self._last_user_speech_activity_at = time.monotonic()
+        elif isinstance(frame, UserSpeakingFrame):
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._last_user_speech_activity_at = time.monotonic()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._avatar_post_turn_decay = False
+            self._user_is_speaking = False
+            self._activity_start_sent_for_turn = False
+            if not getattr(self, "_mixin_bot_responding", False):
+                self._anchor_ttft_at_speech_end()
+            if getattr(self, "_vad_disabled", False) and not getattr(self, "_activity_end_sent_for_turn", False):
+                await self._handle_user_stopped_speaking(frame)
+                self._activity_end_sent_for_turn = True
 
         await super().process_frame(frame, direction)
+
+    async def _handle_user_started_speaking(self, frame):
+        self._user_is_speaking = True
+        if getattr(self, "_vad_disabled", False):
+            if getattr(self, "_activity_start_sent_for_turn", False) and isinstance(frame, UserStartedSpeakingFrame):
+                return
+            self._activity_start_sent_for_turn = True
+        await super()._handle_user_started_speaking(frame)
+
+    async def _handle_user_stopped_speaking(self, frame):
+        self._user_is_speaking = False
+        self._activity_start_sent_for_turn = False
+        if getattr(self, "_vad_disabled", False):
+            if getattr(self, "_activity_end_sent_for_turn", False) and isinstance(frame, UserStoppedSpeakingFrame):
+                self._activity_end_sent_for_turn = False
+                return
+            self._activity_end_sent_for_turn = True
+        await super()._handle_user_stopped_speaking(frame)
+
+    async def _create_single_response(self, messages_list):
+        self._awaiting_interrupted_turn_complete = False
+        self._avatar_post_turn_decay = False
+        self._ttft_reported_for_response = False
+        self._ttft_anchored_to_speech_end = False
+        self._my_ttfb_start = time.monotonic()
+        await super()._create_single_response(messages_list)
 
     async def _push_user_transcription(self, sentence: str, result=None):
         """Emit consolidated complete sentences for user speech."""
@@ -253,6 +815,15 @@ class GeminiSessionLoggerMixin:
         if clean_sentence:
             append_diagnostic_log("💬 User Speech", f'"{clean_sentence}"')
             GLOBAL_LANGSMITH_TRACER.record_user_turn(clean_sentence)
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            if not self._dialogue_history or self._dialogue_history[-1].get("text") != clean_sentence or self._dialogue_history[-1].get("role") != "User":
+                self._dialogue_history.append({
+                    "role": "User",
+                    "text": clean_sentence,
+                    "timestamp": time.time()
+                })
+                logger.info(f"💬 [Transcript User (Turn {len(self._dialogue_history)})]: {clean_sentence}")
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -263,8 +834,31 @@ class GeminiSessionLoggerMixin:
                 }
             }))
 
+            # Optional transcript telemetry. Pragya inherits the no-op hook;
+            # Gemini's switch_phase tool owns her phase and collected fields.
+            architecture = getattr(self, "persona_architecture", None)
+            if architecture is not None:
+                try:
+                    await architecture.on_user_transcript(
+                        clean_sentence, getattr(self, "persona_broadcast", None)
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"[Persona] on_user_transcript failed: {exc}")
+
     async def _handle_msg_input_transcription(self, message):
         """Override to detect ≤2-word fillers after an interruption and auto-repeat."""
+        sc = getattr(message, "server_content", None)
+        it = getattr(sc, "input_transcription", None) if sc else None
+        if it and getattr(it, "text", None):
+            self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
+            self._last_user_speech_activity_at = time.monotonic()
+        if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
+            # Short speech can be consent or a real answer ("आप बताइए").
+            # Let Gemini interpret it, without a regex/word-count repeat rule.
+            self._repeat_on_filler_pending = False
+            self._post_interruption_buffer = ""
+            return await super()._handle_msg_input_transcription(message)
         if not message.server_content.input_transcription:
             return await super()._handle_msg_input_transcription(message)
 
@@ -295,11 +889,12 @@ class GeminiSessionLoggerMixin:
             user_stopped = not getattr(self, '_user_is_speaking', True)
 
             if has_sentence_end or user_stopped:
+                from processors.repeat_on_interruption import is_conversational_filler
                 filler_max_words = getattr(self, '_filler_max_words', 2)
                 clean = buffer.rstrip('।.!?\n').strip()
                 word_count = len(clean.split()) if clean else 0
 
-                if word_count <= filler_max_words:
+                if is_conversational_filler(clean, filler_max_words):
                     logger.info(
                         f"[RepeatOnFiller] Filler detected: '{buffer}' "
                         f"({word_count} word(s)). Sending repeat instruction."
@@ -316,31 +911,26 @@ class GeminiSessionLoggerMixin:
                     self._post_interruption_buffer = ""
 
     async def _handle_msg_output_transcription(self, message):
+        if getattr(self, "_awaiting_interrupted_turn_complete", False):
+            return
+        if getattr(self, "_live_output_turn", None) is None:
+            self._live_output_turn = getattr(self, "_last_input_turn", None)
+        self.response_identity.begin()
+        has_text = bool(message.server_content.output_transcription and message.server_content.output_transcription.text)
+        if has_text:
+            self._avatar_post_turn_decay = False
+            self._begin_output()
         await super()._handle_msg_output_transcription(message)
-        if message.server_content.output_transcription and message.server_content.output_transcription.text:
+        if has_text:
             text = message.server_content.output_transcription.text
-            
+
             # Accumulate text for the complete bot turn
             if not hasattr(self, '_bot_turn_text_buffer'):
                 self._bot_turn_text_buffer = ""
             self._bot_turn_text_buffer += text
-            
-            # If text chunk arrived before audio stop_ttfb_metrics, calculate TTFT immediately
-            if getattr(self, '_current_turn_ttft', None) is None and getattr(self, '_my_ttfb_start', None) is not None:
-                self._current_turn_ttft = time.time() - self._my_ttfb_start
-                ttfb_ms = self._current_turn_ttft * 1000.0
-                append_diagnostic_log("⚡ TTFB Latency", f"Bot text turnaround inside {round(ttfb_ms, 1)} ms", ttfb_ms=ttfb_ms)
-                self._my_ttfb_start = None
-                
-                # Also push metric frame immediately
-                await self.push_frame(OutputTransportMessageFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        'type': 'metrics',
-                        'payload': {'type': 'llm_latency', 'value': self._current_turn_ttft}
-                    }
-                }))
+
+            # The transcript can beat the first audio chunk: first output wins.
+            await self._report_ttft()
 
             ttft = getattr(self, '_current_turn_ttft', None)
             message_data = {
@@ -359,43 +949,152 @@ class GeminiSessionLoggerMixin:
             }))
 
     async def _handle_msg_turn_complete(self, message):
+        was_interrupted = getattr(self, "_awaiting_interrupted_turn_complete", False)
+        was_avatar_active = bool(
+            getattr(self, "_avatar_last_has_audio", False)
+            or getattr(self, "_avatar_speaking", False)
+        )
+        self._awaiting_interrupted_turn_complete = False
+        self._ttft_reported_for_response = False
+        self.response_identity.begin()
+        # super() must see Pipecat's own _bot_is_responding intact, or it skips
+        # TTSStoppedFrame/LLMFullResponseEndFrame and every turn is "abandoned".
         await super()._handle_msg_turn_complete(message)
+        self._mixin_bot_responding = False
+        self._response_started_at = None
+        await self._end_avatar_output()
+        self._avatar_post_turn_decay = bool(was_avatar_active and not was_interrupted)
+        if was_interrupted:
+            self._bot_turn_text_buffer = ""
         if getattr(self, '_bot_turn_text_buffer', '').strip():
             full_bot_text = self._bot_turn_text_buffer.strip()
             append_diagnostic_log("🤖 Bot Response", f'"{full_bot_text}"')
             GLOBAL_LANGSMITH_TRACER.record_bot_turn(
                 full_bot_text,
                 ttfb_ms=getattr(self, '_current_turn_ttft', 0.0) * 1000.0 if getattr(self, '_current_turn_ttft', None) else None,
-                token_usage=getattr(self, '_last_turn_usage', None)
+                # Usage arrives after turn_complete; never attach the previous response's usage.
+                token_usage=None
             )
+            if not hasattr(self, '_dialogue_history'):
+                self._dialogue_history = []
+            self._dialogue_history.append({
+                "role": "Assistant",
+                "text": full_bot_text,
+                "timestamp": time.time()
+            })
+            logger.info(f"🤖 [Transcript Assistant (Turn {len(self._dialogue_history)})]: {full_bot_text}")
             self._bot_turn_text_buffer = ""
 
-    async def _send_repeat_instruction(self, filler_text: str):
-        """Send a user-role prompt telling the model to repeat itself."""
+        # Metric Streaming: Turn Complete
+        await self.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": {
+                'type': 'metrics',
+                'payload': {'type': 'turn_complete'}
+            }
+        }))
+        self.response_identity.finish()
+        self._live_output_turn = None
+        pending = getattr(self, "_pending_directives", None)
+        if pending:
+            while pending:
+                deferred_text, deferred_tag = pending.pop(0)
+                try:
+                    await self.inject_directive(
+                        deferred_text, tag=deferred_tag, speak_now=False, at_tool_boundary=True
+                    )
+                except Exception as exc:
+                    logger.warning(f"[{deferred_tag}] Deferred directive flush failed: {exc}")
+        architecture = getattr(self, "persona_architecture", None)
+        flush = getattr(architecture, "flush_pending_card", None)
+        if flush is not None:
+            try:
+                await flush()
+            except Exception as exc:
+                logger.warning(f"[Persona] Deferred card failed: {exc}")
+        st = getattr(self, "start_trigger", None)
+        if st is not None:
+            st.open_gate("bot turn complete")
+
+    async def inject_directive(
+        self, text: str, tag: str = "Directive", speak_now: bool = True,
+        at_tool_boundary: bool = False,
+    ) -> bool:
+        """Send a directive using the selected Live model's text protocol.
+
+        A successful SDK write is reported as sent, not as proof of application
+        to a particular response. Quiet cards wait while generation is active:
+        client content can interrupt even with turn_complete=False. A blocking
+        tool boundary is different: the model is waiting for its function result,
+        so its requested card must be sent before that result. Gemini 3 uses
+        realtime text for mid-call updates, as in the pinned provider.
+        """
+        self._last_directive_status = "failed"
         if self._disconnecting or not self._session:
-            return
+            logger.warning(f"[{tag}] Not delivered — session is not live.")
+            return False
+        generating = getattr(self, "_mixin_bot_responding", False) or getattr(self, "_bot_is_responding", False)
+        if not speak_now and not at_tool_boundary and generating:
+            self._last_directive_status = "pending"
+            if not hasattr(self, "_pending_directives"):
+                self._pending_directives = []
+            self._pending_directives.append((text, tag))
+            return False
         try:
-            await self._create_single_response([{
-                "role": "user",
-                "content": (
-                    f"The user just said '{filler_text}' which is a short "
-                    f"filler/acknowledgment while you were speaking. They did NOT "
-                    f"ask a new question. Please REPEAT your previous response "
-                    f"from the beginning — resume exactly what you were saying "
-                    f"before the interruption."
-                ),
-            }])
-            logger.info("[RepeatOnFiller] Repeat instruction sent to model.")
+            if speak_now:
+                await self._create_single_response([{"role": "user", "content": text}])
+            elif getattr(self, "_is_gemini_3", False):
+                await self._session.send_realtime_input(text=text)
+            else:
+                await self._session.send_client_content(
+                    turns=[Content(role="user", parts=[Part(text=text)])],
+                    turn_complete=False,
+                )
+            self._last_directive_status = "sent"
+            mode = "respond now" if speak_now else "briefing"
+            logger.info(f"[{tag}] Sent (~{estimate_tokens(text)} estimated tokens, {mode}).")
+            return True
         except Exception as e:
-            logger.error(f"[RepeatOnFiller] Error sending repeat instruction: {e}")
+            logger.error(f"[{tag}] Injection failed: {e}")
+            return False
+
+    async def _send_repeat_instruction(self, filler_text: str):
+        """Send a user-role prompt telling the model to continue where it was cut off."""
+        await self.inject_directive(
+            (
+                f"The user just said '{filler_text}' which is a short "
+                f"filler/acknowledgment while you were speaking. They did NOT "
+                f"ask a new question. Continue your previous response from "
+                f"where you were cut off. Do not restart it from the beginning."
+            ),
+            tag="RepeatOnFiller",
+        )
 
     # ── Session ID & token usage logging ──────────────────────────────
 
     async def _handle_session_ready(self, session):
+        self._avatar_mp4_buffer = bytearray()
         await super()._handle_session_ready(session)
         session_id = getattr(session, 'session_id', None) or getattr(session, 'id', None)
         if session_id:
             logger.info(f"Session ID Established: {session_id}")
+        on_ready = getattr(getattr(self, "persona_architecture", None), "on_session_ready", None)
+        if on_ready is not None:
+            try:
+                await on_ready(self, resumed=bool(getattr(self, "_session_resumption_handle", None)))
+            except Exception as exc:
+                logger.warning(f"[Persona] on_session_ready failed: {exc}")
+        for kind in ("avatar", "voice"):
+            notice = getattr(self, f"_{kind}_fallback_notice", None)
+            if not notice:
+                continue
+            setattr(self, f"_{kind}_fallback_notice", None)
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {"type": f"{kind}_fallback", **notice},
+            }))
 
     async def _handle_msg_usage_metadata(self, message):
         await super()._handle_msg_usage_metadata(message)
@@ -421,23 +1120,42 @@ class GeminiSessionLoggerMixin:
         )
 
         # Stream token usage downstream to client
+        def clean_modality(mod):
+            s = str(mod).lower()
+            if "audio" in s: return "audio"
+            if "text" in s: return "text"
+            if "image" in s: return "image"
+            if "video" in s: return "video"
+            return s
+
         prompt_details = {}
         if hasattr(usage, 'prompt_tokens_details') and usage.prompt_tokens_details:
             for d in usage.prompt_tokens_details:
-                prompt_details[d.modality.lower()] = d.token_count
+                prompt_details[clean_modality(d.modality)] = d.token_count
 
         response_details = {}
         if hasattr(usage, 'response_tokens_details') and usage.response_tokens_details:
             for d in usage.response_tokens_details:
-                response_details[d.modality.lower()] = d.token_count
+                response_details[clean_modality(d.modality)] = d.token_count
+
+        prompt_tokens = int(getattr(usage, 'prompt_token_count', 0) or 0)
+        response_tokens = int(getattr(usage, 'response_token_count', 0) or 0)
+        total_tokens = int(getattr(usage, 'total_token_count', 0) or 0)
 
         usage_dict = {
-            "prompt_token_count": getattr(usage, 'prompt_token_count', 0),
-            "response_token_count": getattr(usage, 'response_token_count', 0),
-            "total_token_count": getattr(usage, 'total_token_count', 0),
+            "prompt_token_count": prompt_tokens,
+            "response_token_count": response_tokens,
+            "total_token_count": total_tokens,
             "prompt_details": prompt_details,
-            "response_details": response_details
+            "response_details": response_details,
+            "cached_content_token_count": getattr(usage, "cached_content_token_count", None),
+            "thoughts_token_count": getattr(usage, "thoughts_token_count", None),
+            "tool_use_prompt_token_count": getattr(usage, "tool_use_prompt_token_count", None),
+            "phase": "final",
+            "service": "live",
+            "revision": 0,
         }
+        self._last_turn_usage = usage_dict
         
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
@@ -451,18 +1169,129 @@ class GeminiSessionLoggerMixin:
             }
         }))
 
-    async def _handle_msg_turn_complete(self, message):
-        await super()._handle_msg_turn_complete(message)
-        
-        # Metric Streaming: Turn Complete
-        await self.push_frame(OutputTransportMessageFrame(message={
-            "label": "rtvi-ai",
-            "type": "server-message",
-            "data": {
-                'type': 'metrics',
-                'payload': {'type': 'turn_complete'}
-            }
-        }))
+        # Check for context compression trigger
+        if getattr(self, '_context_compression_enabled', False):
+            raw_threshold = getattr(self, '_context_compression_trigger_tokens', 5000) or 5000
+            threshold = max(5000, raw_threshold)
+            current_tot = total_tokens
+            current_prompt = prompt_tokens
+            last_prompt = int(getattr(self, '_last_prompt_tokens', 0) or 0)
+            # VIDEO output is excluded from the context threshold
+            video_out_tokens = int(response_details.get("video", 0) or 0)
+            effective_context_tot = max(current_prompt, current_tot - video_out_tokens)
+
+            # Detect compression:
+            # 1. Effective context tokens reached or exceeded the configured threshold
+            # 2. OR prompt tokens dropped significantly (>150 tokens) while turn count > 1 (signature of FIFO eviction compaction)
+            compression_detected = False
+            if effective_context_tot >= threshold and not getattr(self, '_context_compression_triggered', False):
+                compression_detected = True
+            elif current_prompt > 0 and last_prompt > 1000 and current_prompt < (last_prompt - 150):
+                compression_detected = True
+                logger.info(f"🗜️ [Context Compression] Compaction detected! Prompt tokens contracted from {last_prompt} to {current_prompt}")
+
+            if compression_detected:
+                self._context_compression_triggered = True
+                logger.info(f"🗜️ [Context Compression] Triggered! Context token count {effective_context_tot} (threshold: {threshold}, prompt: {current_prompt})")
+                append_diagnostic_log(
+                    "🗜️ Context Compression",
+                    f"Triggered at {effective_context_tot} tokens (threshold: {threshold}, prompt: {current_prompt}) · Sliding window active"
+                )
+                await self.push_frame(OutputTransportMessageFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        "type": "context_compression",
+                        "payload": {
+                            "status": "triggered",
+                            "tokens": effective_context_tot,
+                            "threshold": threshold,
+                            "message": f"Context window compressed at {effective_context_tot} tokens",
+                            "timestamp": time.time(),
+                        }
+                    }
+                }))
+
+                # A persona that keeps server-side state re-sends its own card; the rest get
+                # the verbatim dialogue transcription logs (FactStore) back in context.
+                architecture = getattr(self, "persona_architecture", None)
+                on_compressed = getattr(architecture, "on_context_compressed", None)
+                handled = False
+                if on_compressed is not None:
+                    try:
+                        handled = bool(await on_compressed(self))
+                    except Exception as exc:
+                        logger.warning(f"[Persona] on_context_compressed failed: {exc}")
+                if not handled:
+                    await self._inject_transcription_logs()
+
+            if current_prompt > 0:
+                self._last_prompt_tokens = current_prompt
+
+    async def _inject_transcription_logs(self):
+        """Inject verbatim dialogue transcription logs into Gemini Live context on compression."""
+        if not getattr(self, '_session', None) or self._disconnecting:
+            logger.warning("🗜️ [FactStore Injection] Cannot inject transcript logs: session not available or disconnecting.")
+            return
+
+        history = getattr(self, '_dialogue_history', [])
+        if not history:
+            logger.info("🗜️ [FactStore Injection] No dialogue history in FactStore to inject.")
+            return
+
+        # Cap injection to the last 5 turns to keep token overhead minimal
+        capped_history = history[-5:] if len(history) > 5 else history
+
+        # Format verbatim dialogue transcription logs for model injection (last 5 turns)
+        injected_lines = [f"{turn['role']}: {turn['text']}" for turn in capped_history]
+        injected_transcript = "\n".join(injected_lines)
+
+        # Full dialogue history across the entire session for backend logs
+        total_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+        total_transcript = "\n".join(total_lines)
+
+        turn_notice = f"last {len(capped_history)}" if len(history) > 5 else "all"
+        prompt_card = (
+            f"[CONVERSATION_TRANSCRIPT_LOG]\n"
+            f"The following is the verbatim transcript log of the {turn_notice} dialogue turns in this session:\n"
+            f"{injected_transcript}\n\n"
+            f"CRITICAL INSTRUCTIONS:\n"
+            f"• Seamlessly continue the conversation with the user from the latest turn.\n"
+            f"• Retain full awareness of all customer details, numbers, preferences, and agreements stated in this transcript.\n"
+            f"• DO NOT repeat greetings, do NOT re-introduce yourself, and do NOT verbally acknowledge this transcript update."
+        )
+
+        injected_tokens = estimate_tokens(injected_transcript)
+
+        logger.info(
+            f"🗜️ [FactStore Injection] Compression compaction triggered! Session turns: {len(history)}, Injecting: last {len(capped_history)} turns (~{injected_tokens} tok).\n"
+            f"==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+            f"{total_transcript}\n"
+            f"============================================================================================\n"
+            f"==================== INJECTED TRANSCRIPT PAYLOAD (Last {len(capped_history)} turns) ====================\n"
+            f"{injected_transcript}\n"
+            f"============================================================================================"
+        )
+
+        try:
+            content = Content(
+                role="user",
+                parts=[Part(text=prompt_card)]
+            )
+            await self._session.send_client_content(
+                turns=[content],
+                turn_complete=False
+            )
+            logger.info(
+                f"🗜️ [FactStore Injection] Successfully injected last {len(capped_history)} dialogue turns "
+                f"(~{injected_tokens} tok) into model context via send_client_content(turn_complete=False)."
+            )
+            append_diagnostic_log(
+                "🗜️ FactStore Injected",
+                f"Restored last {len(capped_history)} turns (~{injected_tokens} tok) of verbatim transcript into context."
+            )
+        except Exception as e:
+            logger.error(f"❌ [FactStore Injection] Error sending client_content: {e}")
 
     async def _handle_msg_tool_call(self, message):
         # Metric Streaming: Tool Call
@@ -481,39 +1310,189 @@ class GeminiSessionLoggerMixin:
         
         await super()._handle_msg_tool_call(message)
 
+    # ── Custom Live media: recorded voice clone and uploaded avatar ─────
+
     async def _connection_task_handler(self, config):
         from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+
+        lang_code = getattr(self, "_language_code", None) or "en-US"
+        architecture = getattr(self, "persona_architecture", None)
         if isinstance(self, GeminiLiveVertexLLMService):
-            # Set transcription language to match the session's configured language (Vertex AI Enterprise only)
+            # Transcription language pinning is Vertex AI Enterprise only.
             from google.genai.types import AudioTranscriptionConfig
-            lang_code = getattr(self, "_language_code", "en-US")
-            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
-            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=[lang_code])
-        
-        await super()._connection_task_handler(config)
+            persona_codes = list(getattr(architecture, "transcription_language_codes", None) or [])
+            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
+            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
+
+        # A persona that swaps tools per step declares its current group in every setup,
+        # so a reconnect (resumed or not) starts with the tools the step needs.
+        setup_tools = getattr(architecture, "setup_tools", None)
+        if setup_tools is not None:
+            persona_tools = setup_tools(self.get_llm_adapter())
+            if persona_tools:
+                config.tools = persona_tools
+        # ...and its current system instruction, so a reconnect never restarts from the greeting.
+        setup_instruction = getattr(architecture, "setup_system_instruction", None)
+        if setup_instruction is not None:
+            live_instruction = setup_instruction()
+            if live_instruction:
+                config.system_instruction = Content(parts=[Part(text=live_instruction)])
+
+        # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
+        if getattr(config, "context_window_compression", None):
+            trigger = getattr(config.context_window_compression, "trigger_tokens", None) or 5000
+            target = int(trigger * 0.8)  # 4000 for 5000 trigger
+            config.context_window_compression.sliding_window = SlidingWindow(target_tokens=target)
+            logger.info(f"🗜️ [Context Compression Config] Initialized with trigger_tokens={trigger}, target_tokens={target}")
+
+        # Every attempt starts from Pipecat's config (prebuilt voice, no avatar) and
+        # adds whatever custom media is still in play. A rejection drops the part it
+        # blames, so each retry carries strictly less custom media: at most three
+        # attempts, and anything that is not a media rejection surfaces at once.
+        while True:
+            attempt = config.model_copy(deep=True)
+            self._apply_custom_media(attempt, lang_code)
+            try:
+                return await super()._connection_task_handler(attempt)
+            except Exception as error:
+                if not self._reject_custom_media(error):
+                    raise
+
+    async def _handle_connection_error(self, error):
+        # A rejection after setup: drop the blamed media so the reconnect Pipecat
+        # is about to make comes back with the prebuilt voice or avatar.
+        self._reject_custom_media(error)
+        return await super()._handle_connection_error(error)
+
+    def _apply_custom_media(self, config, lang_code):
+        self._apply_custom_voice(config, lang_code)
+        if getattr(self, "_avatar_enabled", False):
+            self._apply_avatar(config)
+
+    def _apply_custom_voice(self, config, lang_code):
+        sample = getattr(self, "_replicated_voice_sample", None)
+        if not sample:
+            return  # Pipecat's config already speaks with the prebuilt voice.
+        from google.genai.types import ReplicatedVoiceConfig
+        try:
+            wav, meta = normalize_custom_voice_audio(sample)
+        except Exception as wav_err:
+            self._fall_back_voice(f"The voice sample could not be read ({wav_err})", "invalid_sample")
+            return
+        speech = SpeechConfig(
+            voice_config=VoiceConfig(
+                replicated_voice_config=ReplicatedVoiceConfig(
+                    voice_sample_audio=wav,
+                    mime_type="audio/pcm;rate=24000",
+                )
+            ),
+            language_code=lang_code,
+        )
+        if getattr(config, "generation_config", None) is not None:
+            config.generation_config.speech_config = speech
+        config.speech_config = speech
+        logger.info(
+            f"🎙️ [Live Voice Clone] Configured replicated_voice_config "
+            f"({meta['duration_s']}s, 24kHz 16-bit mono WAV, {meta['bytes']} bytes) "
+            f"with fallback '{self._fallback_voice()}'"
+        )
+
+    def _apply_avatar(self, config):
+        from google.genai.types import AvatarConfig, CustomizedAvatar, Modality
+        if getattr(config, "generation_config", None) is not None:
+            config.generation_config.response_modalities = None
+        config.response_modalities = [Modality.VIDEO]
+        name = self._fallback_avatar()
+        image_b64 = getattr(self, "_avatar_custom_image", None)
+        if image_b64:
+            try:
+                image, meta = normalize_custom_avatar_image(base64.b64decode(image_b64.split(",")[-1]))
+            except Exception as img_err:
+                self._fall_back_avatar(f"The image could not be used ({img_err})", "invalid_image")
+            else:
+                config.avatar_config = AvatarConfig(
+                    customized_avatar=CustomizedAvatar(image_data=image, image_mime_type="image/png")
+                )
+                logger.info(
+                    f"🎭 [Live Avatar] Configured customized_avatar "
+                    f"({meta['orig_size']} -> {meta['norm_size']} RGB PNG, {len(image)} bytes) "
+                    f"with fallback '{name}'"
+                )
+                return
+        config.avatar_config = AvatarConfig(avatar_name=name)
+        logger.info(f"🎭 [Live Avatar] Configured prebuilt avatar_name='{name}' with response_modalities=[VIDEO]")
+
+    def _reject_custom_media(self, error) -> set:
+        """Drop whichever custom media `error` blames and return what was dropped."""
+        rejected = classify_custom_media_rejection(
+            error,
+            avatar=bool(getattr(self, "_avatar_custom_image", None)),
+            voice=bool(getattr(self, "_replicated_voice_sample", None)),
+        )
+        detail = _rejection_detail(error)
+        not_allowlisted = "not allowlisted" in detail.lower()
+        code = "project_not_allowlisted" if not_allowlisted else "rejected"
+        if "avatar" in rejected:
+            self._fall_back_avatar(
+                "This Google Cloud project is not allowlisted for custom avatars" if not_allowlisted
+                else f"Vertex AI rejected the custom avatar ({detail})",
+                code,
+            )
+        if "voice" in rejected:
+            self._fall_back_voice(
+                "This Google Cloud project is not allowlisted for custom Live voices" if not_allowlisted
+                else f"Vertex AI rejected the voice sample ({detail})",
+                code,
+            )
+        return rejected
+
+    def _fallback_avatar(self) -> str:
+        return getattr(self, "_avatar_name", None) or "Ben"
+
+    def _fallback_voice(self) -> str:
+        return getattr(self, "_fallback_voice_name", None) or "Puck"
+
+    def _fall_back_avatar(self, cause: str, code: str):
+        name = self._fallback_avatar()
+        logger.warning(f"🎭 [Live Avatar] {cause}; using the prebuilt avatar '{name}'")
+        self._avatar_custom_image = None
+        self._avatar_fallback_notice = {
+            "fallback_avatar": name,
+            "reason": f"{cause}, so the prebuilt avatar {name} is standing in.",
+            "code": code,
+        }
+
+    def _fall_back_voice(self, cause: str, code: str):
+        name = self._fallback_voice()
+        logger.warning(f"🎙️ [Live Voice Clone] {cause}; using the prebuilt voice '{name}'")
+        self._replicated_voice_sample = None
+        self._voice_fallback_notice = {
+            "fallback_voice": name,
+            "reason": f"{cause}, so the prebuilt voice {name} is speaking instead.",
+            "code": code,
+        }
 
 class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVertexLLMService):
     @property
     def _supports_non_blocking_tools(self) -> bool:
         return True
 
+    @staticmethod
+    def _get_credentials(credentials, credentials_path):
+        from runtime_compat import _ensure_valid_adc
+        cached = _ensure_valid_adc()
+        if not credentials and not credentials_path and cached is not None:
+            return cached
+        return GeminiLiveVertexLLMService._get_credentials(credentials, credentials_path)
+
+
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
-        import os
         from google.genai import Client
-        
-        # Temporarily unset Vertex env vars to force AI Studio mode
-        project = os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
-        creds = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-        
-        logger.info("Creating Client forcing AI Studio mode (unsetting project/creds temporarily)...")
-        try:
-            self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
-        finally:
-            # Restore them
-            if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
-            if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
+
+        logger.info("Creating Client forcing AI Studio mode (vertexai=False)...")
+        self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
 
 
 async def dynamic_tool_handler(params: FunctionCallParams):
@@ -573,10 +1552,21 @@ class UserIdleProcessor(FrameProcessor):
             logger.info(f"[UserIdleProcessor] Bot finished speaking. Starting silence countdown.")
 
         # Reset timer ONLY on active speech activity (VAD or transcription/text frames)
-        if isinstance(frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame, TextFrame, TranscriptionFrame)):
+        if isinstance(
+            frame,
+            (
+                VADUserStartedSpeakingFrame,
+                VADUserStoppedSpeakingFrame,
+                UserStartedSpeakingFrame,
+                UserStoppedSpeakingFrame,
+                UserSpeakingFrame,
+                TextFrame,
+                TranscriptionFrame,
+            ),
+        ):
             self.last_activity = time.monotonic()
             # Reset the idle retry counter back to 0 if the user confirms they are active
-            if isinstance(frame, (UserStartedSpeakingFrame, TranscriptionFrame)):
+            if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame, TranscriptionFrame)):
                 if self.retry_count > 0:
                     logger.info(f"[UserIdleProcessor] User speech activity detected ({frame.name}). Resetting idle retry counter from {self.retry_count} to 0.")
                 self.retry_count = 0
@@ -586,13 +1576,56 @@ class UserIdleProcessor(FrameProcessor):
 
 
 class StartTriggerProcessor(FrameProcessor):
-    def __init__(self, language: str = "en-US"):
+    """Handles client start_trigger and gates microphone audio during initial greeting.
+
+    For Gemini 3.1 Live Preview, open duplex microphone streaming before the user
+    speaks causes server-side audio metering to leak ~201 prompt tokens on Turn 1.
+    When `gate_mic_on_greeting` is active:
+      - Raw audio chunks during silence/ambient noise are dropped from downstream.
+      - If the user speaks (voice barge-in, RMS > 650 for >=2 frames), an interruption
+        is immediately broadcast to halt the bot greeting and the mic gate opens.
+      - If the bot finishes the greeting uninterrupted, BotStoppedSpeakingFrame or
+        TTSStoppedFrame opens the gate cleanly.
+      - A 12s safety watchdog auto-opens the gate if no signal arrives.
+    """
+
+    def __init__(
+        self,
+        language: str = "en-US",
+        gate_mic_on_greeting: bool = False,
+    ):
         super().__init__()
         self.language = language
         self.triggered = False
+        self.gate_mic_on_greeting = gate_mic_on_greeting
+        self._mic_gated = gate_mic_on_greeting
+        self._pre_buffer = deque(maxlen=10)  # ~200ms pre-speech buffer to prevent onset clipping
+        self._consecutive_speech_frames = 0
+        self._gate_start_time = time.monotonic()
+        self._max_gate_duration = 12.0  # Safety timeout
+        #: Messages a persona seeds ahead of the greeting (e.g. its first prompt card).
+        self.opening_messages: list = []
+        #: The persona's own greeting turn, when the language default would read as caller speech.
+        self.greeting_text: Optional[str] = None
+        if self._mic_gated:
+            logger.info("[StartTriggerProcessor] Client mic gating enabled for initial greeting turn.")
+
+    def open_gate(self, reason: str = "manual"):
+        if self._mic_gated:
+            logger.info(f"[GreetingAudioGate] Opening client microphone gate (reason: {reason}).")
+            self._mic_gated = False
+            self._pre_buffer.clear()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         await super().process_frame(frame, direction)
+
+        # 1. Gate release on bot completion signals (travels upstream from output transport or downstream from LLM)
+        if isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
+            self.open_gate(f"{type(frame).__name__} received")
+            await self.push_frame(frame, direction)
+            return
+
+        # 2. Handle start_trigger message from client
         if isinstance(frame, InputTransportMessageFrame):
             message = frame.message
             if isinstance(message, dict) and message.get("type") == "start_trigger":
@@ -606,27 +1639,489 @@ class StartTriggerProcessor(FrameProcessor):
                     }))
                 if not self.triggered:
                     self.triggered = True
-                    greeting_text = "नमस्ते!" if self.language == "hi-IN" else "Hello!"
+                    self._gate_start_time = time.monotonic()
+                    greeting_text = self.greeting_text or ("नमस्ते!" if self.language == "hi-IN" else "Hello!")
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
-                    await self.push_frame(LLMMessagesAppendFrame(messages=[{"role": "user", "content": greeting_text}]))
+                    messages = [*self.opening_messages, {"role": "user", "content": greeting_text}]
+                    await self.push_frame(LLMMessagesAppendFrame(messages=messages))
                     await self.push_frame(LLMRunFrame())
                 return
+
+        # 3. Audio input gating & user barge-in detection during initial greeting
+        if isinstance(frame, InputAudioRawFrame):
+            if not self._mic_gated:
+                await self.push_frame(frame, direction)
+                return
+
+            # Safety watchdog: auto-open if greeting exceeds max duration
+            if (time.monotonic() - self._gate_start_time) > self._max_gate_duration:
+                self.open_gate("watchdog timeout 12s expired")
+                await self.push_frame(frame, direction)
+                return
+
+            # Voice activity check on incoming PCM chunk (RMS energy)
+            audio_bytes = getattr(frame, "audio", None)
+            if not audio_bytes:
+                return
+
+            samples = np.frombuffer(audio_bytes, dtype=np.int16)
+            rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2))) if len(samples) > 0 else 0.0
+
+            # Barge-in speech threshold:
+            # Silence/background room noise with open mic is RMS ~40 to 250.
+            # Human speech speaking into mic is typically RMS 1,200 to 10,000+.
+            # Requiring 2 consecutive frames (>40ms) with RMS > 650 prevents single click/breath false triggers.
+            if rms > 650.0:
+                self._consecutive_speech_frames += 1
+                if self._consecutive_speech_frames >= 2:
+                    logger.info(
+                        f"[GreetingAudioGate] User voice barge-in detected during initial greeting! "
+                        f"(RMS={rms:.1f}, frames={self._consecutive_speech_frames}). "
+                        "Broadcasting interruption and opening microphone gate."
+                    )
+                    self._mic_gated = False
+                    # Abort bot greeting playback immediately
+                    await self.broadcast_interruption()
+                    # Flush onset frames from pre_buffer so first syllable is preserved
+                    while self._pre_buffer:
+                        buffered_frame = self._pre_buffer.popleft()
+                        await self.push_frame(buffered_frame, direction)
+                    # Forward active speech frame downstream to model
+                    await self.push_frame(frame, direction)
+                    return
+            else:
+                self._consecutive_speech_frames = 0
+
+            # Ambient noise / silence during greeting: store in rolling pre_buffer and drop from downstream!
+            self._pre_buffer.append(frame)
+            return
+
         await self.push_frame(frame, direction)
 
 
-async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str], language: str, system_instruction: Optional[str] = None, tts: bool = True, tts_pace: float = 0.80, tools: Optional[str] = None, context_compression: bool = True, context_compression_trigger_tokens: Optional[int] = None):
+VALID_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+
+AI_STUDIO_LIVE_MODELS = {
+    "gemini-3.8-live-extended-thinking",
+    "gemini-3.5-live-preview",
+    "gemini-3.5-live-extended-thinking-preview",
+    "gemini-3.1-flash-live-preview",
+    "gemini-3.5-live-translate-preview",
+    "gemini-2.5-flash-native-audio-latest",
+    "gemini-2.5-flash-native-audio-preview-09-2025",
+    "gemini-2.5-flash-native-audio-preview-12-2025",
+}
+VERTEX_LIVE_MODELS = {
+    "gemini-3.8-live",
+    "gemini-3.8-live-preview",
+    "gemini-3.8-live-extended-thinking-preview",
+    "gemini-3.5-flash-live-preview",
+    "gemini-3.5-flash-lite-live-preview",
+    "gemini-3.8-flash-live-preview",
+    "gemini-live-2.5-flash-native-audio",
+    "gemini-live-2.5-flash",
+}
+AI_STUDIO_RENAME_MAP = {
+    "gemini-3.5-live-preview": "gemini-3.8-live",
+    "gemini-3.5-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+    "gemini-3.8-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-extended-thinking-preview": "gemini-3.8-live-extended-thinking",
+}
+VERTEX_RENAME_MAP = {
+    "gemini-3.8-flash-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-preview": "gemini-3.8-live",
+    "gemini-3.8-live-extended-thinking": "gemini-3.8-live-extended-thinking-preview",
+}
+
+
+def resolve_live_model_gateway(model: str) -> tuple[bool, str]:
+    """Resolve whether a Live model string targets AI Studio or Vertex AI, and its normalized model ID.
+
+    - On Vertex AI (`us-central1`), `gemini-3.8-live` is GA (default), while
+      `gemini-3.8-live-extended-thinking-preview` remains in preview.
+    - Legacy `gemini-3.8-live-preview` and `gemini-3.8-flash-live-preview` normalize
+      to `gemini-3.8-live` on Vertex AI.
+    - On AI Studio, `gemini-3.8-live-aistudio` strips `-aistudio` and sends `gemini-3.8-live`.
+    """
+    clean_model = model[:-9] if model.endswith("-aistudio") else model
+    if model.endswith("-aistudio") or clean_model in AI_STUDIO_LIVE_MODELS:
+        clean_model = AI_STUDIO_RENAME_MAP.get(clean_model, clean_model)
+        return True, clean_model
+    clean_model = VERTEX_RENAME_MAP.get(clean_model, clean_model)
+    return False, clean_model
+
+
+def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[str]) -> dict:
+    """Build the Gemini reasoning config for a Live session.
+
+    Gemini 3 replaced the numeric `thinking_budget` with discrete `thinking_level`
+    tiers, and the API rejects any request carrying both. We therefore only ever
+    emit `thinking_level`. An empty dict means "no explicit config", letting the
+    model apply its own default tier.
+    See https://ai.google.dev/gemini-api/docs/thinking
+    """
+    # Base Gemini 3.8 Live (`gemini-3.8-live` / `gemini-3.8-live-preview`) does not
+    # support `thinking_level` (reasoning is served by the dedicated
+    # `gemini-3.8-live-extended-thinking*` models). Never emit `thinking_level`
+    # for the non-thinking 3.8 Live endpoint even if the UI toggle remained set.
+    if "3.8" in model and "thinking" not in model.lower():
+        return {}
+
+    # Models with "thinking" in the name reason by default; honour that even if
+    # the client did not explicitly opt in.
+    if not thinking and "thinking" not in model.lower():
+        return {}
+
+    level = (thinking_level or "").strip().lower()
+    if level not in VALID_THINKING_LEVELS:
+        # Lite and 3.1-class models are latency sensitive, so bias them low.
+        level = "minimal" if ("3.1" in model or "flash-lite" in model) else "medium"
+    return {"thinking_level": level}
+
+
+def compose_live_system_prompt(
+    system_instruction: Optional[str],
+    gender: str,
+    language: str,
+    voice: Optional[str] = None,
+    language_directive: bool = True,
+) -> str:
+    """Build the system prompt for a Live session.
+
+    A caller-supplied ``system_instruction`` is authoritative and passes through
+    untouched apart from the language directive. Earlier revisions appended a
+    global "never ask for the user's name" rule here unconditionally, which
+    silently contradicted custom instructions that legitimately needed to ask.
+    That rule now lives where it belongs: in the shared default prompt
+    (``system_prompt.SYSTEM_PROMPT``) and in each persona's own prompt, both of
+    which a caller can override.
+
+    A cloned ``voice`` also gets its self-reference grammar rule: its gender is
+    fixed by the recording, whatever the persona says.
+
+    ``language_directive=False`` is for a persona whose prompt owns the language
+    policy (Tara starts in Indian English and switches only through a tool).
+    """
+    base = system_instruction if system_instruction else SYSTEM_PROMPT.replace("female", gender)
+    gender_rule = tts_script.voice_gender_rule(voice)
+    if gender_rule:
+        base = f"{base}\n\n{gender_rule}"
+    if not language_directive:
+        return base
+    return f"{base}\n\nIMPORTANT: You must converse in {language} language."
+
+
+def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:
+    """Resolve VAD mode into (mode_name, use_silero_vad, disable_gemini_internal_vad).
+
+    Supported modes:
+    - "both": Local Silero VAD on WebSocket transport + Gemini Live internal server-side VAD enabled.
+    - "gemini": Local Silero VAD disabled; Gemini Live internal server-side VAD enabled.
+    - "silero": Local Silero VAD on WebSocket transport; Gemini Live internal server-side VAD disabled
+      (AutomaticActivityDetection(disabled=True) so Pipecat sends explicit ActivityStart/ActivityEnd).
+    """
+    normalized = (vad_mode or "").strip().lower()
+    if normalized == "silero":
+        return ("silero", True, True)
+    if normalized == "gemini" or (not normalized and not vad):
+        return ("gemini", False, False)
+    return ("both", True, False)
+
+
+def build_live_vad_analyzer(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[SileroVADAnalyzer]:
+    """Client-side turn detection for the Live pipeline.
+
+    Returning ``None`` hands endpointing to Gemini's own server-side turn
+    detection. That is a legitimate configuration for native audio, not a
+    degraded one, but it changes interruption behaviour — so it stays opt-in.
+    """
+    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode)
+    if not use_silero:
+        return None
+    return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
+
+
+def build_live_vad_processor(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[VADProcessor]:
+    """Silero must run as a pipeline processor.
+
+    Pipecat 1.2.1 ``FastAPIWebsocketParams`` has no ``vad_analyzer`` field and
+    Pydantic drops it silently, so passing it to the transport never ran VAD.
+    """
+    analyzer = build_live_vad_analyzer(vad, vad_mode)
+    return VADProcessor(vad_analyzer=analyzer) if analyzer is not None else None
+
+
+def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[GeminiVADParams]:
+    """Server-side AutomaticActivityDetection configuration for Gemini Live."""
+    _, _, disable_gemini_internal = resolve_live_vad_mode(vad, vad_mode)
+    if disable_gemini_internal:
+        return GeminiVADParams(disabled=True)
+    return None
+
+
+from persona_registry import get_persona_architecture
+
+
+PREBUILT_AVATAR_NAMES = {"Ben", "Kira", "Leo", "Vera", "Sam", "Kai", "Jay", "Paul"}
+
+
+def normalize_custom_avatar_image(raw_bytes: bytes) -> tuple[bytes, dict]:
+    """Normalize any user-uploaded portrait into Vertex AI's required 9:16 RGB PNG (>=704x1280, <5 MB).
+
+    Requirements per Vertex AI Gemini 3.8 Live Avatar documentation:
+      - Format: PNG (lossless RGB)
+      - Minimum size: 704 x 1280 pixels (9:16 portrait)
+      - File size: < 5 MB
+      - Framing: Head & shoulders bust shot (upper-center bias when cropping square/landscape uploads)
+    """
+    import io
+    from PIL import Image, ImageOps
+
+    target_w, target_h = 704, 1280
+    with Image.open(io.BytesIO(raw_bytes)) as img:
+        orig_format = img.format
+        exif = img.getexif()
+        orientation = exif.get(0x0112, 1) if exif else 1
+        if (
+            orig_format == "PNG"
+            and img.size == (target_w, target_h)
+            and img.mode == "RGB"
+            and orientation == 1
+            and len(raw_bytes) <= 4_800_000
+        ):
+            return raw_bytes, {
+                "orig_size": f"{target_w}x{target_h}",
+                "norm_size": f"{target_w}x{target_h}",
+                "bytes": len(raw_bytes),
+            }
+
+        img = ImageOps.exif_transpose(img)
+        orig_w, orig_h = img.size
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            bg = Image.new("RGB", img.size, (18, 24, 38))
+            rgba = img.convert("RGBA")
+            bg.paste(rgba, mask=rgba.split()[3])
+            rgb_img = bg
+        else:
+            rgb_img = img.convert("RGB")
+
+        # Bias vertical crop slightly toward top (0.22) to preserve head & shoulders bust framing
+        if rgb_img.size == (target_w, target_h):
+            fitted = rgb_img
+        else:
+            fitted = ImageOps.fit(
+                rgb_img,
+                (target_w, target_h),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.22),
+            )
+        out = io.BytesIO()
+        fitted.save(out, format="PNG", compress_level=6)
+        norm_bytes = out.getvalue()
+
+        # If PNG exceeds 4.8 MB, downscale slightly while keeping >= 704x1280
+        if len(norm_bytes) > 4_800_000:
+            out = io.BytesIO()
+            fitted.quantize(colors=256).convert("RGB").save(out, format="PNG", compress_level=6)
+            norm_bytes = out.getvalue()
+
+        return norm_bytes, {
+            "orig_size": f"{orig_w}x{orig_h}",
+            "norm_size": f"{target_w}x{target_h}",
+            "bytes": len(norm_bytes),
+        }
+
+
+def normalize_custom_voice_audio(raw_bytes: bytes) -> tuple[bytes, dict]:
+    """Normalize any uploaded/recorded WAV sample into Vertex AI's required 24 kHz 16-bit mono WAV (`s16le`).
+
+    Requirements per Vertex AI Gemini 3.8 Live ReplicatedVoiceConfig documentation:
+      - Container: WAV (`RIFF...WAVE`) with `mime_type="audio/pcm;rate=24000"`
+      - Sample rate: 24,000 Hz
+      - Bit depth: 16-bit signed integer PCM (`s16le`)
+      - Channels: 1 (mono)
+      - Duration: 10–20 seconds recommended (clamped to <= 20s)
+    """
+    import io
+    import wave
+    import numpy as np
+
+    if not raw_bytes or len(raw_bytes) < 44:
+        raise ValueError("Voice sample audio is empty or too short")
+
+    try:
+        with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+            orig_ch = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            orig_sr = wf.getframerate()
+            nframes = wf.getnframes()
+            frames = wf.readframes(nframes)
+    except Exception as exc:
+        raise ValueError(f"Invalid WAV audio file: {exc}") from exc
+
+    if orig_sr <= 0 or orig_ch <= 0 or nframes <= 0:
+        raise ValueError("WAV audio has invalid header parameters")
+
+    #Fast-path if already 24kHz 16-bit mono WAV within 1..20s
+    if orig_sr == 24000 and orig_ch == 1 and sampwidth == 2 and (24000 <= nframes <= 24000 * 20):
+        return raw_bytes, {
+            "orig_rate": orig_sr,
+            "orig_channels": orig_ch,
+            "duration_s": round(nframes / 24000.0, 2),
+            "bytes": len(raw_bytes),
+        }
+
+    if sampwidth == 1:
+        samples = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sampwidth == 2:
+        samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    elif sampwidth == 4:
+        samples = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2147483648.0
+    elif sampwidth == 3:
+        raw_u8 = np.frombuffer(frames, dtype=np.uint8)
+        n_samp = len(raw_u8) // 3
+        b = raw_u8[: n_samp * 3].reshape(-1, 3)
+        signed = (
+            b[:, 0].astype(np.int32)
+            | (b[:, 1].astype(np.int32) << 8)
+            | (b[:, 2].astype(np.int8).astype(np.int32) << 16)
+        )
+        samples = signed.astype(np.float32) / 8388608.0
+    else:
+        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+
+    if orig_ch > 1:
+        usable = (len(samples) // orig_ch) * orig_ch
+        samples = samples[:usable].reshape(-1, orig_ch).mean(axis=1)
+
+    target_sr = 24000
+    if orig_sr != target_sr and len(samples) > 1:
+        new_len = int(round(len(samples) * target_sr / orig_sr))
+        old_x = np.linspace(0.0, 1.0, num=len(samples), endpoint=False)
+        new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+        samples = np.interp(new_x, old_x, samples).astype(np.float32)
+
+    if len(samples) < target_sr:
+        raise ValueError("Voice sample must be at least 1 second long")
+
+    max_samples = target_sr * 20
+    if len(samples) > max_samples:
+        samples = samples[:max_samples]
+
+    peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
+    if 0.01 < peak < 0.35:
+        samples = samples * (0.85 / peak)
+
+    pcm_i16 = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    out = io.BytesIO()
+    with wave.open(out, "wb") as out_wf:
+        out_wf.setnchannels(1)
+        out_wf.setsampwidth(2)
+        out_wf.setframerate(target_sr)
+        out_wf.writeframes(pcm_i16.tobytes())
+    norm_wav = out.getvalue()
+    return norm_wav, {
+        "orig_rate": orig_sr,
+        "orig_channels": orig_ch,
+        "duration_s": round(len(pcm_i16) / float(target_sr), 2),
+        "bytes": len(norm_wav),
+    }
+
+
+def load_live_voice_sample(voice: Optional[str], custom_voice_audio: Optional[str]) -> tuple[Optional[bytes], bool]:
+    """The ReplicatedVoiceConfig sample for a session, and whether a clone was asked for.
+
+    A recorded or uploaded sample (base64 or data URL) wins; a server-managed
+    Gemini clone loads its bundled sample. A clone that was asked for but has
+    no usable sample comes back as (None, True): the session runs as plain
+    Live and says so, instead of pretending to clone.
+    """
+    if custom_voice_audio:
+        try:
+            return base64.b64decode(custom_voice_audio.split(",")[-1]) or None, True
+        except ValueError as b64_err:
+            logger.warning(f"🎙️ [Live Voice Clone] Could not decode the recorded voice sample: {b64_err}")
+            return None, True
+    if voice_profiles.is_gemini_clone_voice(voice):
+        return voice_profiles.load_gemini_live_voice_sample(voice), True
+    return None, voice_profiles.is_live_replicated_voice(voice)
+
+
+def resolve_prebuilt_avatar_name(
+    avatar_name: Optional[str],
+    persona_id: Optional[str],
+    voice: Optional[str],
+    gender: str,
+) -> str:
+    """Resolve an avatar selection ('auto', 'custom', or explicit prebuilt name) to a valid Vertex AI prebuilt avatar_name."""
+    raw = (avatar_name or "").strip()
+    for valid in PREBUILT_AVATAR_NAMES:
+        if raw.lower() == valid.lower():
+            return valid
+
+    pid = (persona_id or "").strip().lower()
+    if pid == "hindi-assistant":
+        return "Vera"
+    if pid == "banking-advisor":
+        return "Kira"
+    if pid == "tech-architect":
+        return "Leo"
+    if pid == "store-assistant":
+        return "Ben"
+    return "Kira" if (voice_profiles.voice_gender(voice) or gender) == "female" else "Ben"
+
+
+async def run_agent_live(
+    websocket: WebSocket,
+    model: str,
+    voice: Optional[str],
+    language: str,
+    system_instruction: Optional[str] = None,
+    tts: bool = True,
+    tts_pace: float = 0.80,
+    tools: Optional[str] = None,
+    context_compression: bool = True,
+    context_compression_trigger_tokens: Optional[int] = None,
+    thinking: bool = False,
+    thinking_level: Optional[str] = None,
+    custom_voice_key: Optional[str] = None,
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    # Selects the persona's execution architecture. This is the ONLY input that
+    # decides which persona tooling loads -- the system instruction is never
+    # inspected for that purpose. See server/persona_registry.py.
+    persona_id: Optional[str] = None,
+    avatar_enabled: bool = False,
+    avatar_name: str = "auto",
+    avatar_custom_image: Optional[str] = None,
+    custom_voice_audio: Optional[str] = None,
+):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
-    gender = "male" if voice == "Custom-Male" else "female"
+    gender = voice_profiles.voice_gender(voice) or "female"
     logger.info(f"Starting agent with language: {language}")
-    
-    identity_instruction = (
-        "\n\nIDENTITY RULE:\n"
-        "1. When greeting the user initially, ask who you are speaking with today.\n"
-        "2. As soon as the user states their name, call `identify_user(name=...)` immediately.\n"
+
+    # Resolved before the prompt is composed: an architecture may own its system
+    # instruction outright. Routing is on persona_id alone -- the instruction text
+    # is never inspected to decide behaviour. See server/persona_registry.py.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
     )
-    prompt_text = (system_instruction or SYSTEM_PROMPT.replace("female", gender)) + identity_instruction + f"\n\nIMPORTANT: You must converse in {language} language."
+    effective_instruction = persona_architecture.compose_system_prompt(system_instruction)
+    if effective_instruction is not system_instruction:
+        logger.info(
+            "System instruction supplied by architecture "
+            f"{persona_architecture.pattern.value}; client-provided text ignored."
+        )
+
+    prompt_text = compose_live_system_prompt(
+        effective_instruction, gender, language, voice,
+        language_directive=not getattr(persona_architecture, "owns_language_policy", False),
+    )
+
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
@@ -642,35 +2137,57 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         "tr-TR": Language.TR_TR, "vi-VN": Language.VI_VN,
     }
     pipecat_language = language_map.get(language, Language.EN_US)
-    
+
+    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(vad, vad_mode)
+    logger.info(
+        f"Live VAD mode: {effective_vad_mode} "
+        f"(Silero={'enabled' if use_silero else 'disabled'}, "
+        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'})"
+    )
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.4)), serializer=CustomProtobufSerializer(),
+            serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
     )
 
     # Dynamic Tool & RAG / Memory Registration
-    standard_tools = [
-        FunctionSchema(
-            name="get_current_time",
-            description="Get the current time.",
-            properties={
-                "is_explicit_request": {
-                    "type": "boolean",
-                    "description": (
-                        "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                        "- Explaining schedules or timelines.\n"
-                        "- Mentioning time casually in conversation."
-                    )
-                }
-            },
-            required=["is_explicit_request"]
-        ),
-        search_knowledge_base_schema,
-    ]
+    # Persona tooling is resolved from the persona_id supplied at connect time.
+    # The system instruction is NEVER inspected to decide this: prompt text
+    # describes behaviour, it must not select infrastructure. Editing a prompt
+    # can no longer silently disable an engine, and a persona that happens to
+    # mention a car no longer inherits car tooling.
+    persona_architecture = get_persona_architecture(persona_id)
+    logger.info(
+        f"Persona architecture: {persona_architecture.pattern.value} "
+        f"(persona_id={persona_id or 'unspecified'})"
+    )
+
+    if getattr(persona_architecture, "has_exclusive_tools", lambda: False)():
+        standard_tools = list(persona_architecture.get_tool_schemas())
+    else:
+        standard_tools = [
+            FunctionSchema(
+                name="get_current_time",
+                description="Get the current time.",
+                properties={
+                    "is_explicit_request": {
+                        "type": "boolean",
+                        "description": (
+                            "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
+                            "- Explaining schedules or timelines.\n"
+                            "- Mentioning time casually in conversation."
+                        )
+                    }
+                },
+                required=["is_explicit_request"]
+            ),
+            search_knowledge_base_schema,
+        ]
+        standard_tools.extend(persona_architecture.get_tool_schemas())
+
 
     if tools:
         try:
@@ -689,53 +2206,88 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
-    use_external_tts = tts or (voice in ["Custom-Male", "Custom-Female"])
+    resolved_avatar_name = resolve_prebuilt_avatar_name(avatar_name, persona_id, voice, gender)
+    is_custom_voice = voice_profiles.is_custom_clone_voice(voice)
+    replicated_voice_bytes, voice_clone_requested = load_live_voice_sample(voice, custom_voice_audio)
+    # Only a real sample takes the clone path; a clone with no sample runs as plain Live and says so.
+    is_live_voice_clone = bool(replicated_voice_bytes)
+    # When Live Avatar or Gemini 3.8 Live Voice Cloning (ReplicatedVoiceConfig) is enabled,
+    # Gemini 3.8 Live synthesizes audio natively on Vertex AI (`google/gemini-3.8-live`),
+    # so external Chirp TTS must be disabled.
+    use_external_tts = False if (avatar_enabled or is_live_voice_clone) else (tts or is_custom_voice)
     tts_service = None
-    
     if use_external_tts:
-        voice_env = "CLONE_TTS_VOICE_KEY_MALE" if voice == "Custom-Male" else "CLONE_TTS_VOICE_KEY_FEMALE"
-        voice_key_path = os.getenv(voice_env) if voice in ["Custom-Male", "Custom-Female"] else None
-        
-        if voice_key_path:
-            with open(voice_key_path, "r") as f: key = f.read()
-            tts_service = GoogleTTSService(voice_cloning_key=key, params=GoogleTTSService.InputParams(language=Language.EN_US))
+        from agent import CustomGoogleTTSService
+        cloned_key_content = voice_profiles.resolve_clone_key(voice, custom_voice_key)
+        if cloned_key_content:
+            clone_lang = Language.HI_IN if ("hi" in (language or "").lower()) else Language.EN_US
+            tts_service = CustomGoogleTTSService(
+                voice_cloning_key=cloned_key_content,
+                params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
+            )
         else:
-            voice_id = voice if voice else "Aoede"
-            tts_service = GoogleTTSService(voice_id=f"{language}-Chirp3-HD-{voice_id}", params=GoogleTTSService.InputParams(language=pipecat_language))
+            voice_id = voice if voice and not voice.startswith("Custom") and "clone" not in voice.lower() else "Aoede"
+            tts_service = CustomGoogleTTSService(
+                voice_id=voice_id if "-Chirp3-HD-" in voice_id else f"{language}-Chirp3-HD-{voice_id}",
+                params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
+            )
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
     
     voice_name = voice if not use_external_tts else None
     if not voice_name and not use_external_tts:
         voice_name = "Aoede"
+    if voice_name and (voice_name.startswith("Custom") or "clone" in voice_name.lower()):
+        voice_name = "Puck" if gender == "male" else "Aoede"
+
+    # Voice compatibility guard:
+    # Most Gemini Live models (including 2.5 and 3.5) support the full voice library (Aoede, Despina, Puck, etc.).
+    # If a voice like 'Callirhoe' is unmapped on the Vertex Live gateway, fallback gracefully to Aoede.
+    if voice_name and voice_name.lower() == "callirhoe":
+        logger.warning(f"⚠️ Voice '{voice_name}' is currently unmapped on the Vertex Live endpoint. Falling back to 'Aoede'.")
+        voice_name = "Aoede"
 
     cwc = {}
     if context_compression:
         cwc["enabled"] = True
+        trigger = 5000
         if context_compression_trigger_tokens is not None:
-            cwc["trigger_tokens"] = context_compression_trigger_tokens
+            # Google GenAI / Vertex Live API strictly validates trigger_tokens in [5000, 128000]
+            # (throws "1007 None. Context window trigger tokens must be within [5000, 128000]").
+            trigger = max(5000, min(128000, int(context_compression_trigger_tokens)))
+        cwc["trigger_tokens"] = trigger
+        cwc["sliding_window"] = {"target_tokens": int(trigger * 0.8)}
 
-    AI_STUDIO_MODELS = {
-        "gemini-3.1-flash-live-preview",
-        "gemini-3.5-live-translate-preview",
-        "gemini-2.5-flash-native-audio-latest",
-        "gemini-2.5-flash-native-audio-preview-09-2025",
-        "gemini-2.5-flash-native-audio-preview-12-2025",
-    }
-    VERTEX_LIVE_MODELS = {
-        "gemini-3.5-flash-live-preview",
-        "gemini-3.5-flash-lite-live-preview",
-        "gemini-3.5-live-preview",
-        "gemini-3.5-live-extended-thinking-preview",
-        "gemini-live-2.5-flash-native-audio",
-        "gemini-live-2.5-flash",
-    }
-
-    clean_model = model[:-9] if model.endswith("-aistudio") else model
-    if clean_model in AI_STUDIO_MODELS or (model.endswith("-aistudio") and clean_model not in VERTEX_LIVE_MODELS):
-        is_ai_studio = True
-    else:
+    is_ai_studio, clean_model = resolve_live_model_gateway(model)
+    if avatar_enabled or is_live_voice_clone:
+        # Gemini 3.8 Live Avatar (AvatarConfig) and Live Voice Cloning (ReplicatedVoiceConfig)
+        # are served on the Vertex AI Enterprise gateway via `google/gemini-3.8-live`.
         is_ai_studio = False
+        clean_model = "gemini-3.8-live"
+        if avatar_enabled:
+            logger.info(
+                f"🎭 [Live Avatar] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
+                f"(avatar_name='{resolved_avatar_name}', custom_image={'yes' if avatar_custom_image else 'no'})"
+            )
+        if is_live_voice_clone:
+            logger.info(
+                f"🎙️ [Live Voice Clone] Enabled for session: forcing Vertex AI google/gemini-3.8-live "
+                f"(voice='{voice}', sample_bytes={len(replicated_voice_bytes) if replicated_voice_bytes else 0})"
+            )
+    model = clean_model
+
+    # Per-step tool swapping (context_update) is model-specific; the architecture decides from
+    # the resolved model whether setup declares its opening group or the full set.
+    bind_live_model = getattr(persona_architecture, "bind_live_model", None)
+    if bind_live_model is not None and bind_live_model(clean_model, vertex=not is_ai_studio):
+        tools_schema = ToolsSchema(standard_tools=list(persona_architecture.get_tool_schemas()))
+        logger.info(
+            f"[ToolSwap] {clean_model} on Vertex: setup declares "
+            f"{[t.name for t in tools_schema.standard_tools]}; other tools arrive per step via context_update."
+        )
+        if tools:
+            # A context_update replaces the whole declared set, so extra tools cannot ride along.
+            logger.warning("[ToolSwap] Client-supplied tools are not declared for this persona while tools swap per step.")
 
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
@@ -753,13 +2305,18 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             except Exception as sm_err:
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
+        thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
+        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            thinking=thinking_config,
+            vad=gemini_vad_params,
         )
         ai_studio_params = {
             "api_key": gemini_api_key,
@@ -775,13 +2332,18 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         if clean_model in ["gemini-3.5-live-preview", "gemini-3.5-live-extended-thinking-preview"]:
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
+        thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
+        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
             system_instruction=prompt_text,
             voice=voice_name,
             language=pipecat_language,
             modalities=llm_modalities,
-            context_window_compression=cwc
+            context_window_compression=cwc,
+            thinking=thinking_config,
+            vad=gemini_vad_params,
         )
         vertex_params = {
             "project_id": project_id,
@@ -790,15 +2352,59 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
             "transcribe_model_audio": True,
             "settings": settings,
         }
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            vertex_params["credentials_path"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        creds_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if creds_file and os.path.isfile(creds_file):
+            try:
+                with open(creds_file, "r", encoding="utf-8") as cf:
+                    if json.load(cf).get("type") == "service_account":
+                        vertex_params["credentials_path"] = creds_file
+            except Exception:
+                pass
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
+
+    # Avatar & Voice Clone flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
+    llm._avatar_enabled = bool(avatar_enabled)
+    llm._avatar_name = resolved_avatar_name
+    llm._avatar_custom_image = avatar_custom_image
+    llm._avatar_seq = 0
+    llm._replicated_voice_sample = replicated_voice_bytes
+    llm._fallback_voice_name = voice_name or ("Puck" if gender == "male" else "Aoede")
+    if voice_clone_requested and not replicated_voice_bytes:
+        llm._fall_back_voice("No voice sample was recorded or configured for this voice", "missing_sample")
+
+    # Context compression tracking and notification flags
+    effective_trigger = (max(5000, min(128000, int(context_compression_trigger_tokens))) if context_compression_trigger_tokens is not None else 5000) if context_compression else None
+    llm._context_compression_enabled = context_compression
+    llm._context_compression_trigger_tokens = effective_trigger
+    llm._context_compression_triggered = False
+    llm._last_prompt_tokens = 0
 
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("search_knowledge_base", search_knowledge_base_handler)
+    built_in_tools = {"get_current_time", "search_knowledge_base"}
+
+    # Persona-specific tools are owned by the architecture strategy resolved from
+    # persona_id. Adding a new persona architecture therefore never requires an
+    # edit here -- see server/persona_registry.py.
+    async def broadcast_persona_event(payload: dict):
+        """Push a persona telemetry event to the client over RTVI."""
+        await llm.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": payload,
+        }))
+
+    built_in_tools.update(
+        persona_architecture.register_handlers(llm, broadcast=broadcast_persona_event)
+    )
+
+    # Give the service the architecture and a channel to the client, so a
+    # completed user transcript can update persona telemetry without a tool.
+    llm.persona_architecture = persona_architecture
+    llm.persona_broadcast = broadcast_persona_event
+
     
     # Register generic handler for dynamic tools (skip built-in tools)
-    built_in_tools = {"get_current_time", "search_knowledge_base"}
     for tool in standard_tools:
         if tool.name not in built_in_tools:
             llm.register_function(tool.name, dynamic_tool_handler)
@@ -828,18 +2434,44 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         await processor.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
         return False
 
+    gate_mic_on_greeting = "3.1" in (model or "")
+    start_trigger = StartTriggerProcessor(
+        language=language,
+        gate_mic_on_greeting=gate_mic_on_greeting,
+    )
+    llm.start_trigger = start_trigger
+    opening_messages = getattr(persona_architecture, "opening_messages", None)
+    if opening_messages is not None:
+        start_trigger.opening_messages = list(opening_messages())
+    start_trigger.greeting_text = getattr(persona_architecture, "greeting_text", None)
+
+    # Padding only makes sense when local VAD frames actually arrive.
+    turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if use_silero else None)
+    llm._turn_tracker = turn_tracker
+    llm._last_input_turn = turn_tracker.current
+    llm._live_output_turn = turn_tracker.current
+    if tts_service is not None:
+        tts_service._turn_tracker = turn_tracker
+
+    live_vad = build_live_vad_processor(vad, vad_mode)
+    user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
+    llm.user_idle_processor = user_idle
+
     pipeline = Pipeline([
         transport.input(),
-        StartTriggerProcessor(language=language),
-        UserIdleProcessor(callback=handle_user_idle, timeout=30.0),
+        start_trigger,
+        *([live_vad] if live_vad else []),
+        TurnBoundaryProcessor(turn_tracker),
+        user_idle,
         context_aggregator.user(),
         llm,
         *([tts_service] if tts_service else []),
+        ServerAudioTimingProcessor(),
         transport.output(),
         context_aggregator.assistant(),
     ])
 
-    session_id = f"session_{int(time.time()*1000)}"
+    session_id = current_session_id()
     trace_url = GLOBAL_LANGSMITH_TRACER.start_session(session_id, model=model, voice=voice, language=language)
 
     task = PipelineTask(pipeline, params=PipelineParams(
@@ -847,7 +2479,8 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
         enable_usage_metrics=True,
     ))
     
-    task.add_observer(WhiskerObserver(pipeline))
+    if os.getenv("ENABLE_WHISKER") == "1":
+        task.add_observer(WhiskerObserver(pipeline))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
@@ -861,8 +2494,24 @@ async def run_agent_live(websocket: WebSocket, model: str, voice: Optional[str],
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        turn_tracker.close()
         logger.info("Pipecat Client disconnected")
+        history = getattr(llm, '_dialogue_history', [])
+        if history:
+            transcript_lines = [f"[{i+1}] {turn['role']}: {turn['text']}" for i, turn in enumerate(history)]
+            full_transcript = "\n".join(transcript_lines)
+            logger.info(
+                f"\n==================== TOTAL SESSION TRANSCRIPTION HISTORY ({len(history)} turns) ====================\n"
+                f"{full_transcript}\n"
+                f"============================================================================================\n"
+            )
+        else:
+            logger.info("Pipecat Client disconnected (no dialogue history recorded).")
         GLOBAL_LANGSMITH_TRACER.end_session()
         await task.cancel()
 
-    await PipelineRunner(handle_sigint=False).run(task)
+    try:
+        await PipelineRunner(handle_sigint=False).run(task)
+    finally:
+        turn_tracker.close()
+        GLOBAL_LANGSMITH_TRACER.end_session()

@@ -3,6 +3,19 @@ title: Tool Calling & Async Orchestration
 description: Asynchronous tool calling, non-blocking execution, and state orchestration in Gemini Live.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>How the agent asks your backend to do things (look up an order, book a seat) while the conversation keeps going. Also how to change its instructions and tools mid-call, and what to put in a tool result.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Tool calls are where voice agents freeze, go silent, or drift in accent. The result you return is the last thing the model reads before it speaks.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>A one-line pointer instead of a repeated step card in each tool result saves about 550 to 680 history tokens (billing units) per step change.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which tools are available at each step of the call, and what a tool result is allowed to say out loud.</dd></div>
+  </dl>
+</aside>
+
 In standard HTTP request-response models, the model stops generating when it calls a tool, waits for the API response, and then continues. 
 
 In **Gemini Live**, the session is a continuous, real-time audio stream. When the model decides to call a tool, **the audio stream does not pause**. The user can keep speaking while your backend executes the function.
@@ -148,7 +161,7 @@ lookup_order_decl = types.FunctionDeclaration(
 
 Rather than stuffing 25 tools and 5,000 tokens of instructions into a single monolithic prompt, use a lightweight **Router / Triage configuration** and swap active instructions when the conversation transitions to a specialized workflow (such as Billing, Technical Support, or Cancellations).
 
-See [Optimization Patterns: Dynamic Prompt Cards & Phase Gates](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) for the full state-machine implementation that keeps active prompt tokens averaging ~500 tokens per turn without dropping the WebSocket connection.
+See [Optimization Patterns: Dynamic Prompt Cards & Phase Gates](/gemini-live/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) for the full state-machine implementation that keeps active prompt tokens averaging ~500 tokens per turn without dropping the WebSocket connection.
 
 ---
 
@@ -158,11 +171,11 @@ A call often moves through stages. First you verify the caller, then you fix the
 
 | What you want to change | How | Supported? |
 | :-- | :-- | :-- |
-| The instructions | Send `clientContent` with `role="system"` and `turn_complete=False` | Yes, documented |
-| The tool list | Open a new session with the new `setup.tools` | Yes, documented |
-| Both the tool list and `systemInstruction` in place, without reconnecting | Raw `context_update` frame on Vertex AI `gemini-3.8-live` | No (exposed on the wire, not yet documented or in the SDK) |
+| Both the tool list and `systemInstruction` in place, without reconnecting | `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`) | Yes on Vertex AI (`gemini-3.8-live`); SDK also sends the frame on the Gemini Developer API (confirm your API key has server-side `contextUpdate` access) |
+| The instructions only | `await session.send_context_update(system_instruction="...")` (`gemini-3.8-live`), or `clientContent` with `role="system"` and `turn_complete=False` (Vertex AI, including Gemini 2.5 native audio) | Yes, documented |
+| The tool list on models that do not support `contextUpdate` (such as Gemini 2.5 native audio) | Open a new session with the new `setup.tools` | Yes, documented |
 
-### Change the instructions: send a system turn
+### Change the instructions: send a system turn (Vertex AI)
 
 ```python
 await session.send_client_content(
@@ -186,27 +199,82 @@ The supported way to swap tools is a new session with a new `setup.tools`. Done 
 2. Keep a short running summary of the call (key facts plus the last few turns).
 3. Open the new session with the persona, that summary, and the new tools.
 
-[Session Architecture: Managed Session Cycling](/gemini_live_pipecat/gemini-live-skill/#b-the-managed-session-cycling-pattern) walks through each step.
+[Session Architecture: Managed Session Cycling](/gemini-live/gemini-live-skill/#b-the-managed-session-cycling-pattern) walks through each step.
 
-### Swap per-card tools and `systemInstruction` in place with `context_update` (Vertex AI `gemini-3.8-live`)
+### Swap per-card tools and `systemInstruction` in place with `send_context_update` (`google-genai >= 2.32.0`)
 
-The Vertex AI Live WebSocket accepts a `context_update` (`contextUpdate`) client message with two public fields: `tools` and `systemInstruction`. On `gemini-3.8-live`, sending it inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
+Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `session.send_context_update()` lets you replace `system_instruction`, `tools`, or both in place during a live call on `gemini-3.8-live` without closing the WebSocket:
 
-:::caution[`context_update` is exposed on the wire, but not yet documented or supported]
-- No public Google page describes `context_update` yet, and it comes with no compatibility promise or deprecation notice period.
-- Released versions of `google-genai` do not include a helper for it. You write raw JSON to the SDK session's underlying WebSocket (`session._ws.send(...)`).
-- It works on Vertex AI `gemini-3.8-live` (`v1beta1` and `v1`). Google AI Studio ignores it, and `gemini-live-2.5-flash-native-audio` rejects it and closes the connection (`1007`). The server sends no confirmation frame when an update lands.
-- Removing a tool declaration does not remove earlier `function_call` turns from the conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
+```python
+# 1. Replace the system prompt only (existing tools stay untouched):
+await session.send_context_update(
+    system_instruction="Base rules...\n\nCURRENT PROMPT CARD\nStep: Payment..."
+)
+
+# 2. Replace the active tool list (pass Python functions or types.Tool objects):
+await session.send_context_update(tools=[set_call_language, dispatch_checkout_link])
+
+# 3. Remove all tools on a talk-only closing card (0 tool schema tokens/turn):
+await session.send_context_update(tools=[])
+
+# 4. Replace both in one atomic frame inside a blocking tool handler:
+await session.send_context_update(
+    system_instruction=updated_system_instruction,
+    tools=card_tools,
+)
+```
+
+Sending `send_context_update` inside a blocking tool handler (right before returning the `FunctionResponse`) replaces the active tool list with only the tools the next prompt card needs and refreshes `systemInstruction` with the active card and session state, so sliding-window compression never drops the card.
+
+:::caution[Operational rules for `send_context_update`]
+- **Update at major stage transitions, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Swap them when the conversation moves to a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
+- **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
+- **Check active tools before running**: Removing a tool declaration does not remove earlier `function_call` turns from conversation history, so the model can occasionally imitate an old call. Check incoming tool calls against the current card's active tool list before running them.
+- **Model & SDK compatibility**: `session.send_context_update()` is in `google-genai >= 2.32.0` and serializes `contextUpdate` for both Vertex AI and the Gemini Developer API. On Vertex AI (`gemini-3.8-live`) it is ungated; on the Gemini Developer API, confirm your API key has server-side `contextUpdate` access before relying on it in production. Legacy `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` with `1007` (use `send_client_content` with `role="system"` on Vertex AI 2.5 instead). If your non-Python SDK release has no context-update helper yet, send the raw `contextUpdate` JSON frame below.
 :::
 
-#### WebSocket wire payloads (`context_update`)
+#### Python tool-handler pattern (`google-genai >= 2.32.0`)
 
-Every field you include in `context_update` replaces (does not merge) the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty wrapper object (`{"tools": {}}`) clears all tools:
+```python
+from typing import Any, Dict, List
+from google.genai import types
 
-```json
+
+async def advance_card_and_tools(
+    session,
+    function_call,
+    card_tools: List[Any],
+    updated_system_instruction: str,
+    tool_result: Dict[str, Any],
+):
+    # 1. Send context_update while the model is blocked waiting on this tool response.
+    #    Pass card_tools=[] on a talk-only closing card to clear all tools.
+    await session.send_context_update(
+        system_instruction=updated_system_instruction,
+        tools=card_tools,
+    )
+
+    # 2. Return the FunctionResponse (with a short pointer instead of repeating the full card).
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(
+                id=function_call.id,
+                name=function_call.name,
+                response=tool_result,
+            )
+        ]
+    )
+```
+
+#### Raw WebSocket JSON payloads (for non-Python runtimes or `google-genai < 2.32.0`)
+
+On the wire, `send_context_update` sends a `contextUpdate` (or `context_update`) message. Every field you include replaces the previous value. Because Protobuf cannot distinguish an unset repeated field from an empty list, `tools` wraps the `tools` array inside an outer object (`{"tools": {"tools": [...]}}`), and sending an empty list (`{"tools": {"tools": []}}`) or empty wrapper object (`{"tools": {}}`) clears all tools:
+
+```jsonc
 // 1. Replace both systemInstruction and the active tool list for the next card:
 {
-  "context_update": {
+  "contextUpdate": {
     "systemInstruction": {
       "parts": [{ "text": "Base rules...\n\nCURRENT PROMPT CARD\nStep: Payment..." }]
     },
@@ -241,68 +309,92 @@ Every field you include in `context_update` replaces (does not merge) the previo
 
 // 2. Clear all tools when entering a talk-only farewell card (0 tool schema tokens/turn):
 {
-  "context_update": {
-    "tools": {}
+  "contextUpdate": {
+    "tools": { "tools": [] }
   }
 }
 ```
 
-#### Minimal Python helper (send inside a blocking tool call before returning the result)
+:::danger[An empty `"tools": {}` or `"tools": {"tools": []}` clears every tool]
+The `tools` wrapper exists so the server can tell "no tools update" apart from "clear all tools". If the `tools` key is absent (`tools=None` in `send_context_update`), the current tools stay. If it is present with an empty list (`tools=[]` in `send_context_update`, which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form), the server clears all tools. A custom serializer that always writes a default `"tools": {}` when you only meant to update `systemInstruction` removes every tool for the rest of the call, and the server sends no error. Omit the `tools` key unless you mean to change the tools.
+:::
+
+For the animated walkthrough of how Gemini Live stores instructions versus history, the 8-step flight-booking breakdown, and the complete tool-handler code, see [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini-live/optimization/prompt-cards/).
+
+---
+
+## 8. What to put in a FunctionResponse
+
+Every tool result is added to the conversation history and billed again on every later turn. It also sits right before the point where the model starts generating audio, so its wording steers the next reply more than anything else in the prompt. Keep it short, and split it into fields the model speaks and fields it only reads.
+
+### The compact response contract
+
+When a tool call moves the call to a new phase, put the full card in `systemInstruction` (see [section 7](#7-changing-tools-and-instructions-during-a-call)) and return only:
+
+| Field | What it holds | Size |
+| :--- | :--- | :--- |
+| `call_state` | Confirmed facts so far: `"Language: Hindi \| Trip: one-way BLR to DEL, 18 Oct \| Adults: 2"` | Under 60 tokens |
+| `instruction` | What to say or ask next | One sentence |
+| `prompt_card` | A pointer, not the card: `"Prompt card 4 of 8 (Return Flight Selection) is now in your system instruction. Follow it."` | One line |
+| `vocal_tone` | The voice and accent reminder (see below) | One line |
+| spoken fields | `facts`, `ask_say`, `note_say`, any `*_say` or `*_spell` field | As short as the reply allows |
+
+Do not repeat a multi-hundred-token phase card in every tool result. Fourteen tool calls that each carried a ~495-token card added about 6,900 tokens of history in one call. A one-line pointer instead of the full card saves about 550 to 680 history tokens per card change.
+
+### Format numbers in code, not in the model's speech
+
+The audio model is weakest at formatting while it speaks. Do the formatting in your handler and return ready-to-say strings:
+
+| Raw value | Spoken field | What the handler returns |
+| :--- | :--- | :--- |
+| `fare: 4500` | `fare_say` | `"₹4,500 (four thousand five hundred rupees)"`, or the same amount in the caller's script for Hindi or Tamil |
+| `depart: "06:20"` | `depart_say` | `"6:20 AM"` |
+| `flight: "XY 2134"` | `flight_say` | `"X Y two one three four"` |
+| `name: "SACHIN"` | `first_spell` | `"S as in Sierra, A as in Alpha, C as in Charlie, H as in Hotel, I as in India, N as in November"` |
 
 ```python
-import json
-from typing import Any, Dict, List, Optional
-from google.genai import types
+def rupees(amount: int) -> str:
+    """Indian digit grouping plus words: 150000 -> '₹1,50,000 (one lakh fifty thousand rupees)'."""
+    digits = str(amount)
+    head, tail = digits[:-3], digits[-3:]
+    while len(head) > 2:
+        tail = f"{head[-2:]},{tail}"
+        head = head[:-2]
+    grouped = f"{head},{tail}" if head else tail
+    words = number_to_words(amount)  # your own helper, or num2words(amount, lang="en_IN")
+    return f"₹{grouped} ({words} rupees)"
 
 
-def context_update_frame(
-    declarations: Optional[List[Dict[str, Any]]] = None,
-    system_instruction: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Build the raw context_update frame.
-
-    - declarations=[...] -> replaces active tools with the given declarations
-    - declarations=[]    -> sends {"tools": {}} to clear all active tools
-    - declarations=None  -> omits "tools" so existing tools stay unchanged
-    """
-    update: Dict[str, Any] = {}
-    if declarations is not None:
-        update["tools"] = (
-            {"tools": [{"functionDeclarations": declarations}]}
-            if declarations
-            else {}
-        )
-    if system_instruction is not None:
-        update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-    return {"context_update": update}
-
-
-async def advance_card_and_tools(
-    session,
-    function_call,
-    card_declarations: List[Dict[str, Any]],
-    updated_system_instruction: str,
-    tool_result: Dict[str, Any],
-):
-    # 1. Send context_update while the model is blocked waiting on this tool response.
-    #    The generation that reads the tool response will already have the new card's tools.
-    frame = context_update_frame(
-        declarations=card_declarations,
-        system_instruction=updated_system_instruction,
-    )
-    await session._ws.send(json.dumps(frame))
-
-    # 2. Return the FunctionResponse (with a short pointer instead of repeating the full card).
-    await session.send_tool_response(
-        function_responses=[
-            types.FunctionResponse(
-                id=function_call.id,
-                name=function_call.name,
-                response=tool_result,
-            )
-        ]
-    )
+def clock(hhmm: str) -> str:
+    hour, minute = map(int, hhmm.split(":"))
+    suffix = "AM" if hour < 12 else "PM"
+    return f"{hour % 12 or 12}:{minute:02d} {suffix}"
 ```
 
-For the animated walkthrough of how Gemini Live stores instructions versus history, the 8-step flight-booking breakdown, and the complete tool-handler code, see [Pillar 2: Dynamic Prompt Cards & Per-Card Tools](/gemini_live_pipecat/optimization/prompt-cards/).
+### Tell the model which fields to speak
+
+Add one rule to the base system instruction that lists the spoken fields and the private ones:
+
+```text
+Tool results are private guidance. Speak only their spoken fields, in the caller's language:
+facts, ask_say, heads_up, note_say, change, any field ending in _say or _spell (exactly as given),
+and any field the current step or the instruction tells you to read.
+Never speak instruction, prompt_card, call_state, or vocal_tone.
+If a result has an error field, do not read it. Fix the argument it names and call the tool once more,
+unless its instruction says otherwise.
+```
+
+### Keep the accent after tool calls: `vocal_tone`
+
+The system instruction sits at the top of the prompt. After three or four audio turns, it is thousands of tokens away from the decode point, while the newest tool result is right next to it. A result full of English JSON keys and values can then pull the voice toward the model's default US English accent. Repeat a one-line tone reminder inside every tool result:
+
+```python
+VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
+
+
+def respond(payload: dict, call_state: str) -> dict:
+    return {**payload, "call_state": call_state, "vocal_tone": VOCAL_TONE}
+```
+
+Keep the same wording as the accent line in your system instruction, and list `vocal_tone` among the fields the model never speaks. In field testing on Indian-English agents, this removed most post-tool accent drift.
 

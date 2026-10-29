@@ -285,6 +285,83 @@ header.header::before {
   border: 1px solid var(--gl-amber-border);
 }
 
+/* ==========================================================================
+   4b. "In one minute" summary card (top of every page, plain-English layer)
+   ========================================================================== */
+.one-minute {
+  margin: 1.25rem 0 2rem;
+  padding: 1.25rem 1.5rem 1rem;
+  border-radius: 0.875rem;
+  background: var(--gl-card-bg);
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 32%, var(--gl-card-border));
+  border-left: 4px solid var(--sl-color-accent);
+  box-shadow: var(--gl-shadow);
+}
+
+.one-minute-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.one-minute-audience {
+  font-size: 0.78rem;
+  color: var(--gl-text-secondary);
+}
+
+.one-minute-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem 1.5rem;
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .one-minute-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.one-minute-cell {
+  margin: 0;
+  padding: 0;
+}
+
+.one-minute-cell dt {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gl-text-secondary);
+  margin: 0 0 0.25rem;
+}
+
+.one-minute-cell dd,
+.sl-markdown-content .one-minute dd {
+  margin: 0 !important;
+  padding: 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--gl-text-primary);
+}
+
+.one-minute-cell dt,
+.sl-markdown-content .one-minute dt {
+  margin-top: 0 !important;
+}
+
+.one-minute-number dd,
+.sl-markdown-content .one-minute .one-minute-number dd {
+  font-weight: 650;
+  color: var(--sl-color-accent-high, var(--sl-color-accent));
+}
+
+.one-minute code {
+  font-size: 0.85em;
+}
+
 /* Starlight LinkCard & Card Hover Elevation */
 .sl-link-card,
 .card {

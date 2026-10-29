@@ -7,6 +7,8 @@ import os
 import time
 import uuid
 import threading
+from contextvars import ContextVar
+from collections import OrderedDict
 from typing import Optional, Dict, Any
 from datetime import datetime
 from loguru import logger
@@ -226,4 +228,41 @@ class LangSmithTracer:
             self.root_run = None
 
 
-GLOBAL_LANGSMITH_TRACER = LangSmithTracer()
+class SessionTracerRegistry:
+    """Compatibility facade; each call and its child tasks own one tracer."""
+    def __init__(self):
+        self._current = ContextVar("voice_session_tracer", default=None)
+        self._sessions = OrderedDict()
+
+    def start_session(self, session_id, *args, **kwargs):
+        tracer = LangSmithTracer()
+        self._current.set(tracer)
+        self._sessions[session_id] = tracer
+        self._sessions.move_to_end(session_id)
+        # Keep recent trace links for the post-call drawer without retaining an
+        # ever-growing registry. Active tasks keep their own tracer reference.
+        while len(self._sessions) > 200:
+            self._sessions.popitem(last=False)
+        return tracer.start_session(session_id, *args, **kwargs)
+
+    def get_current_trace_url(self, session_id=None):
+        tracer = self._sessions.get(session_id) if session_id else self._current.get()
+        return tracer.get_current_trace_url() if tracer else None
+
+    def end_session(self, *args, **kwargs):
+        tracer = self._current.get()
+        if tracer:
+            tracer.end_session(*args, **kwargs)
+        self._current.set(None)
+
+    def __getattr__(self, name):
+        if name.startswith("record_"):
+            def record(*args, **kwargs):
+                tracer = self._current.get()
+                if tracer:
+                    return getattr(tracer, name)(*args, **kwargs)
+            return record
+        raise AttributeError(name)
+
+
+GLOBAL_LANGSMITH_TRACER = SessionTracerRegistry()

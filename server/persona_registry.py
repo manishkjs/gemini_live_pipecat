@@ -1,0 +1,1143 @@
+"""Deterministic persona -> architecture routing for the voice agents.
+
+Why this module exists
+----------------------
+Persona behaviour used to be inferred by sniffing substrings out of the caller's
+``system_instruction`` (``"Abhay" in system_instruction``, ``"Lamborghini" in
+system_instruction`` and friends). That coupling is wrong in three ways:
+
+1. It is fragile. Editing one word of a prompt silently disables a whole engine.
+2. It leaks. Any persona that happens to mention a car inherits car tooling.
+3. It confuses layers. Prompt text describes *behaviour*; it must never decide
+   *infrastructure*.
+
+Routing is therefore keyed on the immutable ``persona_id`` that the client already
+owns, and nothing else. No prompt text is ever inspected here or downstream.
+
+Adding a new architecture
+-------------------------
+Subclass :class:`BasePersonaArchitecture`, then register the persona in
+:data:`PERSONA_REGISTRY`. ``agent_live.py`` does not need to change: it asks the
+registry for an architecture object and calls the same three methods on whatever
+it gets back.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+import asyncio
+from enum import Enum
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
+
+from persona_identity import PERSONA_ALIASES, normalize_persona_id
+
+
+class ArchitecturePattern(str, Enum):
+    """The prompt/tooling strategy a persona runs under."""
+
+    #: A single static system instruction, no persona-specific tools.
+    MONOLITHIC_STATIC = "monolithic_static"
+    #: Abhay's strict concession ladder with server-authoritative deal state.
+    STATE_LADDER_NEGOTIATOR = "negotiator_ladder"
+    #: Pragya's context cards selected by Gemini through ``switch_phase``.
+    JIT_PHASE_CARDS = "jit_phase_cards"
+    #: Ananya's Cymbal Mutual Fund Advisor with portfolio/NAV/SIP tools.
+    JIT_MF_ADVISOR = "jit_mf_advisor"
+    #: Kavya's Cymbal Smartglasses companion with 14 mock smartglasses tools.
+    GLASS_BUDDY = "glass_buddy"
+    #: Tara's Book My Trip flight booking: the server pushes prompt cards inside tool
+    #: results and, where the model supports it, swaps the declared tools per card.
+    JIT_TRAVEL_CARDS = "jit_travel_cards"
+
+
+class PersonaConfig(NamedTuple):
+    persona_id: str
+    architecture: ArchitecturePattern
+    #: False locks the prompt editor in Voice Studio. Used where the prompt is
+    #: load-bearing for a state machine and a demo edit would silently break it.
+    is_ui_editable: bool = True
+
+
+PERSONA_REGISTRY: Dict[str, PersonaConfig] = {
+    # Pragya - Lamborghini VIP outbound concierge. Prompt is locked in the UI
+    # because the JIT phase engine depends on its exact contract.
+    "lamborghini-concierge": PersonaConfig(
+        persona_id="lamborghini-concierge",
+        architecture=ArchitecturePattern.JIT_PHASE_CARDS,
+        is_ui_editable=False,
+    ),
+    # Abhay - car negotiator (AeroNxt EV, rupees). Entirely independent of the supercar modules;
+    # they share no code, no state and no branch.
+    "car-negotiator": PersonaConfig(
+        persona_id="car-negotiator",
+        architecture=ArchitecturePattern.STATE_LADDER_NEGOTIATOR,
+    ),
+    "debt-collector": PersonaConfig("debt-collector", ArchitecturePattern.MONOLITHIC_STATIC),
+    # Kavya - Cymbal Smartglasses AI Companion (14 tools + JIT phase cards)
+    "kavya-glass-buddy": PersonaConfig(
+        persona_id="kavya-glass-buddy",
+        architecture=ArchitecturePattern.GLASS_BUDDY,
+        is_ui_editable=False,
+    ),
+    # Ananya - Cymbal Mutual Fund Advisor (portfolio/NAV/SIP + JIT phase cards)
+    "ananya-advisor": PersonaConfig(
+        persona_id="ananya-advisor",
+        architecture=ArchitecturePattern.JIT_MF_ADVISOR,
+        is_ui_editable=False,
+    ),
+    "storyteller": PersonaConfig("storyteller", ArchitecturePattern.MONOLITHIC_STATIC),
+    "ai-companion": PersonaConfig("ai-companion", ArchitecturePattern.MONOLITHIC_STATIC),
+    # Tara - Book My Trip flight booking (6 tools + 8 server-pushed prompt cards). Locked:
+    # the cards, the tool results and the server-side call state are one contract.
+    "travel-concierge": PersonaConfig(
+        persona_id="travel-concierge",
+        architecture=ArchitecturePattern.JIT_TRAVEL_CARDS,
+        is_ui_editable=False,
+    ),
+    "custom": PersonaConfig("custom", ArchitecturePattern.MONOLITHIC_STATIC),
+}
+
+# Preserve direct registry lookups for old IDs without duplicating routing rules.
+PERSONA_REGISTRY.update({
+    alias: PERSONA_REGISTRY[canonical]._replace(persona_id=alias)
+    for alias, canonical in PERSONA_ALIASES.items()
+})
+
+
+def resolve_persona_architecture(persona_id: Optional[str]) -> ArchitecturePattern:
+    """Map a persona id to its architecture. Unknown ids fall back to monolithic.
+
+    An unknown id is not an error: direct API callers and the ``custom`` persona
+    legitimately have no registry entry, and the safe default is the plain
+    static-prompt pipeline with no persona-specific tooling.
+    """
+    if not persona_id:
+        return ArchitecturePattern.MONOLITHIC_STATIC
+    config = PERSONA_REGISTRY.get(normalize_persona_id(persona_id))
+    return config.architecture if config else ArchitecturePattern.MONOLITHIC_STATIC
+
+
+def is_persona_ui_editable(persona_id: Optional[str]) -> bool:
+    """Whether Voice Studio may let a demo user edit this persona's prompt."""
+    if not persona_id:
+        return True
+    config = PERSONA_REGISTRY.get(normalize_persona_id(persona_id))
+    return config.is_ui_editable if config else True
+
+
+# ---------------------------------------------------------------------------
+# Architecture strategies
+# ---------------------------------------------------------------------------
+
+
+def standard_function_schemas(declarations):
+    """Keep the architecture contract provider-neutral for both Live and Cascade."""
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    result = []
+    for declaration in declarations:
+        if isinstance(declaration, FunctionSchema):
+            result.append(declaration)
+            continue
+        parameters = declaration.parameters.model_dump(mode="json", exclude_none=True) if declaration.parameters else {}
+        result.append(FunctionSchema(
+            name=declaration.name,
+            description=declaration.description or "",
+            properties=parameters.get("properties", {}),
+            required=parameters.get("required", []),
+        ))
+    return result
+
+
+class BasePersonaArchitecture(ABC):
+    """One persona execution strategy: its tools, its handlers, its state.
+
+    Implementations must be safe to construct even when their optional
+    dependencies are missing, so construction stays cheap and import-light.
+    Heavy imports belong inside the methods.
+    """
+
+    pattern: ArchitecturePattern = ArchitecturePattern.MONOLITHIC_STATIC
+    model_controls_conversation = False
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        """If True, only get_tool_schemas() are passed to the model, omitting global standard_tools."""
+        return False
+
+    @abstractmethod
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        """Persona-specific tool schemas appended to the standard set."""
+
+    @abstractmethod
+    def register_handlers(
+        self,
+        llm: Any,
+        broadcast: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        engine: str = "live",
+    ) -> List[str]:
+        """Wire handlers onto ``llm``. Returns the names registered."""
+
+    async def on_user_transcript(
+        self,
+        text: str,
+        broadcast: Optional[Callable[[Dict[str, Any]], Any]] = None,
+    ) -> None:
+        """Observe a completed caller utterance. Default: do nothing.
+
+        This is the seam for telemetry that must not cost the model anything --
+        progress tracking, funnel position, analytics. It runs on a transcript
+        that already exists, so it adds no tokens, no tool round-trip and no
+        turn latency. Architectures that need it override; the rest ignore it.
+        """
+        return None
+
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        """Final say over the system instruction sent to the model.
+
+        Defaults to whatever the client supplied. Architectures whose prompt is
+        load-bearing override this, which is what actually makes a "locked"
+        prompt locked: the UI hides the editor, but this discards edits even if
+        the client sends them anyway.
+        """
+        if system_instruction:
+            if getattr(self, "persona_id", None) == "debt-collector" and system_instruction.startswith("You are Meera,") and "off-topic question" not in system_instruction:
+                from persona_prompt_cards.meera_cards import get_meera_system_instruction, get_meera_signature_instruction
+                if "impatient, assertive" in system_instruction:
+                    return get_meera_signature_instruction()
+                return get_meera_system_instruction()
+            return system_instruction
+        from persona_prompt_cards import get_persona_system_instruction
+        return get_persona_system_instruction(getattr(self, "persona_id", None), engine=engine)
+
+
+
+class MonolithicArchitecture(BasePersonaArchitecture):
+    """Static system prompt, no persona-specific tools. The default."""
+
+    pattern = ArchitecturePattern.MONOLITHIC_STATIC
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        return []
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        return []
+
+
+class NegotiatorLadderArchitecture(BasePersonaArchitecture):
+    """Abhay. Server-authoritative rupee concession ladder via ``negotiation.Deal``."""
+
+    pattern = ArchitecturePattern.STATE_LADDER_NEGOTIATOR
+
+    def __init__(self) -> None:
+        self._deal = None
+
+    @property
+    def deal(self):
+        """Lazily built so importing this module never pulls in negotiation."""
+        if self._deal is None:
+            import persona_tools.negotiation as negotiation
+
+            self._deal = negotiation.Deal(strict_ladder=True)
+        return self._deal
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        import persona_tools.negotiation as negotiation
+        from pipecat.adapters.schemas.function_schema import FunctionSchema
+
+        return [
+            FunctionSchema(
+                name=s["name"],
+                description=s["description"],
+                properties=s["properties"],
+                required=s["required"],
+            )
+            for s in negotiation.TOOL_SCHEMAS
+        ]
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        from loguru import logger
+
+        deal = self.deal
+
+        async def handle_concede_price(params):
+            reason = (params.arguments or {}).get("reason", "buyer negotiated price")
+            res = deal.concede(reason)
+            logger.info(f"[Negotiator] concede_price -> {res}")
+            await params.result_callback(res)
+
+        async def handle_include_extra(params):
+            item = (params.arguments or {}).get("item", "")
+            res = deal.grant_extra(item)
+            logger.info(f"[Negotiator] include_extra -> {res}")
+            await params.result_callback(res)
+
+        async def handle_close_deal(params):
+            args = params.arguments or {}
+            price = args.get("price_inr", args.get("price", 0))
+            res = deal.close(price)
+            logger.info(f"[Negotiator] close_deal -> {res}")
+            await params.result_callback(res)
+
+        llm.register_function("concede_price", handle_concede_price)
+        llm.register_function("include_extra", handle_include_extra)
+        llm.register_function("close_deal", handle_close_deal)
+        return ["concede_price", "include_extra", "close_deal"]
+
+
+class JITPhaseCardsArchitecture(BasePersonaArchitecture):
+    """Gemini chooses a phase; the server delivers its card and validates tools.
+
+    Opening lives in the root instruction. No transcript observer, classifier,
+    forced sequence or background model call selects the other three phases.
+    """
+
+    pattern = ArchitecturePattern.JIT_PHASE_CARDS
+    model_controls_conversation = True
+
+    def __init__(self) -> None:
+        self._tracker = None
+        self._slots = None
+        self._llm = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._card_delivery_status = None
+        self._phase_broadcast = None
+        self._phase_event_revision = 0
+        self._confirmed_bookings: Dict[tuple, Dict[str, Any]] = {}
+        self._pending_card_args: Optional[Dict[str, Any]] = None
+
+    async def flush_pending_card(self) -> None:
+        if self._pending_card_args is not None:
+            args = self._pending_card_args
+            self._pending_card_args = None
+            async with self._card_lock:
+                await self._switch_phase(args)
+
+    @property
+    def tracker(self):
+        if self._tracker is None:
+            from persona_tools.supercar_phases import PragyaPhaseTracker
+            self._tracker = PragyaPhaseTracker()
+        return self._tracker
+
+    @property
+    def slots(self):
+        if self._slots is None:
+            from persona_tools.supercar_phases import CallSlots
+            self._slots = CallSlots()
+        return self._slots
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        if engine == "cascade":
+            from persona_prompt_cards.pragya_cards import get_pragya_monolithic_system_instruction
+            return get_pragya_monolithic_system_instruction()
+        from persona_prompt_cards.pragya_cards import get_pragya_root_system_instruction
+        return get_pragya_root_system_instruction()
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from persona_tools.supercar import SUPERCAR_TOOL_SCHEMAS, create_appointment_booking_schema
+        if engine == "cascade":
+            return [create_appointment_booking_schema]
+        return list(SUPERCAR_TOOL_SCHEMAS)
+
+    async def _emit(self, payload: Dict[str, Any]) -> None:
+        """A UI connection failure must not prevent the model's tool response."""
+        if self._phase_broadcast is not None:
+            try:
+                await self._phase_broadcast(payload)
+            except Exception as exc:
+                from loguru import logger
+                logger.warning(f"[Pragya] UI event failed: {exc}")
+
+    async def _broadcast_phase(self, card_pushed: bool) -> None:
+        from diagnostic_buffer import current_session_id
+        self._phase_event_revision += 1
+        await self._emit({
+            "type": "phase_transition",
+            "session_id": current_session_id(),
+            "phase_id": self.tracker.current_phase,
+            "title": self.tracker.title_of(self.tracker.current_phase),
+            "reason": "model selected phase" if card_pushed else "card delivery failed; phase unchanged",
+            "card_pushed": card_pushed,
+            "delivery_status": self._card_delivery_status,
+            "revision": self._phase_event_revision,
+            "furthest_phase": self.tracker.furthest_phase,
+            "slots": self.slots.as_dict(),
+        })
+
+    def _collect_fields(self, args: Dict[str, Any]) -> List[str]:
+        return self.slots.propose(
+            pincode=args.get("pincode"),
+            visit_date=args.get("date"),
+            visit_time=args.get("time"),
+            car_choice=args.get("vehicle_variant"),
+        )
+
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from loguru import logger
+        from persona_prompt_cards.pragya_cards import PRAGYA_SUPERCAR_CARDS, format_supercar_prompt_card
+
+        phase_id = args.get("phase_id")
+        try:
+            self.tracker.validate_phase(phase_id)
+        except ValueError as exc:
+            missing = self.slots.missing_for_booking()
+            if phase_id == "SOP_04_BOOKED" and self.slots.is_bookable():
+                corrective = (
+                    "CORRECTIVE ACTION: All 3 required booking slots are already collected "
+                    f"(pincode={self.slots.get('pincode')}, date={self.slots.get('visit_date')}, "
+                    f"time={self.slots.get('visit_time')}). Call `create_appointment_booking` FIRST, "
+                    "and only after it returns status='confirmed' call `switch_phase(SOP_04_BOOKED)`."
+                )
+            else:
+                corrective = self.slots.build_corrective_action(
+                    missing_fields=missing, raw_args=args
+                )
+            return {
+                "status": "invalid_phase",
+                "message": str(exc),
+                "collected_state": self.slots.as_dict(),
+                "missing_fields": missing,
+                "corrective_action": corrective,
+            }
+
+        invalid = self._collect_fields(args)
+        if invalid:
+            missing = self.slots.missing_for_booking()
+            corrective = self.slots.build_corrective_action(
+                invalid_fields=invalid, missing_fields=missing, raw_args=args
+            )
+            return {
+                "status": "invalid_arguments",
+                "invalid_fields": invalid,
+                "collected_state": self.slots.as_dict(),
+                "missing_fields": missing,
+                "corrective_action": corrective,
+            }
+
+        state = self.slots.as_dict()
+        key = (phase_id, tuple(sorted(state.items())))
+        if key == self._last_card_key:
+            if self._card_delivery_status != "sent":
+                self._card_delivery_status = "sent"
+                await self._broadcast_phase(True)
+            return {"status": "success", "phase_id": phase_id, "delivery_status": "already_sent"}
+
+        try:
+            # This blocking tool has paused Gemini. Send context BEFORE its
+            # function response, even if the provider's responding flag is set.
+            delivered = await self._llm.inject_directive(
+                format_supercar_prompt_card(PRAGYA_SUPERCAR_CARDS[phase_id], state=state),
+                tag=f"Pragya/Card {phase_id}", speak_now=False, at_tool_boundary=True,
+            )
+        except Exception as exc:
+            logger.warning(f"[Pragya/Card] Send failed: {exc}")
+            delivered = False
+
+        if not delivered and getattr(self._llm, "_last_directive_status", None) == "pending":
+            self._pending_card_args = dict(args)
+
+        self._card_delivery_status = "sent" if delivered else "failed"
+        if delivered:
+            self._last_card_key = key
+            self.tracker.select_phase(phase_id)
+        await self._broadcast_phase(bool(delivered))
+        if not delivered:
+            return {
+                "status": "delivery_failed", "phase_id": self.tracker.current_phase,
+                "message": "The new card was not sent. Retry switch_phase before using that phase.",
+            }
+        # The card is already in context. Do not duplicate it in the tool result.
+        return {"status": "success", "phase_id": phase_id, "delivery_status": "sent"}
+
+    async def _book_appointment(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from persona_tools.supercar import create_appointment_booking
+
+        invalid = self._collect_fields(args)
+        await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
+        if invalid:
+            missing = self.slots.missing_for_booking()
+            corrective = self.slots.build_corrective_action(
+                invalid_fields=invalid, missing_fields=missing, raw_args=args
+            )
+            return {
+                "status": "invalid_arguments",
+                "invalid_fields": invalid,
+                "collected_state": self.slots.as_dict(),
+                "missing_fields": missing,
+                "corrective_action": corrective,
+            }
+        missing = self.slots.missing_for_booking()
+        if missing:
+            return {"status": "needs_info", "missing": missing}
+
+        booking_args = dict(
+            pincode=self.slots.get("pincode"),
+            date=self.slots.get("visit_date"),
+            time=self.slots.get("visit_time"),
+            customer_name_or_phone=args.get("customer_name_or_phone", ""),
+            vehicle_variant=self.slots.get("car_choice") or "the car chosen at the Lounge",
+        )
+        # The handler's existing lock also covers this per-call cache. Each
+        # function call gets a response, but a successful booking executes once.
+        booking_key = tuple((key, str(value or "").strip().casefold())
+                            for key, value in sorted(booking_args.items()))
+        res = self._confirmed_bookings.get(booking_key)
+        if res is None:
+            res = create_appointment_booking(**booking_args)
+        if res.get("status") == "confirmed":
+            self._confirmed_bookings[booking_key] = dict(res)
+            already_shown = self.slots.get("booking_ref") == res.get("booking_id")
+            self.slots.set_tool(booking_status="confirmed", booking_ref=res.get("booking_id"))
+            self.slots.set_server(lounge_id=res.get("center_id"), lounge_name=res.get("center_name"))
+            self.tracker.booking_confirmed = True
+            await self._emit({"type": "call_state", "slots": self.slots.as_dict()})
+            if not already_shown:
+                await self._emit({
+                    "type": "booking_confirmed",
+                    **{key: res.get(key) for key in (
+                        "booking_id", "center_name", "city", "address", "date", "time", "vehicle_variant",
+                    )},
+                })
+        # Recording a booking does not select a card. Gemini chooses the next
+        # phase after reading this tool result, just as for any topic change.
+        return dict(res)
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        self._llm = llm
+        self._phase_broadcast = broadcast
+
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
+
+        async def handle_create_appointment_booking(params):
+            async with self._card_lock:
+                result = await self._book_appointment(params.arguments or {})
+            await params.result_callback(result)
+
+        llm.register_function("create_appointment_booking", handle_create_appointment_booking)
+        registered.append("create_appointment_booking")
+        return registered
+
+
+async def _deliver_phase_card(architecture, card, formatter, label):
+    """Commit the active phase only after the provider accepts its context card."""
+    from diagnostic_buffer import current_session_id
+    from loguru import logger
+    if architecture._last_card_key == card.phase_id:
+        return {"status": "success", "phase_id": card.phase_id, "delivery_status": "already_sent"}
+    delivered = False
+    if architecture._llm:
+        try:
+            delivered = bool(await architecture._llm.inject_directive(
+                formatter(card), tag=f"{label}/Card {card.phase_id}",
+                speak_now=False, at_tool_boundary=True))
+        except Exception as exc:
+            logger.warning(f"[{label}/Card] Send failed: {exc}")
+    if not delivered and getattr(architecture._llm, "_last_directive_status", None) == "pending":
+        architecture._pending_card_args = {"phase_id": card.phase_id}
+    if delivered:
+        architecture._last_card_key = card.phase_id
+        architecture.engine.active_phase = card.phase_id
+    architecture._phase_event_revision = getattr(architecture, "_phase_event_revision", 0) + 1
+    phase_id = architecture.engine.active_phase
+    if architecture._broadcast:
+        try:
+            await architecture._broadcast({
+                "type": "phase_transition", "phase_id": phase_id,
+                "requested_phase_id": card.phase_id, "title": card.title if delivered else "Card delivery failed",
+                "session_id": current_session_id(), "revision": architecture._phase_event_revision,
+                "card_pushed": delivered, "delivery_status": "sent" if delivered else "failed",
+                "reason": "model selected phase" if delivered else "card delivery failed; phase unchanged",
+            })
+        except Exception as exc:
+            logger.warning(f"[{label}] UI event failed: {exc}")
+    return {"status": "success" if delivered else "delivery_failed", "phase_id": phase_id,
+            "delivery_status": "sent" if delivered else "failed"}
+
+
+class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
+    """Ananya: Cymbal Mutual Fund & Wealth Advisor.
+
+    Manages portfolio review, fund NAV queries, and SIP orders with JIT cards.
+    """
+
+    pattern = ArchitecturePattern.JIT_MF_ADVISOR
+    model_controls_conversation = True
+
+    def __init__(self) -> None:
+        self._llm = None
+        self._broadcast = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._engine = None
+        self._pending_card_args: Optional[Dict[str, Any]] = None
+
+    async def flush_pending_card(self) -> None:
+        if self._pending_card_args is not None:
+            args = self._pending_card_args
+            self._pending_card_args = None
+            async with self._card_lock:
+                await self._switch_phase(args)
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from persona_tools.mf_advisor import AnanyaMFExecutionEngine
+            self._engine = AnanyaMFExecutionEngine(broadcast=self._broadcast)
+        return self._engine
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        from persona_prompt_cards.ananya_cards import (
+            get_ananya_monolithic_system_instruction,
+            get_ananya_root_system_instruction,
+        )
+        if engine == "cascade":
+            return get_ananya_monolithic_system_instruction()
+        return get_ananya_root_system_instruction()
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from persona_tools.mf_advisor import (
+            get_portfolio_summary_schema,
+            get_fund_nav_details_schema,
+            manage_sip_order_schema,
+            switch_phase_schema,
+        )
+        tools = [get_portfolio_summary_schema, get_fund_nav_details_schema, manage_sip_order_schema]
+        if engine != "cascade":
+            tools.append(switch_phase_schema)
+        return standard_function_schemas(tools)
+
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from loguru import logger
+        from persona_prompt_cards.ananya_cards import (
+            get_ananya_phase_card,
+            format_ananya_prompt_card,
+        )
+
+        phase_id = args.get("phase_id", "")
+        card = get_ananya_phase_card(phase_id)
+        if not card:
+            return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
+
+        return await _deliver_phase_card(self, card, format_ananya_prompt_card, "Ananya")
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        self._llm = llm
+        self._broadcast = broadcast
+        if self._engine:
+            self._engine._broadcast = broadcast
+
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
+
+        async def handle_get_portfolio_summary(params):
+            async with self._card_lock:
+                result = await self.engine.get_portfolio_summary(params.arguments or {})
+            await params.result_callback(result)
+
+        async def handle_get_fund_nav_details(params):
+            async with self._card_lock:
+                result = await self.engine.get_fund_nav_details(params.arguments or {})
+            await params.result_callback(result)
+
+        async def handle_manage_sip_order(params):
+            async with self._card_lock:
+                result = await self.engine.manage_sip_order(params.arguments or {})
+            await params.result_callback(result)
+
+        llm.register_function("get_portfolio_summary", handle_get_portfolio_summary)
+        registered.append("get_portfolio_summary")
+        llm.register_function("get_fund_nav_details", handle_get_fund_nav_details)
+        registered.append("get_fund_nav_details")
+        llm.register_function("manage_sip_order", handle_manage_sip_order)
+        registered.append("manage_sip_order")
+
+        return registered
+
+
+class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
+    """Kavya / Buddy: Cymbal Kart Smartglasses AI Companion.
+
+    Provides all 15 deterministic mock tools (including `plan_my_meal`) with
+    RTVI event broadcasting and Header + Directive + Footer JIT phase cards.
+    """
+
+    pattern = ArchitecturePattern.GLASS_BUDDY
+    model_controls_conversation = True
+
+    def __init__(self) -> None:
+        self._llm = None
+        self._broadcast = None
+        self._card_lock = asyncio.Lock()
+        self._last_card_key = None
+        self._engine = None
+        self._pending_card_args: Optional[Dict[str, Any]] = None
+
+    async def flush_pending_card(self) -> None:
+        if self._pending_card_args is not None:
+            args = self._pending_card_args
+            self._pending_card_args = None
+            async with self._card_lock:
+                await self._switch_phase(args)
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from persona_tools.glass_buddy import GlassBuddyExecutionEngine
+            self._engine = GlassBuddyExecutionEngine(broadcast=self._broadcast)
+        return self._engine
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        from persona_prompt_cards.kavya_cards import (
+            get_kavya_monolithic_system_instruction,
+            get_kavya_root_system_instruction,
+        )
+        if engine == "cascade":
+            return get_kavya_monolithic_system_instruction()
+        return get_kavya_root_system_instruction()
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from persona_tools.glass_buddy import ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema
+        if engine == "cascade":
+            return standard_function_schemas(ALL_GLASS_BUDDY_TOOL_SCHEMAS)
+        return standard_function_schemas([*ALL_GLASS_BUDDY_TOOL_SCHEMAS, switch_phase_schema])
+
+    async def _switch_phase(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        from loguru import logger
+        from persona_prompt_cards.kavya_cards import (
+            get_kavya_phase_card,
+            format_kavya_prompt_card,
+        )
+
+        phase_id = args.get("phase_id", "")
+        card = get_kavya_phase_card(phase_id)
+        if not card:
+            return {"status": "invalid_phase", "message": f"Unknown phase {phase_id}"}
+
+        return await _deliver_phase_card(self, card, format_kavya_prompt_card, "Kavya")
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        self._llm = llm
+        self._broadcast = broadcast
+        if self._engine:
+            self._engine._broadcast = broadcast
+
+        registered = []
+        if engine != "cascade":
+            async def handle_switch_phase(params):
+                async with self._card_lock:
+                    result = await self._switch_phase(params.arguments or {})
+                await params.result_callback(result)
+            llm.register_function("switch_phase", handle_switch_phase)
+            registered.append("switch_phase")
+
+        tool_names = [
+            "make_call",
+            "start_live_ai",
+            "take_photo",
+            "start_video",
+            "meeting_mode",
+            "route_hardware_directive",
+            "log_my_meal",
+            "stop_b",
+            "set_reminder",
+            "get_health_data",
+            "get_calendar_events",
+            "get_nutrition",
+            "recall_memory",
+            "plan_my_meal",
+            "input_required",
+        ]
+
+        def _make_handler(fn):
+            async def _handler(params):
+                async with self._card_lock:
+                    res = await fn(params.arguments or {})
+                await params.result_callback(res)
+            return _handler
+
+        for name in tool_names:
+            fn = getattr(self.engine, name, None)
+            if fn:
+                llm.register_function(name, _make_handler(fn))
+                registered.append(name)
+
+        return registered
+
+
+class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
+    """Tara: Book My Trip domestic flight booking.
+
+    The server owns the booking (``TravelBookingEngine``). The model never selects a phase:
+    the tool result that changes the flow carries the next prompt card (``prompt_card``),
+    every result carries ``call_state`` and a one-line ``instruction``, and card 1 rides in
+    the greeting turn. On Vertex ``gemini-3.8-live`` each card registers exactly its own tools
+    in the same tool call that delivers it (``live_tool_swapper``); everywhere else all six
+    tools stay declared. Each registration is broadcast with the card for the UI.
+    """
+
+    pattern = ArchitecturePattern.JIT_TRAVEL_CARDS
+    #: The user turn that starts the call (live and cascade). START quotes the same constant.
+    from persona_prompt_cards.tara_cards import GREETING_STUB as greeting_text
+    model_controls_conversation = True
+    #: The base SI owns the language policy (Indian English until SelectLanguageTool), so the
+    #: session must not append a fixed "converse in <language>" directive.
+    owns_language_policy = True
+    #: Transcription hints for the languages Tara's callers most often use (Vertex only).
+    transcription_language_codes = ("en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "bn-IN", "mr-IN")
+
+    def __init__(self) -> None:
+        self._llm = None
+        self._broadcast = None
+        self._lock = asyncio.Lock()
+        self._engine = None
+        self._revision = 0
+        self._sessions = 0
+        self.swapper = None
+        #: The live SI the last setup message carried (None: the default greeting SI).
+        self._setup_instruction: Optional[str] = None
+
+    @property
+    def engine(self):
+        if self._engine is None:
+            from persona_prompt_cards.tara_cards import VOCAL_TONE
+            from persona_tools.travel_booking import TravelBookingEngine
+            # Every tool result carries the voice anchor next to the decode point (vocal_tone).
+            self._engine = TravelBookingEngine(vocal_tone=VOCAL_TONE)
+        return self._engine
+
+    def has_exclusive_tools(self, engine: str = "live") -> bool:
+        return True
+
+    def compose_system_prompt(self, system_instruction: Optional[str], engine: str = "live") -> Optional[str]:
+        from persona_prompt_cards.tara_cards import (
+            get_tara_monolithic_system_instruction,
+            get_tara_root_system_instruction,
+        )
+        if engine == "cascade":
+            return get_tara_monolithic_system_instruction()
+        return get_tara_root_system_instruction()
+
+    # -- tools ---------------------------------------------------------------
+
+    def bind_live_model(self, model: Optional[str], vertex: bool) -> bool:
+        """Turn per-card tool swapping on when the session's model honours it."""
+        from live_tool_swapper import LiveToolSwapper, supports_context_update
+        from persona_tools.travel_booking import TOOL_GROUP_BY_CARD, wire_declarations
+        if not supports_context_update(model, vertex):
+            self.swapper = None
+            return False
+        self.swapper = LiveToolSwapper(
+            wire_declarations, TOOL_GROUP_BY_CARD[self.engine.active_card], label="Tara/ToolSwap")
+        return True
+
+    def get_tool_schemas(self, engine: str = "live") -> List[Any]:
+        from persona_tools.travel_booking import TOOL_NAMES, function_schemas
+        if engine != "cascade" and self.swapper is not None:
+            return function_schemas(list(self.swapper.desired))
+        return function_schemas(list(TOOL_NAMES))
+
+    def preview_tool_schemas(self, phase: Optional[str], model: Optional[str] = "gemini-3.8-live",
+                             vertex: bool = True) -> List[Any]:
+        """What a live session declares while on ``phase`` (for the studio's tool panel).
+
+        The panel's endpoint has no session, so ``get_tool_schemas`` (unbound: all six) would
+        overstate it. On Vertex ``gemini-3.8-live`` each card declares only its own group; no
+        phase yet means card 1. Models without ``context_update`` declare all six throughout.
+        """
+        from live_tool_swapper import supports_context_update
+        from persona_prompt_cards.tara_cards import get_tara_phase_card
+        from persona_tools.travel_booking import TOOL_GROUP_BY_CARD, TOOL_NAMES, function_schemas
+        if not supports_context_update(model, vertex):
+            return function_schemas(list(TOOL_NAMES))
+        card = get_tara_phase_card(phase) if phase else None
+        return function_schemas(list(TOOL_GROUP_BY_CARD[card.number if card else 1]))
+
+    def setup_tools(self, adapter: Any) -> Optional[List[Any]]:
+        """Provider tools for a (re)connect setup, or None to keep Pipecat's own."""
+        if self.swapper is None:
+            return None
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+        from persona_tools.travel_booking import function_schemas
+        names = self.swapper.setup_tools()
+        return adapter.from_standard_tools(ToolsSchema(standard_tools=function_schemas(list(names))))
+
+    def setup_system_instruction(self) -> Optional[str]:
+        """The system instruction a (re)connect setup must carry, or None for the default one.
+
+        On 3.8 past card 1 that is the live SI (base rules + current card + session state). A
+        reconnect then starts from it whether the server resumed the session or silently began
+        a fresh one, so no window opens where the setup's greeting SI is in force. The swapper
+        records it as held, so the next tool call sends only what changed.
+        """
+        instruction = self._live_instruction(setup=True)
+        if instruction is None:
+            self._setup_instruction = None
+            return None
+        self.swapper.instruction, self.swapper.pending_instruction = instruction, None
+        self._setup_instruction = instruction
+        return instruction
+
+    async def flush_pending_card(self) -> None:
+        """Called at every turn_complete: retry a tool registration whose send failed.
+
+        Takes the same lock as ``run_tool``: an unlocked retry could write an older pending
+        frame after a tool call's newer one and leave the previous card's tools declared.
+        """
+        if self.swapper is not None and self._llm is not None:
+            async with self._lock:
+                await self.swapper.flush(self._llm)
+
+    # -- cards ---------------------------------------------------------------
+
+    def opening_messages(self) -> List[Dict[str, str]]:
+        """Card 1 with the opening session state, sent ahead of the greeting turn.
+
+        None on a ``context_update`` session: card 1 is already in its setup instruction, and a
+        copy in the history would be billed again on every turn until compaction trims it.
+        """
+        if self.swapper is not None:
+            return []
+        return [{"role": "user", "content": self.engine.opening_card()}]
+
+    async def _resend_card(self, llm: Any, resend: str, tag: str) -> bool:
+        if llm is None or not hasattr(llm, "inject_directive"):
+            return False
+        async with self._lock:
+            text = self.engine.build_card(resend=resend)
+        return bool(await llm.inject_directive(text, tag=tag, speak_now=False))
+
+    async def on_session_ready(self, llm: Any, *, resumed: bool) -> None:
+        """A reconnect that lost the context gets the current card back (the setup already
+        declared the current tool group). On 3.8 the card returns as the live system
+        instruction; elsewhere it is re-sent into the history."""
+        self._sessions += 1
+        if self._sessions == 1:
+            card = self.engine.active_card
+            await self._announce_card(card, await self._register_tools(card, via_setup=True))
+        elif self.swapper is not None and self._setup_instruction is not None \
+                and self._setup_instruction == self._live_instruction():
+            from loguru import logger
+            # The setup message already carried the live SI, resumed or not: nothing to resend.
+            logger.info(f"[Tara] ↻ RECONNECT ({'resumed' if resumed else 'new session'}) on card "
+                        f"{self.engine.active_card}: the setup carried the live system instruction.")
+        elif not resumed and self.engine.active_card > 1:
+            if self.swapper is not None:
+                from loguru import logger
+                self.swapper.session_lost()
+                frames = self.swapper.frames
+                held = await self._refresh_live_instruction(llm)
+                logger.info(f"[Tara] ↻ NEW SESSION (context lost) on card {self.engine.active_card}: "
+                            f"{'live system instruction re-sent' if held else 'falling back to a card resend'}.")
+                self._trace_frame(frames, True)
+                if held:
+                    return
+            await self._resend_card(llm, "new_session", "Tara/Card resend (new session)")
+
+    async def on_context_compressed(self, llm: Any) -> bool:
+        """After the sliding window trimmed old turns. On 3.8 the card and session state live
+        in the system instruction, which compaction keeps, so nothing is re-sent. Elsewhere the
+        current card is re-sent. Returns True (also when the card is queued until the model goes
+        idle) so the generic transcript re-injection is skipped."""
+        from loguru import logger
+        from persona_tools import tara_trace as trace
+        held = self.swapper is not None and self.swapper.instruction is not None
+        logger.info(trace.compaction(self.engine.active_card, held))
+        if held:
+            return True
+        sent = await self._resend_card(llm, "trim", "Tara/Card resend (trim)")
+        return sent or getattr(llm, "_last_directive_status", None) == "pending"
+
+    # -- handlers ------------------------------------------------------------
+
+    async def _emit(self, payload: Dict[str, Any]) -> None:
+        if not self._broadcast:
+            return
+        try:
+            await self._broadcast(payload)
+        except Exception as exc:
+            from loguru import logger
+            logger.warning(f"[Tara] UI event failed: {exc}")
+
+    def _trace_frame(self, frames_before: int, card_changed: bool) -> None:
+        """Log the context_update frame this tool call actually wrote, if any."""
+        from loguru import logger
+        from persona_tools import tara_trace as trace
+        if self.swapper is None:
+            logger.info("[Tara] ⇢ CONTEXT: static tool set on this model; the card travels in the tool result only.")
+            return
+        if self.swapper.frames == frames_before:
+            logger.info("[Tara] ⇢ CONTEXT_UPDATE: nothing sent (tools and system instruction already current).")
+            return
+        frame = self.swapper.last_frame
+        tools = None
+        if frame.get("tools") is not None:
+            names, previous = frame["tools"], frame.get("previous_tools") or ()
+            tools = {"declared": names, "added": [n for n in names if n not in previous],
+                     "removed": [n for n in previous if n not in names]}
+        instruction = frame.get("instruction")
+        from persona_prompt_cards.tara_cards import STEP_MARKER
+        dynamic = instruction.partition(STEP_MARKER)[2] if instruction else None
+        logger.info(trace.context_update(self.swapper.frames, tools, instruction, dynamic, card_changed))
+
+    @staticmethod
+    def _point_at_instruction(result: Dict[str, Any], card: int) -> Dict[str, Any]:
+        """The full card already rides in the live system instruction (sent just before this
+        result); repeating it here would only grow the history by ~550-680 tokens per card."""
+        from persona_prompt_cards.tara_cards import TARA_CARD_BY_NUMBER
+        title = TARA_CARD_BY_NUMBER[card].title
+        return {**result, "prompt_card": f"Prompt card {card} of 8 ({title}) is now in your system instruction. Follow it."}
+
+    def _live_instruction(self, setup: bool = False) -> Optional[str]:
+        """The system instruction a 3.8 session should hold now, or None on models without
+        ``context_update``.
+
+        Card 1 lives only in the setup instruction, with the greeting: a mid-call refresh on
+        card 1 would put the greeting line back in force after it was spoken.
+        """
+        if self.swapper is None:
+            return None
+        card = self.engine.active_card
+        if card == 1 and not setup:
+            return None
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        step = self.engine.build_card(for_instruction=True)
+        return get_tara_live_system_instruction(step, greeting=card == 1)
+
+    async def _refresh_live_instruction(self, llm: Any) -> bool:
+        """Send the live system instruction (tools unchanged). True when the session holds it."""
+        instruction = self._live_instruction()
+        if instruction is None:
+            return False
+        async with self._lock:
+            await self.swapper.register(llm, self.swapper.desired, system_instruction=instruction)
+        return self.swapper.instruction == instruction
+
+    async def _register_tools(self, number: int, *, via_setup: bool = False,
+                              system_instruction: Optional[str] = None) -> Dict[str, Any]:
+        """Declare card ``number``'s tools (and the live system instruction) now and describe
+        the tools for the UI.
+
+        Runs inside the tool call that delivers the card, before its result is returned, so
+        the generation that reads the card already has the card's tools.
+        """
+        from live_tool_swapper import ToolRegistration
+        from persona_tools.travel_booking import TOOL_GROUP_BY_CARD, TOOL_NAMES
+        if self.swapper is None:
+            return ToolRegistration(tuple(TOOL_NAMES), (), (), "sent", via="static").as_event(number)
+        if via_setup:
+            declared = self.swapper.active
+            return ToolRegistration(declared, declared, (), "sent", via="setup").as_event(number)
+        registration = await self.swapper.register(
+            self._llm, TOOL_GROUP_BY_CARD[number], system_instruction=system_instruction)
+        return registration.as_event(number)
+
+    async def _announce_card(self, number: int, tools: Dict[str, Any]) -> None:
+        from diagnostic_buffer import current_session_id
+        from persona_prompt_cards.tara_cards import TARA_CARD_BY_NUMBER
+        card = TARA_CARD_BY_NUMBER[number]
+        self._revision += 1
+        goal = next((line for line in card.directive.splitlines() if line.startswith("Goal:")), card.title)
+        await self._emit({
+            "type": "phase_transition", "phase_id": card.phase_id, "requested_phase_id": card.phase_id,
+            "title": card.title, "directive": goal, "session_id": current_session_id(),
+            "revision": self._revision, "card_pushed": True, "delivery_status": "sent",
+            "reason": "server advanced the booking", "slots": self.engine.slots(), "tools": tools,
+        })
+
+    async def run_tool(self, name: str, args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Every call gets a result: all Tara tools are blocking, so a call without one
+        leaves the model silent for the rest of the session. Before the result returns, a new
+        card registers its tools, and on 3.8 every call refreshes the live system instruction
+        (card + session state) in the same ``context_update``."""
+        from loguru import logger
+        from persona_prompt_cards.tara_cards import render_session_state
+        from persona_tools import tara_trace as trace
+        logger.info(trace.tool_call(name, args))
+        async with self._lock:
+            before = self.engine.active_card
+            step_before = self.engine.state.step
+            state_before = trace.state_lines(render_session_state(self.engine.state.snapshot()))
+            try:
+                result = self.engine.handle(name, args or {})
+            except Exception as exc:
+                logger.exception(f"[Tara] {name} failed: {exc}")
+                result = self.engine.failure(name)
+            after = self.engine.active_card
+            state_after = trace.state_lines(render_session_state(self.engine.state.snapshot()))
+            logger.info(trace.session_state((before, after), (step_before, self.engine.state.step),
+                                            trace.state_changes(state_before, state_after)))
+            instruction = self._live_instruction()
+            frames = self.swapper.frames if self.swapper is not None else 0
+            tools = None
+            if after != before:
+                tools = await self._register_tools(after, system_instruction=instruction)
+            elif instruction is not None:
+                await self.swapper.register(self._llm, self.swapper.desired, system_instruction=instruction)
+            self._trace_frame(frames, after != before)
+            if instruction is not None and self.swapper.instruction == instruction and "prompt_card" in result:
+                result = self._point_at_instruction(result, after)
+        logger.info(trace.tool_result(name, result))
+        if tools is not None:
+            await self._announce_card(after, tools)
+        else:
+            await self._emit({"type": "call_state", "slots": self.engine.slots()})
+        return result
+
+    def register_handlers(self, llm: Any, broadcast=None, engine: str = "live") -> List[str]:
+        from persona_tools.travel_booking import TOOL_NAMES
+        self._llm = llm
+        self._broadcast = broadcast
+
+        def _make_handler(tool_name: str):
+            async def _handler(params):
+                await params.result_callback(await self.run_tool(tool_name, params.arguments))
+            return _handler
+
+        for name in TOOL_NAMES:
+            llm.register_function(name, _make_handler(name))
+        return list(TOOL_NAMES)
+
+
+_ARCHITECTURE_IMPLEMENTATIONS = {
+    ArchitecturePattern.MONOLITHIC_STATIC: MonolithicArchitecture,
+    ArchitecturePattern.STATE_LADDER_NEGOTIATOR: NegotiatorLadderArchitecture,
+    ArchitecturePattern.JIT_PHASE_CARDS: JITPhaseCardsArchitecture,
+    ArchitecturePattern.JIT_MF_ADVISOR: AnanyaMFAdvisorArchitecture,
+    ArchitecturePattern.GLASS_BUDDY: KavyaGlassBuddyArchitecture,
+    ArchitecturePattern.JIT_TRAVEL_CARDS: TaraTravelConciergeArchitecture,
+}
+
+
+def get_persona_architecture(persona_id: Optional[str]) -> BasePersonaArchitecture:
+    """Build the architecture strategy for a persona id.
+
+    This is the single entry point ``agent_live.py`` uses. It never inspects the
+    system instruction.
+    """
+    pattern = resolve_persona_architecture(persona_id)
+    architecture = _ARCHITECTURE_IMPLEMENTATIONS[pattern]()
+    architecture.persona_id = normalize_persona_id(persona_id)
+    return architecture

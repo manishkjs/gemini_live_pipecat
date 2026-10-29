@@ -3,6 +3,19 @@ title: Troubleshooting & Common Pitfalls
 description: Quick diagnosis and fixes for common audio, connection, VAD, tool calling, and billing issues in Gemini Live.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>A symptom-to-fix table for the problems that come up most: wrong-pitch audio, self-interruption, dropped connections, silent tool calls, and surprising bills.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Most incidents in the first weeks match one of these rows. Checking here first saves an investigation.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>The model speaks at 24 kHz and listens at 16 kHz. A mismatch is the most common cause of a voice that sounds slow and deep, or fast and squeaky.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which of these checks go into your launch runbook.</dd></div>
+  </dl>
+</aside>
+
 Use this symptom-to-fix reference to diagnose common issues during Gemini Live development and production rollout.
 
 ---
@@ -25,7 +38,7 @@ Use this symptom-to-fix reference to diagnose common issues during Gemini Live d
 | **Model interrupts itself as soon as it starts speaking** | Acoustic echo: speaker audio is bleeding back into the user's microphone without Echo Cancellation (AEC). | Enable browser AEC (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`) or test with headphones. |
 | **Old audio keeps playing for 2–3 seconds after user barges in** | Client audio queue isn't flushed on `serverContent.interrupted == True`. | Listen for `serverContent.interrupted` and immediately stop/disconnect all scheduled `AudioBufferSourceNode` instances in your playback queue. |
 | **Model cuts off the caller mid-sentence when they pause to think** | `endOfSpeechSensitivity` is too high or `silenceDurationMs` is too short. | Increase `silenceDurationMs` to `600`–`800` ms and set `endOfSpeechSensitivity="END_SENSITIVITY_LOW"`. |
-| **Model ignores short caller replies like *"Yes"* or *"No"*** | `startOfSpeechSensitivity` is set to `LOW` or `prefixPaddingMs` is too high. | Set `startOfSpeechSensitivity="START_SENSITIVITY_HIGH"` and `prefixPaddingMs=100`. |
+| **Model ignores short caller replies like *"Yes"* or *"No"*** | `startOfSpeechSensitivity` is set to `LOW` or `prefixPaddingMs` is too high. | Set `startOfSpeechSensitivity="START_SENSITIVITY_HIGH"` and keep `prefixPaddingMs` at `200` to `300` (higher values drop short words and spelled letters). |
 
 ---
 
@@ -44,5 +57,5 @@ Use this symptom-to-fix reference to diagnose common issues during Gemini Live d
 | Symptom | Root Cause | Fix |
 | :--- | :--- | :--- |
 | **Model reads stage directions aloud (e.g., *"laughs"*, *"pause"*)** | Using square brackets like `[laugh]` or `[SYSTEM UPDATE]` in the prompt or `clientContent`. | Remove all square brackets from prompts and dynamic phase cards; write natural unbracketed guidance instead. |
-| **Injecting a `clientContent` message cuts off the model mid-sentence** | A `clientContent` with `turnComplete: true` is a new user turn and interrupts active generation. | Only send `clientContent` after `turnComplete`, or return dynamic guidance inside a `toolResponse` with `scheduling=WHEN_IDLE` or `SILENT`. |
-| **Per-minute cost climbs from `$0.031/min` in Minute 1 to `$0.178/min` in Minute 10** | Quadratic Carried Audio Tax: every turn re-reads all prior audio turns and a large static system prompt. | Implement the [3-Pillar Optimization Architecture](/gemini_live_pipecat/optimization/) (SlidingWindow + Dynamic Prompt Cards + FactStore Pruning). |
+| **Injecting a `clientContent` message cuts off the model mid-sentence** | A `clientContent` with `turnComplete: true` is a new user turn and interrupts active generation. | Only send `clientContent` after `turnComplete`, or send the update inside a blocking tool handler right before you return the `toolResponse`. |
+| **Per-minute cost climbs from `$0.031/min` in Minute 1 to `$0.178/min` in Minute 10** | Quadratic Carried Audio Tax: every turn re-reads all prior audio turns and a large static system prompt. | Implement the [3-Pillar Optimization Architecture](/gemini-live/optimization/) (SlidingWindow + Dynamic Prompt Cards + FactStore Pruning). |

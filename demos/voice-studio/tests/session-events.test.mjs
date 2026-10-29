@@ -1,0 +1,991 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+import { webcrypto } from 'node:crypto';
+import ts from 'typescript';
+
+// Execute the real transport event decoder and hook; substitute only browser
+// media and React scheduling. No microphone or provider is needed for ordering.
+async function harness() {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const cache = new Map();
+  let handler, cursor = 0;
+  const slots = [];
+  const connections = [];
+  const react = {
+    useState(initial) { const i = cursor++; if (!(i in slots)) slots[i] = initial; return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }]; },
+    useRef(initial) { const i = cursor++; if (!(i in slots)) slots[i] = { current: initial }; return slots[i]; },
+    useCallback(fn) { return fn; }, useEffect() {},
+  };
+  function load(filename, overrides = {}) {
+    const full = path.resolve(root, filename);
+    if (cache.has(full) && !Object.keys(overrides).length) return cache.get(full);
+    const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const exports = {};
+    const require = name => {
+      if (name in overrides) return overrides[name];
+      if (name === 'react') return react;
+      if (name === '@pipecat-ai/websocket-transport') return {
+        WebSocketTransport: class { initialize(_config, callback) { handler = callback; } },
+        DailyMediaManager: class {},
+      };
+      if (name === '@pipecat-ai/client-js') return { RTVIMessage: class {} };
+      const resolved = name.startsWith('@/') ? name.slice(2) : path.relative(root, path.resolve(path.dirname(full), name));
+      return load(resolved.endsWith('.ts') ? resolved : `${resolved}.ts`);
+    };
+    class HarnessMediaSource {
+      static isTypeSupported() { return true; }
+      constructor() { this.readyState = 'open'; }
+      addEventListener(type, fn) { if (type === 'sourceopen') fn(); }
+      addSourceBuffer() {
+        return {
+          updating: false,
+          mode: 'segments',
+          buffered: { length: 1, start: () => 0, end: () => 2 },
+          addEventListener: () => {},
+          appendBuffer: () => {},
+          remove: () => {},
+        };
+      }
+      endOfStream() { this.readyState = 'ended'; }
+    }
+    vm.runInNewContext(compiled, {
+      exports, require, crypto: webcrypto, console, performance, AbortController,
+      URL: Object.assign(URL, { createObjectURL: () => 'blob:harness', revokeObjectURL: () => {} }),
+      URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval,
+      window: {
+        location: { protocol: 'http:', origin: 'http://localhost:7860' },
+        ManagedMediaSource: HarnessMediaSource,
+        atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+      },
+    }, { filename: full });
+    if (!Object.keys(overrides).length) cache.set(full, exports);
+    return exports;
+  }
+  const real = load('lib/pipecat-session.ts');
+  const hook = load('hooks/use-voice-session.ts', {
+    react, 'motion/react': { useReducedMotion: () => false },
+    '@/lib/pipecat-session': { createLiveSession: async (settings, events) => {
+      connections.push(settings);
+      const session = await real.createLiveSession(settings, events);
+      return { ...session, connect: async () => {} };
+    } },
+  });
+  const render = () => { cursor = 0; return hook.useVoiceSession(); };
+  const send = data => handler({ type: 'server-message', data });
+  return { render, send, connections };
+}
+
+test('Cascade cost passes through the actual event decoder and resets per call', async () => {
+  const h = await harness();
+  await h.render().startBackend('cascade');
+  const session_id = h.connections[0].sessionId;
+  const payload = {type:'cascade_cost', session_id, revision:2, currency:'USD', basis:'public-list-price',
+    reviewed_at:'2026-09-13', known_usd:'0.01', complete:false,
+    stages:['stt','llm','tts'].map(stage => ({stage, known_usd:stage==='llm'?'0.01':'0', complete:stage==='llm',
+      disabled:false, requests:1, issues:stage==='llm'?[]:['Awaiting usage'], rates:[]}))};
+  h.send({type:'metrics', payload});
+  assert.equal(h.render().cascadeCost.known_usd, '0.01');
+  h.send({type:'metrics', payload:{...payload, revision:1, known_usd:'99'}});
+  assert.equal(h.render().cascadeCost.revision, 2);
+  assert.equal(h.render().tokenCount, 0); // Costs never masquerade as LLM token events.
+  await h.render().endSession();
+  await h.render().startBackend('cascade');
+  assert.equal(h.render().cascadeCost, null);
+  h.send({type:'metrics', payload});
+  assert.equal(h.render().cascadeCost, null);
+  await h.render().endSession();
+});
+
+test('late metrics update their response, including when another reply already exists', async () => {
+  const h = await harness();
+  await h.render().startBackend();
+  const session_id = h.connections[0].sessionId;
+  const bot = (id, text) => h.send({ type: 'transcription', participant: 'Bot', response_id: id, text });
+  const metric = payload => h.send({ type: 'metrics', payload });
+  bot('a', 'First answer');
+  metric({ type: 'turn_complete', response_id: 'a', event_id: 'done-a' });
+  bot('b', 'Second answer');
+  metric({ type: 'llm_latency', response_id: 'a', value: 0.8 });
+  const usage = { type: 'usage', session_id, response_id: 'a', event_id: 'usage-a', usage: { total_token_count: 100 } };
+  metric(usage);
+  metric(usage);
+  let state = h.render();
+  assert.equal(state.tokenCount, 100);
+  assert.equal(state.messages[0].metrics.usage.total_token_count, 100);
+  assert.equal(state.messages[0].metrics.llmLatency, 0.8);
+  assert.equal(state.messages[1].metrics.usage, undefined);
+  assert.equal(state.messages[1].metrics.llmLatency, undefined);
+  h.send({ type: 'transcription', participant: 'User', text: 'A late transcript' });
+  bot('b', ' continued');
+  state = h.render();
+  assert.equal(state.messages[1].text, 'Second answer continued');
+  assert.equal(state.messages.length, 3);
+  await state.endSession();
+});
+
+test('metrics received before text are retained for that response only', async () => {
+  const h = await harness();
+  await h.render().startBackend();
+  h.send({ type: 'metrics', payload: { type: 'llm_latency', response_id: 'b', value: 0.25 } });
+  h.send({ type: 'transcription', participant: 'Bot', response_id: 'a', text: 'A' });
+  h.send({ type: 'transcription', participant: 'Bot', response_id: 'b', text: 'B' });
+  const state = h.render();
+  assert.equal(state.messages[0].metrics.llmLatency, undefined);
+  assert.equal(state.messages[1].metrics.llmLatency, 0.25);
+  await state.endSession();
+});
+
+test('cascade transcript never shows TTS markup cut across chunks, from any server version', async () => {
+  const h = await harness();
+  await h.render().startBackend('cascade');
+  const chunks = [
+    // Older servers stripped each streamed chunk on its own, leaving halves of a block.
+    ['a', '[[amused disbelief, hi'], ['a', 'gh pitch, fast]] Arre bhai!'], ['b', '] Kya haal hai?'],
+    // Current servers send settled, markup-free words with exact spacing.
+    ['c', 'Namaskaar dost,'], ['c', ' kaise ho?'],
+  ];
+  for (const [response_id, text] of chunks) {
+    h.send({ type: 'transcription', participant: 'Bot', response_id, text });
+    for (const m of h.render().messages) assert.doesNotMatch(m.text, /[[\]|]|pitch|disbelief/, m.text);
+  }
+  assert.deepEqual(Array.from(h.render().messages, m => m.text), ['Arre bhai!', 'Kya haal hai?', 'Namaskaar dost, kaise ho?']);
+  await h.render().endSession();
+});
+
+test('start is guarded and each new call has a fresh identity and empty ledger', async () => {
+  const h = await harness();
+  const state = h.render();
+  await Promise.all([state.startBackend(), state.startBackend()]);
+  assert.equal(h.connections.length, 1);
+  const first = h.connections[0].sessionId;
+  await h.render().endSession();
+  await h.render().startBackend();
+  assert.notEqual(h.connections[1].sessionId, first);
+  assert.equal(h.render().settings.sessionId, h.connections[1].sessionId);
+  h.send({ type: 'metrics', payload: { type: 'usage', session_id: first, response_id: 'old', event_id: 'old-usage', usage: { total_token_count: 999 } } });
+  assert.equal(h.render().tokenCount, 0);
+  await h.render().endSession();
+});
+
+test('choosing Pragya resets her phase using the newly selected persona', async () => {
+  const h = await harness();
+  h.render().choosePersona('lamborghini-concierge');
+  assert.equal(h.render().currentPhase, 'SOP_01_OPENING');
+  h.render().choosePersona('custom');
+  assert.equal(h.render().currentPhase, '');
+});
+
+test('current topic can return to cars while booking and visited milestones remain', async () => {
+  const h = await harness();
+  h.render().choosePersona('lamborghini-concierge');
+  await h.render().startBackend();
+  const phase = (phase_id, revision, delivery_status) => h.send({ type: 'phase_transition', phase_id, revision, delivery_status });
+  phase('SOP_03_PINCODE', 1, 'sent');
+  h.send({ type: 'booking_confirmed', booking_id: 'demo-booking', center_name: 'Demo lounge' });
+  phase('SOP_04_BOOKED', 2, 'sent');
+  phase('SOP_02_DISCOVERY', 3, 'pending');
+  let state = h.render();
+  assert.equal(state.currentPhase, 'SOP_04_BOOKED');
+  assert.equal(state.phaseDelivery, 'pending');
+  assert.equal(state.confirmedBooking.booking_id, 'demo-booking');
+  assert.ok(state.visitedPhases.includes('SOP_04_BOOKED'));
+  phase('SOP_03_PINCODE', 1, 'sent'); // delayed older event
+  assert.equal(h.render().currentPhase, 'SOP_04_BOOKED');
+  phase('SOP_02_DISCOVERY', 4, 'sent');
+  assert.equal(h.render().phaseDelivery, 'sent');
+  await h.render().endSession();
+  await h.render().startBackend();
+  assert.equal(h.render().phaseDelivery, null);
+  assert.equal(h.render().confirmedBooking, null);
+  phase('SOP_03_PINCODE', 1, 'failed');
+  assert.equal(h.render().currentPhase, 'SOP_01_OPENING');
+  assert.equal(h.render().phaseDelivery, 'failed');
+  await h.render().endSession();
+});
+
+for (const [personaId, initial, target] of [
+  ['groww-advisor', 'SOP_01_OVERVIEW', 'SOP_02_SCHEME_DETAILS'],
+  ['reservation-agent', 'SOP_01_COMPANION_READY', 'SOP_02_VISION_CAPTURE'],
+]) test(`${personaId} commits only delivered phases for the current session`, async () => {
+  const h = await harness();
+  h.render().choosePersona(personaId);
+  assert.equal(h.render().currentPhase, initial);
+  await h.render().startBackend();
+  h.send({ type: 'phase_transition', phase_id: target, revision: 1, card_pushed: false, delivery_status: 'failed' });
+  assert.equal(h.render().currentPhase, initial);
+  h.send({ type: 'phase_transition', phase_id: target, revision: 2, card_pushed: true, session_id: 'another-call' });
+  assert.equal(h.render().currentPhase, initial);
+  h.send({ type: 'phase_transition', phase_id: target, revision: 2, card_pushed: true, delivery_status: 'sent' });
+  assert.equal(h.render().currentPhase, target);
+  assert.ok(h.render().visitedPhases.includes(target));
+  await h.render().endSession();
+});
+
+test('call_state RTVI events populate callSlots and empty transcriptions clear interim transcripts without creating empty bubbles', async () => {
+  const h = await harness();
+  h.render().choosePersona('lamborghini-concierge');
+  await h.render().startBackend();
+  // Send call_state RTVI event
+  h.send({ type: 'call_state', slots: { car_choice: 'Revuelto', pincode: '400001' } });
+  let state = h.render();
+  assert.equal(state.callSlots?.car_choice, 'Revuelto');
+  assert.equal(state.callSlots?.pincode, '400001');
+
+  // Send interim user transcript, then empty final transcription
+  h.send({ type: 'interim_transcription', text: 'Stuck partial...' });
+  assert.equal(h.render().partialUser, 'Stuck partial...');
+  h.send({ type: 'transcription', participant: 'User', text: '' });
+  state = h.render();
+  assert.equal(state.partialUser, '');
+  assert.equal(state.messages.length, 0);
+
+  await state.endSession();
+  await h.render().startBackend();
+  assert.equal(Object.keys(h.render().callSlots).length, 0);
+  await h.render().endSession();
+});
+
+test('avatar and voice fallback notices surface their codes and clear when the next session starts', async () => {
+  const h = await harness();
+  await h.render().startBackend();
+  h.send({ type: 'avatar_fallback', fallback_avatar: 'Ben', reason: 'Bad PNG', code: 'invalid_image' });
+  h.send({ type: 'voice_fallback', fallback_voice: 'Puck', reason: 'No recording', code: 'missing_sample' });
+  const during = h.render();
+  assert.deepEqual({ ...during.avatarFallbackNotice }, { fallbackAvatar: 'Ben', reason: 'Bad PNG', code: 'invalid_image' });
+  assert.deepEqual({ ...during.voiceFallbackNotice }, { fallbackVoice: 'Puck', reason: 'No recording', code: 'missing_sample' });
+  await during.endSession();
+  await h.render().startBackend();
+  const next = h.render();
+  assert.equal(next.avatarFallbackNotice, null);
+  assert.equal(next.voiceFallbackNotice, null);
+  await next.endSession();
+});
+
+test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExceededError and resets MediaSource on mid-call re-init', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  const mediaSources = [];
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.removed = [];
+      this.throwNextAppend = false;
+      this.listeners = {};
+      this.bufferedRanges = [[0, 10.2]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      if (this.throwNextAppend) {
+        this.throwNextAppend = false;
+        throw new Error('QuotaExceededError');
+      }
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove(start, end) {
+      this.updating = true;
+      this.removed.push([start, end]);
+    }
+    finishUpdate() {
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  const revokedUrls = [];
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    URL: { createObjectURL: () => `blob:test-${mediaSources.length}`, revokeObjectURL: url => { revokedUrls.push(url); } },
+    console,
+  }, { filename: full });
+
+  const render = () => { cursor = 0; return exports.useAvatarStream(false); };
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 10,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 10.2 },
+    play: () => Promise.resolve(),
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener: () => {},
+  };
+
+  let ctrl = render();
+  ctrl.videoRef(videoEl);
+
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // 1. Push init segment; while sb.updating is true, push 2 media segments and call flushOnInterrupt()
+  ctrl.pushChunk(b64('init-1'), true, 1);
+  const ms1 = mediaSources[0];
+  assert.deepEqual(ms1.sb.appended, ['init-1']);
+  assert.equal(ms1.sb.updating, true);
+
+  ctrl.pushChunk(b64('moof-mdat-1'), false, 2);
+  ctrl.pushChunk(b64('moof-mdat-2'), false, 3);
+  // Interrupt arrives while sb.updating is true (e.g. during Turn 2): must NOT drop queued moof-mdat segments!
+  ctrl.flushOnInterrupt();
+
+  ms1.sb.finishUpdate(); // finishes init-1 -> appends moof-mdat-1
+  ms1.sb.finishUpdate(); // finishes moof-mdat-1 -> appends moof-mdat-2
+  ms1.sb.finishUpdate(); // finishes moof-mdat-2
+  assert.deepEqual(ms1.sb.appended, ['init-1', 'moof-mdat-1', 'moof-mdat-2']);
+
+  // 2. When appendBuffer throws QuotaExceededError, chunk must be retried after remove(), never lost
+  ms1.sb.throwNextAppend = true;
+  ctrl.pushChunk(b64('moof-mdat-3'), false, 4);
+  assert.equal(ms1.sb.removed.length, 1);
+  ms1.sb.finishUpdate(); // finishes remove() -> retries moof-mdat-3
+  ms1.sb.finishUpdate();
+  assert.deepEqual(ms1.sb.appended, ['init-1', 'moof-mdat-1', 'moof-mdat-2', 'moof-mdat-3']);
+
+  // 3. When a new isInit=true segment arrives mid-call (after reconnect), previous MediaSource is closed and URL revoked
+  ctrl.pushChunk(b64('init-2'), true, 5);
+  assert.equal(ms1.readyState, 'ended', 'previous MediaSource must be closed via endOfStream() on mid-call re-init');
+  assert.deepEqual(revokedUrls, ['blob:test-1'], 'previous MediaSource blob URL must be revoked on mid-call re-init');
+  assert.equal(mediaSources.length, 2);
+  assert.deepEqual(mediaSources[1].sb.appended, ['init-2']);
+});
+
+test('avatar session keeps phase in speaking across early turn_complete while avatar_video speech is active, and updates model to gemini-3.8-live on customVoiceAudio upload', async () => {
+  const h = await harness();
+  // Verify update('customVoiceAudio', ...) forces model to gemini-3.8-live
+  h.render().update('model', 'gemini-live-2.5-flash-native-audio');
+  assert.equal(h.render().settings.model, 'gemini-live-2.5-flash-native-audio');
+  h.render().update('customVoiceAudio', 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
+  assert.equal(h.render().settings.model, 'gemini-3.8-live', 'uploading customVoiceAudio must switch model to gemini-3.8-live');
+
+  await h.render().startBackend('live', { avatarEnabled: true, avatarName: 'Kira', model: 'gemini-3.8-live' });
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // Turn 1: avatar_video with has_audio=true arrives -> phase becomes speaking
+  h.send({ type: 'avatar_video', data: b64('init'), is_init: true, seq: 1, has_audio: false, tfdt: 0 });
+  h.send({ type: 'avatar_video', data: b64('speech-1'), is_init: false, seq: 2, has_audio: true, tfdt: 1.0 });
+  assert.equal(h.render().phase, 'speaking');
+
+  // Early turn_complete arrives on the wire while MSE is still playing buffered speech -> phase must stay speaking
+  h.send({ type: 'metrics', payload: { type: 'turn_complete', response_id: 'r1', event_id: 'tc-1' } });
+  assert.equal(h.render().phase, 'speaking', 'early turn_complete must not clobber speaking phase while avatar video speech is playing');
+
+  // Turn 2: text-only / fallback turn without avatar_video speech chunks -> turn_complete transitions to listening
+  h.send({ type: 'transcription', participant: 'User', text: 'Next question' });
+  assert.equal(h.render().phase, 'thinking');
+  h.send({ type: 'transcription', participant: 'Bot', response_id: 'r2', text: 'Fallback answer' });
+  assert.equal(h.render().phase, 'speaking');
+  h.send({ type: 'metrics', payload: { type: 'turn_complete', response_id: 'r2', event_id: 'tc-2' } });
+  assert.equal(h.render().phase, 'listening', 'turn_complete without avatar_video speech chunks must transition phase to listening');
+
+  await h.render().endSession();
+});
+
+test('useAvatarStream stops lip movement immediately at speechEndTfdt and skips the post-speech phantom lip-flap tail', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  const mediaSources = [];
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.listeners = {};
+      this.bufferedRanges = [[0, 0]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove() {
+      this.updating = true;
+    }
+    finishUpdate(newEnd) {
+      if (typeof newEnd === 'number') {
+        this.bufferedRanges = [[0, newEnd]];
+      }
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
+    console,
+  }, { filename: full });
+
+  let speechEndedCount = 0;
+  const render = () => {
+    cursor = 0;
+    return exports.useAvatarStream(false, () => { speechEndedCount++; });
+  };
+
+  let ms;
+  const videoListeners = {};
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 0,
+    paused: false,
+    get buffered() { return ms ? ms.sb.buffered : { length: 0, start: () => 0, end: () => 0 }; },
+    play() { this.paused = false; return Promise.resolve(); },
+    pause() { this.paused = true; },
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener(type, fn) { videoListeners[type] = fn; },
+    removeEventListener: () => {},
+  };
+
+  const ctrl = render();
+  ctrl.videoRef(videoEl);
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // 1. Init + pre-speech idle segments: playhead pins within 80ms of live edge if idle lag > 0.35s
+  ctrl.pushChunk(b64('init'), true, 1, false, 0);
+  ms = mediaSources[0];
+  ms.sb.finishUpdate(0);
+
+  ctrl.pushChunk(b64('idle-1'), false, 2, false, 1.0);
+  ms.sb.finishUpdate(1.04);
+  assert.ok(videoEl.currentTime >= 0.9, `expected idle catch-up near 1.04s, got ${videoEl.currentTime}`);
+
+  // 2. Active speech segments from tfdt=1.50s to tfdt=5.46s: playhead plays normally without clipping
+  videoEl.currentTime = 1.50;
+  ctrl.pushChunk(b64('speech-start'), false, 3, true, 1.50);
+  ms.sb.finishUpdate(1.54);
+  ctrl.pushChunk(b64('speech-end'), false, 4, true, 5.46);
+  ms.sb.finishUpdate(5.50);
+  // Even though buffered end (5.50) is 1.0s ahead of currentTime (4.50), active speech is NOT clipped
+  videoEl.currentTime = 4.50;
+  ctrl.pushChunk(b64('tail-silent-1'), false, 5, false, 5.50);
+  ms.sb.finishUpdate(5.54);
+  assert.equal(videoEl.currentTime, 4.50);
+  assert.equal(videoEl.paused, false);
+
+  // 3. Second silent segment locks speechEndTfdt (~5.50s). When playhead reaches 5.48s (mouth closed at end of speech),
+  // video pauses immediately on the closed-mouth frame instead of playing the 5.50s..7.25s phantom lip-flap frames!
+  ctrl.pushChunk(b64('tail-silent-2'), false, 6, false, 5.54);
+  ms.sb.finishUpdate(5.58);
+  videoEl.currentTime = 5.48;
+  videoListeners.timeupdate?.();
+  assert.equal(videoEl.paused, true, 'video should hold on closed-mouth frame at speechEndTfdt during phantom tail');
+  assert.equal(speechEndedCount, 1, 'onSpeechEnded callback should fire as soon as spoken audio finishes playing');
+
+  // 4. Once buffered end advances past the phantom lip-flap window (>= speechEndTfdt + 1.75s = 7.25s),
+  // playhead jumps directly over the phantom window to the calm idle edge and resumes playing!
+  ctrl.pushChunk(b64('post-tail-idle'), false, 7, false, 7.30);
+  ms.sb.finishUpdate(7.34);
+  assert.equal(videoEl.paused, false, 'video should resume playing once calm post-tail idle frames are buffered');
+  assert.ok(videoEl.currentTime >= 7.20, `expected playhead to skip phantom tail to >=7.20s, got ${videoEl.currentTime}`);
+});
+
+test('useAvatarStream enters terminal failure, releases playback resources, and stops accepting chunks when addSourceBuffer throws or appendBuffer fails persistently', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  let throwOnAddSourceBuffer = false;
+  let alwaysThrowAppend = false;
+  const revokedUrls = [];
+  const mediaSources = [];
+
+  class FakeSourceBuffer {
+    constructor() {
+      this.updating = false;
+      this.mode = 'segments';
+      this.appended = [];
+      this.removed = [];
+      this.listeners = {};
+      this.bufferedRanges = [[0, 10.0]];
+    }
+    get buffered() {
+      const r = this.bufferedRanges;
+      return { length: r.length, start: i => r[i][0], end: i => r[i][1] };
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+    }
+    appendBuffer(bytes) {
+      if (alwaysThrowAppend) {
+        throw new Error('QuotaExceededError: persistent failure');
+      }
+      this.updating = true;
+      this.appended.push(Buffer.from(bytes).toString('utf8'));
+    }
+    remove(start, end) {
+      this.updating = true;
+      this.removed.push([start, end]);
+    }
+    finishUpdate() {
+      this.updating = false;
+      this.listeners.updateend?.();
+    }
+  }
+
+  class FakeMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+      this.listeners = {};
+      this.sb = null;
+      mediaSources.push(this);
+    }
+    addEventListener(type, fn) {
+      this.listeners[type] = fn;
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      if (throwOnAddSourceBuffer) {
+        throw new Error('NotSupportedError: codec rejected');
+      }
+      this.sb = new FakeSourceBuffer();
+      return this.sb;
+    }
+    endOfStream() {
+      this.readyState = 'ended';
+    }
+  }
+
+  let nowMs = 1000;
+  const scheduledTimers = new Map();
+  let nextTimerId = 1;
+  const sandboxSetTimeout = (fn, delay) => {
+    const id = nextTimerId++;
+    scheduledTimers.set(id, { fn, delay });
+    return id;
+  };
+  const sandboxClearTimeout = id => {
+    scheduledTimers.delete(id);
+  };
+  const exports = {};
+  vm.runInNewContext(compiled, {
+    exports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      MediaSource: FakeMediaSource,
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    MediaSource: FakeMediaSource,
+    performance: { now: () => nowMs },
+    setTimeout: sandboxSetTimeout,
+    clearTimeout: sandboxClearTimeout,
+    URL: {
+      createObjectURL: () => `blob:avatar-${mediaSources.length}`,
+      revokeObjectURL: url => { revokedUrls.push(url); },
+    },
+    console: { ...console, error: () => {} },
+  }, { filename: full });
+
+  const fatalReasons = [];
+  const render = () => {
+    cursor = 0;
+    return exports.useAvatarStream(false, undefined, reason => { fatalReasons.push(reason); });
+  };
+
+  let removedSrc = false;
+  let loadedCount = 0;
+  const videoEl = {
+    muted: false,
+    src: '',
+    currentTime: 5,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 10 },
+    play: () => Promise.resolve(),
+    pause() { this.paused = true; },
+    removeAttribute(attr) { if (attr === 'src') { this.src = ''; removedSrc = true; } },
+    load() { loadedCount++; },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // Case 1: addSourceBuffer throws -> immediate terminal failure, resources released, subsequent chunks ignored
+  throwOnAddSourceBuffer = true;
+  let ctrl = render();
+  ctrl.videoRef(videoEl);
+  ctrl.pushChunk(b64('init-fail'), true, 1);
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'addSourceBuffer failure must latch avatarFailed');
+  assert.ok(ctrl.failureReason && ctrl.failureReason.includes('restart'), 'failureReason must tell user to restart');
+  assert.equal(ctrl.queuedBytes, 0, 'queue must be empty after addSourceBuffer failure');
+  assert.equal(fatalReasons.length, 1);
+  assert.equal(revokedUrls.length, 1, 'object URL must be revoked on terminal failure');
+  assert.equal(removedSrc, true, 'video element src must be cleared on terminal failure');
+  assert.ok(loadedCount >= 1, 'video element load() must be called to release decoder');
+
+  // Subsequent chunks must be rejected with zero queue growth
+  ctrl.pushChunk(b64('seg-after-fail-1'), false, 2);
+  ctrl.pushChunk(b64('seg-after-fail-2'), false, 3);
+  ctrl = render();
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must remain 0 after terminal failure');
+  assert.equal(mediaSources.length, 1, 'must not allocate new MediaSources while in terminal failed state');
+
+  // Reset clears terminal state for a fresh call
+  throwOnAddSourceBuffer = false;
+  ctrl.reset();
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, false);
+  assert.equal(ctrl.failureReason, null);
+
+  // Case 2: Persistent appendBuffer failure -> bounded retries, then terminal failure + resource release
+  ctrl.pushChunk(b64('init-ok'), true, 1);
+  const ms2 = mediaSources[1];
+  ms2.sb.finishUpdate();
+
+  alwaysThrowAppend = true;
+  removedSrc = false;
+  ctrl.pushChunk(b64('poison-segment'), false, 2);
+  // Drain retries via finishUpdate() after each eviction attempt until terminal failure latches
+  for (let i = 0; i < 6; i++) {
+    if (render().avatarFailed) break;
+    ms2.sb.finishUpdate();
+  }
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'persistent appendBuffer failure must transition to terminal avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared when retry cap is exceeded');
+  assert.equal(ms2.readyState, 'ended', 'MediaSource must be closed on terminal failure');
+  assert.equal(removedSrc, true, 'video element src must be cleared on persistent append failure');
+  assert.equal(fatalReasons.length, 2);
+
+  // Further chunks after persistent append failure must not accumulate
+  ctrl.pushChunk(b64('ignored-chunk-1'), false, 3);
+  ctrl.pushChunk(b64('ignored-chunk-2'), false, 4);
+  assert.equal(render().queuedBytes, 0, 'queuedBytes must stop growing after terminal failure');
+
+  // Case 3: Age cap breach while SourceBuffer is stalled -> fires via standalone timer even without new pushChunk/updateend, and ignores late callbacks
+  alwaysThrowAppend = false;
+  ctrl.reset();
+  ctrl = render();
+  ctrl.pushChunk(b64('init-stall'), true, 1); // leaves ms3.sb.updating = true
+  const ms3 = mediaSources[2];
+  nowMs += 100;
+  ctrl.pushChunk(b64('queued-while-updating'), false, 2);
+  assert.ok(render().queuedBytes > 0);
+  assert.ok(scheduledTimers.size > 0, 'queue age watchdog timer must be scheduled while items are queued');
+
+  // Advance clock past MAX_QUEUE_AGE_MS (10_000 ms) and fire the watchdog timer WITHOUT any new pushChunk or updateend
+  nowMs += 11_000;
+  for (const { fn } of [...scheduledTimers.values()]) {
+    fn();
+  }
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'stalled queue exceeding max age must latch avatarFailed via timer even without new chunks or updateend');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on age-cap breach');
+
+  // Late updateend callback after terminal failure must not recreate resources or restart retries
+  const mediaSourcesBeforeLate = mediaSources.length;
+  ms3.sb.finishUpdate();
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'late updateend must not clear avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'late updateend must not requeue or mutate queuedBytes');
+  assert.equal(mediaSources.length, mediaSourcesBeforeLate, 'late callbacks must not recreate MediaSources');
+
+  // Case 4: Byte cap breach (MAX_QUEUED_BYTES = 8 MB) -> terminal failure + queue cleared
+  ctrl.reset();
+  ctrl = render();
+  ctrl.pushChunk(b64('init-byte-cap'), true, 1); // leaves sb.updating = true
+  const fourMbB64 = Buffer.alloc(4 * 1024 * 1024 + 1024, 0x61).toString('base64');
+  ctrl.pushChunk(fourMbB64, false, 2);
+  assert.ok(render().queuedBytes > 4 * 1024 * 1024);
+  ctrl.pushChunk(fourMbB64, false, 3); // exceeds 8 MB cap
+  ctrl = render();
+  assert.equal(ctrl.avatarFailed, true, 'queue exceeding 8 MB cap must latch avatarFailed');
+  assert.equal(ctrl.queuedBytes, 0, 'queuedBytes must be cleared on byte-cap breach');
+});
+
+test('useAvatarStream fails immediately when neither MediaSource nor ManagedMediaSource exists, and supports ManagedMediaSource fallback with disableRemotePlayback', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const full = path.resolve(root, 'hooks/use-avatar-stream.ts');
+  const compiled = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+
+  let cursor = 0;
+  const slots = [];
+  const react = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = initial;
+      return [slots[i], value => { slots[i] = typeof value === 'function' ? value(slots[i]) : value; }];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: initial };
+      return slots[i];
+    },
+    useCallback(fn) { return fn; },
+    useEffect() {},
+  };
+
+  // Part A: No MediaSource and no ManagedMediaSource -> immediate terminal failure on first chunk
+  const noMseExports = {};
+  const noMseFatal = [];
+  vm.runInNewContext(compiled, {
+    exports: noMseExports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    },
+    performance: { now: () => 1000 },
+  }, { filename: full });
+
+  assert.equal(noMseExports.isAvatarMseSupported(), false);
+  const renderNoMse = () => {
+    cursor = 0;
+    return noMseExports.useAvatarStream(false, undefined, reason => { noMseFatal.push(reason); });
+  };
+  let ctrlNoMse = renderNoMse();
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+  ctrlNoMse.pushChunk(b64('init-seg'), true, 1);
+  ctrlNoMse = renderNoMse();
+  assert.equal(ctrlNoMse.avatarFailed, true, 'must fail immediately on first chunk when MSE is unsupported');
+  assert.ok(ctrlNoMse.failureReason && ctrlNoMse.failureReason.includes('does not support MediaSource'), 'failureReason must clearly state MediaSource is unsupported');
+  assert.equal(ctrlNoMse.queuedBytes, 0, 'must not enqueue chunks when MSE is unsupported');
+  assert.equal(noMseFatal.length, 1);
+
+  // Part B: Safari iOS 17.1+ ManagedMediaSource fallback (no global MediaSource, window.ManagedMediaSource defined)
+  slots.length = 0;
+  const appendedSegments = [];
+  class FakeManagedMediaSource {
+    static isTypeSupported() { return true; }
+    constructor() {
+      this.readyState = 'open';
+    }
+    addEventListener(type, fn) {
+      if (type === 'sourceopen') fn();
+    }
+    addSourceBuffer() {
+      return {
+        updating: false,
+        mode: 'segments',
+        buffered: { length: 1, start: () => 0, end: () => 1 },
+        addEventListener: () => {},
+        appendBuffer(bytes) {
+          appendedSegments.push(Buffer.from(bytes).toString('utf8'));
+        },
+        remove: () => {},
+      };
+    }
+    endOfStream() {}
+  }
+
+  const managedExports = {};
+  vm.runInNewContext(compiled, {
+    exports: managedExports,
+    require: name => (name === 'react' ? react : {}),
+    window: {
+      ManagedMediaSource: FakeManagedMediaSource,
+      atob: str => Buffer.from(str, 'base64').toString('binary'),
+    },
+    URL: {
+      createObjectURL: () => 'blob:managed-avatar',
+      revokeObjectURL: () => {},
+    },
+    performance: { now: () => 1000 },
+  }, { filename: full });
+
+  assert.equal(managedExports.isAvatarMseSupported(), true);
+  const renderManaged = () => {
+    cursor = 0;
+    return managedExports.useAvatarStream(false);
+  };
+  const videoEl = {
+    muted: false,
+    disableRemotePlayback: false,
+    src: '',
+    currentTime: 0,
+    paused: false,
+    buffered: { length: 1, start: () => 0, end: () => 1 },
+    play: () => Promise.resolve(),
+    pause: () => {},
+    removeAttribute: () => {},
+    load: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  let ctrlManaged = renderManaged();
+  ctrlManaged.videoRef(videoEl);
+  assert.equal(videoEl.disableRemotePlayback, true, 'videoEl must have disableRemotePlayback=true for iOS ManagedMediaSource');
+  ctrlManaged.pushChunk(b64('managed-init'), true, 1);
+  ctrlManaged = renderManaged();
+  assert.equal(ctrlManaged.avatarFailed, false);
+  assert.deepEqual(appendedSegments, ['managed-init']);
+});
+
+test('post_turn_decay avatar segments are forwarded to MSE without flipping phase to speaking or recording latency', async () => {
+  const h = await harness();
+  await h.render().startBackend('live', { avatarEnabled: true, avatarName: 'Kira', model: 'gemini-3.8-live' });
+
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+  // User speaks -> phase is thinking, then post-turn mouth-closure decay segment from previous turn arrives
+  h.send({ type: 'transcription', participant: 'User', text: 'Next question' });
+  assert.equal(h.render().phase, 'thinking');
+  const latencyBefore = h.render().latencyMs;
+
+  h.send({
+    type: 'avatar_video',
+    data: b64('decay-segment'),
+    is_init: false,
+    seq: 99,
+    has_audio: true,
+    post_turn_decay: true,
+    tfdt: 4.2,
+  });
+
+  // Phase must stay 'thinking' (not flip to 'speaking') and no bogus latency metric may be recorded
+  assert.equal(h.render().phase, 'thinking');
+  assert.equal(h.render().latencyMs, latencyBefore);
+  await h.render().endSession();
+});
+
+test('settings-dialog and transcript-panel re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const settingsDialogSrc = fs.readFileSync(path.resolve(root, 'components/studio/settings-dialog.tsx'), 'utf8');
+  const transcriptPanelSrc = fs.readFileSync(path.resolve(root, 'components/studio/transcript-panel.tsx'), 'utf8');
+  const pipecatSessionSrc = fs.readFileSync(path.resolve(root, 'lib/pipecat-session.ts'), 'utf8');
+  const obsDrawerSrc = fs.readFileSync(path.resolve(root, 'components/observability-drawer.tsx'), 'utf8');
+
+  assert.match(settingsDialogSrc, /\[settingsOpen,[^\]]*settings\.model[^\]]*\]/);
+  assert.match(transcriptPanelSrc, /\[serverPreset,[^\]]*settings\.model[^\]]*\]/);
+  assert.doesNotMatch(pipecatSessionSrc, /googlers\.com|rangarok|UberProxy/i);
+  assert.doesNotMatch(obsDrawerSrc, /readStoredLogHeight\(window\.localStorage|writeStoredLogHeight\(window\.localStorage/);
+});

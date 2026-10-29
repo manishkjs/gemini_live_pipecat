@@ -8,6 +8,14 @@ import BargeIn from '../../components/BargeIn.astro';
 import SessionLifecycle from '../../components/SessionLifecycle.astro';
 import MessageReplay from '../../components/MessageReplay.astro';
 import { Aside } from '@astrojs/starlight/components';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How a call flows: one always-open connection, two ways to send input, the three signals that mark a turn, interruptions, and connection rotation."
+  why="Almost every 'the agent talked over me' or 'the call dropped' report traces back to one of these four mechanisms being handled wrong."
+  number="The server rotates the connection every 10 to 15 minutes. Your client must reconnect without the caller noticing."
+  decide="Whether you build the reconnect-and-replay logic yourself or let a framework such as Pipecat handle it."
+/>
 
 Gemini Live is **stateful and bidirectional**. Four concepts govern every production voice session: two input channels, the turn lifecycle, interruptions, and session resumption.
 
@@ -74,5 +82,5 @@ To resume without losing conversation context:
 <MessageReplay />
 
 <Aside type="tip">
-Frameworks like Pipecat manage session resumption and message replay automatically (see [Choosing a framework](/gemini_live_pipecat/frameworks/)). When building directly on a raw WebSocket, implement this replay buffer in your session state machine.
+Frameworks like Pipecat manage session resumption and message replay automatically (see [Choosing a framework](/gemini-live/frameworks/)). When building directly on a raw WebSocket, implement this replay buffer in your session state machine.
 </Aside>

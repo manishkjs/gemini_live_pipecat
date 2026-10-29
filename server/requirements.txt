@@ -12,7 +12,7 @@ certifi==2026.4.22
 cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.4.0
-cryptography==48.0.0
+cryptography==49.0.0
 distro==1.9.0
 docstring_parser==0.18.0
 fastapi==0.136.1
@@ -21,12 +21,12 @@ flatbuffers==25.2.10
 frozenlist==1.8.0
 fsspec==2026.4.0
 google-api-core==2.30.3
-google-auth==2.53.0
+google-auth==2.58.0
 google-cloud-aiplatform
 google-cloud-secret-manager>=2.30.0
 google-cloud-speech==2.39.0
 google-cloud-texttospeech==2.36.0
-google-genai==2.4.0
+google-genai==2.25.0
 googleapis-common-protos==1.75.0
 grpcio==1.80.0
 grpcio-status==1.80.0
@@ -94,7 +94,7 @@ ujson==5.10.0
 urllib3==2.5.0
 uvicorn==0.47.0
 uvloop==0.21.0
-websockets==13.1
+websockets==15.0.1
 yarl==1.23.0
 langchain-core>=0.3.0
 langchain-google-vertexai>=2.0.0

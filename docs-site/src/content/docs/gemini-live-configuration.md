@@ -3,10 +3,23 @@ title: Configuration reference
 description: The wire envelopes, the setup frame, prompting rules for native audio, and every session option in one reference guide.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>Every message type and every setting you can send when a call starts, in one reference table.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>Two of these settings (the instructions and the tool list) can be changed mid-call. Everything else is fixed for the life of the connection, so it has to be right at the start.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>One frame, called setup, must go first and alone. Everything else waits for the server's acknowledgment.</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Which settings are standard across your product and which vary per call (voice, language, speech-detection sensitivity, compression).</dd></div>
+  </dl>
+</aside>
+
 This is the **reference page** for every WebSocket frame, `setup` field, and
 session option in one place. For the tutorial walkthrough, see
-[Getting started](/gemini_live_pipecat/getting-started/); for the state machine
-behind these frames, see [Architecture](/gemini_live_pipecat/architecture/).
+[Getting started](/gemini-live/getting-started/); for the state machine
+behind these frames, see [Architecture](/gemini-live/architecture/).
 
 ## The message envelopes
 
@@ -21,13 +34,14 @@ before the handshake completes; all other frames follow `setupComplete`.
 | `clientContent` | Explicit turn-based input or context injection; interrupts active output when `turnComplete: true` | Yes |
 | `realtimeInput` | Continuous audio, video, or activity signals | Yes (user turns) |
 | `toolResponse` | The result of a function the model requested via `toolCall` | Yes |
+| `contextUpdate` | Mid-call replacement of `systemInstruction`, the declared `tools`, or both via `session.send_context_update()` (`google-genai >= 2.32.0`; also accepts `context_update` on the wire) | No. It overwrites the setup values in place and invalidates the prefix cache |
 
 ### Server -> client
 
 | Frame | What it tells you | Act on it by |
 | --- | --- | --- |
 | `setupComplete` | Handshake acknowledged (`sessionId` assigned) | Start sending input and log `sessionId` |
-| `serverContent` | Streamed output + turn signals (`generationComplete`, `turnComplete`, `interrupted`) | Play audio; on `interrupted`, flush the playout queue |
+| `serverContent` | Streamed output + turn signals (`generationComplete`, `turnComplete`, `interrupted`) | Play audio; on `interrupted`, flush the playout queue. Advance the turn and unmute the mic on `turnComplete`, not `generationComplete` (see below) |
 | `toolCall` | The model wants to invoke one or more functions | Execute functions and reply with `toolResponse` |
 | `toolCallCancellation` | Cancel in-flight tool calls after user barge-in | Abort matching tool IDs and do not send their responses |
 | `usageMetadata` | Token accounting for the turn (`promptTokenCount`, `responseTokenCount`, modality details) | Record once on `turnComplete` for cost and context tracking |
@@ -35,28 +49,29 @@ before the handshake completes; all other frames follow `setupComplete`.
 | `sessionResumptionUpdate` | A fresh resumption `newHandle` + `lastConsumedClientMessageIndex` | Store the handle; drop buffered messages up to that index |
 
 :::tip[realtimeInput vs clientContent]
-Send continuous microphone audio on `realtimeInput`. Reserve `clientContent` for explicit text turns or silent context updates (`turnComplete: false`). Sending microphone audio on `clientContent` interrupts the model on every packet. See [Architecture -> Two input channels](/gemini_live_pipecat/architecture/#two-input-channels).
+Send continuous microphone audio on `realtimeInput`. Reserve `clientContent` for explicit text turns or silent context updates (`turnComplete: false`). Sending microphone audio on `clientContent` interrupts the model on every packet. See [Architecture -> Two input channels](/gemini-live/architecture/#two-input-channels).
 :::
 
 ## The `setup` frame
 
-Declared once at session start. Most fields are **immutable for the life of the socket connection**.
+Sent once at session start. Most fields last for the life of the socket. Two can change mid-call: `systemInstruction` and `tools`.
 
 | Field | Sets | Notes |
 | --- | --- | --- |
 | `model` | The Live model identifier | Vertex requires `projects/.../locations/.../publishers/google/models/...` |
-| `systemInstruction` | The agent's persona and base rules | Immutable on the socket; use [Dynamic prompt cards & phase gates](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor) for mid-call phase updates |
+| `systemInstruction` | The agent's persona and base rules | Replaceable mid-call: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`) or `clientContent` with `role="system"` (Vertex AI). Each update replaces the whole instruction and rebuilds the prefix cache, so update at stage transitions rather than on every turn. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/) |
 | `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never pass both (`["AUDIO","TEXT"]` closes with code `1007`) |
 | `generationConfig.speechConfig` | Prebuilt voice + BCP-47 language | Voice names are **case-sensitive** (`Aoede`, not `aoede`) |
-| `generationConfig.thinkingConfig` | Reasoning level (`thinkingLevel: "minimal"`) | Minimizes reasoning token overhead and cuts Time-to-First-Audio-Byte |
-| `tools` | Function declarations | Set `behavior: "NON_BLOCKING"` for async tools; see [Tools & function calling](/gemini_live_pipecat/tools/) |
+| `generationConfig.temperature` | Sampling temperature | Keep `0.7` to `0.8` for audio output. Leave `topK` and `topP` unset. See [Sampling](#sampling-for-audio-output) |
+| `generationConfig.thinkingConfig` | Reasoning level | Depends on the model. See [Thinking config by model](#thinking-config-by-model) |
+| `tools` | Function declarations | Set `behavior: "NON_BLOCKING"` for async tools. Replaceable mid-call with `session.send_context_update(tools=[...])` (or `tools=[]` to clear all tools) in `google-genai >= 2.32.0`. See [Tools & function calling](/gemini-live/tools/) |
 | `realtimeInputConfig.automaticActivityDetection` | Server VAD thresholds | Sensitivity, `silenceDurationMs`, `prefixPaddingMs` |
-| `outputAudioTranscription` | Text transcript of model speech | `{}` to enable |
-| `inputAudioTranscription` | Text transcript of user speech | `{}` to enable |
+| `outputAudioTranscription` | Text transcript of model speech | `{}` to enable. On Vertex AI, add `languageCodes` (see [Response modalities and transcription](#response-modalities-and-transcription)) |
+| `inputAudioTranscription` | Text transcript of user speech | `{}` to enable. On Vertex AI, add `languageCodes` |
 | `sessionResumption` | Transparent reconnect across 10 to 15 min rotations | `{}` to enable, or `{"handle": "..."}` when reconnecting |
-| `contextWindowCompression` | Sliding-window FIFO token eviction | Set `triggerTokens: 5000`, `slidingWindow.targetTokens: 3500`; see [Optimization patterns](/gemini_live_pipecat/optimization/) |
+| `contextWindowCompression` | Sliding-window FIFO token eviction | Set `triggerTokens: 5000`, `slidingWindow.targetTokens: 3500`; see [Optimization patterns](/gemini-live/optimization/) |
 
-For a complete `setup` payload with production values, see [Getting started -> What the raw protocol looks like](/gemini_live_pipecat/getting-started/#4-what-the-raw-protocol-looks-like).
+For a complete `setup` payload with production values, see [Getting started -> What the raw protocol looks like](/gemini-live/getting-started/#4-what-the-raw-protocol-looks-like).
 
 ## Voices and language
 
@@ -73,9 +88,17 @@ Automatic server VAD is enabled by default and configurable under `realtimeInput
 | `startOfSpeechSensitivity` | How eagerly speech onset triggers | `START_SENSITIVITY_HIGH` |
 | `endOfSpeechSensitivity` | How eagerly a pause ends the user turn | `END_SENSITIVITY_LOW` |
 | `silenceDurationMs` | Silence required before the turn is considered complete | `500` (`350` to `800` depending on workload) |
-| `prefixPaddingMs` | Audio retained prior to detected speech onset | `200` |
+| `prefixPaddingMs` | How much detected speech the server needs before it commits to start-of-speech. Lower values catch shorter sounds | `200` (keep `200` to `300`) |
 
 If your client manages push-to-talk or custom local endpointing, set `automaticActivityDetection.disabled: true` and send explicit `activityStart` and `activityEnd` signals inside `realtimeInput`.
+
+:::caution[Spelled names and emails need a short `prefixPaddingMs`]
+A spoken letter ("S", "A", "C") lasts roughly 250 to 450 ms. With `prefixPaddingMs: 600`, a single letter never reaches the start-of-speech threshold, so letters drop out of names and email addresses spelled one at a time. Keep `prefixPaddingMs` at `200` to `300` ms on any flow that collects spelled input.
+:::
+
+### Short backchannels after a barge-in
+
+Callers often say a one- or two-word acknowledgment ("okay", "right", "haan", "ji") while the agent is talking. Server VAD treats that as a barge-in, and the model stops mid-sentence and waits for a real question that never comes. Watch the input transcript right after an `interrupted` event. If it holds one or two words, no digits, and no stop word ("no", "stop", "wait"), send a short user-role text turn that asks for a reply now and tells the model the caller only acknowledged it, so it should resume what it was saying. Anything longer is a real interruption and gets a normal reply.
 
 ## Prompting for native audio models
 
@@ -84,11 +107,50 @@ Native speech-to-speech models interpret your `systemInstruction` and `clientCon
 1. **Never use square brackets**: Do not place stage directions or tags in square brackets inside `systemInstruction` or `clientContent`. Native audio models either speak bracketed words aloud or shift into exaggerated theatrical prosody. Write natural, unbracketed instructions instead.
 2. **Enforce spoken brevity**: Instruct the model to keep replies to **1 to 2 short sentences per turn** (15 to 35 words) and pause to let the caller respond.
 3. **Spell out digits and codes individually**: Instruct the model to read confirmation numbers, postal codes, and phone numbers one digit at a time (*"four, two, nine"* instead of *"four hundred twenty-nine"*).
-4. **Never inject `clientContent` during active model speech**: Sending a `clientContent` frame while the model is speaking immediately cuts off its current audio turn. Inject phase updates only after `turnComplete` or inside a `FunctionResponse` with `scheduling=WHEN_IDLE`.
+4. **Never inject `clientContent` during active model speech**: Sending a `clientContent` frame while the model is speaking can cut off its current audio turn. Send phase updates inside a blocking tool handler, right before you return the `FunctionResponse`, or after `turnComplete`. See [Prompt engineering -> Steering mid-session](/gemini-live/prompt-engineering/#4-steering-mid-session-system-instruction-cards--short-tool-results).
+5. **Keep sampling non-greedy**: See [Sampling for audio output](#sampling-for-audio-output).
+
+For the full list of prompt patterns that break native audio (silence rules, XML tags around spoken lines, non-lexical fillers), see [Prompt engineering -> Acoustic traps](/gemini-live/prompt-engineering/#3-acoustic-traps-that-break-native-audio-sessions).
+
+## Sampling for audio output
+
+Audio tokens need some randomness. With greedy decoding (`temperature: 0` or `topK: 1`), the audio decoder can lose track of the text it was speaking and loop on one sound for many seconds. On `gemini-3.8-live` this shows up as a long droning or buzzing tail, most often right after a tool result. Keep `temperature` at `0.7` to `0.8` and leave `topK` and `topP` unset so the model uses its own defaults. Get consistent wording from the prompt and from `*_say` fields in tool results, not from greedy sampling.
+
+## Thinking config by model
+
+| Model | What to send | Why |
+| --- | --- | --- |
+| `gemini-3.8-live` (base) | Omit `thinkingConfig` | The base model does not take `thinkingLevel`. Reasoning is served by the separate `-thinking` model variants |
+| `gemini-3.1-flash-live-preview` and other 3.1 thinking models | `thinkingConfig: { "thinkingLevel": "minimal" }` | Lowest reasoning overhead and the fastest first audio byte |
+| Gemini 2.5 native audio | `thinkingConfig: { "thinkingBudget": 0 }` to turn reasoning off | 2.5 uses a numeric budget |
+
+Never send the 2.5-style `thinkingBudget: 0` to a Gemini 3.x model. The API rejects a request that carries both fields, and on models that accept the budget alone, multi-step tool calls copy parameters less reliably.
+
+## Turn signals: `generationComplete` vs `turnComplete`
+
+The server generates audio faster than real time (about 4x) and sends `generationComplete` as soon as the last audio chunk is generated, while the caller is still hearing the reply. `turnComplete` arrives when the turn is really over. Advance your state machine, end the turn in your UI, and unmute the microphone on `turnComplete`. Gating on `generationComplete` clips the end of the reply or lets the caller's echo interrupt it.
 
 ## Response modalities and transcription
 
 A Live session returns **either audio or text** in `generationConfig.responseModalities`, never both. To receive live text transcripts alongside spoken audio, enable `inputAudioTranscription: {}` and `outputAudioTranscription: {}` in `setup`. Transcripts stream incrementally; accumulate fragments until `finished: true` or `turnComplete`.
+
+**Pin transcript languages on Vertex AI.** On multilingual calls, transcripts can drift into the wrong script (Hindi speech written in Urdu, Arabic, or Cyrillic script). On Vertex AI, list the languages you expect:
+
+```python
+from google.genai import types
+
+config = types.LiveConnectConfig(
+    response_modalities=["AUDIO"],
+    input_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"]),
+    output_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"]),
+)
+```
+
+`language_codes` works only on Vertex AI. In Google AI Studio (API key) mode, send `AudioTranscriptionConfig()` with no arguments. Some `google-genai` releases raise `ValueError` for `language_codes` in that mode and newer ones pass it through, so do not rely on a client-side error.
+
+:::caution[Never put single letters or digits in a custom vocabulary]
+If your speech stack accepts a custom vocabulary or phrase hints, leave out single letters (`A` to `Z`) and single digits (`0` to `9`). They bias recognition toward one-character tokens, so short words get transcribed as letters (the Hindi "जी", *ji*, comes out as "G"). Add whole words and names only.
+:::
 
 ## Native options for cost and latency control
 
@@ -96,7 +158,7 @@ A Live session returns **either audio or text** in `generationConfig.responseMod
 | --- | --- |
 | **Media resolution** | Lowering resolution for video or screenshare frames reduces input token consumption. |
 | **Context window compression** | Firing sliding-window eviction at `5,000` tokens (`targetTokens: 3500`) flushes stale carried audio (`$3.00/1M` tokens for caller + played model speech) before it compounds across turns. |
-| **Thinking level (`minimal`)** | Setting `thinkingConfig.thinkingLevel: "minimal"` on Gemini 3.1 Flash Live minimizes reasoning token overhead (`$4.50/1M` output tokens) and reduces initial audio latency while preserving tool-calling accuracy. |
+| **Thinking level (`minimal`)** | On Gemini 3.1 Flash Live, `thinkingConfig.thinkingLevel: "minimal"` keeps reasoning output tokens (`$4.50/1M`) low and shortens time to first audio while keeping tool calls accurate. Omit `thinkingConfig` on base `gemini-3.8-live` (see [Thinking config by model](#thinking-config-by-model)). |
 
 :::note
 Wire protocol fields use `camelCase` (`responseModalities`, `thinkingConfig`), whereas the Python `google-genai` SDK accepts `snake_case` equivalents (`response_modalities`, `thinking_config`).

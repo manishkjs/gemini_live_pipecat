@@ -1,3 +1,4 @@
+import re
 from loguru import logger
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
@@ -5,9 +6,34 @@ from pipecat.frames.frames import (
     TextFrame,
     InterruptionFrame,
     LLMMessagesAppendFrame,
+    LLMFullResponseStartFrame,
     LLMFullResponseEndFrame,
+    BotStartedSpeakingFrame,
     TranscriptionFrame,
 )
+
+# Explicit stop/negation commands that must never be treated as conversational fillers.
+_STOP_OR_NEGATION_COMMANDS = {
+    "no", "stop", "wait", "hold", "pause", "cancel",
+    "nahi", "na", "mat", "ruko", "ruk", "bas",
+    "नहीं", "ना", "मत", "रुको", "रुक", "बस",
+}
+_PUNCT_STRIP_RE = re.compile(r"[^\w\u0900-\u097F\s-]", re.UNICODE)
+
+
+def is_conversational_filler(text: str, max_words: int = 2) -> bool:
+    """Return True if text is a short backchannel filler (<= max_words, no digits, no stop/negation commands)."""
+    if not text:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    cleaned = _PUNCT_STRIP_RE.sub("", text.strip().lower())
+    words = [w for w in cleaned.split() if w]
+    if not words or len(words) > max_words:
+        return False
+    if any(w in _STOP_OR_NEGATION_COMMANDS for w in words):
+        return False
+    return True
 
 
 class RepeatOnInterruptionProcessor(FrameProcessor):
@@ -16,7 +42,7 @@ class RepeatOnInterruptionProcessor(FrameProcessor):
     When the bot is interrupted:
     - Short filler (≤2 words like "uh huh", "okay", "acha"):
       Automatically tells the LLM to resume what it was saying.
-    - Genuine interruption (3+ words): Injects a system note so
+    - Genuine interruption (3+ words or non-filler command): Injects a system note so
       the LLM can repeat if the user explicitly asks later.
 
     IMPORTANT: Interruption detection runs BEFORE super().process_frame()
@@ -33,6 +59,12 @@ class RepeatOnInterruptionProcessor(FrameProcessor):
         self._current_response = ""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        # Reset stale interruption state if a new bot turn starts without a user transcription
+        if isinstance(frame, (LLMFullResponseStartFrame, BotStartedSpeakingFrame)):
+            if self._was_interrupted:
+                self._was_interrupted = False
+                self._current_response = ""
+
         # Detect interruption BEFORE super() cancels the task queue
         if isinstance(frame, InterruptionFrame):
             if self._current_response:
@@ -57,7 +89,7 @@ class RepeatOnInterruptionProcessor(FrameProcessor):
                 f"'{user_text}' ({word_count} words)"
             )
 
-            if word_count <= self._filler_max_words:
+            if is_conversational_filler(user_text, self._filler_max_words):
                 # Short filler — auto-repeat
                 logger.info(
                     f"[RepeatOnInterruption] Filler detected ('{user_text}'). "

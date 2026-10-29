@@ -3,12 +3,12 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 // Deployed as a GitHub Pages *project* site:
-//   https://manishkjs.github.io/gemini_live_pipecat/
+//   https://manishkjs.github.io/gemini-live/
 // If you later move to a custom domain, set `site` to that domain,
 // change `base` to '/', and add a `public/CNAME` file.
 export default defineConfig({
   site: 'https://manishkjs.github.io',
-  base: '/gemini_live_pipecat',
+  base: '/gemini-live',
   vite: {
     server: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
     preview: { allowedHosts: process.env.DEV_ALLOWED_HOSTS?.split(',') ?? true },
@@ -22,7 +22,7 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/manishkjs/gemini_live_pipecat',
+          href: 'https://github.com/manishkjs/gemini-live',
         },
       ],
       customCss: ['./src/styles/custom.css'],
@@ -30,12 +30,18 @@ export default defineConfig({
         {
           tag: 'script',
           attrs: {
-            src: '/gemini_live_pipecat/sidebar-resizer.js',
+            src: '/gemini-live/sidebar-resizer.js',
             defer: true,
           },
         },
       ],
       sidebar: [
+        {
+          label: 'Start here',
+          items: [
+            { label: 'Executive overview', slug: 'executive-overview' },
+          ],
+        },
         {
           label: 'Guides',
           items: [
@@ -49,7 +55,13 @@ export default defineConfig({
           items: [
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Configuration reference', slug: 'gemini-live-configuration' },
-            { label: 'Audio engineering', slug: 'audio-engineering' },
+            {
+              label: 'Audio engineering',
+              items: [
+                { label: 'Capture, buffers & backpressure', slug: 'audio-engineering' },
+                { label: 'Noise, background speech & VAD', slug: 'audio-engineering/noise-and-vad' },
+              ],
+            },
             { label: 'Tools & function calling', slug: 'tools' },
             { label: 'Choosing a framework', slug: 'frameworks' },
           ],
@@ -70,6 +82,7 @@ export default defineConfig({
               ],
             },
             { label: 'How to write a better prompt', slug: 'prompt-optimization' },
+            { label: 'Prompt engineering (deep dive)', slug: 'prompt-engineering' },
           ],
         },
         {

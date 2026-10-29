@@ -4,6 +4,14 @@ description: Measuring true voice-to-voice turn latency, token telemetry, and Op
 ---
 
 import LatencyWaterfall from '../../components/LatencyWaterfall.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to measure the delay a caller feels (last word spoken to first sound back) and the tokens (billing units) each turn consumes."
+  why="Standard web metrics are meaningless on a connection that stays open for 10 to 60 minutes. Without the right two numbers you cannot tell a model slowdown from a deliberate pause setting."
+  number="A good turn is under a second: 30 to 60 ms network, 300 to 500 ms end-of-speech wait, 220 to 350 ms for the model to start speaking."
+  decide="What latency target you promise, and which dashboard shows it per turn."
+/>
 
 In a real-time voice conversation, standard HTTP metrics like "total request duration" are meaningless because the WebSocket remains open for 10 to 60 minutes. Instead, voice engineering teams track **per-turn voice-to-voice latency** and **per-turn token consumption**.
 
@@ -19,7 +27,7 @@ True **Voice-to-Voice Latency** is the elapsed time from the **last millisecond 
 | :--- | :--- | :--- | :--- |
 | **1. Network Transport (Client → Backend → Vertex)** | `30–60ms` | 20ms–40ms PCM audio frames traverse WebRTC/WebSocket to the regional endpoint. | Co-locate your Cloud Run / GKE media gateway in `us-central1` alongside the Vertex AI endpoint; use WebRTC (UDP) for the client leg. |
 | **2. VAD Silence Duration (`silenceDurationMs`)** | `300–500ms` | The server waits after the user stops speaking to confirm the turn is finished. | Tune `silenceDurationMs` down from `500ms` to `350ms` for snappy transactional bots. |
-| **3. Model Time-to-First-Audio-Byte (TTFAB)** | `220–350ms` | Gemini Live processes the active context window and synthesizes the first 24kHz PCM chunk. | Keep active context under 5,000 tokens using [SlidingWindow compression](/gemini_live_pipecat/optimization/#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) and modular prompt cards. |
+| **3. Model Time-to-First-Audio-Byte (TTFAB)** | `220–350ms` | Gemini Live processes the active context window and synthesizes the first 24kHz PCM chunk. | Keep active context under 5,000 tokens using [SlidingWindow compression](/gemini-live/optimization/#pillar-1-native-sliding-window-compression-the-15-minute-ceiling-breaker) and modular prompt cards. |
 
 :::tip[Separating VAD wait time from model inference time]
 When logging latency in production, always record **Total Turn Latency** (`speech_end → first_audio_byte`) alongside **Model Inference Latency** (`vad_end_of_speech → first_audio_byte`). Otherwise, a deliberate `600ms` `silenceDurationMs` setting will look like a model slowdown on your dashboards.
@@ -47,7 +55,7 @@ async for response in session.receive():
 ```
 
 ### What to alert on in production
-1. **Monotonically rising `Input AUDIO` tokens per turn**: Indicates that `contextWindowCompression` is missing or `trigger_tokens` is set too high, causing the [Carried Audio Tax](/gemini_live_pipecat/pricing/#2-the-multi-turn-carried-audio-tax-quadratic-growth).
+1. **Monotonically rising `Input AUDIO` tokens per turn**: Indicates that `contextWindowCompression` is missing or `trigger_tokens` is set too high, causing the [Carried Audio Tax](/gemini-live/pricing/#2-the-multi-turn-carried-audio-tax-quadratic-growth).
 2. **High `Input TEXT` tokens on Turn 1 (>1,500 tokens)**: Indicates an oversized static system prompt or bloated MCP/function tool schemas.
 
 ---

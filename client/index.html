@@ -158,7 +158,7 @@
                     <option value="google-tts">Google TTS - Chirp 3 HD</option>
                   </select>
                 </div>
-                  <div class="setting">
+                <div class="setting" id="tts-voice-setting">
                   <label for="tts-voice-select">Voice</label>
                   <select id="tts-voice-select">
                     <!-- Populated dynamically by app.ts -->
@@ -188,11 +188,11 @@
                 <label for="gemini-model-select">Model</label>
                 <select id="gemini-model-select">
                   <optgroup label="Vertex AI (Gemini Live)">
-                    <option value="gemini-3.5-flash-live-preview" selected>
-                      gemini-3.5-flash-live-preview (Vertex AI Live)
+                    <option value="gemini-3.8-live-preview" selected>
+                      gemini-3.8-live-preview (Vertex AI Live - Default)
                     </option>
-                    <option value="gemini-3.5-flash-lite-live-preview">
-                      gemini-3.5-flash-lite-live-preview (Vertex AI Live Lite)
+                    <option value="gemini-3.8-live-extended-thinking-preview">
+                      gemini-3.8-live-extended-thinking-preview (Vertex AI Thinking)
                     </option>
                     <option value="gemini-live-2.5-flash-native-audio">
                       gemini-live-2.5-flash-native-audio (Vertex AI)
@@ -202,14 +202,17 @@
                     </option>
                   </optgroup>
                   <optgroup label="AI Studio (Gemini Live)">
-                    <option value="gemini-3.5-live-preview">
-                      gemini-3.5-live-preview (AI Studio)
+                    <option value="gemini-3.8-live">
+                      gemini-3.8-live (AI Studio)
                     </option>
-                    <option value="gemini-3.5-live-extended-thinking-preview">
-                      gemini-3.5-live-extended-thinking-preview (AI Studio Thinking)
+                    <option value="gemini-3.8-live-extended-thinking">
+                      gemini-3.8-live-extended-thinking (AI Studio Thinking)
                     </option>
                     <option value="gemini-3.1-flash-live-preview">
                       gemini-3.1-flash-live-preview (AI Studio)
+                    </option>
+                    <option value="gemini-2.5-flash-native-audio-latest">
+                      gemini-2.5-flash-native-audio-latest (AI Studio)
                     </option>
                   </optgroup>
                 </select>
@@ -247,8 +250,8 @@
                   <option value="Vindemiatrix">Vindemiatrix (Female)</option>
                   <option value="Zephyr">Zephyr (Female)</option>
                   <option value="Zubenelgenubi">Zubenelgenubi (Male)</option>
-                  <option value="Custom-Male">Custom clone voice - Male</option>
-                  <option value="Custom-Female">Custom clone voice - Female</option>
+                  <option value="Custom-Male">Chirp 3 HD Voice Clone (Male)</option>
+                  <option value="Custom-Female">Chirp 3 HD Voice Clone (Female)</option>
                 </select>
                 <div id="voice-warning" class="warning" style="display: none; color: red;">
                   <p>Don't select custom voices when selecting native audio model</p>
@@ -322,8 +325,8 @@
                   <input type="checkbox" id="context-compression-toggle" checked />
                 </div>
                 <div class="setting" id="compression-tokens-container" style="margin-top: 8px;">
-                  <label for="compression-tokens-input">Trigger Tokens threshold</label>
-                  <input type="number" id="compression-tokens-input" placeholder="e.g. 10000" min="5000" value="20000" style="width: 100%; max-width: 120px;" />
+                  <label for="compression-tokens-input">Trigger Tokens threshold (min 5,000)</label>
+                  <input type="number" id="compression-tokens-input" placeholder="e.g. 5000" min="5000" value="5000" style="width: 100%; max-width: 120px;" />
                 </div>
               </div>
               <div class="system-instructions">

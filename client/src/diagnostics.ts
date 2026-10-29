@@ -2,10 +2,13 @@ interface DiagnosticLogEntry {
   timestamp: string;
   level: string;
   message: string;
+  event_type?: string;
   ttfb_ms?: number | null;
 }
 
 class DiagnosticsApp {
+  private sessionId = "";
+  private token = "";
   private logFeed: HTMLElement | null = null;
   private ttfbKpi: HTMLElement | null = null;
   private tokensKpi: HTMLElement | null = null;
@@ -35,7 +38,21 @@ class DiagnosticsApp {
   private responseTokens = 0;
 
   constructor() {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== window.opener || event.data?.type !== "diagnostic-access") return;
+      if (typeof event.data.sessionId !== "string" || typeof event.data.token !== "string") return;
+      this.sessionId = event.data.sessionId;
+      this.token = event.data.token;
+      window.removeEventListener("message", receive);
+      this.fetchTelemetry();
+    };
+    window.addEventListener("message", receive);
+    // This request contains no secret. The opener replies only to this window
+    // at its known backend origin; credentials never enter the dashboard URL.
+    window.opener?.postMessage({ type: "diagnostic-access-request" }, "*");
+
     this.initElements();
+    if (!window.opener && this.logFeed) this.logFeed.textContent = "Open this dashboard from an active call’s observability panel.";
     this.bindEvents();
     this.startPolling();
   }
@@ -113,7 +130,9 @@ class DiagnosticsApp {
     // Clear logs button
     this.clearLogsBtn?.addEventListener("click", async () => {
       try {
-        await fetch("/api/logs/clear", { method: "POST" });
+        if (!this.sessionId) return;
+        const response = await fetch(`/api/logs/clear?session_id=${encodeURIComponent(this.sessionId)}`, { method: "POST", headers: { "X-Session-Token": this.token } });
+        if (!response.ok) throw new Error("Clear failed");
         this.allLogs = [];
         this.renderLogs();
       } catch (e) {
@@ -123,9 +142,12 @@ class DiagnosticsApp {
   }
 
   private async fetchTelemetry() {
+    if (!this.sessionId) return;
+    const scope = `session_id=${encodeURIComponent(this.sessionId)}`;
+    const headers = { "X-Session-Token": this.token };
     try {
       // Fetch Logs
-      const res = await fetch("/api/logs?limit=500");
+      const res = await fetch(`/api/logs?limit=500&${scope}`, { headers });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.logs)) {
@@ -140,7 +162,7 @@ class DiagnosticsApp {
 
     try {
       // Fetch current trace URL
-      const traceRes = await fetch("/api/trace/current");
+      const traceRes = await fetch(`/api/trace/current?${scope}`, { headers });
       if (traceRes.ok) {
         const traceData = await traceRes.json();
         if (traceData.trace_url && traceData.trace_url !== this.currentTraceUrl) {
@@ -161,7 +183,7 @@ class DiagnosticsApp {
     const llmStat = summary.llm || {};
     const sttStat = summary.stt || {};
     const ttsStat = summary.tts || {};
-    const totalStat = summary.total_turnaround || {};
+    const totalStat = summary.vad_stop_to_first_server_audio || {};
     const turns = summary.turns || [];
 
     // Update pill counters
@@ -178,7 +200,7 @@ class DiagnosticsApp {
 
     // Select stat according to active filter
     let activeStat = totalStat;
-    let stageLabel = "Total Turnaround (E2E)";
+    let stageLabel = "VAD stop → first server audio";
     if (this.selectedLatencyStage === "llm") {
       activeStat = llmStat;
       stageLabel = "LLM TTFB (Reasoning Stream)";
@@ -208,16 +230,16 @@ class DiagnosticsApp {
     if (p95El) p95El.textContent = activeStat.p95 !== undefined && activeStat.count > 0 ? `${activeStat.p95} ms` : "-- ms";
     if (meanEl) meanEl.textContent = activeStat.mean !== undefined && activeStat.count > 0 ? `${activeStat.mean} ms` : "-- ms";
     if (minmaxEl) minmaxEl.textContent = activeStat.count > 0 ? `Min: ${activeStat.min}ms / Max: ${activeStat.max}ms` : "Min: -- / Max: --";
-    if (badgeEl) badgeEl.textContent = `${activeStat.count || 0} Turns (${stageLabel})`;
+    if (badgeEl) badgeEl.textContent = `${activeStat.count || 0} Samples (${stageLabel})`;
 
     const tbody = document.getElementById("full-latency-breakdown-tbody");
     if (tbody) {
       const rows = [
-        { stageKey: "total", name: "🌟 Total Turnaround (End-to-End)", stat: totalStat, color: "#f472b6" },
+        { stageKey: "total", name: "🌟 VAD stop → first server audio", stat: totalStat, color: "#f472b6" },
         { stageKey: "llm", name: "🧠 LLM TTFB (Reasoning Stream)", stat: llmStat, color: "#c084fc" },
-        { stageKey: "stt", name: "🎙️ STT Latency (Cloud Speech v2 Chirp)", stat: sttStat, color: "#fbbf24" },
+        { stageKey: "stt", name: "🎙️ STT Latency", stat: sttStat, color: "#fbbf24" },
         { stageKey: "tts", name: "🔊 TTS Latency (Audio Synthesis)", stat: ttsStat, color: "#4ade80" },
-        { stageKey: "live_ttfb", name: "⚡ Gemini Live TTFB (Native Audio)", stat: liveStat, color: "#38bdf8" },
+        { stageKey: "live_ttfb", name: "⚡ Gemini Live first output", stat: liveStat, color: "#38bdf8" },
       ].filter(r => r.stat && r.stat.count > 0);
 
       if (rows.length > 0) {
@@ -256,59 +278,19 @@ class DiagnosticsApp {
   }
 
   private computeMetrics(latencySummary?: any) {
-    let ttfbSum = 0;
-    let ttfbCount = 0;
-    let turns = 0;
-    let interrupts = 0;
-    let tools = 0;
-    let tokens = 0;
-    let inTokens = 0;
-    let outTokens = 0;
-
-    if (latencySummary) {
-      this.renderLatencyBenchmarks(latencySummary);
-    }
-
-    for (const log of this.allLogs) {
-      const msg = log.message || "";
-      if (log.ttfb_ms) {
-        ttfbSum += log.ttfb_ms;
-        ttfbCount++;
-      } else if (msg.includes("TTFB") || msg.includes("Latency") || msg.includes("turnaround")) {
-        const match = msg.match(/(\d+(\.\d+)?)\s*ms/);
-        if (match) {
-          ttfbSum += parseFloat(match[1]);
-          ttfbCount++;
-        }
-      }
-
-      if (msg.includes("User Speech") || msg.includes("Bot Response")) {
-        turns++;
-      }
-      if (msg.includes("Interrupted") || msg.includes("Interruption")) {
-        interrupts++;
-      }
-      if (msg.includes("Tool Output") || msg.includes("Function call")) {
-        tools++;
-      }
-      if (msg.includes("Turn Token Usage") || msg.includes("LLM Token Usage")) {
-        const totalMatch = msg.match(/Total:\s*(\d+)/);
-        const promptMatch = msg.match(/Prompt:\s*(\d+)/);
-        const respMatch = msg.match(/Response:\s*(\d+)/);
-        if (totalMatch) tokens += parseInt(totalMatch[1], 10);
-        if (promptMatch) inTokens += parseInt(promptMatch[1], 10);
-        if (respMatch) outTokens += parseInt(respMatch[1], 10);
-      }
-    }
-
-    if (this.ttfbKpi) {
-      this.ttfbKpi.textContent = ttfbCount > 0 ? `${Math.round(ttfbSum / ttfbCount)} ms` : "-- ms";
-    }
-    if (this.turnsKpi) this.turnsKpi.textContent = `${Math.ceil(turns / 2)}`;
-    if (this.interruptsKpi) this.interruptsKpi.textContent = `${interrupts}`;
-    if (this.toolsKpi) this.toolsKpi.textContent = `${tools}`;
-    if (this.tokensKpi) this.tokensKpi.textContent = `${tokens.toLocaleString()}`;
-    if (this.tokensSubKpi) this.tokensSubKpi.textContent = `In: ${inTokens.toLocaleString()} | Out: ${outTokens.toLocaleString()}`;
+    if (latencySummary) this.renderLatencyBenchmarks(latencySummary);
+    const records = latencySummary?.turns ?? [];
+    const turns = records.filter((r: any) => r.stage === "turn" && r.turn_id > 0);
+    const stat = latencySummary?.live_ttfb?.count ? latencySummary.live_ttfb : latencySummary?.llm;
+    if (this.ttfbKpi) this.ttfbKpi.textContent = stat?.count ? `${stat.mean} ms` : "-- ms";
+    if (this.turnsKpi) this.turnsKpi.textContent = String(turns.length);
+    if (this.interruptsKpi) this.interruptsKpi.textContent = String(turns.filter((r: any) => r.status === "interrupted").length);
+    if (this.toolsKpi) this.toolsKpi.textContent = String(this.allLogs.filter(log => log.event_type === "Tool Output").length);
+    const usage = latencySummary?.provider_usage;
+    if (this.tokensKpi) this.tokensKpi.textContent = usage?.count ? String(usage.total_token_count) : "—";
+    if (this.tokensSubKpi) this.tokensSubKpi.textContent = usage?.count
+      ? `In: ${usage.prompt_token_count} · Out: ${usage.response_token_count} · retained responses`
+      : "No provider usage received";
   }
 
   private renderLogs() {
@@ -383,8 +365,11 @@ class DiagnosticsApp {
   }
 
   private startPolling() {
-    this.fetchTelemetry();
-    setInterval(() => this.fetchTelemetry(), 1500);
+    const poll = async () => {
+      await this.fetchTelemetry();
+      setTimeout(poll, 1500);
+    };
+    void poll();
   }
 }
 
