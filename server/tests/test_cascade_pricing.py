@@ -116,26 +116,41 @@ def test_failed_or_interrupted_requests_are_explicitly_partial():
 
 def test_actual_llm_stream_keeps_last_metadata_and_meter_is_optional():
     source = ast.parse((Path(__file__).parents[1] / "agent.py").read_text())
-    cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "CustomGoogleVertexLLMService")
+    cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == "_MeteredGeminiLLMMixin")
     method = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "_stream_content")
+    emit_usage = True
     class FakeBase:
         async def _stream_content(self, context):
             async def chunks():
-                for p in (5, 1000):
-                    yield SimpleNamespace(usage_metadata={"prompt_token_count": p, "candidates_token_count": 200, "total_token_count": p + 200})
+                if emit_usage:
+                    yield SimpleNamespace(usage_metadata={"prompt_token_count": 5, "cached_content_token_count": 3, "candidates_token_count": 200, "total_token_count": 205})
+                    yield SimpleNamespace(usage_metadata={"prompt_token_count": 1000, "candidates_token_count": 200, "total_token_count": 1200})
+                # Gemma 4 MaaS emits empty usageMetadata={} chunks alongside text chunks; must not overwrite real usage!
+                yield SimpleNamespace(usage_metadata=SimpleNamespace(prompt_token_count=None, total_token_count=None))
             return chunks()
     ns = dict(FakeBase=FakeBase, observe_tokens=observe_tokens, publish_cost=AsyncMock())
     extracted = ast.ClassDef(name="Metered", bases=[ast.Name(id="FakeBase", ctx=ast.Load())], keywords=[], body=[method], decorator_list=[])
     exec(compile(ast.fix_missing_locations(ast.Module(body=[extracted], type_ignores=[])), "actual_llm_method", "exec"), ns)
     async def run():
+        nonlocal emit_usage
         service = ns["Metered"]()
         service._settings = SimpleNamespace(model="gemini-3.5-flash-lite")
         service._location = "global"
-        assert len([x async for x in await service._stream_content(None)]) == 2
+        # Unmetered passthrough merges cached_content_token_count across chunks and runs without _MeteredGeminiLLMMixin in globals()
+        assert len([x async for x in await service._stream_content(None)]) == 3
+        assert service._last_merged_usage["prompt_token_count"] == 1000
+        assert service._last_merged_usage["cached_content_token_count"] == 3
+        # Metered stream bills 997 uncached * $0.30/1M + 3 cached * $0.03/1M + 200 out * $2.50/1M = $0.00079919
         service._cascade_meter = CascadeCostLedger("call")
-        assert len([x async for x in await service._stream_content(None)]) == 2
+        assert len([x async for x in await service._stream_content(None)]) == 3
         assert len(service._cascade_meter.records) == 1
-        assert service._cascade_meter.snapshot()["stages"][1]["known_usd"] == "0.0008"
+        assert service._cascade_meter.snapshot()["stages"][1]["known_usd"] == "0.00079919"
+        # Cross-turn reset: if the next turn emits zero usage metadata (e.g. interrupted before usage),
+        # _last_merged_usage and _last_usage_metadata MUST be cleared rather than leaking Turn 1's counts.
+        emit_usage = False
+        assert len([x async for x in await service._stream_content(None)]) == 1
+        assert service._last_merged_usage is None
+        assert service._last_usage_metadata is None
     asyncio.run(run())
 
 
@@ -150,12 +165,13 @@ def extracted_method(class_name, method_name, base, namespace, filename="agent.p
 
 
 def test_gemini_tts_reads_usage_only_chunk_and_interruption_is_partial():
+    import tts_script
     from google.genai import types
     class FakeBase:
         async def start_ttfb_metrics(self): pass
         async def stop_ttfb_metrics(self): pass
     frames = lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs)
-    ns = dict(types=types, observe_tokens=observe_tokens, publish_cost=AsyncMock(),
+    ns = dict(types=types, tts_script=tts_script, observe_tokens=observe_tokens, publish_cost=AsyncMock(),
               logger=SimpleNamespace(debug=lambda *a: None, exception=lambda *a: None),
               TTSAudioRawFrame=frames, TTSStoppedFrame=frames, ErrorFrame=frames)
     cls = extracted_method("CustomVertexGeminiTTSService", "run_tts", FakeBase, ns)
@@ -172,7 +188,7 @@ def test_gemini_tts_reads_usage_only_chunk_and_interruption_is_partial():
         service.sample_rate, service.chunk_size = 24000, 32
         service._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=generate)))
         service._cascade_meter = CascadeCostLedger("call")
-        assert len([f async for f in service.run_tts("नमस्ते", "context")]) == 2
+        assert len([f async for f in service.run_tts("नमस्ते", "context")]) == 1
         assert service._cascade_meter.snapshot()["stages"][2]["known_usd"] == "0.0051"
         interrupted = service.run_tts("Next sentence", "context")
         await anext(interrupted)
@@ -221,6 +237,7 @@ def test_all_persona_declarations_survive_actual_sdk_conversion():
 
 
 def test_normal_cascade_tts_setup_works_with_and_without_stt():
+    import tts_script
     import voice_profiles
     from pipecat.transcriptions.language import Language
     source = ast.parse((Path(__file__).parents[1] / "agent.py").read_text())
@@ -231,8 +248,10 @@ def test_normal_cascade_tts_setup_works_with_and_without_stt():
     for skip in (False, True):
         calls = []
         ns = dict(clean_tts_model="gemini-3.1-flash-tts-preview", tts_voice="Aoede", custom_voice_key=None,
-                  stt_language="hi-IN", project_id="dummy", location="us-central1", tts_voice_prompt=None,
-                  voice_profiles=voice_profiles, MarkdownTextFilter=lambda: None,
+                  gemini_voice_key=None, stt_language="hi-IN", project_id="dummy", location="us-central1",
+                  tts_voice_prompt=None, tts_style=None, tts_accent=None, tts_pitch=None, tts_pace=1.0,
+                  tts_pace_label=None, tts_script=tts_script, voice_profiles=voice_profiles,
+                  MarkdownTextFilter=lambda: None,
                   CustomVertexGeminiTTSService=lambda **kwargs: calls.append(kwargs))
         if not skip: ns["stt_languages"] = [Language.HI_IN]
         exec(code, ns)
@@ -247,7 +266,7 @@ def test_active_cloud_stream_keeps_reported_subtotal_but_not_complete_total():
     assert stage["known_usd"] == "0.016" and not stage["complete"]
 
 
-def test_background_transcript_counts_even_with_skip_stt_and_empty_results(monkeypatch):
+def test_skip_stt_keeps_stt_stage_disabled_and_zero_cost(monkeypatch):
     import sys
     from types import ModuleType
     cloud_types = ModuleType("google.cloud.speech_v2.types")
@@ -262,13 +281,58 @@ def test_background_transcript_counts_even_with_skip_stt_and_empty_results(monke
     cls = extracted_method("AudioAccumulator", "_run_parallel_stt", object, ns, "processors/audio_accumulator.py")
 
     async def run():
+        # 1. When skip_stt=True, AudioAccumulator(enable_parallel_stt=False) NEVER spawns _run_parallel_stt
+        # (zero Cloud Speech v2 recognize calls -> true $0 STT spend) and CascadeCostLedger(skip_stt=True) stays disabled ($0).
+        from processors.audio_accumulator import AudioAccumulator
+        from pipecat.frames.frames import AudioRawFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        ctx_msgs = []
+        fake_ctx = SimpleNamespace(
+            messages=ctx_msgs,
+            add_audio_frames_message=lambda audio_frames, text: ctx_msgs.append({"role": "user", "content": "audio_blob"}),
+        )
+        acc = AudioAccumulator(fake_ctx, project_id="dummy", stt_languages=["hi-IN"], cost_meter=None, enable_parallel_stt=False)
+        acc.push_frame = AsyncMock()
+        acc.broadcast_interruption = AsyncMock()
+        acc._run_parallel_stt = AsyncMock()
+        await acc.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await acc.process_frame(AudioRawFrame(b"\x00\x01" * 160, 16000, 1), FrameDirection.DOWNSTREAM)
+        await acc.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        acc._run_parallel_stt.assert_not_called()
+        assert acc._stt_task is None
+
+        ledger_skipped = CascadeCostLedger("call-skip", skip_stt=True)
+        service_no_meter = cls()
+        service_no_meter._cascade_meter = None
+        service_no_meter._project_id, service_no_meter._stt_languages = "dummy", ["hi-IN"]
+        service_no_meter._get_stt_client = AsyncMock(
+            return_value=SimpleNamespace(
+                recognize=AsyncMock(return_value=SimpleNamespace(results=[], metadata=SimpleNamespace(total_billed_duration=timedelta(seconds=5))))
+            )
+        )
+        await service_no_meter._run_parallel_stt(b"audio")
+        stt_stage = ledger_skipped.snapshot()["stages"][0]
+        assert stt_stage["disabled"] is True
+        assert stt_stage["known_usd"] == "0"
+        assert stt_stage["complete"] is True
+        assert stt_stage["requests"] == 0
+
+        # Even if a record were accidentally written to stt while skip_stt=True, STT remains disabled ($0).
+        stray = ledger_skipped.begin("stt", "chirp_3", "cloud-speech-v2", "us")
+        ledger_skipped.update(stray, complete=True, usage={"billed_seconds": 60})
+        stt_stage_after = ledger_skipped.snapshot()["stages"][0]
+        assert stt_stage_after["disabled"] is True
+        assert stt_stage_after["known_usd"] == "0"
+
+        # 2. When skip_stt=False and a meter is explicitly attached, billed_duration is metered as expected.
         for duration, cancelled in ((timedelta(seconds=2), False), (None, False), (None, True)):
             async def recognize(**kwargs):
                 if cancelled:
                     raise asyncio.CancelledError()
                 return SimpleNamespace(results=[], metadata=SimpleNamespace(total_billed_duration=duration))
             service = cls()
-            service._cascade_meter = CascadeCostLedger("call", skip_stt=True)
+            service._cascade_meter = CascadeCostLedger("call", skip_stt=False)
             service._project_id, service._stt_languages = "dummy", ["hi-IN"]
             service._get_stt_client = AsyncMock(return_value=SimpleNamespace(recognize=recognize))
             await service._run_parallel_stt(b"audio")
@@ -280,3 +344,97 @@ def test_background_transcript_counts_even_with_skip_stt_and_empty_results(monke
             else:
                 assert stage["issues"]
     asyncio.run(run())
+
+
+def test_gemma_4_maas_pricing_and_llm_cache_hit_rate_summary():
+    card = rate_card("llm", "gemma-4-26b-a4b-it-maas", "vertex", "global")
+    assert card is not None
+    assert card["text_in"] == "0.15"
+    assert card["cached_text_in"] == "0.015"
+    assert card["text_out"] == "0.60"
+    # Frontend cascade-cost.ts requires every value in rates[] to be a string
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in card.items())
+
+    # Gemma 4 MaaS is strictly Vertex AI global text-only
+    assert rate_card("llm", "gemma-4-26b-a4b-it-maas", "gemini", "global") is None
+    assert rate_card("llm", "gemma-4-26b-a4b-it-maas", "vertex", "us-central1") is None
+
+    # 600 uncached in * $0.15/1M + 400 cached in * $0.015/1M + 200 out * $0.60/1M
+    # = $0.000090 + $0.000006 + $0.000120 = $0.000216 (40% cache hit rate)
+    r = dict(
+        stage="llm",
+        model="gemma-4-26b-a4b-it-maas",
+        provider="vertex",
+        region="global",
+        complete=True,
+        input_mode="text",
+        usage=dict(
+            prompt_token_count=1000,
+            candidates_token_count=200,
+            cached_content_token_count=400,
+            total_token_count=1200,
+        ),
+    )
+    value, issue, quoted_card = quote(r)
+    assert issue is None
+    assert value == Decimal("0.000216")
+    assert all(isinstance(v, str) for v in quoted_card.values())
+
+    # Tool-call turn where candidates_token_count is None/omitted and cached_content_token_count=1500/2000 (75% hit)
+    ledger = CascadeCostLedger("sess-cache", skip_stt=False)
+    k1 = ledger.begin("llm", "gemini-3.8-flash", "vertex", "global", date="2026-10-29", input_mode="text")
+    ledger.update(
+        k1,
+        complete=True,
+        usage={
+            "prompt_token_count": 2000,
+            "cached_content_token_count": 1500,
+            "thoughts_token_count": 40,
+            "total_token_count": 2040,
+        },
+    )
+    snap = ledger.snapshot()
+    llm_stage = snap["stages"][1]
+    assert llm_stage["complete"] is True
+    assert llm_stage["prompt_tokens"] == 2000
+    assert llm_stage["cached_tokens"] == 1500
+    assert llm_stage["uncached_prompt_tokens"] == 500
+    assert llm_stage["output_tokens"] == 40
+    assert llm_stage["cache_hit_rate"] == 0.75
+    # 500 * $0.75/1M + 1500 * $0.075/1M + 40 * $3.75/1M = 0.000375 + 0.0001125 + 0.000150 = 0.0006375
+    assert Decimal(llm_stage["known_usd"]) == Decimal("0.0006375")
+
+    # Split-rate audio+text model (gemini-2.5-flash) with implicit prefix cache hit when cache_tokens_details is omitted
+    r_split_cache = dict(
+        stage="llm",
+        model="gemini-2.5-flash",
+        provider="vertex",
+        region="global",
+        complete=True,
+        input_mode="audio",
+        usage=dict(
+            prompt_token_count=2000,
+            candidates_token_count=100,
+            cached_content_token_count=1500,
+            prompt_tokens_details=[{"modality": "TEXT", "token_count": 1800}, {"modality": "AUDIO", "token_count": 200}],
+            total_token_count=2100,
+        ),
+    )
+    split_val, split_issue, _ = quote(r_split_cache)
+    assert split_issue is None
+    # 1500 cached text @ $0.03 + 300 uncached text @ $0.30 + 200 audio @ $1.00 + 100 out @ $2.50
+    # = 0.000045 + 0.000090 + 0.000200 + 0.000250 = 0.000585
+    assert split_val == Decimal("0.000585")
+    ledger_split = CascadeCostLedger("sess-split", skip_stt=True)
+    ks = ledger_split.begin("llm", "gemini-2.5-flash", "vertex", "global", date="2026-10-29", input_mode="audio")
+    ledger_split.update(ks, complete=True, usage=r_split_cache["usage"])
+    assert ledger_split.snapshot()["stages"][1]["estimated"] is True
+    assert snap["stages"][1]["estimated"] is False
+
+    # Raw audio input mode must fail closed on a text-only model card
+    r_audio = dict(r, input_mode="audio")
+    audio_val, audio_issue, _ = quote(r_audio)
+    assert audio_val is None
+    assert "does not list audio input rates" in (audio_issue or "")
+
+

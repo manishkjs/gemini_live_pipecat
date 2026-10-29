@@ -30,6 +30,7 @@ import {
   AVATAR_CHARACTERS,
   type VadMode,
   usesExternalTts,
+  supportsCascadeAudioInput,
   buildPersonaPromptUrl,
 } from "@/lib/voice-session";
 import {
@@ -952,11 +953,14 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                 <label className="toggle-label" style={{ marginBottom: "10px" }}>
                   <input
                     type="checkbox"
-                    checked={settings.skipStt ?? false}
-                    disabled={active}
+                    checked={Boolean(settings.skipStt) && supportsCascadeAudioInput(settings.llmModel)}
+                    disabled={active || !supportsCascadeAudioInput(settings.llmModel)}
                     onChange={(e) => updateBool("skipStt", e.target.checked)}
                   />
-                  <span>Skip STT (Send audio directly to LLM)</span>
+                  <span>
+                    Skip STT (Send audio directly to LLM)
+                    {!supportsCascadeAudioInput(settings.llmModel) ? " · requires multimodal audio LLM" : ""}
+                  </span>
                 </label>
 
                 {/* 2. LLM */}
@@ -964,7 +968,12 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                   label="2. Language Model (LLM)"
                   value={settings.llmModel}
                   disabled={active}
-                  onChange={(value) => update("llmModel", value)}
+                  onChange={(value) => {
+                    update("llmModel", value);
+                    if (!supportsCascadeAudioInput(value) && settings.skipStt) {
+                      updateBool("skipStt", false);
+                    }
+                  }}
                   options={CASCADE_LLM_MODELS}
                   groups={CASCADE_LLM_MODEL_GROUPS}
                 />

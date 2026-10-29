@@ -11,9 +11,10 @@ from decimal import Decimal
 from uuid import uuid4
 import math
 
-REVIEWED_AT = "2026-09-13"
+REVIEWED_AT = "2026-10-29"
 SOURCES = {
     "vertex": "https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
+    "vertex_maas": "https://docs.cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing",
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
     "speech": "https://cloud.google.com/speech-to-text/pricing",
     "tts": "https://cloud.google.com/text-to-speech/pricing",
@@ -38,7 +39,16 @@ def rate_card(stage, model, provider, region="global", at=None):
     """Exact allowlist; region/date are the actual request configuration."""
     at = at or datetime.now(timezone.utc).date().isoformat()
     card = {"model": model, "provider": provider, "region": region, "reviewed_at": REVIEWED_AT}
-    if stage == "llm" and provider in ("vertex", "gemini"):
+    if stage == "llm" and model == "gemma-4-26b-a4b-it-maas":
+        if provider != "vertex" or region != "global":
+            return None
+        card.update(
+            text_in="0.15",
+            text_out="0.60",
+            cached_text_in="0.015",
+            source=SOURCES["vertex_maas"],
+        )
+    elif stage == "llm" and provider in ("vertex", "gemini"):
         clean_model = model.replace("-aistudio", "")
         prices = {
             "gemini-3.5-flash-lite": ("0.30", "0.30", "2.50", "0.03", "0.03"),
@@ -131,15 +141,23 @@ def quote(record):
             return None, "Missing provider-billed audio duration", card
         return Decimal(str(seconds)) * Decimal(card["audio_minute"]) / Decimal(60), None, card
     p = count(u.get("prompt_token_count"))
-    output = count(u.get("candidates_token_count", u.get("response_token_count")))
-    thinking = count(u.get("thoughts_token_count", 0))
-    cache = count(u.get("cached_content_token_count", 0))
+    raw_out = u.get("candidates_token_count", u.get("response_token_count"))
+    output = count(0 if (raw_out is None and record["stage"] == "llm") else raw_out)
+    raw_thinking = u.get("thoughts_token_count")
+    thinking = count(0 if raw_thinking is None else raw_thinking)
+    raw_cache = u.get("cached_content_token_count")
+    cache = count(0 if raw_cache is None else raw_cache)
+    raw_tool_prompt = u.get("tool_use_prompt_token_count")
+    tool_prompt = count(0 if raw_tool_prompt is None else raw_tool_prompt)
     total = count(u.get("total_token_count"))
-    if None in (p, output, thinking, cache) or cache > p:
+    if None in (p, output, thinking, cache, tool_prompt):
         return None, "Missing or invalid token counters", card
-    if total == p + output + thinking:
+    input_total = p + tool_prompt
+    if cache > input_total:
+        return None, "Missing or invalid token counters", card
+    if total == input_total + output + thinking:
         output_to_charge = output + thinking
-    elif total == p + output and output >= thinking:
+    elif total == input_total + output and output >= thinking:
         output_to_charge = output
     else:
         return None, "Provider token totals do not reconcile", card
@@ -150,24 +168,37 @@ def quote(record):
     if record["stage"] == "tts":
         if cache or thinking:
             return None, "Unexpected cached/thinking usage for TTS", card
-        return (Decimal(p) * Decimal(card["text_in"]) + Decimal(output) * Decimal(card["audio_out"])) / MILLION, None, card
+        return (Decimal(input_total) * Decimal(card["text_in"]) + Decimal(output) * Decimal(card["audio_out"])) / MILLION, None, card
     if record["stage"] == "stt":
         if cache or thinking:
             return None, "Unexpected cached/thinking usage for STT", card
-        return (Decimal(p) * Decimal(card["audio_in"]) + Decimal(output) * Decimal(card["text_out"])) / MILLION, None, card
-    # LLM: output includes thinking; cached input is a subset of prompt input.
+        return (Decimal(input_total) * Decimal(card["audio_in"]) + Decimal(output) * Decimal(card["text_out"])) / MILLION, None, card
+    # LLM: output includes thinking; cached input (cached_content_token_count) is billed
+    # at cached_text_in / cached_audio_in, and remaining uncached input at text_in / audio_in.
     details = modality_counts(u.get("prompt_tokens_details"))
     cached = modality_counts(u.get("cache_tokens_details"))
     if details is None or cached is None:
         return None, "Invalid modality counters", card
+    if "audio_in" not in card:
+        if record.get("input_mode") == "audio" or details.get("audio", 0) > 0 or cached.get("audio", 0) > 0:
+            return None, "Model rate card does not list audio input rates", card
+        value = Decimal(input_total - cache) * Decimal(card["text_in"]) + Decimal(cache) * Decimal(card["cached_text_in"])
+        value += Decimal(output_to_charge) * Decimal(card["text_out"])
+        return value / MILLION, None, card
     same_rate = (
         card["text_in"] == card["audio_in"]
         and card.get("cached_text_in") == card.get("cached_audio_in")
     )
     if record.get("input_mode") == "text" or same_rate:
-        value = Decimal(p - cache) * Decimal(card["text_in"]) + Decimal(cache) * Decimal(card["cached_text_in"])
+        value = Decimal(input_total - cache) * Decimal(card["text_in"]) + Decimal(cache) * Decimal(card["cached_text_in"])
     else:
-        if set(details) - {"text", "audio"} or sum(details.values()) != p or sum(cached.values()) != cache:
+        if set(details) - {"text", "audio"} or sum(details.values()) != input_total:
+            return None, "Missing audio/text or cache modality breakdown", card
+        if cache > 0 and not cached:
+            # Implicit prefix caching caches leading system/history text first before trailing audio.
+            cached_text = min(cache, details.get("text", 0))
+            cached = {"text": cached_text, "audio": cache - cached_text}
+        if sum(cached.values()) != cache:
             return None, "Missing audio/text or cache modality breakdown", card
         value = Decimal(0)
         for kind in ("text", "audio"):
@@ -178,6 +209,60 @@ def quote(record):
             value += Decimal(cached_tokens) * Decimal(card["cached_" + kind + "_in"])
     value += Decimal(output_to_charge) * Decimal(card["text_out"])
     return value / MILLION, None, card
+
+
+def _llm_stage_usage_summary(records):
+    prompt_tokens = 0
+    cached_tokens = 0
+    output_tokens = 0
+    thoughts_tokens = 0
+    for r in records:
+        u = r.get("usage") or {}
+        p = count(u.get("prompt_token_count"))
+        if p is None:
+            continue
+        raw_tp = u.get("tool_use_prompt_token_count")
+        tp = count(0 if raw_tp is None else raw_tp) or 0
+        raw_c = u.get("cached_content_token_count")
+        c = count(0 if raw_c is None else raw_c) or 0
+        raw_out = u.get("candidates_token_count", u.get("response_token_count"))
+        out = count(0 if raw_out is None else raw_out) or 0
+        raw_th = u.get("thoughts_token_count")
+        th = count(0 if raw_th is None else raw_th) or 0
+        tot = count(u.get("total_token_count"))
+        in_tot = p + tp
+        billed_out = out + th if tot == in_tot + out + th else out
+        prompt_tokens += in_tot
+        cached_tokens += min(c, in_tot)
+        output_tokens += billed_out
+        thoughts_tokens += th
+    uncached_tokens = max(0, prompt_tokens - cached_tokens)
+    hit_rate = round(cached_tokens / prompt_tokens, 4) if prompt_tokens > 0 else 0.0
+    return {
+        "prompt_tokens": prompt_tokens,
+        "cached_tokens": cached_tokens,
+        "uncached_prompt_tokens": uncached_tokens,
+        "output_tokens": output_tokens,
+        "thoughts_tokens": thoughts_tokens,
+        "cache_hit_rate": hit_rate,
+    }
+
+
+def _is_estimated_cache_split(record) -> bool:
+    if record.get("stage") != "llm" or not record.get("complete") or record.get("input_mode") == "text":
+        return False
+    card = rate_card("llm", record.get("model"), record.get("provider"), record.get("region"), record.get("date"))
+    if not card or "audio_in" not in card:
+        return False
+    if card["text_in"] == card["audio_in"] and card.get("cached_text_in") == card.get("cached_audio_in"):
+        return False
+    u = record.get("usage") or {}
+    raw_c = u.get("cached_content_token_count")
+    cache = count(0 if raw_c is None else raw_c) or 0
+    if cache <= 0 or modality_counts(u.get("cache_tokens_details")):
+        return False
+    details = modality_counts(u.get("prompt_tokens_details")) or {}
+    return details.get("text", 0) > 0 and details.get("audio", 0) > 0
 
 
 class CascadeCostLedger:
@@ -202,8 +287,8 @@ class CascadeCostLedger:
     def snapshot(self):
         stages = []
         for stage in ("stt", "llm", "tts"):
-            records = [r for r in self.records.values() if r.get("stage") == stage]
-            disabled = stage == "stt" and self.skip_stt and not records
+            disabled = stage == "stt" and self.skip_stt
+            records = [] if disabled else [r for r in self.records.values() if r.get("stage") == stage]
             amount, missing, rates = Decimal(0), set(), {}
             if not records and not disabled:
                 missing.add("No final usage received")
@@ -219,11 +304,15 @@ class CascadeCostLedger:
                     missing.add(record["pending_reason"])
                 if card:
                     rates[(card["model"], card["provider"], card["region"])] = card
-            stages.append({"stage": stage, "known_usd": str(amount), "complete": not missing,
+            stage_entry = {"stage": stage, "known_usd": str(amount), "complete": not missing,
                            "disabled": disabled, "requests": len(records), "issues": sorted(missing),
-                           "estimated": any(r.get("estimated") for r in records),
-                           "rates": list(rates.values())})
+                           "estimated": any(r.get("estimated") or _is_estimated_cache_split(r) for r in records),
+                           "rates": list(rates.values())}
+            if stage == "llm":
+                stage_entry.update(_llm_stage_usage_summary(records))
+            stages.append(stage_entry)
         return {"type": "cascade_cost", "session_id": self.session_id, "revision": self.revision,
                 "currency": "USD", "basis": "public-list-price", "reviewed_at": REVIEWED_AT,
                 "known_usd": str(sum((Decimal(s["known_usd"]) for s in stages), Decimal(0))),
                 "complete": all(s["complete"] for s in stages), "stages": stages}
+

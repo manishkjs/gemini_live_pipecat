@@ -432,6 +432,12 @@ export const CASCADE_LLM_MODEL_GROUPS: { label: string; options: [string, string
     ],
   },
   {
+    label: "Vertex AI Model-as-a-Service (MaaS)",
+    options: [
+      ["gemma-4-26b-a4b-it-maas", "gemma-4-26b-a4b-it-maas (Vertex MaaS - $0.15/$0.60)"],
+    ],
+  },
+  {
     label: "AI Studio (Gemini LLM)",
     options: [
       ["gemini-3.5-flash-lite-aistudio", "gemini-3.5-flash-lite (AI Studio)"],
@@ -441,6 +447,11 @@ export const CASCADE_LLM_MODEL_GROUPS: { label: string; options: [string, string
 ];
 
 export const CASCADE_LLM_MODELS: [string, string][] = CASCADE_LLM_MODEL_GROUPS.flatMap((group) => group.options);
+
+/** Gemma 4 MaaS accepts text/image input only (no raw audio input), so Cascade requires STT enabled. */
+export function supportsCascadeAudioInput(llmModel: string): boolean {
+  return !(llmModel || "").trim().toLowerCase().startsWith("gemma-4");
+}
 
 export const CASCADE_TTS_MODEL_GROUPS: { label: string; options: [string, string][] }[] = [
   {
@@ -581,6 +592,7 @@ const FALLBACK_CAUSES: Record<"avatar" | "voice", Record<string, string>> = {
     project_not_allowlisted: "custom voices are not allowlisted for this project",
     invalid_sample: "the recording could not be read",
     missing_sample: "no voice sample was recorded",
+    expired_key: "the 7-day voice replication key expired",
     rejected: "Vertex AI rejected the voice sample",
   },
 };
@@ -826,7 +838,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: effectiveVadStr,
       vad_mode: effectiveVadMode,
-      skip_stt: settings.skipStt ? "true" : "false",
+      skip_stt: settings.skipStt && supportsCascadeAudioInput(settings.llmModel) ? "true" : "false",
       persona_id: settings.personaId,
     };
     if (settings.sessionId) cascadeParams.session_id = settings.sessionId;

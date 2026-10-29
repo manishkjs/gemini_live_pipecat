@@ -47,6 +47,22 @@ class TestGeminiCloneSelection(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "voicekey_"):
                 voice_profiles.resolve_gemini_voice_key("Gemini-Clone-Male")
 
+    def test_stateful_voice_id_prefix_is_accepted(self):
+        with patch.object(voice_profiles, "load_gemini_voice_key", return_value="voice_stateful_1yr_id"):
+            self.assertEqual(voice_profiles.resolve_gemini_voice_key("Gemini-Clone-Male"), "voice_stateful_1yr_id")
+
+    def test_keys_mount_takes_priority_over_local_server_copy(self):
+        checked = []
+        def fake_isfile(p):
+            checked.append(p)
+            return p == "/keys/gemini_3_8_voicekey_m.txt"
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("os.path.isfile", side_effect=fake_isfile):
+            os.environ.pop("GEMINI_TTS_VOICE_KEY_MALE", None)
+            chosen = voice_profiles.get_gemini_voice_key_file("male")
+            self.assertEqual(chosen, "/keys/gemini_3_8_voicekey_m.txt")
+            self.assertEqual(checked[0], "/keys/gemini_3_8_voicekey_m.txt")
+
     def test_only_gemini_38_tts_models_accept_the_clone(self):
         for model in ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts-aistudio"):
             self.assertTrue(voice_profiles.supports_gemini_clone(model), model)
@@ -61,23 +77,124 @@ class TestGeminiCloneSpeechConfig(unittest.TestCase):
         from agent import CustomVertexGeminiTTSService
         from pipecat.services.google.tts import GeminiTTSService
         with patch.object(GeminiTTSService, "_create_client", return_value=None), \
-             patch("agent.genai.Client", return_value=None):
+             patch("agent.genai.Client", return_value=None), \
+             patch("agent._resolve_gemini_api_key", return_value="fake-key"):
             return CustomVertexGeminiTTSService(project_id="p", location="us-central1", **kw)
 
     def test_voice_key_goes_in_voice_config_voice_never_prebuilt(self):
-        svc = self._service(voice_id="Gemini-Clone-Male", model="gemini-3.8-flash-lite-tts", voice_key="voicekey_CAESfake")
-        cfg = svc._voice_config()
-        self.assertIsInstance(cfg, types.VoiceConfig)
-        self.assertEqual(cfg.voice, "voicekey_CAESfake")
-        self.assertIsNone(cfg.prebuilt_voice_config)
-        self.assertTrue(svc._is_aistudio, "voicekeys are bound to the AI Studio GEMINI_API_KEY project")
-        self.assertNotIn("voicekey_", svc._settings.voice, "the credential must not live in loggable settings")
+        for sample_key in ("voicekey_CAESfake", "voice_stateful123"):
+            svc = self._service(voice_id="Gemini-Clone-Male", model="gemini-3.8-flash-lite-tts", voice_key=sample_key)
+            cfg = svc._voice_config()
+            self.assertIsInstance(cfg, types.VoiceConfig)
+            self.assertEqual(cfg.voice, sample_key)
+            self.assertIsNone(cfg.prebuilt_voice_config)
+            self.assertTrue(svc._is_aistudio, "voicekeys are bound to the AI Studio GEMINI_API_KEY project")
+            self.assertNotIn(sample_key, svc._settings.voice, "the credential must not live in loggable settings")
 
     def test_named_voice_still_uses_prebuilt(self):
         svc = self._service(voice_id="Puck", model="gemini-3.8-flash-tts")
         cfg = svc._voice_config()
         self.assertIsNone(cfg.voice)
         self.assertEqual(cfg.prebuilt_voice_config.voice_name, "Puck")
+
+    def test_expired_voicekey_hot_reloads_rotated_disk_key_without_fallback(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        svc = self._service(voice_id="Gemini-Clone-Male", model="gemini-3.8-flash-lite-tts", voice_key="voicekey_OLD_EXPIRED")
+        svc._sample_rate = 24000
+        pushed = []
+
+        async def fake_push(frame, *a, **kw):
+            pushed.append(frame)
+
+        async def fake_noop(*a, **kw):
+            pass
+
+        svc.push_frame = fake_push
+        svc.start_ttfb_metrics = fake_noop
+        svc.stop_ttfb_metrics = fake_noop
+
+        seen_voices = []
+
+        async def fake_stream(*, model, contents, config):
+            vc = config.speech_config.voice_config
+            seen_voices.append(vc.voice or vc.prebuilt_voice_config.voice_name)
+            if vc.voice == "voicekey_OLD_EXPIRED":
+                raise RuntimeError('400 INVALID_ARGUMENT. {"error":{"code":400,"message":"Voice replication key has expired. Please generate a new key with CreateVoice method."}}')
+            async def ok_chunks():
+                yield SimpleNamespace(
+                    usage_metadata=None,
+                    parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x02" * 16))],
+                    candidates=[],
+                )
+            return ok_chunks()
+
+        svc._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=fake_stream)))
+
+        async def run():
+            with patch.object(voice_profiles, "load_gemini_voice_key", return_value="voicekey_FRESH_ROTATED"):
+                frames = [f async for f in svc.run_tts("Hello world", "ctx-1")]
+                self.assertEqual(len(frames), 1)
+                self.assertEqual(seen_voices, ["voicekey_OLD_EXPIRED", "voicekey_FRESH_ROTATED"])
+                self.assertEqual(svc._voice_key, "voicekey_FRESH_ROTATED")
+                self.assertEqual(pushed, [])
+
+        asyncio.run(run())
+
+    def test_expired_voicekey_falls_back_to_puck_and_notifies_ui_when_disk_still_expired(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        sample_expired = "voicekey_CAES+oYoP/AWkUfROXL45=="
+        svc = self._service(voice_id="Gemini-Clone-Male", model="gemini-3.8-flash-lite-tts", voice_key=sample_expired)
+        svc._sample_rate = 24000
+        pushed = []
+
+        async def fake_push(frame, *a, **kw):
+            pushed.append(frame)
+
+        async def fake_noop(*a, **kw):
+            pass
+
+        svc.push_frame = fake_push
+        svc.start_ttfb_metrics = fake_noop
+        svc.stop_ttfb_metrics = fake_noop
+
+        seen_voices = []
+
+        async def fake_stream(*, model, contents, config):
+            vc = config.speech_config.voice_config
+            seen_voices.append(vc.voice or vc.prebuilt_voice_config.voice_name)
+            if vc.voice == sample_expired:
+                raise RuntimeError(f"400 INVALID_ARGUMENT: Voice replication key {sample_expired} has expired.")
+            async def ok_chunks():
+                yield SimpleNamespace(
+                    usage_metadata=None,
+                    parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x02" * 16))],
+                    candidates=[],
+                )
+            return ok_chunks()
+
+        svc._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=fake_stream)))
+
+        async def run():
+            with patch.object(voice_profiles, "load_gemini_voice_key", return_value=sample_expired):
+                frames = [f async for f in svc.run_tts("Hello world", "ctx-1")]
+                self.assertEqual(len(frames), 1)
+                self.assertEqual(seen_voices, [sample_expired, "Puck"])
+                self.assertIsNone(svc._voice_key)
+                self.assertEqual(svc._settings.voice, "Puck")
+                self.assertEqual(len(pushed), 1)
+                msg = pushed[0].message["data"]
+                self.assertEqual(msg["type"], "voice_fallback")
+                self.assertEqual(msg["fallback_voice"], "Puck")
+                self.assertEqual(msg["code"], "expired_key")
+                self.assertNotIn("CAES", msg["reason"])
+                self.assertNotIn("AWkUfROXL45", msg["reason"])
+                self.assertIn("<redacted-voice-key>", msg["reason"])
+
+        asyncio.run(run())
 
 
 class TestGeminiLiveReplicatedVoice(unittest.TestCase):

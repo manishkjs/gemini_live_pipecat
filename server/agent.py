@@ -80,6 +80,7 @@ VALID_LLM_MODELS = {
     "gemini-3.7-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+    "gemma-4-26b-a4b-it-maas",
 }
 
 VALID_TTS_MODELS = {
@@ -104,6 +105,26 @@ AI_STUDIO_TTS_MODELS = {
 from persona_identity import PERSONA_VOICE_DESIGN_DEFAULTS, resolve_persona_voice_design
 
 
+def _resolve_gemini_api_key(project_id: Optional[str] = None) -> str:
+    """Resolve GEMINI_API_KEY from env or GCP Secret Manager for AI Studio endpoints."""
+    key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if key:
+        return key
+    target_project = project_id or os.getenv("GCP_PROJECT_ID")
+    if not target_project:
+        return ""
+    try:
+        from google.cloud import secretmanager
+        sm_client = secretmanager.SecretManagerServiceClient()
+        sm_name = f"projects/{target_project}/secrets/GEMINI_API_KEY/versions/latest"
+        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+        key = sm_res.payload.data.decode("UTF-8").strip()
+        if key:
+            os.environ["GEMINI_API_KEY"] = key
+    except Exception as sm_err:
+        logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+    return key
+
 
 def validate_stt_model(stt_model: Optional[str]) -> str:
     """Validates and sanitizes STT model choice, defaulting to gemini-3.5-transcribe-live-aistudio."""
@@ -119,6 +140,15 @@ def validate_llm_model(llm_model: Optional[str]) -> str:
     return "gemini-3.5-flash-lite"
 
 
+def supports_cascade_audio_input(llm_model: Optional[str]) -> bool:
+    """True when the Cascade LLM accepts raw audio input (`skip_stt=True`).
+
+    Gemma 4 26B A4B IT MaaS (`gemma-4-26b-a4b-it-maas`) supports text and image
+    inputs only, so Cascade must keep STT enabled when Gemma 4 is selected.
+    """
+    return not (llm_model or "").strip().lower().startswith("gemma-4")
+
+
 def validate_tts_model(tts_model: Optional[str]) -> str:
     """Validates and sanitizes TTS model choice, defaulting to gemini-3.8-flash-lite-tts."""
     if tts_model in VALID_TTS_MODELS:
@@ -132,6 +162,8 @@ def build_cascade_thinking_config(actual_llm_model: str):
     gemini-3.8-flash and gemini-3.7-flash reject THINKING_LEVEL_MINIMAL with
     400 INVALID_ARGUMENT on both Vertex AI and AI Studio, and require
     thinking_budget=0 to suppress reasoning tokens in real-time voice turns.
+    Gemma 4 MaaS (`gemma-4-26b-a4b-it-maas`) does not support thinkingConfig
+    and returns None.
     """
     if any(k in actual_llm_model for k in ["gemini-3.8", "gemini-3.7", "gemini-2.5-flash", "gemini-2.5-flash-lite"]):
         return GoogleLLMService.ThinkingConfig(thinking_budget=0)
@@ -558,10 +590,12 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         voice_key: Optional[str] = None,
         **kwargs,
     ):
-        # Gemini 3.8 cloned voice (voicekey_...). Held privately, never in
-        # self._settings (which is loggable), and always sent via AI Studio:
+        # Gemini 3.8 cloned voice (voicekey_... or voice_...). Held privately,
+        # never in self._settings (which is loggable), and always sent via AI Studio:
         # the key is bound to the GEMINI_API_KEY project.
-        self._voice_key = voice_key if voice_key and voice_key.startswith("voicekey_") else None
+        self._voice_key = voice_key.strip() if voice_profiles.is_valid_gemini_voice_key(voice_key) else None
+        self._clone_gender = voice_profiles.voice_gender(voice_id) or "male"
+        self._fallback_notified = False
         if voice_id and voice_id.lower() == "callirhoe":
             voice_id = "Aoede"
         elif voice_id and "-Chirp3-HD-" in voice_id:
@@ -571,7 +605,10 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
 
         self._is_aistudio = bool(self._voice_key) or model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
         clean_tts_model = (model or "gemini-3.8-flash-lite-tts").replace("-aistudio", "")
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy"
+        if self._is_aistudio:
+            api_key = _resolve_gemini_api_key(project_id) or "dummy"
+        else:
+            api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "dummy"
 
         settings = GeminiTTSService.Settings(
             voice=voice_id,
@@ -650,9 +687,92 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
     def _voice_config(self) -> "types.VoiceConfig":
         """Cloned voicekeys go in VoiceConfig(voice=...). PrebuiltVoiceConfig only
         accepts named voices and 400s on a voicekey ("No matching speaker voice")."""
-        if self._voice_key:
+        if getattr(self, "_voice_key", None):
             return types.VoiceConfig(voice=self._voice_key)
         return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
+
+    @staticmethod
+    def _is_voice_key_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return ("400" in msg or "invalid_argument" in msg) and any(
+            token in msg
+            for token in (
+                "voice replication key",
+                "voicekey",
+                "no matching speaker voice",
+                "invalid voice",
+                "createvoice",
+            )
+        )
+
+    async def _stream_tts_with_voice_fallback(self, contents, generate_content_config):
+        """Stream Gemini 3.8 cloned-voice TTS with hot-reload from /keys and prebuilt fallback."""
+        yielded_any = False
+        try:
+            stream = await self._client.aio.models.generate_content_stream(
+                model=self._settings.model, contents=contents, config=generate_content_config,
+            )
+            async for chunk in stream:
+                yielded_any = True
+                yield chunk
+            return
+        except Exception as exc:
+            if yielded_any or not self._is_voice_key_error(exc):
+                raise
+            primary_exc = exc
+
+        gender = getattr(self, "_clone_gender", None) or "male"
+        fresh_key = voice_profiles.load_gemini_voice_key(gender)
+        if voice_profiles.is_valid_gemini_voice_key(fresh_key) and fresh_key != self._voice_key:
+            logger.info(f"[TTS] Hot-reloading rotated Gemini 3.8 voice key from disk ({gender})")
+            self._voice_key = fresh_key
+            retry_cfg = types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(voice_config=self._voice_config()),
+            )
+            try:
+                retry_stream = await self._client.aio.models.generate_content_stream(
+                    model=self._settings.model, contents=contents, config=retry_cfg,
+                )
+                async for chunk in retry_stream:
+                    yielded_any = True
+                    yield chunk
+                return
+            except Exception as retry_exc:
+                if yielded_any or not self._is_voice_key_error(retry_exc):
+                    raise
+                primary_exc = retry_exc
+
+        fallback_voice = "Aoede" if gender == "female" else "Puck"
+        err_str = re.sub(r"(?:voicekey|voice)_[A-Za-z0-9_\-=+/]+", "<redacted-voice-key>", str(primary_exc))
+        code = "expired_key" if "expired" in err_str.lower() else "rejected"
+        logger.warning(
+            f"[TTS] Gemini 3.8 cloned voice key failed ({code}); falling back to {fallback_voice}: {err_str}"
+        )
+        self._voice_key = None
+        self._settings.voice = fallback_voice
+        if not getattr(self, "_fallback_notified", False):
+            self._fallback_notified = True
+            await self.push_frame(OutputTransportMessageFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    "type": "voice_fallback",
+                    "fallback_voice": fallback_voice,
+                    "reason": err_str,
+                    "code": code,
+                },
+            }))
+
+        fallback_cfg = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(voice_config=self._voice_config()),
+        )
+        fallback_stream = await self._client.aio.models.generate_content_stream(
+            model=self._settings.model, contents=contents, config=fallback_cfg,
+        )
+        async for chunk in fallback_stream:
+            yield chunk
 
     def _build_speech_metadata_style(self, lang_code: Optional[str], direction: Optional[str] = None) -> str:
         """Constructs the SpeechMetadata style string for one Gemini 3.8 TTS part.
@@ -722,9 +842,11 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         self._pending_tags = ""
         clean_text = " ".join(segment for _, segment in spoken)
 
-        logger.debug(f"{self}: Generating TTS [{clean_text}] with model={self._settings.model} aistudio={self._is_aistudio}")
+        is_aistudio = getattr(self, "_is_aistudio", False)
+        cost_provider = getattr(self, "_cost_provider", "gemini" if is_aistudio else "vertex")
+        logger.debug(f"{self}: Generating TTS [{clean_text}] with model={self._settings.model} aistudio={is_aistudio}")
         meter = getattr(self, "_cascade_meter", None)
-        cost_key = meter.begin("tts", self._settings.model, self._cost_provider, self._cost_region) if meter else None
+        cost_key = meter.begin("tts", self._settings.model, cost_provider, self._cost_region) if meter else None
         completed = False
         last_usage_metadata = None
         await publish_cost(self)
@@ -738,8 +860,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 hi_lang = next((l for l in langs if "hi" in l.lower()), None)
                 lang_code = hi_lang if hi_lang else langs[0]
 
-            if self._is_aistudio:
-                speech_config = types.SpeechConfig(voice_config=self._voice_config())
+            voice_cfg = (
+                self._voice_config()
+                if hasattr(self, "_voice_config")
+                else types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
+            )
+            if is_aistudio:
+                speech_config = types.SpeechConfig(voice_config=voice_cfg)
                 generate_content_config = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=speech_config,
@@ -760,7 +887,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                     }]
             else:
                 speech_config = types.SpeechConfig(
-                    voice_config=self._voice_config(),
+                    voice_config=voice_cfg,
                     language_code=lang_code
                 )
                 generate_content_config = types.GenerateContentConfig(
@@ -779,18 +906,24 @@ Speak ONLY the lines under #### TRANSCRIPT.
 ## SCENE: A warm, natural conversation in colloquial Hindi/English
 
 ### PERFORMANCE
-Style: {self._tts_style or 'Warm, expressive, natural voice'}.
-Pace: {self._tts_pace_label or 'Conversational'}.
+Style: {getattr(self, '_tts_style', None) or 'Warm, expressive, natural voice'}.
+Pace: {getattr(self, '_tts_pace_label', None) or 'Conversational'}.
 
 #### TRANSCRIPT
 {clean_text}
 """
 
-            async for chunk in await self._client.aio.models.generate_content_stream(
-                model=self._settings.model, contents=contents, config=generate_content_config,
-            ):
-                if getattr(chunk, "usage_metadata", None):
-                    last_usage_metadata = chunk.usage_metadata
+            if getattr(self, "_voice_key", None):
+                chunk_iter = self._stream_tts_with_voice_fallback(contents, generate_content_config)
+            else:
+                chunk_iter = await self._client.aio.models.generate_content_stream(
+                    model=self._settings.model, contents=contents, config=generate_content_config,
+                )
+
+            async for chunk in chunk_iter:
+                um = getattr(chunk, "usage_metadata", None)
+                if um and (isinstance(um, dict) or getattr(um, "prompt_token_count", None) is not None or getattr(um, "total_token_count", None) is not None):
+                    last_usage_metadata = um
                 parts_list = getattr(chunk, "parts", None)
                 if not parts_list and chunk.candidates and chunk.candidates[0].content:
                     parts_list = chunk.candidates[0].content.parts
@@ -903,13 +1036,34 @@ class _MeteredGeminiLLMMixin:
             logger.debug(f"Failed to extend aiohttp keepalive_timeout: {e}")
 
     async def _stream_content(self, context):
-        await self._ensure_warm_aiohttp_session()
+        self._last_usage_metadata = None
+        self._last_merged_usage = None
+        if hasattr(self, "_ensure_warm_aiohttp_session"):
+            await self._ensure_warm_aiohttp_session()
         meter = getattr(self, "_cascade_meter", None)
         if meter is None:
-            return await super()._stream_content(context)
-        region = getattr(self, "_location", "global") if self._cost_provider == "vertex" else "global"
-        key = meter.begin("llm", self._settings.model, self._cost_provider, region,
-                          input_mode=getattr(self, "_cost_input_mode", "unknown"))
+            raw = await super()._stream_content(context)
+            async def passthrough_stream():
+                merged_usage = None
+                async for chunk in raw:
+                    um = getattr(chunk, "usage_metadata", None)
+                    if um is not None:
+                        um_dict = um.model_dump(mode="json", exclude_none=True) if hasattr(um, "model_dump") else (dict(um) if isinstance(um, dict) else {})
+                        if any(um_dict.get(k) is not None for k in ("prompt_token_count", "total_token_count", "candidates_token_count", "cached_content_token_count")):
+                            merged_usage = {**(merged_usage or {}), **um_dict}
+                            self._last_usage_metadata = um
+                            self._last_merged_usage = merged_usage
+                        else:
+                            try:
+                                chunk.usage_metadata = None
+                            except Exception:
+                                pass
+                    yield chunk
+            return passthrough_stream()
+        provider = getattr(self, "_cost_provider", "vertex")
+        region = getattr(self, "_location", "global") if provider == "vertex" else "global"
+        key = meter.begin("llm", self._settings.model, provider, region,
+                          input_mode=getattr(self, "_cost_input_mode", "text"))
         await publish_cost(self)
         try:
             stream = await super()._stream_content(context)
@@ -921,11 +1075,22 @@ class _MeteredGeminiLLMMixin:
         async def metered_stream():
             completed = False
             last_usage = None
+            merged_usage = None
             try:
                 async for chunk in stream:
-                    if getattr(chunk, "usage_metadata", None):
-                        last_usage = chunk.usage_metadata
-                        self._last_usage_metadata = chunk.usage_metadata
+                    um = getattr(chunk, "usage_metadata", None)
+                    if um is not None:
+                        um_dict = um.model_dump(mode="json", exclude_none=True) if hasattr(um, "model_dump") else (dict(um) if isinstance(um, dict) else {})
+                        if any(um_dict.get(k) is not None for k in ("prompt_token_count", "total_token_count", "candidates_token_count", "cached_content_token_count")):
+                            merged_usage = {**(merged_usage or {}), **um_dict}
+                            last_usage = merged_usage
+                            self._last_usage_metadata = um
+                            self._last_merged_usage = merged_usage
+                        else:
+                            try:
+                                chunk.usage_metadata = None
+                            except Exception:
+                                pass
                     yield chunk
                 completed = True
             finally:
@@ -970,6 +1135,8 @@ class _MeteredGeminiLLMMixin:
             model = self._settings.model or ""
             if "thinking_config" in generation_params:
                 return
+            if "gemma-4" in model or model.endswith("-maas"):
+                return
             if any(k in model for k in ["gemini-3.8", "gemini-3.7", "gemini-2.5"]):
                 generation_params["thinking_config"] = {"thinking_budget": 0}
             elif any(k in model for k in ["gemini-3.5-flash-lite", "gemini-3.1", "gemini-3-flash"]):
@@ -1000,11 +1167,22 @@ class _MeteredGeminiLLMMixin:
     async def start_llm_usage_metrics(self, metrics):
         await super().start_llm_usage_metrics(metrics)
         
-        prompt_tokens = getattr(metrics, "prompt_tokens", 0) or 0
-        completion_tokens = getattr(metrics, "completion_tokens", 0) or 0
-        total_tokens = getattr(metrics, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+        merged = getattr(self, "_last_merged_usage", None) or {}
+        prompt_tokens = merged.get("prompt_token_count") or getattr(metrics, "prompt_tokens", 0) or 0
+        completion_tokens = merged.get("candidates_token_count") or getattr(metrics, "completion_tokens", 0) or 0
+        thoughts_tokens = merged.get("thoughts_token_count")
+        if thoughts_tokens is None:
+            thoughts_tokens = getattr(metrics, "reasoning_tokens", None) or 0
+        cached_tokens = merged.get("cached_content_token_count")
+        if cached_tokens is None:
+            cached_tokens = getattr(metrics, "cache_read_input_tokens", None) or 0
+        total_tokens = merged.get("total_token_count") or getattr(metrics, "total_tokens", 0) or (prompt_tokens + completion_tokens + thoughts_tokens)
+        cache_hit_rate = round(cached_tokens / prompt_tokens, 4) if prompt_tokens > 0 else 0.0
         
-        logger.info(f"LLM Token Usage: Prompt: {prompt_tokens}, Response: {completion_tokens}, Total: {total_tokens}")
+        logger.info(
+            f"LLM Token Usage: Prompt: {prompt_tokens} (Cached: {cached_tokens}, Cache Hit: {cache_hit_rate * 100:.1f}%), "
+            f"Response: {completion_tokens}, Thoughts: {thoughts_tokens}, Total: {total_tokens}"
+        )
         
         prompt_details = {"text": prompt_tokens}
         last_meta = getattr(self, "_last_usage_metadata", None)
@@ -1035,8 +1213,9 @@ class _MeteredGeminiLLMMixin:
                         "response_details": {"text": completion_tokens},
                         "phase": "final", "service": "llm", "revision": 0,
                         "model": self._settings.model,
-                        "cached_content_token_count": getattr(metrics, "cache_read_input_tokens", None),
-                        "thoughts_token_count": getattr(metrics, "reasoning_tokens", None),
+                        "cached_content_token_count": cached_tokens,
+                        "cache_hit_rate": cache_hit_rate,
+                        "thoughts_token_count": thoughts_tokens,
                     }
                 }
             }
@@ -1178,6 +1357,14 @@ async def run_agent(
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
 
+    clean_stt_model = validate_stt_model(stt_model)
+    clean_llm_model = validate_llm_model(llm_model)
+    clean_tts_model = validate_tts_model(tts_model)
+
+    if skip_stt and not supports_cascade_audio_input(clean_llm_model):
+        logger.warning(f"[Cascade] {clean_llm_model} does not support raw audio input; forcing skip_stt=False")
+        skip_stt = False
+
     # Automatically apply Persona Voice Design defaults if not explicitly overridden
     resolved_vd = resolve_persona_voice_design(
         persona_id,
@@ -1222,10 +1409,6 @@ async def run_agent(
         ),
     )
 
-    clean_stt_model = validate_stt_model(stt_model)
-    clean_llm_model = validate_llm_model(llm_model)
-    clean_tts_model = validate_tts_model(tts_model)
-
     stt = None
     if not skip_stt:
         stt_languages = [Language(lang.strip()) for lang in stt_language.split(',')] if stt_language else [Language("en-US"), Language("hi-IN")]
@@ -1236,18 +1419,7 @@ async def run_agent(
             elif not clean_stt_model.endswith("-preview") and os.getenv("GEMINI_API_KEY"):
                 is_ai_studio = True
 
-            gemini_api_key = os.getenv("GEMINI_API_KEY")
-            if is_ai_studio and not gemini_api_key:
-                try:
-                    from google.cloud import secretmanager
-                    sm_client = secretmanager.SecretManagerServiceClient()
-                    sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                    sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                    gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
-                    if gemini_api_key:
-                        os.environ["GEMINI_API_KEY"] = gemini_api_key
-                except Exception as sm_err:
-                    logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+            gemini_api_key = _resolve_gemini_api_key(project_id) if is_ai_studio else os.getenv("GEMINI_API_KEY")
 
             stt_loc = "global" if not is_ai_studio else location
             stt = CustomGeminiTranscribeLiveService(
@@ -1298,9 +1470,13 @@ async def run_agent(
         final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current current user query. Do not bring up previous topics or simulate future turns."
 
     is_aistudio_llm = "aistudio" in clean_llm_model
-    # Always pass the exact canonical model string ("gemini-3.8-flash", "gemini-3.5-flash-lite") to the SDK
+    # Always pass the exact canonical model string ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it-maas") to the SDK
     actual_llm_model = clean_llm_model.replace("-aistudio", "")
-    llm_location = "global" if any(k in actual_llm_model for k in ["gemini-3", "3.8", "3.7", "3.5"]) else location
+    llm_location = (
+        "global"
+        if (actual_llm_model.endswith("-maas") or any(k in actual_llm_model for k in ["gemini-3", "3.8", "3.7", "3.5", "gemma-4"]))
+        else location
+    )
     
     thinking_config = build_cascade_thinking_config(actual_llm_model)
 
@@ -1315,18 +1491,7 @@ async def run_agent(
     }] if cascade_tools else None
 
     if is_aistudio_llm:
-        gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-        if not gemini_api_key:
-            try:
-                from google.cloud import secretmanager
-                sm_client = secretmanager.SecretManagerServiceClient()
-                sm_name = f"projects/{project_id}/secrets/GEMINI_API_KEY/versions/latest"
-                sm_res = sm_client.access_secret_version(request={"name": sm_name})
-                gemini_api_key = sm_res.payload.data.decode("UTF-8").strip()
-                if gemini_api_key:
-                    os.environ["GEMINI_API_KEY"] = gemini_api_key
-            except Exception as sm_err:
-                logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
+        gemini_api_key = _resolve_gemini_api_key(project_id)
         aistudio_kwargs = {
             "api_key": gemini_api_key,
             "settings": GoogleLLMService.Settings(
@@ -1435,13 +1600,11 @@ async def run_agent(
             text_filters=[MarkdownTextFilter()],
         )
 
-    # Skip STT bypasses the LLM's transcription input, but AudioAccumulator
-    # still calls Cloud Speech for the displayed transcript. It is billable.
     turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
     for service in (llm, tts, stt):
         if service is not None:
             service._turn_tracker = turn_tracker
-    cost_meter = CascadeCostLedger(current_session_id())
+    cost_meter = CascadeCostLedger(current_session_id(), skip_stt=skip_stt)
     llm._cascade_meter = cost_meter
     llm._cost_input_mode = "audio" if skip_stt else "text"
     tts._cascade_meter = cost_meter
@@ -1463,11 +1626,14 @@ async def run_agent(
             {"role": "user", "content": initial_greeting}
         ])
         stt_languages = [lang.strip() for lang in stt_language.split(',')] if stt_language else ["en-US"]
+        # When Skip STT is enabled, user audio goes directly to the LLM and parallel
+        # Cloud Speech (chirp_3) transcription is disabled so true STT spend is $0.
         accumulator = AudioAccumulator(
             context,
             project_id=project_id,
             stt_languages=stt_languages,
-            cost_meter=cost_meter,
+            cost_meter=None,
+            enable_parallel_stt=False,
         )
         context_aggregator = LLMContextAggregatorPair(context)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
