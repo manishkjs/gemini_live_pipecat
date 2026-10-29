@@ -1,10 +1,24 @@
-import sys
+import atexit
 import os
+import shutil
+import sys
 import unittest
 
 server_dir = os.path.dirname(os.path.abspath(__file__))
 if server_dir not in sys.path:
     sys.path.insert(0, server_dir)
+
+_repo_root = os.path.abspath(os.path.join(server_dir, ".."))
+_existing_dist = any(
+    os.path.exists(os.path.join(_repo_root, rel))
+    for rel in ("demos/voice-studio/dist", "client/dist")
+)
+if not _existing_dist:
+    _fallback_dist = os.path.join(_repo_root, "client", "dist")
+    os.makedirs(os.path.join(_fallback_dist, "assets"), exist_ok=True)
+    with open(os.path.join(_fallback_dist, "index.html"), "w", encoding="utf-8") as _fh:
+        _fh.write("<!doctype html><html><body>Voice Studio test fixture</body></html>\n")
+    atexit.register(shutil.rmtree, _fallback_dist, True)
 
 from fastapi.testclient import TestClient
 from server import app
