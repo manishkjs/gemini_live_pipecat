@@ -437,4 +437,25 @@ def test_gemma_4_maas_pricing_and_llm_cache_hit_rate_summary():
     assert audio_val is None
     assert "does not list audio input rates" in (audio_issue or "")
 
+    # AI Studio Gemma 4 fallback/direct card quotes $0 with string rate fields and rejects audio input
+    ai_card = rate_card("llm", "gemma-4-26b-a4b-it", "gemini", "global")
+    assert ai_card is not None
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in ai_card.items())
+    r_ai = dict(
+        stage="llm",
+        model="gemma-4-26b-a4b-it",
+        provider="gemini",
+        region="global",
+        complete=True,
+        input_mode="text",
+        usage=dict(prompt_token_count=900, candidates_token_count=120, total_token_count=1020),
+    )
+    ai_val, ai_issue, _ = quote(r_ai)
+    assert ai_issue is None
+    assert ai_val == Decimal("0")
+    ai_audio_val, ai_audio_issue, _ = quote(dict(r_ai, input_mode="audio"))
+    assert ai_audio_val is None
+    assert "does not list audio input rates" in (ai_audio_issue or "")
+
+
 

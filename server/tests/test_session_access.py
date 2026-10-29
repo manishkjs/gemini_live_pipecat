@@ -354,4 +354,301 @@ class TestSessionAccess(unittest.TestCase):
             self.assertEqual(bad_resp.status_code, 400)
             self.assertNotIn(bad_sid, session_access._sessions)
 
+    def test_cross_instance_sqlite_handoff_and_single_use_replay_protection(self):
+        import os
+        import tempfile
+        from shared_session_store import SQLiteSharedStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "shared_sessions.sqlite3")
+            shared_a = SQLiteSharedStore(db_path)
+            shared_b = SQLiteSharedStore(db_path)
+            store_a = session_access.SessionStore(shared_store=shared_a)
+            store_b = session_access.SessionStore(shared_store=shared_b)
+            vp_a = voice_profiles.VoiceProfileStore(shared_store=shared_a)
+            vp_b = voice_profiles.VoiceProfileStore(shared_store=shared_b)
+
+            sid, diag_token, join_token = store_a.issue(
+                "multi_sqlite_1",
+                instructions="Cross-instance prompt",
+                tools='[{"name":"lookup_order"}]',
+                avatar_custom_image="data:image/png;base64,AVATAR_PNG",
+                custom_voice_audio="data:audio/wav;base64,VOICE_WAV",
+            )
+            pid = vp_a.register("secret-chirp-clone-key")
+
+            # Instance B (which never saw /connect) validates join, pops handoff & voice profile, and authorizes /api/logs
+            self.assertTrue(store_b.consume_join(sid, join_token))
+            self.assertFalse(store_b.consume_join(sid, join_token))
+            self.assertFalse(store_a.consume_join(sid, join_token))
+
+            handoff = store_b.take_handoff(sid)
+            self.assertEqual(handoff["instructions"], "Cross-instance prompt")
+            self.assertEqual(handoff["tools"], '[{"name":"lookup_order"}]')
+            self.assertEqual(handoff["avatar_custom_image"], "data:image/png;base64,AVATAR_PNG")
+            self.assertEqual(handoff["custom_voice_audio"], "data:audio/wav;base64,VOICE_WAV")
+            self.assertEqual(store_a.take_handoff(sid)["instructions"], None)
+
+            self.assertEqual(vp_b.consume(pid), "secret-chirp-clone-key")
+            self.assertIsNone(vp_b.consume(pid))
+            self.assertIsNone(vp_a.consume(pid))
+
+            self.assertTrue(store_b.authorized(sid, diag_token))
+            self.assertTrue(store_a.authorized(sid, diag_token))
+
+    def test_cross_instance_firestore_chunked_media_and_optimistic_concurrency(self):
+        import copy
+        import io
+        import json
+        import urllib.error
+        from fastapi.testclient import TestClient
+        import server
+        from shared_session_store import (
+            FIRESTORE_CHUNK_CHARS,
+            FirestoreSharedStore,
+            SharedStoreError,
+        )
+
+        json_clone = copy.deepcopy
+        fake_docs = {}
+        rev_counter = [0]
+        commit_byte_sizes = []
+
+        def http_err(code: int, status: str) -> urllib.error.HTTPError:
+            body = json.dumps({"error": {"code": code, "status": status}}).encode("utf-8")
+            return urllib.error.HTTPError("https://firestore.googleapis.com", code, status, {}, io.BytesIO(body))
+
+        def fake_request(store_self, method, url, payload=None):
+            prefix = "https://firestore.googleapis.com/v1/"
+            assert url.startswith(prefix)
+            rel = url[len(prefix) :]
+            if method == "GET":
+                doc = fake_docs.get(rel)
+                if doc is None:
+                    raise http_err(404, "NOT_FOUND")
+                return json_clone(doc)
+            if method == "POST" and rel.endswith(":commit"):
+                raw_bytes = len(json.dumps(payload).encode("utf-8"))
+                commit_byte_sizes.append(raw_bytes)
+                # Enforce Firestore's real 10 MiB commit RPC limit
+                if raw_bytes > 10 * 1024 * 1024:
+                    raise http_err(400, "INVALID_ARGUMENT")
+                for w in payload.get("writes", []):
+                    cur = w.get("currentDocument")
+                    target = w["update"]["name"] if "update" in w else w["delete"]
+                    existing = fake_docs.get(target)
+                    if cur:
+                        if "exists" in cur and bool(existing is not None) != cur["exists"]:
+                            raise http_err(409, "ALREADY_EXISTS")
+                        if "updateTime" in cur and (not existing or existing["updateTime"] != cur["updateTime"]):
+                            raise http_err(400, "FAILED_PRECONDITION")
+                for w in payload.get("writes", []):
+                    rev_counter[0] += 1
+                    ts = f"2026-10-29T16:00:{rev_counter[0]:06d}Z"
+                    if "delete" in w:
+                        fake_docs.pop(w["delete"], None)
+                    elif "update" in w:
+                        name = w["update"]["name"]
+                        new_fields = w["update"].get("fields", {})
+                        mask = (w.get("updateMask") or {}).get("fieldPaths")
+                        if mask and name in fake_docs:
+                            merged = dict(fake_docs[name]["fields"])
+                            for fp in mask:
+                                if fp in new_fields:
+                                    merged[fp] = new_fields[fp]
+                                else:
+                                    merged.pop(fp, None)
+                            doc_obj = {"name": name, "fields": merged, "updateTime": ts}
+                        else:
+                            doc_obj = {"name": name, "fields": dict(new_fields), "updateTime": ts}
+                        # Enforce Firestore's real 1 MiB per-document limit
+                        if len(json.dumps(doc_obj).encode("utf-8")) > 1024 * 1024:
+                            raise http_err(400, "INVALID_ARGUMENT")
+                        fake_docs[name] = doc_obj
+                return {"writeResults": []}
+            raise AssertionError(f"Unexpected {method} {url}")
+
+        with patch.object(FirestoreSharedStore, "_request", fake_request):
+            fs_a = FirestoreSharedStore("demo-proj", "v2v-demo-visits")
+            fs_b = FirestoreSharedStore("demo-proj", "v2v-demo-visits")
+            store_a = session_access.SessionStore(shared_store=fs_a)
+            store_b = session_access.SessionStore(shared_store=fs_b)
+            vp_a = voice_profiles.VoiceProfileStore(shared_store=fs_a)
+            vp_b = voice_profiles.VoiceProfileStore(shared_store=fs_b)
+
+            # S3 + S4: max 7 MB avatar + 4 MB voice + 400 KB instructions + 400 KB tools (~11.8 MB total)
+            # stays < 1 MiB per document and < 10 MiB per :commit batch, with native expires_at Timestamps.
+            max_avatar = "IMG_" + ("A" * (7_000_000 - 4))
+            max_voice = "WAV_" + ("V" * (4_000_000 - 4))
+            big_prompt = "P" * 400_000
+            big_tools = "T" * 400_000
+
+            sid, diag_token, join_token = store_a.issue(
+                "fs_sess_1",
+                instructions=big_prompt,
+                tools=big_tools,
+                avatar_custom_image=max_avatar,
+                custom_voice_audio=max_voice,
+            )
+            pid = vp_a.register("fs-voice-secret")
+            self.assertTrue(all(sz < 5 * 1024 * 1024 for sz in commit_byte_sizes))
+
+            # S5: Every document (session, blob, voice_profile) carries a native timestampValue expires_at
+            for doc_key, doc_val in fake_docs.items():
+                self.assertIn("timestampValue", doc_val["fields"].get("expires_at", {}), doc_key)
+
+            # S6: Shrinking chunked instructions -> short inline instructions deletes all old instruction blobs
+            store_a.set_instructions(sid, "Short updated prompt", token=diag_token)
+            inst_blobs_after_shrink = [k for k in fake_docs if "instructions_" in k and "/blobs/" in k]
+            self.assertEqual(inst_blobs_after_shrink, [])
+
+            # Instance B consumes join, reassembles & deletes all remaining chunks in take_handoff, and consumes voice profile
+            self.assertTrue(store_b.consume_join(sid, join_token))
+            self.assertFalse(store_a.consume_join(sid, join_token))
+            handoff = store_b.take_handoff(sid)
+            self.assertEqual(handoff["avatar_custom_image"], max_avatar)
+            self.assertEqual(handoff["custom_voice_audio"], max_voice)
+            self.assertEqual(handoff["instructions"], "Short updated prompt")
+            self.assertEqual(handoff["tools"], big_tools)
+            self.assertEqual([k for k in fake_docs if "/blobs/" in k], [])
+            self.assertEqual(vp_b.consume(pid), "fs-voice-secret")
+            self.assertIsNone(vp_a.consume(pid))
+            self.assertTrue(store_b.authorized(sid, diag_token))
+
+            # S6b: Overwriting an expired session doc and take_field on expired media clean up blobs too
+            fs_a.create_session(
+                "exp_media_sess",
+                token="t" * 32,
+                join="j" * 32,
+                join_ttl=10.0,
+                session_ttl=100.0,
+                avatar_custom_image="M" * 100_000,
+                now_wall=1000.0,
+            )
+            self.assertEqual(len([k for k in fake_docs if "/blobs/" in k]), 1)
+            # Media join expired at 1015, session still alive -> take_field returns None AND deletes expired media blob
+            self.assertIsNone(fs_b.take_field("exp_media_sess", "avatar_custom_image", now_wall=1015.0))
+            self.assertEqual([k for k in fake_docs if "/blobs/" in k], [])
+
+        # S1: SessionStore.issue does NOT hold _lock while shared_store.create_session runs
+        lock_held_during_io = []
+
+        class SlowSharedStore:
+            def create_session(self_s, *args, **kwargs):
+                # Attempt non-blocking acquire from another thread to prove _lock is NOT held during I/O
+                import threading
+                acquired = []
+                def probe():
+                    got = probe_store._lock.acquire(blocking=False)
+                    acquired.append(got)
+                    if got:
+                        probe_store._lock.release()
+                t = threading.Thread(target=probe)
+                t.start()
+                t.join(timeout=1.0)
+                lock_held_during_io.append(not acquired[0])
+                return True
+
+        probe_store = session_access.SessionStore(shared_store=SlowSharedStore())
+        probe_store.issue("lock_free_io")
+        self.assertEqual(lock_held_during_io, [False])
+
+        # S2: Missing credentials / Firestore 503 raises SharedStoreError -> HTTP 503 (never silent success or false 409)
+        broken_fs = FirestoreSharedStore("demo-proj", "v2v-demo-visits")
+        with patch.object(FirestoreSharedStore, "_token", side_effect=SharedStoreError("ADC missing")):
+            with self.assertRaises(SharedStoreError):
+                broken_fs.create_session("no_creds", token="t" * 32, join="j" * 32, join_ttl=60, session_ttl=300)
+            client = TestClient(server.app)
+            session_access.configure_shared_store(broken_fs)
+            try:
+                r503 = client.post("/connect?session_id=should_503", json={})
+                self.assertEqual(r503.status_code, 503)
+                self.assertNotIn("should_503", session_access._sessions)
+            finally:
+                session_access.configure_shared_store(None)
+
+    def test_finished_calls_release_active_capacity_while_retaining_diagnostic_access(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        import server
+
+        store = session_access.SessionStore()
+        tokens = []
+        # Run 5 sequential calls through max_active=2, max_diagnostic=5
+        for idx in range(5):
+            sid, tok, join = store.issue(f"seq_{idx}", max_active=2, max_diagnostic=5)
+            tokens.append((sid, tok))
+            self.assertTrue(store.consume_join(sid, join))
+            store.open_connection(sid)
+            self.assertEqual(store.active_connection_count(), 1)
+            store.close_connection(sid)
+            self.assertEqual(store.active_connection_count(), 0)
+
+        # All 5 finished calls still retain diagnostic token access
+        for sid, tok in tokens:
+            self.assertTrue(store.authorized(sid, tok))
+
+        # Meanwhile 2 simultaneously open/pending sessions block a 3rd until one closes
+        s1, _, j1 = store.issue("conc_1", max_active=2, max_diagnostic=10)
+        store.consume_join(s1, j1)
+        store.open_connection(s1)
+        s2, _, _ = store.issue("conc_2", max_active=2, max_diagnostic=10)
+        with self.assertRaisesRegex(RuntimeError, "Session capacity reached"):
+            store.issue("conc_3", max_active=2, max_diagnostic=10)
+        store.close_connection(s1)
+        s3, _, _ = store.issue("conc_3", max_active=2, max_diagnostic=10)
+        self.assertEqual(s3, "conc_3")
+
+        # End-to-end /connect -> /ws disconnect releases active capacity immediately,
+        # AND S8: anonymous raw /ws (no connection_id) enforces MAX_SESSIONS with zero shared-store calls.
+        client = TestClient(server.app)
+        mock_shared = MagicMock()
+        mock_shared.create_session.return_value = True
+        mock_shared.consume_join.return_value = True
+        mock_shared.take_handoff.return_value = {
+            "instructions": None,
+            "tools": None,
+            "avatar_custom_image": None,
+            "custom_voice_audio": None,
+        }
+        with patch("session_access.MAX_SESSIONS", 1), \
+             patch.object(server, "load_pipeline", return_value=AsyncMock(return_value=None)):
+            r1 = client.post("/connect?bot_type=tts-llm-stt", json={})
+            self.assertEqual(r1.status_code, 200)
+            # While r1 is pending join (active_count == 1 == MAX_SESSIONS), an anonymous /ws is rejected with 1013
+            session_access.configure_shared_store(mock_shared)
+            try:
+                with self.assertRaises(WebSocketDisconnect) as ws_exc:
+                    with client.websocket_connect("/ws?bot_type=tts-llm-stt") as ws:
+                        ws.receive_text()
+                self.assertEqual(ws_exc.exception.code, 1013)
+                mock_shared.take_handoff.assert_not_called()
+            finally:
+                session_access.configure_shared_store(None)
+
+            d1 = r1.json()
+            ws_rel_1 = urlparse(d1["ws_url"]).path + "?" + urlparse(d1["ws_url"]).query
+            with client.websocket_connect(ws_rel_1):
+                pass
+            # Slot is now released, so both an anonymous /ws AND a 2nd /connect succeed!
+            session_access.configure_shared_store(mock_shared)
+            try:
+                with client.websocket_connect("/ws?bot_type=tts-llm-stt"):
+                    pass
+                mock_shared.take_handoff.assert_not_called()
+                mock_shared.clear_handoff_payloads.assert_not_called()
+            finally:
+                session_access.configure_shared_store(None)
+
+            r2 = client.post("/connect?bot_type=tts-llm-stt", json={})
+            self.assertEqual(r2.status_code, 200)
+            logs_1 = client.get(
+                f"/api/logs?session_id={d1['session_id']}",
+                headers={"x-session-token": d1["diagnostic_token"]},
+            )
+            self.assertEqual(logs_1.status_code, 200)
+
+
+
 

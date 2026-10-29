@@ -2165,44 +2165,16 @@ async def run_agent_live(
         f"(persona_id={persona_id or 'unspecified'})"
     )
 
-    if getattr(persona_architecture, "has_exclusive_tools", lambda: False)():
-        standard_tools = list(persona_architecture.get_tool_schemas())
-    else:
-        standard_tools = [
-            FunctionSchema(
-                name="get_current_time",
-                description="Get the current time.",
-                properties={
-                    "is_explicit_request": {
-                        "type": "boolean",
-                        "description": (
-                            "Return `true` ONLY if the user explicitly asks for the current time or date.\n\n"
-                            "- Explaining schedules or timelines.\n"
-                            "- Mentioning time casually in conversation."
-                        )
-                    }
-                },
-                required=["is_explicit_request"]
-            ),
-            search_knowledge_base_schema,
-        ]
-        standard_tools.extend(persona_architecture.get_tool_schemas())
-
-
-    if tools:
-        try:
-            tools_data = json.loads(tools)
-            if isinstance(tools_data, list):
-                for tool in tools_data:
-                    if "name" in tool:
-                        standard_tools.append(FunctionSchema(
-                            name=tool.get("name"),
-                            description=tool.get("description", ""),
-                            properties=tool.get("properties", {}),
-                            required=tool.get("required", [])
-                        ))
-        except Exception as e:
-            logger.error(f"Failed to parse dynamic tools: {e}")
+    from tool_catalog import resolve_session_tools
+    try:
+        standard_tools, has_tool_override = resolve_session_tools(
+            persona_architecture, engine="live", tools_raw=tools
+        )
+    except ValueError as e:
+        logger.error(f"Invalid dynamic tools override ({e}); falling back to default persona tools.")
+        standard_tools, has_tool_override = resolve_session_tools(
+            persona_architecture, engine="live", tools_raw=None
+        )
 
     tools_schema = ToolsSchema(standard_tools=standard_tools)
 
@@ -2276,18 +2248,21 @@ async def run_agent_live(
             )
     model = clean_model
 
-    # Per-step tool swapping (context_update) is model-specific; the architecture decides from
-    # the resolved model whether setup declares its opening group or the full set.
+    # Per-step tool swapping (context_update) is model-specific; when supported, per-card tool
+    # groups own the session's declarations and ignore any static client tools override.
     bind_live_model = getattr(persona_architecture, "bind_live_model", None)
     if bind_live_model is not None and bind_live_model(clean_model, vertex=not is_ai_studio):
-        tools_schema = ToolsSchema(standard_tools=list(persona_architecture.get_tool_schemas()))
+        if has_tool_override:
+            logger.warning(
+                f"[ToolSwap] Ignoring static tools override on {clean_model} (Vertex): "
+                f"persona '{persona_id}' manages tools per card via context_update."
+            )
+        standard_tools = list(persona_architecture.get_tool_schemas())
+        tools_schema = ToolsSchema(standard_tools=standard_tools)
         logger.info(
             f"[ToolSwap] {clean_model} on Vertex: setup declares "
             f"{[t.name for t in tools_schema.standard_tools]}; other tools arrive per step via context_update."
         )
-        if tools:
-            # A context_update replaces the whole declared set, so extra tools cannot ride along.
-            logger.warning("[ToolSwap] Client-supplied tools are not declared for this persona while tools swap per step.")
 
     if is_ai_studio:
         # Resolve API key from environment (Cloud Run --set-secrets) or Secret Manager
@@ -2379,13 +2354,9 @@ async def run_agent_live(
     llm._context_compression_triggered = False
     llm._last_prompt_tokens = 0
 
-    llm.register_function("get_current_time", get_current_time)
-    llm.register_function("search_knowledge_base", search_knowledge_base_handler)
-    built_in_tools = {"get_current_time", "search_knowledge_base"}
-
     # Persona-specific tools are owned by the architecture strategy resolved from
     # persona_id. Adding a new persona architecture therefore never requires an
-    # edit here -- see server/persona_registry.py.
+    # edit here -- see server/persona_registry.py and server/tool_catalog.py.
     async def broadcast_persona_event(payload: dict):
         """Push a persona telemetry event to the client over RTVI."""
         await llm.push_frame(OutputTransportMessageFrame(message={
@@ -2394,20 +2365,19 @@ async def run_agent_live(
             "data": payload,
         }))
 
-    built_in_tools.update(
-        persona_architecture.register_handlers(llm, broadcast=broadcast_persona_event)
+    from tool_catalog import register_runtime_tool_handlers
+    register_runtime_tool_handlers(
+        llm,
+        active_schemas=standard_tools,
+        persona_architecture=persona_architecture,
+        broadcast=broadcast_persona_event,
+        engine="live",
     )
 
     # Give the service the architecture and a channel to the client, so a
     # completed user transcript can update persona telemetry without a tool.
     llm.persona_architecture = persona_architecture
     llm.persona_broadcast = broadcast_persona_event
-
-    
-    # Register generic handler for dynamic tools (skip built-in tools)
-    for tool in standard_tools:
-        if tool.name not in built_in_tools:
-            llm.register_function(tool.name, dynamic_tool_handler)
 
     user_params = LLMUserAggregatorParams(
         user_turn_strategies=UserTurnStrategies(

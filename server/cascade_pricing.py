@@ -48,6 +48,14 @@ def rate_card(stage, model, provider, region="global", at=None):
             cached_text_in="0.015",
             source=SOURCES["vertex_maas"],
         )
+    elif stage == "llm" and model.replace("-aistudio", "") == "gemma-4-26b-a4b-it" and provider == "gemini":
+        card["model"] = "gemma-4-26b-a4b-it"
+        card.update(
+            text_in="0",
+            text_out="0",
+            cached_text_in="0",
+            source=SOURCES["gemini"],
+        )
     elif stage == "llm" and provider in ("vertex", "gemini"):
         clean_model = model.replace("-aistudio", "")
         prices = {

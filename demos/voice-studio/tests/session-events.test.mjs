@@ -1018,8 +1018,48 @@ test('gemma-4-26b-a4b-it-maas is listed in Cascade LLMs, clamps skip_stt=false, 
   const cc = compileLib('lib/cascade-cost.ts');
 
   assert.ok(vs.CASCADE_LLM_MODELS.some(([id]) => id === 'gemma-4-26b-a4b-it-maas'));
+  assert.ok(vs.CASCADE_LLM_MODELS.some(([id]) => id === 'gemma-4-26b-a4b-it-aistudio'));
   assert.equal(vs.supportsCascadeAudioInput('gemma-4-26b-a4b-it-maas'), false);
+  assert.equal(vs.supportsCascadeAudioInput('gemma-4-26b-a4b-it-aistudio'), false);
   assert.equal(vs.supportsCascadeAudioInput('gemini-3.8-flash'), true);
+
+  assert.throws(() => vs.parseToolsOverride('{bad-json'), /valid JSON/);
+  assert.throws(
+    () => vs.parseToolsOverride('[{"name":"dup_tool"},{"name":"dup_tool"}]'),
+    /Duplicate tool/i
+  );
+  assert.throws(
+    () => vs.parseToolsOverride('[{"name":"get weather"}]'),
+    /Invalid tool name/i
+  );
+  assert.throws(
+    () => vs.parseToolsOverride('[{"name":"1bad"}]'),
+    /Invalid tool name/i
+  );
+  assert.throws(
+    () => vs.buildConnectRequest({ ...vs.DEFAULT_SETTINGS, toolsJson: '[{"name":"dup"},{"name":"dup"}]' }),
+    /Duplicate tool/i
+  );
+  const validReq = vs.buildConnectRequest({
+    ...vs.DEFAULT_SETTINGS,
+    personaId: 'debt-collector',
+    toolsJson: '[{"name":"lookup_order","description":"Lookup order","properties":{"id":{"type":"string"}},"required":["id"]}]',
+  });
+  assert.equal(validReq.body.tools.length, 1);
+  assert.equal(validReq.body.tools[0].name, 'lookup_order');
+
+  // Switching to Tara on Vertex Gemini 3.8 Live without opening Settings omits body.tools so per-card swap stays active
+  const taraVertexReq = vs.buildConnectRequest({
+    ...vs.DEFAULT_SETTINGS,
+    engine: 'live',
+    personaId: 'travel-concierge',
+    model: 'gemini-3.8-live',
+    toolsJson: '[{"name":"lookup_order"}]',
+  });
+  assert.equal(taraVertexReq.body.tools, undefined);
+  assert.equal(vs.arePersonaToolsEditable({ ...vs.DEFAULT_SETTINGS, engine: 'live', personaId: 'travel-concierge', model: 'gemini-3.8-live' }), false);
+  assert.equal(vs.arePersonaToolsEditable({ ...vs.DEFAULT_SETTINGS, engine: 'live', personaId: 'travel-concierge', model: 'gemini-3.8-live-aistudio' }), true);
+  assert.equal(vs.arePersonaToolsEditable({ ...vs.DEFAULT_SETTINGS, engine: 'cascade', personaId: 'travel-concierge', model: 'gemini-3.8-live' }), true);
 
   const connectUrl = vs.buildConnectUrl({
     ...vs.DEFAULT_SETTINGS,

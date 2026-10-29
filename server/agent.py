@@ -81,6 +81,8 @@ VALID_LLM_MODELS = {
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemma-4-26b-a4b-it-maas",
+    "gemma-4-26b-a4b-it",
+    "gemma-4-26b-a4b-it-aistudio",
 }
 
 VALID_TTS_MODELS = {
@@ -1035,71 +1037,272 @@ class _MeteredGeminiLLMMixin:
         except Exception as e:
             logger.debug(f"Failed to extend aiohttp keepalive_timeout: {e}")
 
+    @staticmethod
+    def _is_rate_limit_error(exc: BaseException) -> bool:
+        for attr in ("code", "status_code", "status"):
+            raw_code = getattr(exc, attr, None)
+            if raw_code is None:
+                continue
+            if isinstance(raw_code, int) and not isinstance(raw_code, bool):
+                return raw_code == 429
+            code_str = str(raw_code).strip()
+            if code_str.isdigit():
+                return int(code_str) == 429
+            if "resource_exhausted" in code_str.lower() or "too_many_requests" in code_str.lower():
+                return True
+        msg = str(exc).lower()
+        if any(
+            phrase in msg
+            for phrase in ("resource_exhausted", "request queue is full", "too many requests")
+        ):
+            return True
+        return bool(
+            re.search(r"(?:^\s*429\b|\b(?:http|status|code|error)\s*[:=]?\s*429\b)", msg)
+        )
+
+    def _log_llm_failover(self, message: str) -> None:
+        logger.warning(message)
+
+    async def _open_gemma_aistudio_fallback(self, context):
+        """Fail over a rate-limited Vertex gemma-4-26b-a4b-it-maas turn to AI Studio gemma-4-26b-a4b-it."""
+        if getattr(self, "_cost_provider", "vertex") != "vertex":
+            return None
+        project_id = getattr(self, "_project_id", None) or os.getenv("GCP_PROJECT_ID")
+        api_key = _resolve_gemini_api_key(project_id)
+        if not api_key:
+            logger.warning(
+                "[Cascade LLM] Vertex gemma-4-26b-a4b-it-maas hit 429 and no GEMINI_API_KEY is available for AI Studio failover."
+            )
+            return None
+        adapter = self.get_llm_adapter()
+        raw_sys = getattr(self._settings, "system_instruction", None)
+        sys_inst = raw_sys if isinstance(raw_sys, str) else None
+        params = adapter.get_llm_invocation_params(context, system_instruction=sys_inst)
+        messages = params["messages"]
+        tools = params["tools"] if params.get("tools") else (getattr(self, "_tools", None) or [])
+        tool_config = getattr(self, "_tool_config", None) or None
+        generation_params = self._build_generation_params(
+            system_instruction=params["system_instruction"],
+            tools=tools,
+            tool_config=tool_config,
+        )
+        generation_params.pop("thinking_config", None)
+        generation_config = types.GenerateContentConfig(**generation_params)
+        if getattr(self, "_aistudio_fallback_client", None) is None:
+            self._aistudio_fallback_client = genai.Client(api_key=api_key)
+        self._my_ttfb_start = None
+        await self.start_ttfb_metrics()
+        logger.warning(
+            "[Cascade LLM] Vertex gemma-4-26b-a4b-it-maas remained 429 (queue full) after retries; "
+            "failing over turn to Google AI Studio gemma-4-26b-a4b-it"
+        )
+        try:
+            return await self._aistudio_fallback_client.aio.models.generate_content_stream(
+                model="gemma-4-26b-a4b-it",
+                contents=messages,
+                config=generation_config,
+            )
+        except BaseException:
+            self._my_ttfb_start = None
+            raise
+
     async def _stream_content(self, context):
         self._last_usage_metadata = None
         self._last_merged_usage = None
+        model_name = getattr(getattr(self, "_settings", None), "model", None) or ""
+        self._active_turn_model = model_name
         if hasattr(self, "_ensure_warm_aiohttp_session"):
             await self._ensure_warm_aiohttp_session()
+        open_base = super()._stream_content
+        is_rate_limit = getattr(self, "_is_rate_limit_error", None)
+        open_fallback = getattr(self, "_open_gemma_aistudio_fallback", None)
+        log_note = getattr(self, "_log_llm_failover", None)
         meter = getattr(self, "_cascade_meter", None)
-        if meter is None:
-            raw = await super()._stream_content(context)
-            async def passthrough_stream():
-                merged_usage = None
-                async for chunk in raw:
-                    um = getattr(chunk, "usage_metadata", None)
-                    if um is not None:
-                        um_dict = um.model_dump(mode="json", exclude_none=True) if hasattr(um, "model_dump") else (dict(um) if isinstance(um, dict) else {})
-                        if any(um_dict.get(k) is not None for k in ("prompt_token_count", "total_token_count", "candidates_token_count", "cached_content_token_count")):
-                            merged_usage = {**(merged_usage or {}), **um_dict}
-                            self._last_usage_metadata = um
-                            self._last_merged_usage = merged_usage
-                        else:
-                            try:
-                                chunk.usage_metadata = None
-                            except Exception:
-                                pass
-                    yield chunk
-            return passthrough_stream()
-        provider = getattr(self, "_cost_provider", "vertex")
-        region = getattr(self, "_location", "global") if provider == "vertex" else "global"
-        key = meter.begin("llm", self._settings.model, provider, region,
-                          input_mode=getattr(self, "_cost_input_mode", "text"))
-        await publish_cost(self)
-        try:
-            stream = await super()._stream_content(context)
-        except BaseException:
-            meter.update(key, issue="LLM request failed before final usage")
+        key = None
+        if meter is not None:
+            provider = getattr(self, "_cost_provider", "vertex")
+            region = getattr(self, "_location", "global") if provider == "vertex" else "global"
+            key = meter.begin(
+                "llm",
+                model_name,
+                provider,
+                region,
+                input_mode=getattr(self, "_cost_input_mode", "text"),
+            )
             await publish_cost(self)
-            raise
 
-        async def metered_stream():
+        def _check_429(exc):
+            if is_rate_limit is not None:
+                return is_rate_limit(exc)
+            return CustomGoogleVertexLLMService._is_rate_limit_error(exc)
+
+        attempt = 0
+        used_fallback = False
+
+        async def _open_initial():
+            nonlocal attempt, used_fallback
+            while True:
+                try:
+                    return await open_base(context)
+                except BaseException as exc:
+                    self._my_ttfb_start = None
+                    active_exc: BaseException = exc
+                    if isinstance(exc, Exception) and _check_429(exc):
+                        if attempt < 2:
+                            import asyncio as _aio
+                            import random as _rnd
+                            delay = (0.35 if attempt == 0 else 0.85) + _rnd.uniform(0.0, 0.12)
+                            attempt += 1
+                            if log_note is not None:
+                                log_note(
+                                    f"[Cascade LLM] {model_name} hit 429 on stream open; retry {attempt}/2 in {delay:.2f}s"
+                                )
+                            await _aio.sleep(delay)
+                            continue
+                        if (
+                            not used_fallback
+                            and model_name == "gemma-4-26b-a4b-it-maas"
+                            and open_fallback is not None
+                        ):
+                            used_fallback = True
+                            try:
+                                fb = await open_fallback(context)
+                            except BaseException as fb_exc:
+                                self._my_ttfb_start = None
+                                active_exc = fb_exc
+                            else:
+                                if fb is not None:
+                                    self._active_turn_model = "gemma-4-26b-a4b-it"
+                                    if meter is not None and key is not None:
+                                        meter.update(
+                                            key,
+                                            model="gemma-4-26b-a4b-it",
+                                            provider="gemini",
+                                            region="global",
+                                        )
+                                        await publish_cost(self)
+                                    return fb
+                    self._my_ttfb_start = None
+                    if meter is not None and key is not None:
+                        meter.update(
+                            key,
+                            complete=False,
+                            issue="LLM request failed before final usage",
+                        )
+                        await publish_cost(self)
+                    raise active_exc
+
+        stream = await _open_initial()
+
+        async def _consume_stream(initial_stream):
+            nonlocal attempt, used_fallback
+            cur_stream = initial_stream
+            need_reopen = False
             completed = False
+            yielded_any = False
             last_usage = None
             merged_usage = None
             try:
-                async for chunk in stream:
-                    um = getattr(chunk, "usage_metadata", None)
-                    if um is not None:
-                        um_dict = um.model_dump(mode="json", exclude_none=True) if hasattr(um, "model_dump") else (dict(um) if isinstance(um, dict) else {})
-                        if any(um_dict.get(k) is not None for k in ("prompt_token_count", "total_token_count", "candidates_token_count", "cached_content_token_count")):
-                            merged_usage = {**(merged_usage or {}), **um_dict}
-                            last_usage = merged_usage
-                            self._last_usage_metadata = um
-                            self._last_merged_usage = merged_usage
-                        else:
+                while True:
+                    try:
+                        if need_reopen:
+                            cur_stream = await open_base(context)
+                            need_reopen = False
+                        it = cur_stream.__aiter__()
+                        while True:
                             try:
-                                chunk.usage_metadata = None
-                            except Exception:
-                                pass
-                    yield chunk
-                completed = True
+                                chunk = await it.__anext__()
+                            except StopAsyncIteration:
+                                break
+                            yielded_any = True
+                            um = getattr(chunk, "usage_metadata", None)
+                            if um is not None:
+                                um_dict = (
+                                    um.model_dump(mode="json", exclude_none=True)
+                                    if hasattr(um, "model_dump")
+                                    else (
+                                        dict(um)
+                                        if isinstance(um, dict)
+                                        else {k: v for k, v in vars(um).items() if v is not None}
+                                        if hasattr(um, "__dict__")
+                                        else {}
+                                    )
+                                )
+                                if any(
+                                    um_dict.get(k) is not None
+                                    for k in (
+                                        "prompt_token_count",
+                                        "total_token_count",
+                                        "candidates_token_count",
+                                        "cached_content_token_count",
+                                    )
+                                ):
+                                    merged_usage = {**(merged_usage or {}), **um_dict}
+                                    last_usage = merged_usage
+                                    self._last_usage_metadata = um
+                                    self._last_merged_usage = merged_usage
+                                else:
+                                    try:
+                                        chunk.usage_metadata = None
+                                    except Exception:
+                                        pass
+                            yield chunk
+                        completed = True
+                        break
+                    except Exception as exc:
+                        if not yielded_any and _check_429(exc):
+                            self._my_ttfb_start = None
+                            if attempt < 2:
+                                import asyncio as _aio
+                                import random as _rnd
+                                delay = (0.35 if attempt == 0 else 0.85) + _rnd.uniform(0.0, 0.12)
+                                attempt += 1
+                                if log_note is not None:
+                                    log_note(
+                                        f"[Cascade LLM] {model_name} hit 429 before first token; retry {attempt}/2 in {delay:.2f}s"
+                                    )
+                                await _aio.sleep(delay)
+                                need_reopen = True
+                                continue
+                            if (
+                                not used_fallback
+                                and model_name == "gemma-4-26b-a4b-it-maas"
+                                and open_fallback is not None
+                            ):
+                                used_fallback = True
+                                try:
+                                    fb = await open_fallback(context)
+                                except BaseException:
+                                    self._my_ttfb_start = None
+                                    raise
+                                if fb is not None:
+                                    self._active_turn_model = "gemma-4-26b-a4b-it"
+                                    if meter is not None and key is not None:
+                                        meter.update(
+                                            key,
+                                            model="gemma-4-26b-a4b-it",
+                                            provider="gemini",
+                                            region="global",
+                                        )
+                                        await publish_cost(self)
+                                    cur_stream = fb
+                                    need_reopen = False
+                                    continue
+                        raise
             finally:
-                if last_usage is not None:
-                    observe_tokens(meter, key, last_usage)
-                meter.update(key, complete=completed,
-                             issue=None if completed else "LLM stream interrupted; final usage unconfirmed")
-                await publish_cost(self)
-        return metered_stream()
+                if not completed:
+                    self._my_ttfb_start = None
+                if meter is not None and key is not None:
+                    if last_usage is not None:
+                        observe_tokens(meter, key, last_usage)
+                    meter.update(
+                        key,
+                        complete=completed,
+                        issue=None if completed else "LLM stream interrupted; final usage unconfirmed",
+                    )
+                    await publish_cost(self)
+
+        return _consume_stream(stream)
 
     @property
     def response_identity(self):
@@ -1212,7 +1415,7 @@ class _MeteredGeminiLLMMixin:
                         "prompt_details": prompt_details,
                         "response_details": {"text": completion_tokens},
                         "phase": "final", "service": "llm", "revision": 0,
-                        "model": self._settings.model,
+                        "model": getattr(self, "_active_turn_model", None) or self._settings.model,
                         "cached_content_token_count": cached_tokens,
                         "cache_hit_rate": cache_hit_rate,
                         "thoughts_token_count": thoughts_tokens,
@@ -1334,6 +1537,41 @@ def cascade_greeting_text(persona_architecture, stt_language) -> str:
     return "नमस्ते!" if is_hindi else "Hello!"
 
 
+def compose_cascade_system_prompt(
+    system_instruction: Optional[str],
+    tts_voice: Optional[str] = None,
+    clean_tts_model: str = "gemini-3.8-flash-lite-tts",
+    persona_id: Optional[str] = None,
+    skip_stt: bool = False,
+) -> str:
+    """Build the system prompt for a Cascade session without mutating caller prompts.
+
+    Like ``compose_live_system_prompt``, a caller- or persona-supplied
+    ``system_instruction`` passes through without appending a conflicting
+    "Never ask for the user's name" rule. The shared default ``SYSTEM_PROMPT``
+    already contains the name- and gender-neutral rules for generic sessions.
+    """
+    if system_instruction:
+        final_system_instruction = system_instruction
+    else:
+        gender = voice_profiles.voice_gender(tts_voice) or "female"
+        final_system_instruction = SYSTEM_PROMPT.replace("female", gender)
+
+    speech_prompt = tts_script.speech_prompt_for(clean_tts_model, persona_id)
+    if speech_prompt:
+        final_system_instruction += "\n\n" + speech_prompt
+    gender_rule = tts_script.voice_gender_rule(tts_voice)
+    if gender_rule:
+        final_system_instruction += "\n\n" + gender_rule
+
+    if skip_stt:
+        final_system_instruction += (
+            "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. "
+            "Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
+        )
+    return final_system_instruction
+
+
 async def run_agent(
     websocket: WebSocket,
     tts_voice: str,
@@ -1348,6 +1586,7 @@ async def run_agent(
     tts_pitch: Optional[str] = None,
     tts_pace_label: Optional[str] = None,
     system_instruction: Optional[str] = None,
+    tools: Optional[str] = None,
     skip_stt: bool = False,
     vad: bool = True,
     vad_mode: Optional[str] = None,
@@ -1443,10 +1682,9 @@ async def run_agent(
                 )
             )
 
-    persona_architecture = None
+    from persona_registry import get_persona_architecture
+    persona_architecture = get_persona_architecture(persona_id)
     if persona_id:
-        from persona_registry import get_persona_architecture
-        persona_architecture = get_persona_architecture(persona_id)
         logger.info(
             f"[Cascade] Persona architecture: {persona_architecture.pattern.value} "
             f"(persona_id={persona_id})"
@@ -1455,36 +1693,35 @@ async def run_agent(
         if arch_instruction:
             system_instruction = arch_instruction
 
-    neutrality_instruction = "\n\nRULE: Never ask for the user's name or who you are speaking with."
-    if not system_instruction:
-        neutrality_instruction += "\nKeep all address, pronouns, call-outs, and verb forms for the user strictly gender-neutral so the conversation fits naturally whether the user is male or female."
-    final_system_instruction = (system_instruction or SYSTEM_PROMPT) + neutrality_instruction
-    speech_prompt = tts_script.speech_prompt_for(clean_tts_model, persona_id)
-    if speech_prompt:
-        final_system_instruction += "\n\n" + speech_prompt
-    gender_rule = tts_script.voice_gender_rule(tts_voice)
-    if gender_rule:
-        final_system_instruction += "\n\n" + gender_rule
+    final_system_instruction = compose_cascade_system_prompt(
+        system_instruction,
+        tts_voice=tts_voice,
+        clean_tts_model=clean_tts_model,
+        persona_id=persona_id,
+        skip_stt=skip_stt,
+    )
 
-    if skip_stt:
-        final_system_instruction += "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. Strictly answer ONLY the current current user query. Do not bring up previous topics or simulate future turns."
-
-    is_aistudio_llm = "aistudio" in clean_llm_model
-    # Always pass the exact canonical model string ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it-maas") to the SDK
+    is_aistudio_llm = "aistudio" in clean_llm_model or clean_llm_model == "gemma-4-26b-a4b-it"
+    # Always pass the exact canonical model string ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it-maas", "gemma-4-26b-a4b-it") to the SDK
     actual_llm_model = clean_llm_model.replace("-aistudio", "")
     llm_location = (
         "global"
         if (actual_llm_model.endswith("-maas") or any(k in actual_llm_model for k in ["gemini-3", "3.8", "3.7", "3.5", "gemma-4"]))
         else location
     )
-    
+
     thinking_config = build_cascade_thinking_config(actual_llm_model)
 
-    cascade_tools = None
-    if persona_architecture:
-        cascade_tools = persona_architecture.get_tool_schemas(engine="cascade")
-        if not cascade_tools:
-            cascade_tools = None
+    from tool_catalog import register_runtime_tool_handlers, resolve_session_tools
+    try:
+        cascade_tools, _ = resolve_session_tools(
+            persona_architecture, engine="cascade", tools_raw=tools
+        )
+    except ValueError as tool_err:
+        logger.error(f"[Cascade] Invalid dynamic tools override ({tool_err}); falling back to default persona tools.")
+        cascade_tools, _ = resolve_session_tools(
+            persona_architecture, engine="cascade", tools_raw=None
+        )
 
     tools_list = [{
         "function_declarations": [schema.to_default_dict() for schema in cascade_tools],
@@ -1519,18 +1756,23 @@ async def run_agent(
             llm_kwargs["tools"] = tools_list
         llm = CustomGoogleVertexLLMService(**llm_kwargs)
 
-    if persona_architecture:
-        async def broadcast_persona_event(payload: dict):
-            """Push a persona telemetry event to the client over RTVI."""
-            await llm.push_frame(OutputTransportMessageFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": payload,
-            }))
+    async def broadcast_persona_event(payload: dict):
+        """Push a persona telemetry event to the client over RTVI."""
+        await llm.push_frame(OutputTransportMessageFrame(message={
+            "label": "rtvi-ai",
+            "type": "server-message",
+            "data": payload,
+        }))
 
-        persona_architecture.register_handlers(
-            llm, broadcast=broadcast_persona_event, engine="cascade"
-        )
+    register_runtime_tool_handlers(
+        llm,
+        active_schemas=cascade_tools,
+        persona_architecture=persona_architecture,
+        broadcast=broadcast_persona_event,
+        engine="cascade",
+    )
+    llm.persona_architecture = persona_architecture
+    llm.persona_broadcast = broadcast_persona_event
 
     gemini_voice_key = voice_profiles.resolve_gemini_voice_key(tts_voice)
     if gemini_voice_key and not voice_profiles.supports_gemini_clone(clean_tts_model):
