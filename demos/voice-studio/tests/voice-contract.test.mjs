@@ -227,14 +227,14 @@ function withBrowser(location, run) {
 
 // A real window.location always defines `port` ("" when the URL uses the
 // protocol default), so the stub must too.
-const cloudtop = { hostname: 'rangarok.c.googlers.com', host: 'rangarok.c.googlers.com', port: '', protocol: 'https:' };
+const cloudtop = { hostname: 'studio.example.com', host: 'studio.example.com', port: '', protocol: 'https:' };
 
 test('in a browser, a loopback ws_url is rewritten onto the page host for proxying', () => {
   withBrowser(cloudtop, () => {
     // The backend's :7860 must not survive; the proxy listens on the page host.
     assert.equal(
-      validateSocketUrl('ws://127.0.0.1:7860/ws?voice=Aoede', 'https://rangarok.c.googlers.com'),
-      'wss://rangarok.c.googlers.com/ws?voice=Aoede',
+      validateSocketUrl('ws://127.0.0.1:7860/ws?voice=Aoede', 'https://studio.example.com'),
+      'wss://studio.example.com/ws?voice=Aoede',
     );
   });
 });
@@ -260,18 +260,18 @@ test('in a browser, the same host on a different port is accepted', () => {
   // The page and the WebSocket routinely differ only by port.
   withBrowser(cloudtop, () => {
     assert.equal(
-      validateSocketUrl('wss://rangarok.c.googlers.com:7860/ws', 'https://rangarok.c.googlers.com'),
-      'wss://rangarok.c.googlers.com:7860/ws',
+      validateSocketUrl('wss://studio.example.com:7860/ws', 'https://studio.example.com'),
+      'wss://studio.example.com:7860/ws',
     );
   });
 });
 
 test('in a browser, the page port is preserved when the page is served on one', () => {
-  const tunnelled = { hostname: 'rangarok.c.googlers.com', host: 'rangarok.c.googlers.com:5173', port: '5173', protocol: 'http:' };
+  const tunnelled = { hostname: 'studio.example.com', host: 'studio.example.com:5173', port: '5173', protocol: 'http:' };
   withBrowser(tunnelled, () => {
     assert.equal(
-      validateSocketUrl('ws://127.0.0.1:7860/ws', 'http://rangarok.c.googlers.com:5173'),
-      'ws://rangarok.c.googlers.com:5173/ws',
+      validateSocketUrl('ws://127.0.0.1:7860/ws', 'http://studio.example.com:5173'),
+      'ws://studio.example.com:5173/ws',
     );
   });
 });
@@ -279,7 +279,7 @@ test('in a browser, the page port is preserved when the page is served on one', 
 test('in a browser, a foreign WebSocket host is still rejected', () => {
   withBrowser(cloudtop, () => {
     for (const url of ['wss://attacker.example.com/ws', 'ws://attacker.example.com/ws', 'wss://evil.test:443/ws']) {
-      assert.throws(() => validateSocketUrl(url, 'https://rangarok.c.googlers.com'), /must match your configured server host/);
+      assert.throws(() => validateSocketUrl(url, 'https://studio.example.com'), /must match your configured server host/);
     }
   });
 });
@@ -291,8 +291,8 @@ test('in a browser, the configured backend host and the page host are both allow
       'wss://voice.example.com/ws',
     );
     assert.equal(
-      validateSocketUrl('ws://rangarok.c.googlers.com/ws', 'https://voice.example.com'),
-      'wss://rangarok.c.googlers.com/ws',
+      validateSocketUrl('ws://studio.example.com/ws', 'https://voice.example.com'),
+      'wss://studio.example.com/ws',
     );
   });
 });

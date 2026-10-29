@@ -59,6 +59,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let levelTimer: ReturnType<typeof setInterval> | null = null;
   let speakingTimer: ReturnType<typeof setTimeout> | null = null;
   let turnStarted = false;
+  let avatarSpeechInTurn = false;
   let lastUserAt: number | null = null;
 
   // Latency buffers according to canonical protocol invariants
@@ -145,12 +146,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       is_init?: boolean;
       seq?: number;
       has_audio?: boolean;
+      post_turn_decay?: boolean;
       tfdt?: number;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
     if (data.type === "avatar_video" && typeof data.data === "string") {
-      if (data.has_audio === true && isAvatarActive(settings)) {
+      if (data.has_audio === true && !data.post_turn_decay && isAvatarActive(settings)) {
+        avatarSpeechInTurn = true;
         events.onPhase("speaking");
         if (lastUserAt !== null) {
           events.onLatency(performance.now() - lastUserAt);
@@ -168,6 +171,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     }
 
     if (data.type === "avatar_interrupted") {
+      avatarSpeechInTurn = false;
       events.onAvatarInterrupted?.();
       events.onPhase("listening");
       return;
@@ -194,6 +198,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       }
       if (data.participant?.toLowerCase() === "user") {
         turnStarted = false;
+        avatarSpeechInTurn = false;
         lastUserAt = performance.now();
         events.onPartialUser("");
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
@@ -238,16 +243,19 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       const p = data.payload;
       if (!p) return;
       if (p.type === "turn_complete") {
+        const hadAvatarSpeech = avatarSpeechInTurn;
         turnStarted = false;
+        avatarSpeechInTurn = false;
         pendingLLMLatency = null;
         pendingTTSLatency = null;
         lastTurnSTTLatency = null;
-        if (isAvatarActive(settings)) {
+        if (isAvatarActive(settings) && !hadAvatarSpeech) {
           events.onPhase("listening");
         }
         events.onMetricUpdate?.("turn_complete", p);
       } else if (p.type === "interruption") {
         turnStarted = false;
+        avatarSpeechInTurn = false;
         void media.userStartedSpeaking();
         events.onAvatarInterrupted?.();
         events.onPhase("listening");
@@ -351,7 +359,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         if (stopped) return;
         const msg = err?.message || String(err);
         if (msg.includes("1006")) {
-          throw new Error("WebSocket connection error (1006): UberProxy rejected the WebSocket upgrade. Please use the Autobahn PEN URL or SSH tunnel (`ssh -L 5173:localhost:5173 rangarok.c.googlers.com`).");
+          throw new Error("WebSocket connection error (1006): the proxy or server closed the WebSocket upgrade unexpectedly.");
         }
         throw new Error(`Failed to connect to voice stream: ${msg}`);
       }

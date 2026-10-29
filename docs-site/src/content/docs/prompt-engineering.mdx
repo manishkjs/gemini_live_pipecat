@@ -1,0 +1,172 @@
+---
+title: Prompt Engineering & Context Anatomy
+description: How Gemini Live assembles the model prompt from top to bottom, where to place static rules vs. mutable session state, and how to write prompts that hold up under real-time streaming audio.
+---
+
+import PromptAnatomyDiagram from '../../components/PromptAnatomyDiagram.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="The detailed layout of the model prompt (eight ordered blocks), where to put standing rules versus changing state, and the phrasing traps that break a voice model."
+  why="Prompts that work for a text chatbot often fail out loud: brackets get read aloud, 'stay silent' causes dead air, and negative rules backfire."
+  number="Keep the standing instruction under 500 tokens."
+  decide="Which prompt rules are company-wide standards (persona, tone, language) and which are per-step."
+/>
+
+Writing prompts for a full-duplex native audio model is different from prompting a text chatbot. In Gemini Live, `systemInstruction`, `tools`, conversation history, and dynamic context updates are not independent settings: they occupy **fixed positions** inside the model prompt on every inference pass.
+
+Understanding that positional layout explains both **why certain instructions steer the current turn more strongly** and **how mid-session updates affect latency and prefix caching**.
+
+---
+
+## 1. How the model prompt is constructed (top to bottom)
+
+When Gemini Live processes a turn, it assembles the model context in eight ordered positional blocks:
+
+```text
+ROLE_SYSTEM:
+  1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
+  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+
+ROLE_DEVELOPER:
+  3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
+  4. <developer instruction>                   <- setup.systemInstruction (maps to ROLE_DEVELOPER, after tools)
+------------------------------------------------- [Prefix Cache Boundary]
+ROLE_USER / ROLE_ASSISTANT:
+  5. <conversation history>                    <- Prior clientContent & realtimeInput turns (audio + transcripts;
+                                                  barge-in turns are truncated to only the audio the caller actually heard)
+
+ROLE_CONTEXT:
+  6. <time and location>                       <- Server-injected runtime metadata (from session timezone / location)
+
+ROLE_USER:
+  7. <current turn>                            <- Newest caller utterance (<audio> + transcript), then any
+                                                  toolCall and FunctionResponse that follow it in this turn
+
+ROLE_CONTEXT:
+  8. <server footer>                           <- Short server-side closing context (public clients cannot write it)
+```
+
+<PromptAnatomyDiagram />
+
+### Four architectural consequences of this layout
+
+1. **Why public `systemInstruction` lives in `ROLE_DEVELOPER` (after `tools`)**:
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 large tool schemas, they sit ahead of your `systemInstruction` inside `ROLE_DEVELOPER`. Keeping declared tools pruned to 1 to 5 active schemas (`CallSlots`) prevents tool definitions from crowding out your persona and turn-taking rules.
+2. **The newest turn is the last thing the model reads (Recency Steering)**:
+   Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, twenty turns of accumulated audio and transcript history eventually separate your opening instructions from the caller's latest sentence. A tool result returned in the current turn lands at the end of the prompt, right before the model starts decoding audio, so it carries the most weight for the next reply. Use that slot for short, per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it.
+3. **`systemInstruction` and `tools` form the prefix-cached preamble**:
+   Both `tools` (serialized first) and `systemInstruction` (serialized second) live inside `ROLE_DEVELOPER` at the start of the token sequence. Updating either one mid-session rebuilds the cached preamble from that point. Swap `tools` only when the card changes. A `systemInstruction` refresh that only updates session state costs the same rebuild, so send it when the card or a confirmed fact changes, not on turns where nothing changed.
+4. **Barge-in truncates history to what the caller actually heard, and session resumption replays pre-tokenized chunks**:
+   Only the Live server knows which streamed audio frames were endpointed into a turn and the exact playback timestamp where a caller barged in (slicing unplayed bot audio chunks out of `ROLE_ASSISTANT` history and appending a trailing dash to the partial transcript so the model knows the caller never heard the rest of an interrupted sentence). When using `SessionResumptionConfig`, the server replays pre-tokenized history chunks rather than re-tokenizing raw audio bytes.
+
+### Decision matrix: Where each piece of information belongs
+
+| Information Type | Where to Place It | Update Cadence | Prefix Cache Impact |
+| :--- | :--- | :--- | :--- |
+| **Agent persona, vocal tone, speaking pace, and language/gender rules** | `setup.systemInstruction` (`ROLE_DEVELOPER`), plus a one-line `vocal_tone` in every tool result | Set once; repeated in every system-instruction update | Cached in preamble until the next card swap |
+| **Tool schemas (`functionDeclarations`)** | `setup.tools`, then only the current card's tools via `session.send_context_update(tools=[...])` (`google-genai >= 2.32.0`) | On card change (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once |
+| **Active conversation phase rules (`Phase 2: KYC Verification`)** | Inside `systemInstruction`, replaced in place: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`), or `clientContent` with `role="system"` (Vertex AI) | On phase transition (for example, `3 to 8 times` in a multi-step call) | Each swap rebuilds the cached preamble once; history does not grow |
+| **Verified caller facts (`FactStore`: name, postal code, ticket ID)** | A `Session state` block inside the same system-instruction update, plus a `<60-token` `call_state` line in each tool result | Updated after key facts are captured | Rides with the card swap |
+| **Large reference catalogs or policy docs (`>1,000 tokens`)** | Behind a non-blocking lookup tool (`CallSlots` returning `~25-token` speakable summaries) | Fetched on demand | Zero static prompt tax |
+
+:::note[Why phase cards no longer go in the tail]
+A card placed in history (a `role="user"` turn or a full card inside a tool result) is billed again on every later turn: about `635` extra tokens per card in our 3-swap test (`585 -> 1,214 -> 1,853 -> 2,493` prompt tokens). When `SlidingWindow` compression trims history at `5,000` tokens, the card disappears and the model falls back to the opening greeting (6 of 7 runs). A system-instruction update overwrites the old card, survives compression, and grew only `~65` tokens per swap (`585 -> 647 -> 713 -> 783`). Each swap rebuilds the cached preamble once, which costs far less than carrying every old card. Details: [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/).
+:::
+
+---
+
+## 2. How to structure a production `systemInstruction`
+
+A reliable voice `systemInstruction` stays under **500 tokens** and is organized into four distinct blocks:
+
+```text
+1. PERSONA & ACOUSTIC DELIVERY
+You are Maya, a senior technical support specialist at Cymbal Fiber.
+Speak in a warm, calm, conversational tone. Keep every response to 1 or 2 short sentences (15 to 35 words), then pause so the caller can reply.
+Read confirmation numbers, postal codes, and phone numbers one digit at a time ("four, two, nine").
+
+2. LANGUAGE PINNING & ACOUSTIC FILTERING
+Speak exclusively in English. Every word you output must remain in English regardless of background noise, coughs, or caller accent.
+The caller may be in a noisy environment. Ignore background conversations, side chatter, and non-directed sounds.
+
+3. POSITIVE TOOL & TURN RULES
+When you invoke a tool, first speak a brief natural acknowledgment ("Let me check your line status right now."), then emit the tool call. When the result arrives, speak its spoken fields right away.
+
+4. OPENING PHASE (STEP 1: GREETING & INTENT)
+a) Greet the caller briefly and ask how you can help today.
+b) Listen to their complete answer.
+c) Call lookup_customer_account with their stated issue and wait for the tool response before advancing.
+```
+
+### Why each block is written this way
+
+#### A. Positive behavioral framing beats negative prohibitions
+Under real-time audio streaming, negative instructions (*"Do NOT narrate tool calls"*, *"Do NOT ask two questions at once"*, *"Never repeat yourself"*) frequently backfire because they prime token attention on the forbidden action. Rewrite prohibitions into positive actions that tell the model what to do next:
+
+| Fragile Negative Prompt | Production Positive Rewrite |
+| :--- | :--- |
+| *"Do NOT announce when you are calling a function or read out parameter names."* | *"Before invoking a tool, speak one natural sentence ('Let me check that for you.'), emit the tool call, and immediately stop speaking."* |
+| *"Never ask multiple questions in the same turn or give long paragraphs."* | *"Ask exactly one question per turn, keep your reply under 30 words, and wait for the caller to answer."* |
+| *"Do not switch languages if you hear background noise."* | *"Speak exclusively in English on every turn, even if background voices or accents sound like another language."* |
+
+#### B. Prescriptive `a -> b -> c` sequences prevent turn-boundary guessing
+When a phase requires asking a question and calling a tool, spell out the exact turn boundary using lettered steps (`a, b, c`) so the model does not call the tool before the caller answers.
+
+#### C. Single source of truth (no duplicate instructions)
+If a phase directive or follow-up question is delivered dynamically (in the current card or a tool response), **remove that instruction from the base rules**. Keeping the same instruction in both places causes the model to deliver the prompt twice.
+
+---
+
+## 3. Acoustic traps that break native audio sessions
+
+Native speech-to-speech models process text instructions directly in the acoustic domain. Avoid these failure modes:
+
+1. **Never use square brackets (`[PAUSE]`, `[SYSTEM_NOTE]`, `[EMPATHETIC]`)**:
+   Native audio models frequently treat bracketed tags as literal words to read aloud (*"bracket system note bracket"*) or shift into exaggerated theatrical prosody. Always use plain conversational prose (`"System update for agent: ..."`).
+2. **Never instruct the model to `"stay silent"`, `"wait silently"`, or `"produce no audio"`**:
+   When a Gemini Live model generates zero audio tokens for an entire turn, the backend suppresses `inputAudioTranscription` events for that turn as well, blinding your server-side transcript logger and state machine. The same rule causes two more failures in production: long dead air (the model declines to answer and the server sends no signal, so the caller waits) and placeholder leaks (the model writes `<no speech>` into its output transcript and can say "no speech" aloud). If the client needs silence while background work runs, gate audio or use `FunctionResponseScheduling.SILENT` on the tool response. If the caller only says "okay" or "haan", handle it in the client (see [Short backchannels after a barge-in](/gemini-live/gemini-live-configuration/#short-backchannels-after-a-barge-in)) or tell the model to ask one short follow-up question.
+3. **Never send `clientContent` while the model is actively speaking**:
+   A `BidiGenerateContentClientContent` message with `turn_complete=True` sent during active model generation is a new user turn and cuts off the model's in-flight speech. A `turn_complete=False` update usually lets the reply finish (14 of 16 measured runs on Vertex AI `gemini-3.8-live` and `gemini-live-2.5-flash-native-audio`), but it only applies from the next turn. Send updates after `turnComplete`, or inside a blocking tool handler right before you return the `FunctionResponse`.
+4. **Never wrap spoken lines in XML tags (`<verbatim>`, `<say>`, `<script>`)**:
+   Asking the model to read back text inside tags such as `<verbatim>...</verbatim>` makes `gemini-3.8-live` dump the whole line into the output transcript in one or two frames and send `generationComplete` after less than a second of audio (or none). In one test this cut off 7 of 25 turns (28%). Put the exact line in a plain `*_say` field of a tool result and tell the model to say it exactly as given.
+5. **Ban non-lexical fillers (`"Hmm..."`, `"Umm..."`, `"Ahh..."`)**:
+   The model renders these as breathy sounds, and on female voices they can drop the pitch into a deep chest register that does not match the rest of the call. Ask for short real words instead: "Sure", "Right", "One moment", or "जी" on Hindi calls.
+6. **Do not use greedy sampling to get consistent wording**:
+   `temperature: 0` or `topK: 1` can send the audio decoder into a long droning loop after a tool result. Keep `temperature` at `0.7` to `0.8` and leave `topK` and `topP` unset. See [Sampling for audio output](/gemini-live/gemini-live-configuration/#sampling-for-audio-output).
+
+---
+
+## 4. Steering mid-session: system-instruction cards & short tool results
+
+To steer the model across a multi-step call without growing history on every phase change:
+
+1. **Replace the card in `systemInstruction`, do not stack it in history.** On each phase change, send one system-instruction update that holds `base rules + current card + session state`: `await session.send_context_update(system_instruction=..., tools=...)` (`google-genai >= 2.32.0`), or `clientContent` with `role="system"` and `turn_complete=False` on Vertex AI models that do not support `contextUpdate` (such as Gemini 2.5 native audio). On `gemini-3.8-live`, swap the card's tools in the same `send_context_update` call.
+2. **Send the update inside the blocking tool handler**, right before you return the `FunctionResponse`. The model is paused waiting for the result, so the update never races its speech.
+3. **Return a short tool result that points at the card.** Keep `call_state` (`<60` tokens of confirmed facts), a one-sentence `instruction`, and a one-line `prompt_card` pointer such as *"Prompt card 4 of 8 (Return Flight Selection) is now in your system instruction. Follow it."* See [Tools -> What to put in a FunctionResponse](/gemini-live/tools/#8-what-to-put-in-a-functionresponse).
+4. **Repeat persona grammar rules inside multilingual phase cards**: In gendered languages (such as Hindi, Spanish, or French), include a one-line persona grammar header in each card so the model never drifts from its assigned speaker gender.
+
+### Opening the call: a language-neutral Turn-0 stub
+
+Many clients open the call by sending a short user turn so the model speaks first. Do not make that turn a greeting in any language. On a multilingual agent, a stub like `"नमस्ते!"` reads as the caller choosing Hindi: the model skips its introduction and calls the language tool on Turn 0. Send a neutral stage note, and pair it with an opening rule in the first system instruction:
+
+```python
+GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"
+
+START = (
+    "START\n"
+    f'The message "{GREETING_STUB}" only means the call has connected. It is not the caller '
+    "speaking and not a language choice. Do not call a tool for it. Say only: "
+    '"Hello, I am Asha from Cymbal Travel. Which language would you like to talk in?"'
+)
+
+IN_CALL = (
+    "IN CALL\n"
+    "The greeting and the language choice are done. Never greet again or ask for the language "
+    "again. Older turns may be missing: the prompt card and session state below are the truth."
+)
+```
+
+Build the setup instruction with `START`. From the first card change onward, build every system-instruction update with `IN_CALL` in its place. After a `SlidingWindow` trim or a session resumption, the opening turns may be gone, and `IN_CALL` stops the model from greeting the caller a second time.
+
+See [Optimization Patterns](/gemini-live/optimization/) for the complete Python implementation of dynamic phase cards (`Pillar 2`) and the `<60-token` rolling `FactStore` (`Pillar 3`).

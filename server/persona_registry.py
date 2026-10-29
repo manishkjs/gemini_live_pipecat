@@ -799,6 +799,8 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
     """
 
     pattern = ArchitecturePattern.JIT_TRAVEL_CARDS
+    #: The user turn that starts the call (live and cascade). START quotes the same constant.
+    from persona_prompt_cards.tara_cards import GREETING_STUB as greeting_text
     model_controls_conversation = True
     #: The base SI owns the language policy (Indian English until SelectLanguageTool), so the
     #: session must not append a fixed "converse in <language>" directive.
@@ -814,12 +816,16 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         self._revision = 0
         self._sessions = 0
         self.swapper = None
+        #: The live SI the last setup message carried (None: the default greeting SI).
+        self._setup_instruction: Optional[str] = None
 
     @property
     def engine(self):
         if self._engine is None:
+            from persona_prompt_cards.tara_cards import VOCAL_TONE
             from persona_tools.travel_booking import TravelBookingEngine
-            self._engine = TravelBookingEngine()
+            # Every tool result carries the voice anchor next to the decode point (vocal_tone).
+            self._engine = TravelBookingEngine(vocal_tone=VOCAL_TONE)
         return self._engine
 
     def has_exclusive_tools(self, engine: str = "live") -> bool:
@@ -878,15 +884,42 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         names = self.swapper.setup_tools()
         return adapter.from_standard_tools(ToolsSchema(standard_tools=function_schemas(list(names))))
 
+    def setup_system_instruction(self) -> Optional[str]:
+        """The system instruction a (re)connect setup must carry, or None for the default one.
+
+        On 3.8 past card 1 that is the live SI (base rules + current card + session state). A
+        reconnect then starts from it whether the server resumed the session or silently began
+        a fresh one, so no window opens where the setup's greeting SI is in force. The swapper
+        records it as held, so the next tool call sends only what changed.
+        """
+        instruction = self._live_instruction(setup=True)
+        if instruction is None:
+            self._setup_instruction = None
+            return None
+        self.swapper.instruction, self.swapper.pending_instruction = instruction, None
+        self._setup_instruction = instruction
+        return instruction
+
     async def flush_pending_card(self) -> None:
-        """Called at every turn_complete: retry a tool registration whose send failed."""
+        """Called at every turn_complete: retry a tool registration whose send failed.
+
+        Takes the same lock as ``run_tool``: an unlocked retry could write an older pending
+        frame after a tool call's newer one and leave the previous card's tools declared.
+        """
         if self.swapper is not None and self._llm is not None:
-            await self.swapper.flush(self._llm)
+            async with self._lock:
+                await self.swapper.flush(self._llm)
 
     # -- cards ---------------------------------------------------------------
 
     def opening_messages(self) -> List[Dict[str, str]]:
-        """Card 1 with the opening session state, sent ahead of the greeting turn."""
+        """Card 1 with the opening session state, sent ahead of the greeting turn.
+
+        None on a ``context_update`` session: card 1 is already in its setup instruction, and a
+        copy in the history would be billed again on every turn until compaction trims it.
+        """
+        if self.swapper is not None:
+            return []
         return [{"role": "user", "content": self.engine.opening_card()}]
 
     async def _resend_card(self, llm: Any, resend: str, tag: str) -> bool:
@@ -904,6 +937,12 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         if self._sessions == 1:
             card = self.engine.active_card
             await self._announce_card(card, await self._register_tools(card, via_setup=True))
+        elif self.swapper is not None and self._setup_instruction is not None \
+                and self._setup_instruction == self._live_instruction():
+            from loguru import logger
+            # The setup message already carried the live SI, resumed or not: nothing to resend.
+            logger.info(f"[Tara] ↻ RECONNECT ({'resumed' if resumed else 'new session'}) on card "
+                        f"{self.engine.active_card}: the setup carried the live system instruction.")
         elif not resumed and self.engine.active_card > 1:
             if self.swapper is not None:
                 from loguru import logger
@@ -959,7 +998,8 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
             tools = {"declared": names, "added": [n for n in names if n not in previous],
                      "removed": [n for n in previous if n not in names]}
         instruction = frame.get("instruction")
-        dynamic = instruction.partition("CURRENT PROMPT CARD\n")[2] if instruction else None
+        from persona_prompt_cards.tara_cards import STEP_MARKER
+        dynamic = instruction.partition(STEP_MARKER)[2] if instruction else None
         logger.info(trace.context_update(self.swapper.frames, tools, instruction, dynamic, card_changed))
 
     @staticmethod
@@ -970,13 +1010,21 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         title = TARA_CARD_BY_NUMBER[card].title
         return {**result, "prompt_card": f"Prompt card {card} of 8 ({title}) is now in your system instruction. Follow it."}
 
-    def _live_instruction(self) -> Optional[str]:
-        """The system instruction a 3.8 session should hold now: None on card 1 (the setup SI
-        greets) and on models without ``context_update``."""
-        if self.swapper is None or self.engine.active_card == 1:
+    def _live_instruction(self, setup: bool = False) -> Optional[str]:
+        """The system instruction a 3.8 session should hold now, or None on models without
+        ``context_update``.
+
+        Card 1 lives only in the setup instruction, with the greeting: a mid-call refresh on
+        card 1 would put the greeting line back in force after it was spoken.
+        """
+        if self.swapper is None:
+            return None
+        card = self.engine.active_card
+        if card == 1 and not setup:
             return None
         from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
-        return get_tara_live_system_instruction(self.engine.build_card())
+        step = self.engine.build_card(for_instruction=True)
+        return get_tara_live_system_instruction(step, greeting=card == 1)
 
     async def _refresh_live_instruction(self, llm: Any) -> bool:
         """Send the live system instruction (tools unchanged). True when the session holds it."""

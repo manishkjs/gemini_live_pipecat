@@ -20,6 +20,7 @@ _count: Optional[int] = None
 _seen_page_loads: "OrderedDict[str, bool]" = OrderedDict()
 _MAX_SEEN_PAGE_LOADS = 2048
 _use_firestore: bool = bool(os.environ.get("K_SERVICE") and os.environ.get("GCP_PROJECT_ID"))
+_firestore_synced: bool = False
 _creds = None
 
 
@@ -121,11 +122,6 @@ def _firestore_increment_visits() -> Optional[int]:
 
 def _load_locked() -> int:
     global _count
-    if _use_firestore:
-        remote = _firestore_get_visits()
-        if remote is not None:
-            _count = remote
-            return _count
     if _count is not None:
         return _count
     if _store_path and os.path.exists(_store_path):
@@ -158,7 +154,7 @@ def _save_locked(visits: int) -> None:
 
 def configure_store(path: Optional[str], initial_seed: int = _DEFAULT_SEED) -> None:
     """Configure or reset the persistence path (used by tests and startup)."""
-    global _store_path, _initial_seed, _count, _use_firestore
+    global _store_path, _initial_seed, _count, _use_firestore, _firestore_synced
     with _lock:
         _store_path = path if path is not None else _DEFAULT_PATH
         _initial_seed = initial_seed
@@ -167,39 +163,69 @@ def configure_store(path: Optional[str], initial_seed: int = _DEFAULT_SEED) -> N
         _use_firestore = bool(
             path is None and os.environ.get("K_SERVICE") and os.environ.get("GCP_PROJECT_ID")
         )
+        _firestore_synced = False
 
 
 def get_visits() -> Dict[str, object]:
+    global _count, _firestore_synced
     with _lock:
-        visits = _load_locked()
-        return {"visits": visits, "label": VISIT_LABEL}
+        if not _use_firestore:
+            visits = _load_locked()
+            return {"visits": visits, "label": VISIT_LABEL}
+        if _firestore_synced and _count is not None:
+            return {"visits": _count, "label": VISIT_LABEL}
+
+    remote = _firestore_get_visits()
+    with _lock:
+        if remote is not None:
+            _count = max(_count or 0, remote)
+            _firestore_synced = True
+            _save_locked(_count)
+            return {"visits": _count, "label": VISIT_LABEL}
+        fallback = _count if _count is not None else max(0, _initial_seed)
+        return {"visits": fallback, "label": VISIT_LABEL}
 
 
 def record_visit(page_load_id: Optional[str] = None) -> Dict[str, object]:
-    global _count
+    global _count, _firestore_synced
+    clean_id = (page_load_id or "").strip()[:128]
     with _lock:
-        clean_id = (page_load_id or "").strip()[:128]
         if clean_id and clean_id in _seen_page_loads:
+            _seen_page_loads.move_to_end(clean_id)
+            if _count is not None:
+                return {"visits": _count, "label": VISIT_LABEL}
+            if not _use_firestore:
+                visits = _load_locked()
+                return {"visits": visits, "label": VISIT_LABEL}
+            already_seen = True
+        else:
+            already_seen = False
+
+        if not _use_firestore:
             visits = _load_locked()
+            if clean_id:
+                _seen_page_loads[clean_id] = True
+                while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
+                    _seen_page_loads.popitem(last=False)
+            visits += 1
+            _count = visits
+            _save_locked(visits)
             return {"visits": visits, "label": VISIT_LABEL}
 
-        if _use_firestore:
-            remote_new = _firestore_increment_visits()
-            if remote_new is not None:
-                if clean_id:
-                    _seen_page_loads[clean_id] = True
-                    while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
-                        _seen_page_loads.popitem(last=False)
-                _count = remote_new
-                _save_locked(remote_new)
-                return {"visits": remote_new, "label": VISIT_LABEL}
+    if already_seen:
+        return get_visits()
 
-        visits = _load_locked()
-        if clean_id:
-            _seen_page_loads[clean_id] = True
-            while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
-                _seen_page_loads.popitem(last=False)
-        visits += 1
-        _count = visits
-        _save_locked(visits)
-        return {"visits": visits, "label": VISIT_LABEL}
+    remote_new = _firestore_increment_visits()
+    with _lock:
+        if remote_new is not None:
+            if clean_id:
+                _seen_page_loads[clean_id] = True
+                while len(_seen_page_loads) > _MAX_SEEN_PAGE_LOADS:
+                    _seen_page_loads.popitem(last=False)
+            _count = max(_count or 0, remote_new)
+            _firestore_synced = True
+            _save_locked(_count)
+            return {"visits": _count, "label": VISIT_LABEL}
+        fallback = _count if _count is not None else max(0, _initial_seed)
+        return {"visits": fallback, "label": VISIT_LABEL}
+

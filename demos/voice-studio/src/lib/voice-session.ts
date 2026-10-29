@@ -760,6 +760,10 @@ export function buildPersonaPromptUrl(settings: SessionSettings, phase?: string)
   if (phase && settings.engine !== "cascade") {
     searchParams.set("phase", phase);
   }
+  if (settings.engine !== "cascade" && settings.model) {
+    // Per-card tool swapping depends on the Live model and gateway, so the panel asks for both.
+    searchParams.set("model", settings.model);
+  }
   searchParams.set("tone", settings.tone);
   searchParams.set("language", settings.language);
   url.search = searchParams.toString();

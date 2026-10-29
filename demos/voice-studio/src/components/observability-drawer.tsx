@@ -4,11 +4,13 @@ import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { diagnosticHeaders } from "@/lib/session-diagnostics";
 import {
   LOG_HEIGHT,
-  LOG_HEIGHT_STORAGE_KEY,
   clampLogHeight,
   dragLogHeight,
   keyLogHeight,
+  maxLogHeight,
+  readStoredLogHeight,
   toggleLogHeight,
+  writeStoredLogHeight,
 } from "@/lib/log-resize";
 import { totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
 import {
@@ -106,15 +108,25 @@ export default function ObservabilityDrawer({
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
   // Resizable log: drag the handle under it, arrow keys/Home/End on the handle, double-click to expand.
-  const [logHeight, setLogHeight] = useState<number>(() => {
-    if (typeof window === "undefined") return LOG_HEIGHT.initial;
-    const saved = Number(window.localStorage.getItem(LOG_HEIGHT_STORAGE_KEY));
-    return saved ? clampLogHeight(saved, window.innerHeight) : LOG_HEIGHT.initial;
-  });
+  const [logHeight, setLogHeight] = useState<number>(() =>
+    typeof window === "undefined" ? LOG_HEIGHT.initial : readStoredLogHeight(() => window.localStorage, window.innerHeight),
+  );
+  const [viewportHeight, setViewportHeight] = useState<number>(() =>
+    typeof window === "undefined" ? 1000 : window.innerHeight,
+  );
   const logDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   useEffect(() => {
-    window.localStorage.setItem(LOG_HEIGHT_STORAGE_KEY, String(logHeight));
+    writeStoredLogHeight(() => window.localStorage, logHeight);
   }, [logHeight]);
+  // A smaller window must not leave the log taller than the drawer can show.
+  useEffect(() => {
+    const onResize = () => {
+      setViewportHeight(window.innerHeight);
+      setLogHeight((h) => clampLogHeight(h, window.innerHeight));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const onLogHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -748,6 +760,7 @@ export default function ObservabilityDrawer({
                 aria-orientation="horizontal"
                 aria-label="Resize diagnostics log"
                 aria-valuemin={LOG_HEIGHT.min}
+                aria-valuemax={maxLogHeight(viewportHeight)}
                 aria-valuenow={logHeight}
                 tabIndex={0}
                 title="Drag to resize · double-click to expand or restore"

@@ -1,4 +1,10 @@
 (function () {
+  if (window.location.pathname.startsWith('/gemini_live_pipecat')) {
+    window.location.replace(
+      window.location.href.replace('/gemini_live_pipecat', '/gemini-live')
+    );
+    return;
+  }
   const STORAGE_KEY = 'sl-left-sidebar-width';
   const MIN_W = 180;
   const MAX_W = 560;

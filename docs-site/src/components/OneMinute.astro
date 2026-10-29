@@ -1,0 +1,47 @@
+---
+/**
+ * OneMinute: a plain-English summary card placed at the top of every page.
+ *
+ * Written for product managers and solution architects who need the point
+ * of a page without reading the protocol details first.
+ *
+ * Props (all plain strings; no markdown):
+ *   what   - What this page covers, in one sentence.
+ *   why    - Why it matters to a product or cost decision.
+ *   number - The single figure worth remembering.
+ *   decide - The decision the reader has to make.
+ */
+interface Props {
+  what: string;
+  why: string;
+  number: string;
+  decide: string;
+}
+
+const { what, why, number, decide } = Astro.props;
+---
+
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell">
+      <dt>What this page covers</dt>
+      <dd>{what}</dd>
+    </div>
+    <div class="one-minute-cell">
+      <dt>Why it matters</dt>
+      <dd>{why}</dd>
+    </div>
+    <div class="one-minute-cell one-minute-number">
+      <dt>The number to remember</dt>
+      <dd>{number}</dd>
+    </div>
+    <div class="one-minute-cell">
+      <dt>The decision you own</dt>
+      <dd>{decide}</dd>
+    </div>
+  </dl>
+</aside>

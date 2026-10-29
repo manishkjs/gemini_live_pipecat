@@ -44,3 +44,36 @@ export function keyLogHeight(height: number, key: string, viewport: number): num
 export function toggleLogHeight(height: number, viewport: number): number {
   return height >= maxLogHeight(viewport) ? LOG_HEIGHT.initial : maxLogHeight(viewport);
 }
+
+/** The subset of `Storage` the log height needs (lets tests pass a fake). */
+export type HeightStore = Pick<Storage, "getItem" | "setItem">;
+export type HeightStoreSource = HeightStore | (() => HeightStore | undefined) | undefined;
+
+function resolveStore(source: HeightStoreSource): HeightStore | undefined {
+  return typeof source === "function" ? source() : source;
+}
+
+/**
+ * The saved height, clamped to this viewport. Storage can be missing or throw (blocked
+ * cookies, private mode); either way the drawer opens at the default height instead of crashing.
+ */
+export function readStoredLogHeight(store: HeightStoreSource, viewport: number): number {
+  try {
+    const resolved = resolveStore(store);
+    const saved = Number(resolved?.getItem(LOG_HEIGHT_STORAGE_KEY));
+    return saved ? clampLogHeight(saved, viewport) : LOG_HEIGHT.initial;
+  } catch {
+    return LOG_HEIGHT.initial;
+  }
+}
+
+/** Save the height; a storage failure only means it is not remembered. */
+export function writeStoredLogHeight(store: HeightStoreSource, height: number): void {
+  try {
+    const resolved = resolveStore(store);
+    resolved?.setItem(LOG_HEIGHT_STORAGE_KEY, String(height));
+  } catch {
+    /* not remembered across reloads; the drawer still works */
+  }
+}
+

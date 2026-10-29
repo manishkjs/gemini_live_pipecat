@@ -4,6 +4,14 @@ description: "Worklets, jitter buffers, backpressure, and client-side VAD: clien
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to capture, buffer, and play audio in the browser or app so the agent sounds clean and reacts quickly when the caller interrupts."
+  why="When an agent sounds choppy, talks over itself, or is slow to stop, the cause is almost always the client audio path, not the model."
+  number="A 150 to 200 ms playback buffer at 24 kHz. Smaller stutters; larger makes interruptions feel slow."
+  decide="Whether your client team owns this audio path or you adopt a framework that ships it."
+/>
 
 When a voice agent sounds choppy, talks over itself, or takes 400 ms to register a barge-in, the culprit is almost always the **client audio path** rather than the model.
 
@@ -77,7 +85,7 @@ Network packet arrival is uneven. Use two small buffers to smooth transport jitt
 Scale output buffer depth based on measured inter-arrival jitter rather than hardcoding a large fixed delay.
 
 <Aside type="tip" title="Using the 200 ms jitter buffer as a compliance guardrail">
-Playing the first audio chunk at 0 ms buffer depth causes audible underruns whenever a network packet arrives late. Queuing 150 to 200 ms of audio eliminates stutter and enables **pre-speech compliance filtering**: because `outputTranscription` text arrives ahead of buffered audio playout, your backend can evaluate text against policy rules and flush the 200 ms buffer before a prohibited phrase reaches the speaker. See [Optimization patterns -> Pre-speech compliance guardrails](/gemini_live_pipecat/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer).
+Playing the first audio chunk at 0 ms buffer depth causes audible underruns whenever a network packet arrives late. Queuing 150 to 200 ms of audio eliminates stutter and enables **pre-speech compliance filtering**: because `outputTranscription` text arrives ahead of buffered audio playout, your backend can evaluate text against policy rules and flush the 200 ms buffer before a prohibited phrase reaches the speaker. See [Optimization patterns -> Pre-speech compliance guardrails](/gemini-live/optimization/#pre-speech-compliance-guardrails-200ms-jitter-buffer).
 </Aside>
 
 ## Respect WebSocket backpressure
@@ -125,8 +133,8 @@ Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are incl
 
 | Setting | Behavior | Recommended use |
 | --- | --- | --- |
-| **`TURN_INCLUDES_ALL_INPUT`** | Includes all audio, including speech while the model was talking | **Default for duplex voice**: preserves full caller context during barge-in |
-| `TURN_INCLUDES_ONLY_ACTIVITY` | Includes only segments flagged as active speech | High-noise environments where ambient background speech would pollute context |
+| **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)** | Includes only segments since the last turn flagged as active speech, excluding silence and inactivity | **Default for voice agents**: strips non-speech silence between turns so room tone does not inflate carried audio tokens |
+| `TURN_INCLUDES_ALL_INPUT` | Includes all realtime input since the last turn, including inactivity and silence | Only when the model needs continuous ambient audio between utterances |
 
 ## Production audio checklist
 
@@ -135,3 +143,4 @@ Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are incl
 - [ ] Output playout uses an adaptive 150 to 200 ms jitter buffer at 24 kHz.
 - [ ] `socket.bufferedAmount` is checked before every `send()`.
 - [ ] Local VAD halts speaker playout immediately on barge-in, while `interrupted` flushes any newly arrived chunks.
+- [ ] For noisy rooms, PSTN telephony filters (`KrispVivaFilter`, `RNNoiseFilter`), background speech isolation, and cough/backchannel recovery, see [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).

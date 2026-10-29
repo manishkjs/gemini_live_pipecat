@@ -136,6 +136,47 @@ class TestGreetingAudioGate(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(processor._mic_gated)
 
+    async def test_hindi_start_trigger_uses_namaste_greeting(self):
+        processor = StartTriggerProcessor(language="hi-IN", gate_mic_on_greeting=True)
+        pushed = []
+
+        async def capture(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+            pushed.append(frame)
+
+        processor.push_frame = capture
+        await processor.process_frame(
+            InputTransportMessageFrame(message={"type": "start_trigger", "id": "t1"}),
+            FrameDirection.DOWNSTREAM,
+        )
+        append_frames = [f for f in pushed if isinstance(f, LLMMessagesAppendFrame)]
+        self.assertEqual(len(append_frames), 1)
+        self.assertEqual(append_frames[0].messages, [{"role": "user", "content": "नमस्ते!"}])
+
+    def test_create_client_does_not_mutate_os_environ(self):
+        from unittest.mock import patch
+        from agent_live import CustomGeminiLiveLLMService
+
+        svc = CustomGeminiLiveLLMService.__new__(CustomGeminiLiveLLMService)
+        svc._api_key = "dummy-key"
+        svc._http_options = None
+
+        observed_env = {}
+
+        def fake_client(**kwargs):
+            observed_env["GOOGLE_CLOUD_PROJECT"] = os.environ.get("GOOGLE_CLOUD_PROJECT")
+            observed_env["GOOGLE_APPLICATION_CREDENTIALS"] = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            return object()
+
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_CLOUD_PROJECT": "my-gcp-proj", "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/creds.json"},
+            clear=False,
+        ), patch("google.genai.Client", side_effect=fake_client):
+            svc.create_client()
+
+        self.assertEqual(observed_env["GOOGLE_CLOUD_PROJECT"], "my-gcp-proj")
+        self.assertEqual(observed_env["GOOGLE_APPLICATION_CREDENTIALS"], "/tmp/creds.json")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -562,6 +562,7 @@ export function useVoiceSession() {
         ...next,
         ...((key === "voice" && value !== "Custom-Key") || (key === "ttsModel" && value !== "google-tts") ? { customVoiceKey: "" } : {}),
         ...(key === "ttsModel" ? { voice: reconcileVoiceForEngine(next, current.engine) } : {}),
+        ...(key === "customVoiceAudio" && value ? { model: "gemini-3.8-live" } : {}),
       };
     });
 

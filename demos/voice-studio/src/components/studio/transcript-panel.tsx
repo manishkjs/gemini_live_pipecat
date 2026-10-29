@@ -68,9 +68,9 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
     return () => {
       cancelled = true;
     };
-    // Re-fetch when persona, backendUrl, active phase card, or engine changes
+    // Re-fetch when persona, backendUrl, active phase card, engine, or model changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverPreset, personaId, backendUrl, currentPhase, settings.engine, settings.tone, settings.language]);
+  }, [serverPreset, personaId, backendUrl, currentPhase, settings.engine, settings.model, settings.tone, settings.language]);
 
   const previewPrompt = serverPreset
     ? serverPrompt

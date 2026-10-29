@@ -239,7 +239,7 @@ class TestBookingFlow(unittest.TestCase):
         e = engine()
         to_card(e, 5)
         old = e.state.outbound.flight_id
-        new = "F3" if old != "F3" else "F4"
+        new = next(f for f in e.offered["outbound"] if f != old)  # cards 4-7 change only to an offered flight
         r = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": new})
         self.assertEqual(r["status"], "changed")
         self.assertIn("The new total is", r["change"])
@@ -1172,3 +1172,966 @@ class TestToolPreview(unittest.TestCase):
         self.assertEqual([t["name"] for t in body["tools"]], ["SelectLanguageTool"])
         body = client.get("/persona-prompt/travel-concierge?engine=live&phase=BMT_05_NAME").json()
         self.assertEqual({t["name"] for t in body["tools"]}, set(TOOL_GROUP_BY_CARD[5]))
+
+
+class TestGauntletEngineBugs(unittest.TestCase):
+    """Bugs found by the 3-model gauntlet review (round 1)."""
+
+    def test_round_trip_change_by_reference_needs_and_honours_the_leg(self):
+        e = engine()
+        to_card(e, 5, trip_type="RT")
+        outbound_before, return_before = e.state.outbound.flight_id, e.state.ret.flight_id
+        ambiguous = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "reference": "CHEAPEST"})
+        self.assertEqual(ambiguous["status"], "error")
+        self.assertEqual((e.state.outbound.flight_id, e.state.ret.flight_id), (outbound_before, return_before))
+        cheapest_out = min(e.results["outbound"], key=lambda f: (f.fare, f.depart_minutes))
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "reference": "CHEAPEST", "leg": "OUTBOUND"})
+        self.assertEqual(e.state.outbound.flight_id, cheapest_out.flight_id)
+        self.assertEqual(e.state.ret.flight_id, return_before)
+
+    def test_child_date_of_birth_at_the_count_step_is_a_child_date(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 3})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 1,
+                                                  "date_of_birth": "2018-05-01"})
+        self.assertEqual(e._child_dobs, ["2018-05-01"])
+        self.assertTrue(all(t.date_of_birth is None for t in e.state.travellers))
+        self.assertEqual(result["data"]["step"], "confirm_passenger_count")
+
+    def test_phone_said_with_the_name_is_kept(self):
+        e = engine()
+        to_card(e, 5)
+        result = e.handle("TravellerDetailsTool", {
+            "passenger_index": 1, "first_name_letters": list("RAHUL"), "last_name_letters": list("SHARMA"),
+            "spelling_source": "model_guess", "age": 34, "gender": "male", "phone_choice": "same"})
+        self.assertEqual(result["data"]["step"], "confirm_name")
+        self.assertEqual(e.state.whatsapp, CALLING_NUMBER)
+        self.assertTrue(e.state.whatsapp_confirmed)
+
+    def test_adding_travellers_keeps_the_name_said_in_the_same_turn(self):
+        e = engine()
+        to_card(e, 5)
+        result = e.handle("TravellerDetailsTool", {
+            "add_more_passengers": True, "passenger_index": 1, "first_name_letters": list("RAHUL"),
+            "last_name_letters": list("SHARMA"), "spelling_source": "model_guess", "age": 34, "gender": "male"})
+        self.assertEqual(result["data"]["step"], "passenger_count")
+        self.assertIn(1, e._pending_name)
+        self.assertEqual(e.state.travellers[0].age, 34)
+
+    def test_children_without_a_count_keep_the_person_fields(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 2})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "passenger_index": 1, "age": 34,
+                                                  "gender": "male"})
+        self.assertEqual(result["data"]["step"], "child_count")
+        self.assertEqual(e.state.travellers[0].age, 34)
+
+    def test_a_count_raised_with_a_selection_asks_the_mix_again(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": FRI, "passenger_count": 2})
+        e.state.mix_known = True  # e.g. "all adults" heard earlier for two travellers
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F1", "passenger_count": 3})
+        self.assertEqual(result["data"]["step"], "passenger_mix")
+
+    def test_flight_errors_after_card_three_never_point_at_search(self):
+        e = engine()
+        to_card(e, 5)
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F99"})
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("SearchTool", result["instruction"])
+
+    def test_reselecting_the_same_flight_keeps_the_link_and_the_review(self):
+        e = engine()
+        to_card(e, 7)
+        e.state.details_confirmed = True
+        e.state.booking_ref = "BMT0000001"
+        e._payment_link_sent = True
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": e.state.outbound.flight_id})
+        self.assertTrue(e.state.details_confirmed)
+        self.assertEqual(e.state.booking_ref, "BMT0000001")
+        self.assertTrue(e._payment_link_sent)
+        self.assertIn("already selected", result["change"])
+
+    def test_change_trip_goes_back_to_search_and_keeps_the_travellers(self):
+        e = engine()
+        to_card(e, 6)
+        travellers = [t.name for t in e.state.travellers]
+        result = e.handle("FlightActionTool", {"action": "CHANGE_TRIP"})
+        self.assertEqual(e.active_card, 2)
+        self.assertIn("SearchTool", TOOL_GROUP_BY_CARD[e.active_card])
+        self.assertIsNone(e.state.outbound)
+        self.assertEqual(result["data"]["step"], "trip_details")
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": MON})
+        after = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        self.assertEqual([t.name for t in e.state.travellers], travellers)
+        self.assertGreaterEqual(e.active_card, 4)
+        self.assertNotEqual(after["data"]["step"], "passenger_count")
+
+    def test_every_tool_a_result_names_is_declared_on_the_card_it_lands_on(self):
+        """Every tool named in a result's next/instruction is in that card's group (one-way and round trip)."""
+        for trip in ("OW", "RT"):
+            e = engine()
+            seen = []
+
+            def check(name, result, e=e):
+                group = set(TOOL_GROUP_BY_CARD[e.active_card])
+                named = {n["tool"] for n in result.get("next", [])}
+                named |= {t for t in TOOL_NAMES if t in result.get("instruction", "")}
+                seen.append((name, e.active_card, named - group))
+
+            to_card(e, 8, trip_type=trip, on_result=check)
+            check("PaymentTool", e.handle("PaymentTool", {"action": "PROCEED"}))
+            bad = [s for s in seen if s[2]]
+            self.assertEqual(bad, [], trip)
+
+
+class TestGauntletSearchAndPaymentBugs(unittest.TestCase):
+    """Round-trip searches, language, child count and payment link (gauntlet round 1)."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": FRI, "trip_type": "RT", "return_date": MON})
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F1"})
+        return e
+
+    def test_reversed_route_with_a_new_date_moves_the_return_and_keeps_the_trip(self):
+        e = self._rt_outbound_chosen()
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW", "origin": "Mumbai",
+                                         "destination": "Delhi", "depart_date": "2026-10-14"})
+        self.assertEqual(e.state.trip_type, "RT")
+        self.assertEqual((e.state.origin, e.state.destination), ("Delhi", "Mumbai"))
+        self.assertEqual(e.state.outbound.flight_id, "F1")
+        self.assertEqual(e.state.return_date, dt.date(2026, 10, 14))
+        self.assertEqual(result["data"]["leg"], "return")
+
+    def test_return_date_alone_moves_the_return(self):
+        e = self._rt_outbound_chosen()
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "R1"})
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-14"})
+        self.assertEqual(e.state.return_date, dt.date(2026, 10, 14))
+        self.assertIsNone(e.state.ret)  # the old return flight was for the old date
+        self.assertEqual(e.state.outbound.flight_id, "F1")
+        self.assertEqual(result["data"]["leg"], "return")
+
+    def test_repeated_outbound_search_while_the_return_is_open_keeps_the_outbound(self):
+        e = self._rt_outbound_chosen()
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                         "depart_date": FRI})
+        self.assertEqual(e.state.outbound.flight_id, "F1")
+        self.assertEqual(result["data"]["leg"], "return")
+        bare = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE"})
+        self.assertEqual(e.state.outbound.flight_id, "F1")
+        self.assertEqual(bare["data"]["leg"], "return")
+
+    def test_explicit_one_way_on_the_same_route_is_a_new_trip(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW", "origin": "Delhi",
+                                "destination": "Mumbai", "depart_date": FRI})
+        self.assertEqual(e.state.trip_type, "OW")
+        self.assertIsNone(e.state.outbound)
+
+    def test_new_outbound_date_is_still_a_new_trip(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-10"})
+        self.assertEqual(e.state.depart_date, dt.date(2026, 10, 10))
+        self.assertIsNone(e.state.outbound)
+
+    def test_language_chosen_late_keeps_the_current_step(self):
+        e = engine()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": FRI})  # a static model can search before the language
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F1"})
+        card, step = e.active_card, e.state.step
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        self.assertEqual((e.active_card, e.state.step), (card, step))
+        self.assertEqual(e.state.language, "Hindi")
+
+    def test_impossible_child_count_is_an_error(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 2})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 2})
+        self.assertIn("error", result)
+        self.assertEqual(result["data"]["step"], "child_count")
+        self.assertEqual(e.state.child_count, 0)
+
+    def test_link_is_reissued_when_the_booking_changed_after_it_was_sent(self):
+        e = engine()
+        to_card(e, 8)
+        first = e.handle("PaymentTool", {"action": "PROCEED"})
+        again = e.handle("PaymentTool", {"action": "PROCEED"})
+        self.assertEqual(again["status"], "already_sent")
+        self.assertEqual(again["data"]["booking_ref"], first["data"]["booking_ref"])
+        e.state.email = "rahul.new@gmail.com"  # e.g. changed on a static model after the link went out
+        changed = e.handle("PaymentTool", {"action": "PROCEED"})
+        self.assertEqual(changed["status"], "link_sent")
+        self.assertNotEqual(changed["data"]["booking_ref"], first["data"]["booking_ref"])
+
+    def test_return_flight_and_names_change_the_booking_reference(self):
+        refs = set()
+        for ret, name in (("R1", "RAHUL"), ("R2", "RAHUL"), ("R1", "ROHAN")):
+            e = engine()
+            to_card(e, 5, trip_type="RT")
+            e.state.ret = next(f for f in e.results["return"] if f.flight_id == ret)
+            e.state.travellers[0].first_name = name.capitalize()
+            refs.add(e._booking_fingerprint())
+        self.assertEqual(len(refs), 3)
+
+    def test_card_eight_never_asks_for_a_second_proceed(self):
+        card = TARA_CARD_BY_NUMBER[8]
+        text = card.body if hasattr(card, "body") else str(card)
+        self.assertIn("never call PROCEED again", text)
+        self.assertNotIn("last result's next", text)
+
+    def test_live_si_names_only_tools_of_the_current_card(self):
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        for number in range(1, 9):
+            e = engine()
+            if number > 1:
+                to_card(e, number)
+            si = get_tara_live_system_instruction(e.build_card(number))
+            named = {t for t in TOOL_NAMES if t in si}
+            self.assertLessEqual(named, set(TOOL_GROUP_BY_CARD[number]), (number, named - set(TOOL_GROUP_BY_CARD[number])))
+
+
+class TestGauntletArchitectureBugs(unittest.TestCase):
+    """Reconnects, flush ordering and the studio panel's model awareness."""
+
+    def setUp(self):
+        from persona_registry import get_persona_architecture
+        self.arch = get_persona_architecture("travel-concierge")
+        self.arch._engine = engine()
+
+    def _live(self):
+        frames, llm = [], _FakeLLM()
+        ws = llm._session._ws
+        real_send = ws.send
+
+        async def send(text):
+            await real_send(text)
+            frames.append(json.loads(text)["context_update"])
+        ws.send = send
+        self.arch.bind_live_model("gemini-3.8-live", vertex=True)
+        self.arch.register_handlers(llm)
+        return llm, frames
+
+    def test_setup_on_card_one_greets_with_card_one_in_the_instruction(self):
+        self._live()
+        si = self.arch.setup_system_instruction()
+        self.assertIn("Which language would you like", si)
+        self.assertIn("Prompt card 1 of 8: Language", si)
+        self.assertNotIn("Never greet again", si)
+        self.assertEqual(self.arch.opening_messages(), [])  # card 1 is not repeated in the history
+
+    def test_card_one_is_never_refreshed_mid_call(self):
+        self._live()  # a refresh would put the greeting line back after it was spoken
+        self.assertIsNone(self.arch._live_instruction())
+
+    def test_static_models_still_send_card_one_ahead_of_the_greeting(self):
+        self.arch.bind_live_model("gemini-3.5-flash-live-preview", vertex=True)
+        self.assertIn("Prompt card 1 of 8", self.arch.opening_messages()[0]["content"])
+
+    def test_reconnect_setup_carries_the_live_instruction(self):
+        self._live()
+        to_card(self.arch.engine, 5)
+        si = self.arch.setup_system_instruction()
+        self.assertIn("Prompt card 5 of 8", si)
+        self.assertIn("Session state:", si)
+        self.assertEqual(self.arch.swapper.instruction, si)
+        self.assertIsNone(self.arch.swapper.pending_instruction)
+
+    def test_static_models_never_override_the_setup_instruction(self):
+        self.arch.bind_live_model("gemini-3.5-flash-live-preview", vertex=True)
+        to_card(self.arch.engine, 5)
+        self.assertIsNone(self.arch.setup_system_instruction())
+
+    def test_reconnect_after_a_live_setup_sends_nothing_resumed_or_not(self):
+        llm, frames = self._live()
+        run(self.arch.on_session_ready(llm, resumed=False))  # first connect
+        to_card(self.arch.engine, 5)
+        for resumed in (True, False):
+            self.arch.setup_system_instruction()
+            sent = len(frames)
+            run(self.arch.on_session_ready(llm, resumed=resumed))
+            self.assertEqual(len(frames), sent, resumed)
+            self.assertEqual(llm.directives, [], resumed)
+
+    def test_flush_waits_for_a_running_tool_call(self):
+        llm, frames = self._live()
+        seen = []
+
+        async def flush(_llm):
+            seen.append(self.arch._lock.locked())
+        self.arch.swapper.flush = flush
+
+        async def scenario():
+            await self.arch._lock.acquire()
+            task = asyncio.ensure_future(self.arch.flush_pending_card())
+            await asyncio.sleep(0)
+            self.assertEqual(seen, [])  # blocked behind the tool call
+            self.arch._lock.release()
+            await task
+        run(scenario())
+        self.assertEqual(seen, [True])
+
+    def test_persona_prompt_route_follows_the_selected_model(self):
+        from fastapi.testclient import TestClient
+        import server as server_module
+        client = TestClient(server_module.app)
+        url = "/persona-prompt/travel-concierge?engine=live&phase=BMT_01_LANGUAGE&model="
+        static = client.get(url + "gemini-3.5-flash-live-preview").json()
+        self.assertEqual({t["name"] for t in static["tools"]}, set(TOOL_NAMES))
+        live = client.get(url + "gemini-3.8-live").json()
+        self.assertEqual([t["name"] for t in live["tools"]], ["SelectLanguageTool"])
+
+
+class TestGauntletRoundTwoBugs(unittest.TestCase):
+    """Opus round 2: child DOB via early returns, recycled refs, bare date on the return leg."""
+
+    def test_child_dob_on_the_children_question_never_lands_on_adult_one(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 3})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "date_of_birth": "2018-05-01"})
+        self.assertEqual(result["data"]["step"], "child_count")
+        self.assertTrue(all(t.date_of_birth is None for t in e.state.travellers))
+        self.assertEqual(e._child_dobs, ["2018-05-01"])
+
+    def test_child_dob_with_an_impossible_count_never_lands_on_adult_one(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 2})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 2,
+                                                  "date_of_birth": "2018-05-01"})
+        self.assertIn("error", result)
+        self.assertTrue(all(t.date_of_birth is None for t in e.state.travellers))
+
+    def test_a_voided_reference_is_never_issued_again(self):
+        e = engine()
+        to_card(e, 8)
+        first = e.handle("PaymentTool", {"action": "PROCEED"})["data"]["booking_ref"]
+        original = e.state.outbound
+        e.state.outbound = next(f for f in e.results["outbound"] if f.flight_id != original.flight_id)
+        second = e.handle("PaymentTool", {"action": "PROCEED"})["data"]["booking_ref"]
+        e.state.outbound = original  # back to the first itinerary
+        third = e.handle("PaymentTool", {"action": "PROCEED"})
+        self.assertEqual(third["status"], "link_sent")
+        self.assertEqual(len({first, second, third["data"]["booking_ref"]}), 3)
+        self.assertEqual(e.handle("PaymentTool", {"action": "PROCEED"})["status"], "already_sent")
+
+    def test_the_return_offer_says_where_a_new_return_date_goes(self):
+        # depart_date keeps one meaning (the outbound date, see test_new_outbound_date_is_still_a_new_trip);
+        # the return offer tells the model to send a new return date as return_date alone.
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": FRI, "trip_type": "RT", "return_date": MON})
+        chosen = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F1"})
+        offer = e.handle("SearchTool", chosen["next"][0]["arguments"])
+        self.assertEqual(e.state.step, "flight_choice_return")
+        self.assertIn("only return_date", offer["instruction"])
+        moved = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-14"})
+        self.assertEqual((e.state.return_date, e.state.outbound.flight_id), (dt.date(2026, 10, 14), "F1"))
+        self.assertEqual(moved["data"]["leg"], "return")
+
+    def test_change_trip_forgets_the_half_heard_search(self):
+        e = engine()
+        to_card(e, 6)
+        e._draft = {"depart": dt.date(2026, 10, 27)}
+        e.handle("FlightActionTool", {"action": "CHANGE_TRIP"})
+        self.assertEqual(e._draft, {})
+
+    def test_from_card_four_only_offered_flights_can_be_selected(self):
+        e = engine()
+        to_card(e, 5)
+        offered = e.offered["outbound"]
+        unheard = next(f.flight_id for f in e.results["outbound"] if f.flight_id not in offered)
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": unheard})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not offered", result["error"] if "error" in result else result["instruction"])
+        self.assertNotEqual(e.state.outbound.flight_id, unheard)
+
+
+class TestGauntletRoundTwoFableBugs(unittest.TestCase):
+    """Fable round 2: a half-heard outbound date, reverse round trips, re-select after the link."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": FRI, "trip_type": "RT", "return_date": MON})
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F1"})
+        return e
+
+    def test_an_outbound_date_after_the_return_survives_the_return_date_answer(self):
+        e = self._rt_outbound_chosen()
+        first = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-14"})
+        self.assertIn("return date", first.get("error", "") + first.get("instruction", ""))
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-16"})
+        self.assertEqual((e.state.depart_date, e.state.return_date), (dt.date(2026, 10, 14), dt.date(2026, 10, 16)))
+        self.assertIsNone(e.state.outbound)  # a new trip: the old outbound was for the 9th
+
+    def test_reversed_route_as_a_round_trip_is_a_new_trip(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Mumbai", "destination": "Delhi",
+                                "trip_type": "RT", "depart_date": "2026-10-20", "return_date": "2026-10-25"})
+        self.assertEqual((e.state.origin, e.state.destination), ("Mumbai", "Delhi"))
+        self.assertEqual((e.state.depart_date, e.state.return_date), (dt.date(2026, 10, 20), dt.date(2026, 10, 25)))
+
+    def test_reselecting_after_the_link_keeps_the_payment_step(self):
+        e = engine()
+        to_card(e, 8)
+        e.handle("PaymentTool", {"action": "PROCEED"})
+        held = e.state.outbound.flight_id
+        e.active_card = 7  # static models keep FlightActionTool declared; pretend the model calls it here
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": held})
+        self.assertEqual(result["status"], "unchanged")
+        self.assertEqual(e.state.step, "payment_sent")
+        self.assertNotIn("PROCEED", json.dumps(result.get("next", [])))
+
+    def test_a_stalled_socket_leaves_the_update_pending(self):
+        import live_tool_swapper
+        llm = _FakeLLM()
+
+        async def stall(_text):
+            await asyncio.sleep(5)
+        llm._session._ws.send = stall
+        swapper = live_tool_swapper.LiveToolSwapper(lambda names: [{"name": n} for n in names], TOOL_GROUP_BY_CARD[1], label="t")
+        old, live_tool_swapper.SEND_TIMEOUT_S = live_tool_swapper.SEND_TIMEOUT_S, 0.05
+        try:
+            run(swapper.register(llm, TOOL_GROUP_BY_CARD[2]))
+        finally:
+            live_tool_swapper.SEND_TIMEOUT_S = old
+        self.assertEqual(tuple(swapper.pending), tuple(TOOL_GROUP_BY_CARD[2]))
+
+
+class TestGauntletRoundThreeBugs(unittest.TestCase):
+    """Round 3 (Opus A/B/C, Fable R3-1..3 + backlog): sticky draft, heard flights, payment_sent re-select."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20", "trip_type": "RT", "return_date": "2026-10-25"})
+        chosen = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        return e, chosen["next"][0]["arguments"]
+
+    def _failed_new_outbound(self):
+        e, return_args = self._rt_outbound_chosen()
+        bad = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-27"})
+        self.assertEqual(bad["status"], "error")
+        return e, return_args
+
+    def test_after_a_failed_outbound_date_the_return_arguments_still_offer_the_return(self):
+        e, return_args = self._failed_new_outbound()
+        result = e.handle("SearchTool", return_args)
+        self.assertEqual((e.state.trip_type, e.state.outbound.flight_id), ("RT", "F2"))
+        self.assertEqual(result["data"]["leg"], "return")
+        self.assertEqual(e._draft, {})
+
+    def test_keeping_the_stored_return_after_a_failed_outbound_date_is_not_a_loop(self):
+        e, _ = self._failed_new_outbound()
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-25"})
+        self.assertNotEqual(result["status"], "error")
+        self.assertEqual((e.state.depart_date, e.state.outbound.flight_id), (dt.date(2026, 10, 20), "F2"))
+
+    def test_keeping_the_stored_outbound_date_keeps_the_chosen_flight(self):
+        e, _ = self._failed_new_outbound()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-20"})
+        self.assertEqual(e.state.outbound.flight_id, "F2")
+
+    def test_a_flight_heard_before_refine_more_can_still_be_chosen(self):
+        e = engine()
+        to_card(e, 5)
+        first_two = list(e.offered["outbound"])
+        e.handle("SearchTool", {"query_sub_type": "REFINE_RESULTS", "refinement": "MORE"})
+        other = next(f for f in first_two if f != e.state.outbound.flight_id)
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": other})
+        self.assertEqual(result["status"], "changed")
+
+    def test_a_no_match_filter_does_not_switch_the_heard_guard_off(self):
+        e = engine()
+        to_card(e, 5)
+        heard = set(e._heard_ids["outbound"])
+        e.offered["outbound"] = []  # what a no_flights refine leaves behind
+        unheard = next(f.flight_id for f in e.results["outbound"] if f.flight_id not in heard)
+        self.assertEqual(e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": unheard})["status"], "error")
+
+    def test_the_payment_step_points_at_information_with_a_heads_up(self):
+        e = engine()
+        to_card(e, 8)
+        e.handle("PaymentTool", {"action": "PROCEED"})
+        e.active_card = 7
+        result = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": e.state.outbound.flight_id})
+        self.assertEqual(result["data"]["step"], "payment_sent")
+        self.assertTrue(result.get("heads_up"))
+        self.assertEqual([(n["tool"], n.get("arguments", {}).get("action")) for n in result["next"]],
+                         [("PaymentTool", "INFORMATION")])
+
+    def test_the_alternatives_search_clears_the_draft(self):
+        e, return_args = self._rt_outbound_chosen()
+        e.handle("SearchTool", return_args)
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "R1"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20"})
+        self.assertEqual(e._draft, {})
+
+    def test_adding_a_return_to_a_one_way_is_not_an_outbound_change(self):
+        e = engine()
+        to_card(e, 5)  # one way
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": e.state.origin, "destination": e.state.destination,
+                                "depart_date": e.state.depart_date.isoformat(), "trip_type": "RT", "return_date": "2026-10-16"})
+        self.assertEqual((e.state.trip_type, e.state.return_date), ("RT", dt.date(2026, 10, 16)))
+
+
+class TestGauntletRoundFourBugs(unittest.TestCase):
+    """Round 4 (Opus calendar draft, Fable OW-shaped alternatives) + Argon round 3 leftovers."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20", "trip_type": "RT", "return_date": "2026-10-25"})
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        return e
+
+    def test_browsing_a_calendar_is_not_a_chosen_departure(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-27"})
+        self.assertEqual((e.state.depart_date, e.state.return_date), (dt.date(2026, 10, 20), dt.date(2026, 10, 27)))
+        self.assertEqual(e.state.outbound.flight_id, "F2")
+
+    def test_ow_shaped_alternatives_keep_the_round_trip(self):
+        e = engine()
+        to_card(e, 5, trip_type="RT")
+        ret = e.state.ret.flight_id
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW", "origin": e.state.origin,
+                                "destination": e.state.destination, "depart_date": e.state.depart_date.isoformat()})
+        self.assertEqual((e.state.trip_type, e.state.ret.flight_id), ("RT", ret))
+        self.assertGreaterEqual(e.active_card, 4)
+
+    def test_a_child_date_resent_with_a_corrected_count_never_lands_on_adult_one(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 2})
+        e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 2, "date_of_birth": "2018-05-01"})
+        e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 1, "date_of_birth": "2018-05-01"})
+        self.assertTrue(all(t.date_of_birth is None for t in e.state.travellers))
+        self.assertEqual(e._child_dobs, ["2018-05-01"])
+
+    def test_more_twice_reaches_flights_not_heard_yet(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai", "depart_date": FRI})
+        e.handle("SearchTool", {"query_sub_type": "REFINE_RESULTS", "refinement": "MORE"})
+        e.handle("SearchTool", {"query_sub_type": "REFINE_RESULTS", "refinement": "MORE"})
+        self.assertEqual(len(e._heard_ids["outbound"]), min(6, len(e.results["outbound"])))
+
+    def test_cheapest_after_card_three_picks_among_heard_flights(self):
+        e = engine()
+        to_card(e, 5)
+        heard = set(e._heard_ids["outbound"])
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "reference": "CHEAPEST", "leg": "OUTBOUND"})
+        self.assertIn(e.state.outbound.flight_id, heard)
+
+    def test_a_route_change_answered_with_a_return_date_is_the_new_trip(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "destination": "Bengaluru", "return_date": "2026-10-08"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-24"})
+        self.assertEqual(e.state.destination, "Bengaluru")
+        self.assertEqual(e.state.return_date, dt.date(2026, 10, 24))
+
+
+class TestGauntletRoundFiveBugs(unittest.TestCase):
+    """Round 5 (Opus): browsed calendars, echoed child dates vs twins, bare one-way switch."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20", "trip_type": "RT", "return_date": "2026-10-25"})
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        return e
+
+    def _goa_calendar(self, e):
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+
+    def test_a_calendar_for_another_route_is_only_browsing(self):
+        e = self._rt_outbound_chosen()
+        self._goa_calendar(e)
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-27"})
+        self.assertEqual((e.state.destination, e.state.outbound.flight_id), ("Mumbai", "F2"))
+        self.assertEqual(e.state.return_date, dt.date(2026, 10, 27))
+
+    def test_calendar_cheapest_books_the_browsed_route(self):
+        e = self._rt_outbound_chosen()
+        self._goa_calendar(e)
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "date_reference": "CALENDAR_CHEAPEST"})
+        self.assertEqual((e.state.destination, e.state.depart_date), ("Goa", e.calendar_cheapest))
+
+    def test_calendar_cheapest_on_card_two(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "date_reference": "CALENDAR_CHEAPEST"})
+        self.assertEqual((e.state.origin, e.state.destination, e.state.depart_date), ("Delhi", "Goa", e.calendar_cheapest))
+        self.assertTrue(result["data"].get("flights"))
+
+    def test_a_date_echoed_with_the_count_is_not_a_twin(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 3})
+        e.handle("TravellerDetailsTool", {"includes_children": True, "date_of_birth": "2018-05-01"})
+        result = e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 2, "date_of_birth": "2018-05-01"})
+        self.assertEqual(e._child_dobs, ["2018-05-01"])
+        self.assertEqual(result["data"]["step"], "child_date_of_birth")
+
+    def test_twins_share_a_date_of_birth(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 3})
+        first = e.handle("TravellerDetailsTool", {"includes_children": True, "child_count": 2})
+        self.assertEqual(first["data"]["step"], "child_date_of_birth")
+        e.handle("TravellerDetailsTool", {"date_of_birth": "2018-05-01"})
+        e.handle("TravellerDetailsTool", {"date_of_birth": "2018-05-01"})
+        self.assertEqual(e._child_dobs, ["2018-05-01", "2018-05-01"])
+
+    def test_a_bare_one_way_switch_after_both_legs_is_a_one_way_trip(self):
+        e = engine()
+        to_card(e, 5, trip_type="RT")
+        outbound = e.state.outbound.flight_id
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW"})
+        self.assertEqual((e.state.trip_type, e.state.ret, e.state.return_date), ("OW", None, None))
+        self.assertEqual(e.state.outbound.flight_id, outbound)  # only the return was dropped
+        self.assertNotIn(result["data"]["step"], ("flight_choice", "flight_choice_outbound"))
+        self.assertIn("one way", result["change"])
+
+
+class TestGauntletRoundSixBugs(unittest.TestCase):
+    """Round 6 (Opus R6, Fable R5): the calendar is one-shot context; one-way keeps the outbound."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20", "trip_type": "RT", "return_date": "2026-10-25"})
+        chosen = e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        return e, chosen["next"][0]["arguments"]
+
+    def test_same_route_calendar_then_the_stored_return_day_offers_the_return(self):
+        e, _ = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "depart_date": "2026-10-19", "depart_date_end": "2026-10-25"})
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-25"})
+        self.assertEqual((e.state.outbound.flight_id, e.state.depart_date), ("F2", dt.date(2026, 10, 20)))
+        self.assertEqual(result["data"]["leg"], "return")
+
+    def test_a_dismissed_calendar_never_reroutes_a_later_date(self):
+        e, return_args = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        e.handle("SearchTool", return_args)
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "R2"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-22"})
+        self.assertEqual(e.state.destination, "Mumbai")
+
+    def test_a_day_right_after_a_calendar_takes_its_route_even_outside_the_range(self):
+        e, _ = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-22"})
+        self.assertEqual((e.state.destination, e.state.depart_date), ("Goa", dt.date(2026, 10, 22)))
+
+    def test_a_failed_calendar_leaves_the_draft_alone(self):
+        e, _ = self._rt_outbound_chosen()
+        bad = e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                      "depart_date": "2026-09-01", "depart_date_end": "2026-09-03"})
+        self.assertEqual(bad["status"], "error")
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "return_date": "2026-10-27"})
+        self.assertEqual((e.state.destination, e.state.outbound.flight_id), ("Mumbai", "F2"))
+        self.assertEqual(e.state.return_date, dt.date(2026, 10, 27))
+
+    def test_one_way_at_the_return_step_keeps_the_outbound(self):
+        e, _ = self._rt_outbound_chosen()
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW"})
+        self.assertEqual((e.state.trip_type, e.state.outbound.flight_id), ("OW", "F2"))
+        self.assertGreaterEqual(e.active_card, 4)
+        self.assertNotIn("return", e.results)
+
+
+
+class TestSystemInstructionRevamp(unittest.TestCase):
+    """context_update replaces the whole instruction, so each one is complete and says each rule once."""
+
+    @staticmethod
+    def _live_si(number):
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        e = engine()
+        if number > 1:
+            to_card(e, number)
+        return get_tara_live_system_instruction(e.build_card(number, for_instruction=True), greeting=number == 1)
+
+    def test_every_live_instruction_says_each_line_once_and_ends_with_the_reminder(self):
+        for number in range(1, 9):
+            si = self._live_si(number)
+            lines = [line for line in si.splitlines() if line.strip()]
+            with self.subTest(card=number):
+                self.assertEqual(len(lines), len(set(lines)))
+                self.assertEqual(si.count("Before you speak:"), 1)
+                self.assertTrue(lines[-1].startswith("Before you speak:"))
+                self.assertNotIn("System update for agent", si)
+                self.assertNotIn("You are Tara, a woman", si)  # the base already says who she is
+                self.assertNotIn("ALWAYS", si)
+
+    def test_live_instruction_describes_its_own_transport(self):
+        si = self._live_si(4)
+        self.assertIn("CURRENT STEP AND SESSION STATE", si)
+        self.assertNotIn("prompt_card field of a tool result", si)
+
+    def test_base_rules_are_at_most_1250_tokens(self):
+        from persona_prompt_cards.tara_cards import STEP_MARKER
+        base = self._live_si(5).partition(STEP_MARKER)[0]
+        self.assertLess(len(base) / 4, 1250)
+
+    def test_card_specific_rules_live_on_their_cards(self):
+        from persona_prompt_cards.tara_cards import STEP_MARKER
+        base = self._live_si(5).partition(STEP_MARKER)[0]
+        self.assertNotIn("returns no flights", base)
+        self.assertNotIn("FIRST or CHEAPEST", base)
+        self.assertIn("returns no flights", TARA_CARD_BY_NUMBER[2].directive)
+        self.assertIn("returns no flights", TARA_CARD_BY_NUMBER[3].directive)
+        for number in range(4, 8):
+            self.assertIn("never use FIRST or CHEAPEST", TARA_CARD_BY_NUMBER[number].directive)
+
+    def test_message_transport_keeps_the_system_update_contract(self):
+        root = get_tara_root_system_instruction()
+        self.assertIn("System update for agent", root)
+        self.assertEqual(root.count("Before you speak:"), 1)
+        card = engine().build_card(1)
+        self.assertTrue(card.startswith("System update for agent. Prompt card 1 of 8"))
+        self.assertIn("You are Tara, a woman", card)
+
+
+class TestGauntletRoundSevenBugs(unittest.TestCase):
+    """Round 7 (Opus R7): the cheapest calendar day is one-shot too; one-way drops the stale draft."""
+
+    def _rt_outbound_chosen(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                "depart_date": "2026-10-20", "trip_type": "RT", "return_date": "2026-10-25"})
+        e.handle("FlightActionTool", {"action": "SELECT_FLIGHT", "flight_id": "F2"})
+        return e
+
+    def test_calendar_cheapest_after_an_intervening_call_asks_instead_of_rebooking(self):
+        for between in (("FlightActionTool", {"action": "FLIGHT_DETAILS", "flight_id": "F2"}),
+                        ("SelectLanguageTool", {"language": "English"})):
+            e = self._rt_outbound_chosen()
+            e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                    "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+            e.handle(*between)
+            result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "date_reference": "CALENDAR_CHEAPEST"})
+            with self.subTest(between=between[0]):
+                self.assertEqual(result["status"], "error")
+                self.assertEqual((e.state.destination, e.state.outbound.flight_id), ("Mumbai", "F2"))
+
+    def test_calendar_cheapest_right_after_the_calendar_still_books_its_route(self):
+        e = self._rt_outbound_chosen()
+        cal = e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                      "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "date_reference": "CALENDAR_CHEAPEST"})
+        self.assertEqual((e.state.destination, e.state.depart_date.isoformat()),
+                         ("Goa", cal["data"]["cheapest"]["date"]))
+
+    def test_one_way_switch_clears_the_stale_round_trip_draft(self):
+        e = self._rt_outbound_chosen()
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "depart_date": "2026-10-27"})
+        e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "trip_type": "OW"})
+        self.assertEqual((e.state.trip_type, e.state.outbound.flight_id), ("OW", "F2"))
+        self.assertEqual(e._draft, {})
+        self.assertIsNone(e.state.heard)
+
+
+class TestLiveSessionFindings(unittest.TestCase):
+    """Findings from the live session s_6fe39282 (2026-10-04)."""
+
+    def test_tara_greeting_trigger_is_not_caller_speech_in_any_language(self):
+        # F1: on hi-IN the injected "नमस्ते!" read as the caller choosing Hindi; Tara never introduced herself.
+        from persona_registry import get_persona_architecture
+        arch = get_persona_architecture("travel-concierge")
+        self.assertNotIn("नमस्ते", arch.greeting_text)
+        self.assertIn("not spoken", arch.greeting_text)
+        self.assertIn("not the caller", get_tara_root_system_instruction())
+
+    def test_start_trigger_uses_the_persona_greeting_text(self):
+        from pipecat.frames.frames import InputTransportMessageFrame, LLMMessagesAppendFrame
+        from pipecat.processors.frame_processor import FrameDirection
+        from agent_live import StartTriggerProcessor
+        processor = StartTriggerProcessor(language="hi-IN")
+        processor.greeting_text = "(call connected)"
+        pushed = []
+
+        async def capture(frame, direction=FrameDirection.DOWNSTREAM):
+            pushed.append(frame)
+
+        processor.push_frame = capture
+        run(processor.process_frame(InputTransportMessageFrame(message={"type": "start_trigger"}), FrameDirection.DOWNSTREAM))
+        append = [f for f in pushed if isinstance(f, LLMMessagesAppendFrame)][0]
+        self.assertEqual(append.messages[-1], {"role": "user", "content": "(call connected)"})
+
+    def test_cards_four_and_five_tell_the_model_to_send_a_volunteered_number(self):
+        # F2: "7738035517" said with the name was never sent; the calling number was offered instead.
+        for number in (4, 5):
+            self.assertIn("phone_number", TARA_CARD_BY_NUMBER[number].directive)
+
+    def test_a_number_said_with_the_count_is_read_back_instead_of_the_calling_number(self):
+        e = engine()
+        to_card(e, 4)
+        e.handle("TravellerDetailsTool", {"passenger_count": 1, "includes_children": False, "phone_number": "7738035517"})
+        e.handle("TravellerDetailsTool", {"first_name_letters": list("MANISH"), "last_name_letters": list("KUMAR"),
+                                          "spelling_source": "caller_spelled", "age": 39, "gender": "male"})
+        result = e.handle("TravellerDetailsTool", {"name_confirmed": True})
+        self.assertEqual(result["data"]["step"], "confirm_phone")
+        self.assertEqual(result["phone_digits"], " ".join("7738035517"))
+
+
+class TestGauntletRoundEightBugs(unittest.TestCase):
+    """Round 8 (Opus R8): two prompt rules the revamp dropped, the calendar route check, cascade footer."""
+
+    def test_search_cards_forbid_a_checking_line_of_its_own(self):
+        for number in (2, 3):
+            self.assertIn("without your own checking line", TARA_CARD_BY_NUMBER[number].directive)
+
+    def test_flight_change_cards_carry_the_barge_in_rule(self):
+        for number in range(4, 8):
+            self.assertIn("ye wala", TARA_CARD_BY_NUMBER[number].directive)
+
+    def test_calendar_cheapest_for_another_route_than_the_calendar_errors(self):
+        e = engine()
+        e.handle("SelectLanguageTool", {"language": "Hindi"})
+        e.handle("SearchTool", {"query_sub_type": "DATE_RANGE", "origin": "Delhi", "destination": "Goa",
+                                "depart_date": "2026-10-21", "depart_date_end": "2026-10-23"})
+        result = e.handle("SearchTool", {"query_sub_type": "SPECIFIC_DATE", "origin": "Delhi", "destination": "Mumbai",
+                                         "date_reference": "CALENDAR_CHEAPEST"})
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(e.state.destination)
+
+    def test_cascade_prompt_ends_with_the_reminder(self):
+        si = get_tara_monolithic_system_instruction()
+        self.assertTrue(si.rstrip().splitlines()[-1].startswith("Before you speak:"))
+        self.assertEqual(si.count("Before you speak:"), 1)
+        self.assertIn("Prompt card 1 of 8: Language", si)
+
+
+class TestGauntletRoundNineBugs(unittest.TestCase):
+    """Round 9 (Opus, Fable, Argon): cascade greeting, volunteered phone on cards 4-5, START wording."""
+
+    def test_cascade_greeting_uses_the_persona_stub(self):
+        from agent import cascade_greeting_text
+        from persona_registry import get_persona_architecture
+        arch = get_persona_architecture("travel-concierge")
+        self.assertEqual(cascade_greeting_text(arch, "hi-IN"), arch.greeting_text)
+        self.assertEqual(cascade_greeting_text(None, "hi-IN"), "नमस्ते!")
+        self.assertEqual(cascade_greeting_text(None, "en-IN"), "Hello!")
+
+    def test_start_quotes_the_exact_stub(self):
+        from persona_prompt_cards.tara_cards import GREETING_STUB
+        from persona_registry import get_persona_architecture
+        self.assertEqual(get_persona_architecture("travel-concierge").greeting_text, GREETING_STUB)
+        self.assertIn(GREETING_STUB, get_tara_root_system_instruction())
+        self.assertNotIn("The first message", get_tara_root_system_instruction())
+
+    def test_cascade_prompt_carries_the_opening_session_state(self):
+        si = get_tara_monolithic_system_instruction()
+        self.assertIn("Session state:", si)
+        self.assertIn("language: not given yet", si)
+
+    def test_a_clipped_number_on_card_four_never_jumps_to_the_contact_step(self):
+        e = engine()
+        to_card(e, 4)
+        result = e.handle("TravellerDetailsTool", {"passenger_count": 2, "phone_number": "773803551"})
+        self.assertEqual((e.active_card, e.state.step), (4, "passenger_mix"))
+        self.assertNotIn("error", result)
+        self.assertIsNone(e.state.whatsapp)
+
+    def test_a_bare_short_number_on_card_five_stays_on_names(self):
+        e = engine()
+        to_card(e, 5)
+        e.handle("TravellerDetailsTool", {"phone_number": "98765"})
+        self.assertEqual(e.active_card, 5)
+
+    def test_a_number_said_with_the_name_shows_in_the_next_card_state(self):
+        e = engine()
+        to_card(e, 4)
+        result = e.handle("TravellerDetailsTool", {
+            "passenger_count": 1, "first_name_letters": list("MANISH"), "last_name_letters": list("KUMAR"),
+            "spelling_source": "model_guess", "age": 39, "gender": "male", "phone_number": "7738035517"})
+        self.assertNotIn("WhatsApp: not given yet", result.get("prompt_card", ""))
+        self.assertEqual(e.state.whatsapp, "7738035517")
+
+
+class TestVocalToneAnchor(unittest.TestCase):
+    """vocal_tone rides in every tool result so the accent rule sits next to the decode point."""
+
+    def test_engine_default_sends_no_vocal_tone(self):
+        result = engine().handle("SelectLanguageTool", {"language": "Hindi"})
+        self.assertNotIn("vocal_tone", result)
+
+    def test_every_result_carries_the_anchor_when_set(self):
+        from persona_prompt_cards.tara_cards import VOCAL_TONE
+        e = TravelBookingEngine(today=TODAY, vocal_tone=VOCAL_TONE)
+        ok = e.handle("SelectLanguageTool", {"language": "Hindi"})
+        self.assertEqual(ok["vocal_tone"], VOCAL_TONE)
+        self.assertIn("call_state", ok)
+        failed = e.failure("SearchTool")
+        self.assertEqual(failed["vocal_tone"], VOCAL_TONE)
+        self.assertIn("error", failed)
+
+    def test_anchor_is_short(self):
+        from persona_prompt_cards.tara_cards import VOCAL_TONE
+        self.assertLess(len(VOCAL_TONE) // 4, 25)  # ~4 chars per token: a one-line reminder
+
+    def test_base_si_never_speaks_the_anchor(self):
+        from persona_prompt_cards.tara_cards import get_tara_live_system_instruction
+        for si in (get_tara_root_system_instruction(), get_tara_live_system_instruction("x", greeting=True)):
+            self.assertIn("Never speak instruction, prompt_card, call_state or vocal_tone.", si)
+
+    def test_registry_engine_sends_the_anchor(self):
+        from persona_prompt_cards.tara_cards import VOCAL_TONE
+        from persona_registry import get_persona_architecture
+        arch = get_persona_architecture("travel-concierge")
+        arch._engine = None
+        try:
+            self.assertEqual(arch.engine.vocal_tone, VOCAL_TONE)
+        finally:
+            arch._engine = None
+
+    def test_pointer_keeps_the_anchor(self):
+        from persona_prompt_cards.tara_cards import VOCAL_TONE
+        from persona_registry import get_persona_architecture
+        arch = get_persona_architecture("travel-concierge")
+        pointed = arch._point_at_instruction(
+            {"instruction": "Ask for the route.", "prompt_card": "<full card>", "call_state": "Language: Hindi",
+             "vocal_tone": VOCAL_TONE}, 2)
+        self.assertEqual(pointed["vocal_tone"], VOCAL_TONE)
+        self.assertIn("Prompt card 2 of 8", pointed["prompt_card"])
+        self.assertEqual(set(pointed), {"instruction", "prompt_card", "call_state", "vocal_tone"})
+
+    def test_empty_declarations_send_the_clear_all_wrapper(self):
+        # proto: a set-but-empty Tools wrapper clears every tool; an absent key keeps them.
+        self.assertEqual(context_update_frame([])["context_update"], {"tools": {}})
+        self.assertNotIn("tools", context_update_frame(system_instruction="SI")["context_update"])
+
+    def test_whitelist_lets_spelled_fields_be_spoken(self):
+        si = get_tara_root_system_instruction()
+        self.assertIn("any field ending in _say or _spell (exactly as given)", si)
+        self.assertNotIn("say nothing and wait", si)

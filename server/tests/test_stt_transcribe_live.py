@@ -21,7 +21,7 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
 
     def test_init_vertex_ai(self):
         service = CustomGeminiTranscribeLiveService(
-            project_id="deep-clock-339817",
+            project_id="example-gcp-project",
             location="us-central1",
             model="gemini-3.5-transcribe-live",
             languages=[Language("en-US"), Language("hi-IN")],
@@ -29,9 +29,9 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live-preview")
         self.assertFalse(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(vertexai=True, project="deep-clock-339817", location="us-central1")
+        self.client_factory.assert_called_once_with(vertexai=True, project="example-gcp-project", location="us-central1")
         self.assertEqual(service.location, "us-central1")
-        self.assertEqual(service.project_id, "deep-clock-339817")
+        self.assertEqual(service.project_id, "example-gcp-project")
 
     def test_init_ai_studio(self):
         service = CustomGeminiTranscribeLiveService(

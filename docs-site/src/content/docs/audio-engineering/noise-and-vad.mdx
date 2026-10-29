@@ -1,0 +1,144 @@
+---
+title: Noise, background speech & VAD
+description: Every option for handling fan noise, traffic, background voices, speakerphone echo, and false barge-ins in Gemini Live.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="What to do about fan noise, traffic, other people talking, speakerphone echo, and coughs, layer by layer from the microphone to the prompt."
+  why="Noise is the top reason voice agents fail in real homes, cars, and call centers rather than in demos."
+  number="Four noise types, each with a different fix. Background voices need a voice-isolation filter; a noise suppressor alone will not remove them."
+  decide="Whether your callers' environments justify a commercial voice-isolation license (Krisp) or the open-source noise filter is enough."
+/>
+
+Native audio models hear the raw waveform. A ceiling fan, a television in the next room, or the agent's own voice leaking out of a mobile speakerphone all arrive on the same 16 kHz PCM stream as the caller. Because no single setting fixes all three, you need to match the defense to the kind of noise on the line.
+
+## 1. Match the fix to the noise type
+
+| Noise type | Examples | What fixes it | What does NOT fix it |
+| :--- | :--- | :--- | :--- |
+| **Stationary background noise** | AC hum, fan, road rumble, keyboard clicks | Browser `noiseSuppression: true`, `RNNoiseFilter`, `SileroVADAnalyzer` (`min_volume=0.6`), `startOfSpeechSensitivity: LOW` | Prompt rules alone (the noise still triggers server VAD) |
+| **Background human voices (crosstalk)** | TV, side conversation, nearby call-center desk | Voice-isolation DSP (`KrispVivaFilter` `vi-tel-v2.7` / `pro-v1`), prompt listening rule | Browser `noiseSuppression` or `RNNoise` (both treat all human voices as signal to keep) |
+| **Speakerphone echo** | Agent's own voice bleeding back into the mic | Browser/carrier `echoCancellation: true`, unmuting on `turnComplete` (not `generationComplete`), prompt echo guard | Raising VAD thresholds alone |
+| **Short coughs, breaths & backchannels** | Throat clear, `"haan"`, `"okay"`, `"right"` while the agent speaks | `RepeatOnFiller` recovery after `interrupted`, prompt continuation rule | Telling the model to `"stay silent and wait"` |
+
+---
+
+## 2. Layer 1: Client capture and Turn-0 mic gating
+
+### Browser WebRTC constraints
+On web and mobile WebRTC clients, turn on the hardware and browser acoustic pipeline (`echoCancellation`, `noiseSuppression`, `autoGainControl`) when opening the microphone. See [Capture, buffers & backpressure](/gemini-live/audio-engineering/#clean-the-signal-at-the-source).
+
+### Gate the microphone during the opening greeting
+When a duplex WebSocket opens on Gemini 3.1 Live Preview before the caller speaks, streaming open-mic room tone leaks about 201 audio prompt tokens on Turn 1. Drop ambient frames during the opening greeting and open the gate only when the greeting finishes (`BotStoppedSpeakingFrame`) or when the caller barges in (`RMS > 650` for 2 consecutive frames, while keeping a 10-frame / ~200 ms rolling pre-buffer so the first syllable is preserved):
+
+```python
+# Ambient room noise with an open mic is RMS ~40 to 250.
+# Human speech into the mic is RMS 1,200 to 10,000+.
+# Requiring 2 consecutive frames (>40 ms) with RMS > 650 filters single clicks and breaths.
+if rms > 650.0:
+    self._consecutive_speech_frames += 1
+    if self._consecutive_speech_frames >= 2:
+        self._mic_gated = False
+        await self.broadcast_interruption()
+        while self._pre_buffer:
+            await self.push_frame(self._pre_buffer.popleft(), direction)
+        await self.push_frame(frame, direction)
+```
+
+---
+
+## 3. Layer 2: Server-side audio filters (PSTN telephony & raw WebSockets)
+
+PSTN telephony trunks (Twilio, Plivo, SIP) and raw WebSocket clients do not run browser WebRTC processing. Attach an `audio_filter` to your input transport so every downstream VAD, turn detector, and Gemini Live frame sees cleaned PCM audio.
+
+### Comparing server-side filter options
+
+| Filter | Removes background voices (crosstalk)? | License & install | Sample rate & latency notes |
+| :--- | :--- | :--- | :--- |
+| **`KrispVivaFilter`** (Krisp VIVA SDK) | **Yes** (`vi-tel-v2.7`, `tel-v2`, `pro-v1` isolate the primary speaker) | Commercial (`krisp_audio` wheel from `sdk.krisp.ai` + `KRISP_VIVA_API_KEY` + `.kef` model) | Accepts 8/16/24/32/44.1/48 kHz natively (raises `ValueError` on other rates). Adds ~20 ms latency. Use `vi-tel-v2.7.kef` for 16 kHz telephony or `pro-v1.kef` for 16 to 32 kHz close mics. Note: `ss-v1.kef` removes noise only, without voice isolation |
+| **`RNNoiseFilter`** (`pyrnnoise`) | **No** (suppresses stationary noise only) | Open source, BSD (`pip install pipecat-ai[rnnoise]`) | Always runs at 48 kHz (480-sample frames); resamples `16 kHz <-> 48 kHz` via `SOXRStreamAudioResampler` |
+| **`KoalaFilter`** (Picovoice Koala) | **No** (stationary and non-stationary noise suppression) | Commercial (`pip install pipecat-ai[koala]` + Picovoice `access_key`) | Input transport sample rate must match `koala.sample_rate` |
+| **`AICFilter`** (ai-coustics AIC SDK) | **Yes** (speech enhancement and dereverberation) | Commercial (`aic_sdk` + model file or download ID) | Shares read-only models across calls via `AICModelManager` refcounting; pairs with `AICVADAnalyzer` |
+
+<Aside type="caution" title="Operational rules for KrispVivaFilter in production">
+1. **Lazy-import the module**: Pipecat's `krisp_viva_filter` and `krisp_viva_turn` raise an exception at import time when the `krisp_audio` wheel is absent. Wrap them in a lazy helper that returns `None` when unconfigured so local dev boxes run without the proprietary wheel.
+2. **Pin OpenBLAS threads**: The native Krisp library spawns an OpenBLAS thread pool by default. Set `OPENBLAS_NUM_THREADS=1` in your container.
+3. **Set `OPENBLAS_CORETYPE` on AMD Zen CPUs**: OpenBLAS can issue unsupported AVX-512 instructions on AMD Zen hosts and crash the process. Export `OPENBLAS_CORETYPE=HASWELL` (Zen 1), `ZEN` (Zen 2/3), or `SKYLAKEX` (Zen 4) before loading the SDK.
+4. **Silent fallback on runtime errors**: `KrispVivaFilter.filter()` returns unfiltered audio if an exception occurs inside the native session, and returns `b""` until a full 10 ms frame is buffered.
+</Aside>
+
+---
+
+## 4. Layer 3: Local VAD, server VAD, and turn-taking models
+
+You can run voice activity detection on your server, inside Gemini Live, or in both places at once:
+
+| Mode | Local `SileroVADAnalyzer` | Gemini `AutomaticActivityDetection` | When to use |
+| :--- | :--- | :--- | :--- |
+| **`"both"` (Default)** | Enabled (`confidence=0.7`, `start_secs=0.2`, `stop_secs=0.4`, `min_volume=0.6`) | Enabled (`disabled=False`) | Best for duplex voice: local Silero VAD stops speaker playback in under 50 ms on barge-in and ignores quiet room noise (`min_volume=0.6`), while Gemini's server VAD owns the turn state |
+| **`"gemini"`** | Disabled | Enabled (`disabled=False`) | Direct client-to-Gemini streaming when you do not run a server-side audio pipeline |
+| **`"silero"` (Custom local endpointing)** | Enabled | Disabled (`disabled=True`; client sends `activityStart` / `activityEnd`) | When you want full local control over turn boundaries, or when pairing `SileroVADAnalyzer` with a semantic end-of-turn model such as `KrispVivaTurn` (`krisp-viva-tp-v3.kef`, `threshold=0.5`) |
+
+<Aside type="note" title="Filter before turn prediction">
+When combining `KrispVivaFilter` with `KrispVivaTurn` (`krisp-viva-tp-v3.kef` for multi-language or `krisp-viva-tt-v2.kef` for English), attach `KrispVivaFilter` on the input transport so the turn-prediction model runs on voice-isolated audio.
+</Aside>
+
+---
+
+## 5. Layer 4: Gemini Live `realtimeInputConfig` settings for noisy lines
+
+Inside `setup.realtimeInputConfig`, two blocks control how Gemini Live reacts to noisy audio:
+
+### 1. `automaticActivityDetection`
+```json
+{
+  "realtimeInputConfig": {
+    "automaticActivityDetection": {
+      "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+      "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+      "prefixPaddingMs": 200,
+      "silenceDurationMs": 800
+    },
+    "turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY"
+  }
+}
+```
+- **`startOfSpeechSensitivity`**: Set to `START_SENSITIVITY_LOW` when callers are in noisy rooms, cars, or call centers so background spikes and breathing do not trigger false interruptions. Use `START_SENSITIVITY_HIGH` on clean lines when callers give very short one-word answers.
+- **`endOfSpeechSensitivity`**: Keep at `END_SENSITIVITY_LOW` so mid-sentence pauses do not cut the caller off early.
+- **`prefixPaddingMs`**: Keep at `200` to `300` ms. It sets how much speech the server must detect before committing to start-of-speech. Values around `600` ms drop 250 to 450 ms spoken letters (`"S"`, `"A"`, `"C"`) when a caller spells a name or email address.
+- **`silenceDurationMs`**: Use `500` to `800` ms for general conversation, and raise to `1200` ms on dictation steps where callers pause to read out phone numbers, PNR codes, or addresses.
+
+### 2. `turnCoverage`
+- **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)**: Sends only audio segments since the last turn that VAD flagged as active speech, stripping inactivity and silence between turns so quiet room tone does not accumulate carried audio tokens (setting `"turnCoverage": "TURN_INCLUDES_ONLY_ACTIVITY"` in `setup` explicitly pins this default). Note: background chatter loud enough to trip VAD still counts as activity, so pair this with `START_SENSITIVITY_LOW` or `KrispVivaFilter` when other people are talking nearby.
+- **`TURN_INCLUDES_ALL_INPUT`**: Sends all realtime input since the last turn, including silence and inactivity between utterances. Use only when you need continuous ambient audio in the turn context.
+
+---
+
+## 6. Layer 5: Prompt guardrails and cough/backchannel recovery
+
+Even with a denoiser and tuned VAD, some background speech, coughs, or narrowband telephony artifacts will reach the model. Handle those in your system instruction and turn-recovery logic:
+
+### 1. Positive listening, language-pinning, and speakerphone echo rules
+Add explicit, positively framed listening rules to your base `systemInstruction`:
+
+```text
+LISTENING AND NOISE
+Reply only to the main caller. Ignore background voices, TV, traffic and other noise.
+Respond only to the caller's newest utterance. If your own last sentence echoes back from a speakerphone, wait and listen for the caller.
+Keep every word in the active call language regardless of background noise or caller accent, except when using English letter names and structural words ("at", "dot", "dash", "underscore") to spell email addresses or codes, or when saying untranslated proper nouns.
+If a short "haan", "hmm" or a cough cuts you off, do not restart your sentence. Say only what is still needed.
+```
+
+Also pass `AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN", ...])` on Vertex AI so background noise does not cause input transcripts to drift into unrelated scripts (such as Urdu or Cyrillic).
+
+### 2. Narrowband 8 kHz consonant disambiguation
+PSTN telephone lines sample at 8 kHz, which strips the high frequencies that separate `B/V`, `M/N`, `F/S`, and `P/T`. On phase cards that collect spelled names or booking codes, tell the model to ask for an anchor word (*"Was that B as in Bravo, or V as in Victor?"*) when a letter is unclear, rather than guessing.
+
+### 3. Never write `"stay silent and wait"` for noise
+Do not instruct the model to *"remain silent"* or *"produce no audio"* when it hears noise or side chatter. When a native audio model chooses not to speak, the server sends no `turnComplete` event (leaving the caller in dead air), suppresses `inputAudioTranscription` for that turn, and on `gemini-3.8-live` can leak `<no speech>` text tokens into the output transcript. Instead, handle coughs and short backchannels in your application harness.
+
+### 4. Recover from coughs and 1-to-2-word backchannels (`RepeatOnFiller`)
+When a cough or a short acknowledgment (`"okay"`, `"haan"`, `"ji"`) trips server VAD during agent speech, the server emits `interrupted` and stops generating audio. Inspect the `inputTranscription` text right after `interrupted`. If it contains at most 2 words, no digits, and no stop word (`"no"`, `"stop"`, `"wait"`, `"nahi"`, `"ruko"`), send a brief user-role text turn instructing the model to continue from where it was cut off instead of waiting in silence or restarting from the beginning.

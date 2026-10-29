@@ -1,0 +1,242 @@
+---
+title: "Pillar 2: Dynamic Prompt Cards & Per-Card Tools"
+description: Replace system instructions in place instead of stacking cards in history, and swap per-card tool schemas mid-call with session.send_context_update() (google-genai >= 2.32.0).
+---
+
+import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.astro';
+import PromptCardFunnel from '../../../components/PromptCardFunnel.astro';
+import ReplaceVsStackFlow from '../../../components/ReplaceVsStackFlow.astro';
+import MidSpeechUpdateFlow from '../../../components/MidSpeechUpdateFlow.astro';
+import OneMinute from '../../../components/OneMinute.astro';
+
+<OneMinute
+  what="Give the model only the instructions and tools for the current step of the call. When the step changes, replace them in place rather than piling them up in history."
+  why="This is the difference between a prompt bill that stays flat and one that grows with every step, and it keeps the agent on script after long calls."
+  number="783 tokens per turn after three step changes when instructions are replaced in place, versus 2,493 when they are stacked in history."
+  decide="Whether your call flow is defined as steps (cards), each with its own short instructions and tool list."
+/>
+
+<OptimizationPillarTabs active="pillar-2" />
+
+<div class="hero-card">
+  <span class="badge badge-blue">Core Cost &amp; State Rules</span>
+  <span class="badge badge-green">New in google-genai 2.32.0</span>
+  <h3>Two sentences every Gemini Live builder should know</h3>
+  <p>
+    <strong>1. Replace in place, don't stack in history:</strong> A prompt card sent as a <code>role="user"</code> turn or inside a tool result stays in conversation history and is billed again on every later turn (<code>2,493 tokens/turn</code> after 3 card swaps). Sending it as a system instruction (<code>session.send_context_update()</code> or Vertex AI <code>role="system"</code>) overwrites the old card in place (<code>783 tokens/turn</code>).
+  </p>
+  <p>
+    <strong>2. Swap both tools and instructions with no reconnect:</strong> Starting in <code>google-genai 2.32.0</code>, <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place during a live call on <code>gemini-3.8-live</code>, with no reconnect.
+  </p>
+</div>
+
+## 1. Why dynamic prompt cards matter
+
+In a multi-turn call, your system prompt and tool schemas are re-read on every turn. If you load a monolithic 4,500-token system prompt covering Greeting, KYC Verification, Troubleshooting, Billing, Upsell, and Cancellation at Turn 1, you pay to re-read all 4,500 tokens on every turn, even when the caller hangs up in the first 5 seconds.
+
+Start the session with a compact 120-token opening card (keeping active prompt tokens averaging ~500 tokens across steps) and load the next phase card only when the conversation enters that stage.
+
+<PromptCardFunnel />
+
+---
+
+## 2. How Gemini Live stores instructions vs. history (Replace vs. Stack)
+
+A Gemini Live session has two memory regions that are sent to the model and billed on every turn:
+
+- Region 1 (Top System Slot: `systemInstruction` and `tools`): Overwritten in place whenever you send a `role="system"` turn or `context_update`. When [Pillar 1 (`SlidingWindow`)](/gemini-live/optimization/sliding-window/) trims old history at 5,000 tokens, Region 1 is never evicted.
+- Region 2 (Conversation History: caller/agent audio, tool results, and `role="user"` turns): Append-only. Every card you drop into Region 2 stays there and is billed again on every later turn until the 5,000-token window trims it, at which point the card disappears and the model falls back to Turn 1's opening greeting (6 of 7 measured runs).
+
+<ReplaceVsStackFlow />
+
+### Measured token growth across 3 card swaps (~570 tokens per card)
+
+We tested three consecutive swaps of a ~570-token instruction card on Vertex AI, asking the same question after each swap:
+
+| How the card was sent | Prompt tokens on Turns 1 -> 2 -> 3 -> 4 | Growth per swap | Survives 5k `SlidingWindow` trim? |
+| :--- | :--- | :--- | :--- |
+| `role="system"` client content (`gemini-3.8-live`) | `585 -> 647 -> 713 -> 783` | ~65 tok (only the prior Q&amp;A) | Yes (`0 of 7` replayed greeting) |
+| `context_update.systemInstruction` (`gemini-3.8-live`) | `585 -> 643 -> 709 -> 786` | ~65 tok (only the prior Q&amp;A) | Yes (`0 of 7` replayed greeting) |
+| `role="system"` client content (`gemini-live-2.5-flash-native-audio`) | `585 -> 653 -> 709 -> 764` | ~60 tok (only the prior Q&amp;A) | Yes |
+| `role="user"` client content or full card in tool result | `585 -> 1,214 -> 1,853 -> 2,493` | ~635 tok (every old card stays) | No (`6 of 7` replayed Turn-1 greeting) |
+
+<div class="hero-card">
+  <span class="badge badge-purple">Two Rules for Your Handler</span>
+  <h3>What in-place replacement means when you write your handler</h3>
+  <p>
+    <strong>Rule 1: Always send <code>base_rules + current_card + session_state</code> together.</strong> Because a system-instruction update overwrites Region 1 completely, anything you leave out is gone. Keep your base voice/persona rules (~150 tokens) and append the current step card plus the latest <code>Session state</code> dictionary every time you update <code>systemInstruction</code>.
+  </p>
+  <p>
+    <strong>Rule 2: Replacing <code>systemInstruction</code> does not wipe conversation history.</strong> Earlier audio turns and earlier <code>function_call</code> / <code>function_response</code> turns remain in Region 2 until sliding-window compaction. Return a 1-line status in your <code>FunctionResponse</code> (instead of repeating a 600-token card in Region 2), and check that any tool the model calls is still in the current step's active tool list.
+  </p>
+</div>
+
+### Code pattern A: Replace instructions only (`role="system"`, documented on all Vertex AI Live models)
+
+When your tool list stays the same and you only need to change the step instructions, use the documented `send_client_content` method with `role="system"` and `turn_complete=False`:
+
+```python
+from google.genai import types
+
+BASE_RULES = (
+    "You are Maya, a calm support specialist at Cymbal Fiber. "
+    "Keep every reply to 1 or 2 short sentences, then pause for the caller."
+)
+
+STEP_CARDS = {
+    "verify": "Current step: Verify identity. Ask for date of birth and postal code.",
+    "troubleshoot": "Current step: Troubleshoot line. Check router lights one step at a time.",
+    "wrap_up": "Current step: Wrap up. Read back the ticket number and wish the caller well.",
+}
+
+
+async def update_step_instruction(session, step: str, session_state: dict):
+    # Always combine base rules + current card + live state so nothing is lost on overwrite
+    full_instruction = (
+        f"{BASE_RULES}\n\n"
+        f"{STEP_CARDS[step]}\n"
+        f"Session state: {session_state}"
+    )
+    await session.send_client_content(
+        turns=types.Content(
+            role="system",
+            parts=[types.Part(text=full_instruction)],
+        ),
+        turn_complete=False,
+    )
+```
+
+---
+
+## 3. When to send an update (Mid-Speech vs. Inside a Tool Handler)
+
+When you send an update matters just as much as how you format it:
+
+- `clientContent` with `turn_complete=True` means *"the caller just finished speaking, reply now."* Sending it while the model is talking cuts the model off mid-sentence.
+- `clientContent` with `turn_complete=False` (or `context_update`) is held in a server buffer and applied right before the next model turn (`14 of 16` mid-speech runs finished their sentence cleanly). However, it cannot steer a reply that is already in flight.
+- Best timing: send the update inside a blocking tool handler right before returning the `FunctionResponse` (or right after receiving `turnComplete`). Because the model is paused waiting for your tool result, the update never races active speech (`5 of 5` runs).
+
+<MidSpeechUpdateFlow />
+
+---
+
+<h2 id="per-card-tool-registration--instruction-updates-via-context_update-vertex-ai-gemini-38-live">
+  4. Swap both tools and instructions per card with <code>send_context_update</code> (<code>google-genai &gt;= 2.32.0</code>)
+</h2>
+
+<div class="hero-card">
+  <span class="badge badge-green">New in google-genai 2.32.0</span>
+  <h3>In-place tool + instruction replacement on Gemini 3.8 Live</h3>
+  <p>
+    <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place during a live call, with no reconnect.
+  </p>
+</div>
+
+### Example: Breaking down an 8-step flight-booking voice agent
+
+To see why swapping tools per card saves so many tokens, consider an example flight-booking voice agent (**"Cymbal Travel"**) that guides a caller from greeting to payment. Across the whole call, the agent uses 6 tools (measured on Vertex AI `gemini-3.8-live` as the `usage_metadata.prompt_token_count` delta above a zero-tool session):
+
+1. `set_call_language` (`93` billed tokens): records the caller's preferred spoken language for the session.
+2. `resolve_airport_code` (`44` billed tokens): resolves a city or region name to an IATA airport code.
+3. `find_available_flights` (`511` billed tokens): queries outbound and return flights by date, time window, or fare tier.
+4. `update_selected_itinerary` (`164` billed tokens): locks in a chosen flight leg, updates cabin filters, or reopens route search.
+5. `save_passenger_manifest` (`457` billed tokens): validates passenger counts, legal names, mobile number, and email address.
+6. `dispatch_checkout_link` (`57` billed tokens): sends the checkout link once the itinerary and passenger manifest are confirmed.
+
+If you declare all 6 tools in `setup.tools`, Gemini 3.8 Live bills all **1,326 tool-schema tokens on every single turn** of the call (`93 + 44 + 511 + 164 + 457 + 57 = 1,326` in `usage_metadata.prompt_token_count`, or `~2,198` tokens if counted as raw serialized JSON text), even on Turn 1 when the agent is only asking which language the caller prefers, and on the final turn when passenger details are already done.
+
+With `context_update`, each of the 8 prompt cards registers only the tools needed for that step:
+
+| Prompt card in the flight-booking call | What happens in this step | Tools registered for this card | Tool tokens billed per turn (`gemini-3.8-live`) |
+| :--- | :--- | :--- | :--- |
+| Card 1 | Greeting &amp; language choice | `set_call_language` | `93 tokens` (vs. 1,326 for all 6) |
+| Card 2 | Route &amp; travel date intake | `set_call_language`, `find_available_flights`, `resolve_airport_code` | `648 tokens` (`93 + 511 + 44`) |
+| Card 3 | Flight selection &amp; filter refinement | `set_call_language`, `update_selected_itinerary`, `find_available_flights` | `768 tokens` (`93 + 164 + 511`) |
+| Cards 4 to 7 | Passenger count, names, phone &amp; email | `set_call_language`, `save_passenger_manifest`, `update_selected_itinerary` (`find_available_flights` &amp; `resolve_airport_code` dropped) | `714 tokens` (down from 1,225 with `find_available_flights`) |
+| Card 8 | Checkout link &amp; confirmation | `set_call_language`, `dispatch_checkout_link` (`save_passenger_manifest` &amp; `update_selected_itinerary` dropped) | `150 tokens` (down from 771 on Cards 4 to 7 + checkout) |
+| Optional farewell (after Card 8) | Talk-only closing | `tools=[]` (sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) | `0 tool tokens` |
+
+### Python pattern: `session.send_context_update()` and tool handler
+
+Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), call `await session.send_context_update(...)` inside your blocking tool handler right before returning the `FunctionResponse`:
+
+```python
+from google.genai import types
+
+VOCAL_TONE = "Warm Indian English or everyday Hinglish female voice, Indian accent on every word"
+
+
+async def on_tool_call(session, function_call, call: dict, run_step):
+    # call holds per-call state: {"card": 1, "tool_names": {...}, "instruction": "..."}
+    # 1. Guard against the model imitating an old tool call from earlier history turns
+    if function_call.name not in call["tool_names"]:
+        await session.send_tool_response(
+            function_responses=[
+                types.FunctionResponse(
+                    id=function_call.id,
+                    name=function_call.name,
+                    response={
+                        "error": f"{function_call.name} is not active in this step.",
+                        "instruction": "Do not call it again. Continue the current step.",
+                    },
+                )
+            ]
+        )
+        return
+
+    # 2. Run your business logic. step holds the card number and title, the full instruction
+    #    text (base rules + card + session state), the card's tools (functions or types.Tool list,
+    #    or [] on a talk-only card), a one-line call_state, a one-sentence next instruction,
+    #    and any *_say fields to speak.
+    step = run_step(function_call.name, function_call.args or {})
+    card_changed = step.number != call["card"]
+
+    # 3. While the model is paused on this result: swap tools only on a card change, and
+    #    refresh system_instruction only when the card or the session state changed.
+    if card_changed:
+        call["card"], call["tool_names"] = step.number, set(step.tool_names)
+        await session.send_context_update(
+            system_instruction=step.instruction_text,
+            tools=step.tools,  # pass [] on a talk-only closing card to clear all tools
+        )
+    elif step.instruction_text != call["instruction"]:
+        await session.send_context_update(
+            system_instruction=step.instruction_text  # tools=None leaves current tools unchanged
+        )
+    call["instruction"] = step.instruction_text
+
+    # 4. Return the compact contract; the 1-line card pointer only when the card changed
+    response = {
+        **step.spoken_fields,  # e.g. {"ask_say": "How many people are travelling?"}
+        "call_state": step.call_state,  # under 60 tokens of confirmed facts
+        "instruction": step.next_instruction,  # one sentence
+        "vocal_tone": VOCAL_TONE,
+    }
+    if card_changed:
+        response["prompt_card"] = (
+            f"Prompt card {step.number} of 8 ({step.title}) is now in your system instruction. Follow it."
+        )
+    await session.send_tool_response(
+        function_responses=[
+            types.FunctionResponse(id=function_call.id, name=function_call.name, response=response)
+        ]
+    )
+```
+
+See [Tools -> What to put in a FunctionResponse](/gemini-live/tools/#8-what-to-put-in-a-functionresponse) for the spoken-field rule and why `vocal_tone` rides in every result, and [Tools -> Raw WebSocket JSON payloads](/gemini-live/tools/#raw-websocket-json-payloads-for-non-python-runtimes-or-google-genai--2320) if you are sending raw WebSocket frames from a non-Python runtime.
+
+:::caution[Operational rules for `send_context_update`]
+- **Update at stage changes, not on every turn**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Update them when the conversation enters a new phase card (for example, `3 to 8 times` in a multi-step call), not on turns where nothing changed.
+- **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
+- **Full replacement (no merge)**: Every `send_context_update` call replaces (does not merge) the fields you set. Keep global tools like `set_call_language` in every card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`.
+- **Clearing all tools**: Passing `tools=[]` in `session.send_context_update(tools=[])` (which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) clears all tools. Send it only on a talk-only card. Leave `tools=None` (or omit the `"tools"` key on a raw WebSocket) when you only want to update `system_instruction`.
+- **Model & SDK support**: `session.send_context_update()` is in `google-genai >= 2.32.0` and sends `contextUpdate` on both Vertex AI and the Gemini Developer API. On Vertex AI (`gemini-3.8-live`) it is ungated; on the Gemini Developer API, confirm your API key has server-side `contextUpdate` access before relying on it in production. Legacy `gemini-live-2.5-flash-native-audio` rejects `contextUpdate` and closes with `1007` (use `send_client_content` with `role="system"` on Vertex AI 2.5 instead). If your non-Python SDK release has no context-update helper yet, send the raw `contextUpdate` WebSocket frame.
+:::
+
+### The opening card and the in-call line
+
+Card 1 lives only in the setup instruction, together with the greeting rule (`START`) and a language-neutral Turn-0 stub (`"(The call has connected. The caller has not spoken yet.)"`). From the first card change onward, every system-instruction update replaces `START` with an `IN_CALL` line ("The greeting and the language choice are done. Never greet again."). A later trim or reconnect then cannot bring the greeting back. See [Prompt engineering -> Opening the call](/gemini-live/prompt-engineering/#opening-the-call-a-language-neutral-turn-0-stub).
+
+---
+
+Next: [Pillar 3: Lossless history pruning & FactStore ->](/gemini-live/optimization/history-pruning/)

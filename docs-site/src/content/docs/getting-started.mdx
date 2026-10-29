@@ -5,6 +5,14 @@ description: "From zero to a working Gemini Live voice turn: endpoints, authenti
 
 import { Steps, Aside, Badge } from '@astrojs/starlight/components';
 import HandshakeSequence from '../../components/HandshakeSequence.astro';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="How to get a first spoken reply from Gemini Live: pick AI Studio or Vertex AI, authenticate, open the connection, and send audio."
+  why="Both surfaces run the same Live protocol on the same billing setup. They differ in how you authenticate, which compliance controls you get, and a few Vertex-only options."
+  number="About fifteen minutes from zero to a working spoken reply."
+  decide="AI Studio (API key, fastest start) or Vertex AI (enterprise access control, HIPAA and SOC 2, private networking, customer-managed encryption keys, regional data residency)."
+/>
 
 You can have a Gemini Live agent talking back to you in about fifteen minutes.
 
@@ -206,18 +214,18 @@ The server replies with `{"setupComplete": {"sessionId": "<UUID>"}}`. Log `sessi
 | **Input** (client -> model) | 16 kHz, 16-bit little-endian, **mono** PCM (`audio/pcm;rate=16000`) |
 | **Output** (model -> client) | 24 kHz, 16-bit, **mono** PCM (`audio/pcm;rate=24000`) |
 
-Input and output sample rates differ. Playing 24 kHz output at 16 kHz sounds slowed down; playing 16 kHz at 24 kHz sounds fast and high-pitched. Always enable `echoCancellation: true` in `getUserMedia` and run PCM capture inside an `AudioWorklet` (see [Audio engineering](/gemini_live_pipecat/audio-engineering/)).
+Input and output sample rates differ. Playing 24 kHz output at 16 kHz sounds slowed down; playing 16 kHz at 24 kHz sounds fast and high-pitched. Always enable `echoCancellation: true` in `getUserMedia` and run PCM capture inside an `AudioWorklet` (see [Audio engineering](/gemini-live/audio-engineering/)).
 
 ## 6. Six common setup failures
 
 1. **Sending frames before `setupComplete`**: `setup` must be the first frame and must travel alone. Gate all audio and text sends until `setupComplete` arrives.
 2. **Requesting `["AUDIO", "TEXT"]`**: A session returns audio or text, never both as modalities. Requesting both closes the socket with code **`1007`**. Use `outputAudioTranscription` for text alongside speech.
 3. **Treating 10 to 15 minute rotation as a crash**: The server emits `sessionResumptionUpdate` and closes with **`1008`** every 10 to 15 minutes. Reconnect using the resumption handle.
-4. **Mutating `systemInstruction` mid-session**: System instructions in `setup` are immutable for that socket connection. To inject mid-call phase instructions without reopening the socket, see [Dynamic prompt cards & phase gates](/gemini_live_pipecat/optimization/#pillar-2-dynamic-prompt-cards--phase-gates-the-silent-conductor).
+4. **Resending `setup` to change `systemInstruction`**: `setup` is the first frame only. To change instructions mid-call, send `clientContent` with `role="system"` and `turn_complete=False`, or `context_update` on Vertex AI `gemini-3.8-live`. Both replace the whole instruction in place. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/).
 5. **Testing through an HTTP proxy that drops WebSocket upgrades**: If you see immediate **`1006`** closes on a remote VM, forward the port over SSH (`ssh -L 7860:localhost:7860 user@your-dev-vm`) and open `http://localhost:7860/`.
 6. **Not flushing playback on `interrupted`**: When the user barges in, immediately clear your client audio playout queue.
 
-For full diagnostics on close codes (`1000`, `1006`, `1007`, `1008`, `1011`), see [Troubleshooting](/gemini_live_pipecat/troubleshooting/).
+For full diagnostics on close codes (`1000`, `1006`, `1007`, `1008`, `1011`), see [Troubleshooting](/gemini-live/troubleshooting/).
 
 ## 7. Pre-launch verification checklist
 
@@ -230,6 +238,6 @@ For full diagnostics on close codes (`1000`, `1006`, `1007`, `1008`, `1011`), se
 
 ## Next steps
 
-- **[Architecture](/gemini_live_pipecat/architecture/)**: Understand `realtimeInput` vs. `clientContent`, turn lifecycle signals, and session resumption.
-- **[Audio engineering](/gemini_live_pipecat/audio-engineering/)**: Implement `AudioWorklet` capture, adaptive jitter buffers, and instant barge-in.
-- **[Telephony pricing & tokenomics](/gemini_live_pipecat/pricing/)**: Understand how multi-turn duplex sessions are billed and how to keep costs around $0.031/min.
+- **[Architecture](/gemini-live/architecture/)**: Understand `realtimeInput` vs. `clientContent`, turn lifecycle signals, and session resumption.
+- **[Audio engineering](/gemini-live/audio-engineering/)**: Implement `AudioWorklet` capture, adaptive jitter buffers, and instant barge-in.
+- **[Telephony pricing & tokenomics](/gemini-live/pricing/)**: Understand how multi-turn duplex sessions are billed and how to keep costs around $0.031/min.

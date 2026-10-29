@@ -1,0 +1,144 @@
+---
+title: Executive overview
+description: What Gemini Live is, what a voice agent costs to run, which decisions a product or architecture team has to make, and where the common failures come from. Written in plain English, with links to the detailed pages.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import OneMinute from '../../components/OneMinute.astro';
+
+<OneMinute
+  what="A plain-English tour of the whole site: what Gemini Live does, what a call costs, the six decisions your team owns, and the failures to expect."
+  why="Most voice-agent projects are decided on three things: does it sound natural, what does a minute cost, and will it hold up on a 20-minute call. This page answers all three before you open a single protocol page."
+  number="About $0.031 per minute, flat, for a well-run call. An unmanaged call reaches $0.082 per minute at 3 minutes and $0.178 per minute at 10 minutes."
+  decide="Whether to build on Gemini Live at all, and if so, which surface (AI Studio or Vertex AI), which framework, and which cost controls you commit to before launch."
+/>
+
+## 1. What Gemini Live is, in one paragraph
+
+Gemini Live is a Google model that listens and talks at the same time. Your application opens one network connection, streams the caller's microphone audio in, and receives the model's spoken reply back as audio while it is being produced. The model decides when the caller has finished speaking, replies in a chosen voice, and stops when the caller talks over it. There is no separate speech-to-text step, no separate text model, and no separate text-to-speech step. One model does all three.
+
+That single fact drives everything else on this site: the latency numbers, the cost model, and the engineering rules.
+
+## 2. Two ways to build a voice agent
+
+| | Native (Gemini Live) | Cascade (three separate services) |
+| :--- | :--- | :--- |
+| How it works | One model hears audio and speaks audio | Speech-to-text, then a text model, then text-to-speech |
+| Time from the caller finishing to the agent starting | Under a second in normal conditions (network 30 to 60 ms, end-of-speech wait 300 to 500 ms, model 220 to 350 ms) | 1,200 to 2,500 ms, because the three stages run one after another |
+| What the model hears | Tone, hesitation, and emotion | Only the words, as text |
+| What you pay for | Audio and text tokens (the billing unit; about 25 tokens per second of audio) | Three separate bills |
+| Where this site covers it | Every page | [Choosing a framework](/gemini-live/frameworks/) |
+
+Both are valid. Native is the better fit for conversations where speed and natural turn-taking matter (sales, support, booking). Cascade still makes sense when you must run a specific text model or need a transcript-first audit trail.
+
+## 3. What a call costs, and why it can run away
+
+Gemini Live bills tokens, not minutes. Audio converts to tokens at about 25 tokens per second in each direction. A single continuous minute of talking (caller in, agent out) costs about **$0.023**.
+
+The problem is turn-taking. On every new turn, the model re-reads everything said so far. Left alone, a 3-minute, 18-turn call costs **$0.082 per minute** and a 10-minute, 60-turn call costs **$0.178 per minute**. A 30-minute unmanaged call does not finish at all: it is disconnected at the 15-minute uncompressed-audio ceiling.
+
+Three of the four patterns below (each with its own page) bring that back to a flat **$0.031 per minute** regardless of call length (a 62% saving at 3 minutes, 82% at 10 minutes). The fourth removes the cost of lines the agent says on every call:
+
+| Pattern | Plain-English version | Detail page |
+| :--- | :--- | :--- |
+| Sliding window | Let the server forget old audio once the conversation passes 5,000 tokens | [Pillar 1](/gemini-live/optimization/sliding-window/) |
+| Prompt cards | Give the model only the instructions and tools for the current step, and replace them in place rather than piling them up | [Pillar 2](/gemini-live/optimization/prompt-cards/) |
+| Fact store | Keep the caller's name, postal code, and other facts in a tiny summary (under 60 tokens) so forgetting old audio loses nothing | [Pillar 3](/gemini-live/optimization/history-pruning/) |
+| Cached lines | Record the greeting and hold messages once and play the file, instead of paying the model to say them on every call | [Pillar 4](/gemini-live/optimization/cached-tts/) |
+
+Try your own numbers in the [pricing calculator](/gemini-live/pricing-calculator/). The rate card and the full worked example are on [Token economics and pricing](/gemini-live/pricing/).
+
+## 4. The six decisions your team owns
+
+1. Which surface to build on. Google AI Studio uses an API key and is the fastest way to start. Vertex AI adds enterprise access control and the compliance options regulated industries need (HIPAA, SOC 2, private networking, customer-managed encryption keys, regional data residency). Both run the same Live protocol on the same billing setup. See [Getting started](/gemini-live/getting-started/).
+2. Which framework connects callers to the model. The choices are the raw Google SDK, Google's Agent Development Kit (ADK), Pipecat, or LiveKit. Pick by how calls arrive: browser and mobile apps lean toward LiveKit or the raw SDK; phone lines and carrier trunks lean toward Pipecat; multi-agent systems on Google Cloud lean toward ADK. See [Choosing a framework](/gemini-live/frameworks/).
+3. Which model and voice to pin. The measurements on this site cover `gemini-live-2.5-flash-native-audio`, `gemini-3.1-flash-live-preview`, and `gemini-3.8-live`; the newest optimization pages are measured on `gemini-3.8-live`. Voices are prebuilt, and the names are case-sensitive in the configuration. Audition them in the [Voice Studio](/gemini-live/voice-playground/) and check the settings in the [Configuration reference](/gemini-live/gemini-live-configuration/).
+4. Which cost controls ship on day one. Decide which of the four patterns above you launch with. The sliding window and prompt cards have the largest effect.
+5. Where the voice server runs. Cloud Run or Google Kubernetes Engine (GKE). Voice servers hold a connection open for the whole call, so the defaults built for short web requests break them. See [Deployment](/gemini-live/deployment/).
+6. What you measure. Per-turn latency from the caller's last word to the agent's first sound, and per-turn token counts. Standard request-duration metrics do not apply. See [Latency and telemetry](/gemini-live/latency-and-telemetry/).
+
+## 5. The failures that show up most often
+
+| What people see | What is actually happening | Where the fix is |
+| :--- | :--- | :--- |
+| The agent cuts itself off as soon as it starts speaking | Its own voice is leaking from the speaker into the microphone, and the model hears that as the caller interrupting | [Audio engineering](/gemini-live/audio-engineering/) |
+| The agent answers the TV or a person in the background | Background speech reaches the model as if it were the caller. A noise suppressor does not remove other voices; a voice-isolation filter does | [Noise, background speech and VAD](/gemini-live/audio-engineering/noise-and-vad/) |
+| The agent keeps talking for 2 to 3 seconds after the caller interrupts | The client received several seconds of audio in advance and did not throw it away when the server said "interrupted" | [Architecture](/gemini-live/architecture/#interruptions-barge-in) |
+| Calls drop at exactly 5 minutes | Cloud Run's default request timeout is 300 seconds | [Deployment](/gemini-live/deployment/) |
+| The voice sounds slow and deep, or fast and squeaky | The audio is being played at the wrong sample rate (the model speaks at 24 kHz and listens at 16 kHz) | [Troubleshooting](/gemini-live/troubleshooting/) |
+| Costs climb turn after turn even with short prompts | Step-by-step instructions were added to the conversation history instead of replacing the system instruction (2,493 tokens per turn after 3 steps, versus 783 when replaced in place) | [Pillar 2](/gemini-live/optimization/prompt-cards/) |
+| The agent repeats its greeting halfway through a long call | The server forgot the old audio, and the current step's instructions lived only in that audio (6 of 7 runs replayed the greeting when the card sat in history; 0 of 7 when it sat in the system instruction) | [Pillar 2](/gemini-live/optimization/prompt-cards/#2-how-gemini-live-stores-instructions-vs-history-replace-vs-stack) |
+| The agent's accent drifts after it reads a tool result | The tool result is the last thing the model reads before it speaks, and plain English JSON pulls it toward a US English voice | [Tools](/gemini-live/tools/#8-what-to-put-in-a-functionresponse) |
+| The agent reads brackets aloud or goes quiet when told to "stay silent" | Instructions written for a text chatbot behave differently when spoken. Bracketed tags get read out, and a silence instruction causes dead air | [How to write a better prompt](/gemini-live/prompt-optimization/) and [Prompt engineering](/gemini-live/prompt-engineering/) |
+
+## 6. What "ready for production" looks like
+
+- Echo cancellation and noise suppression are on at the microphone.
+- The client throws away buffered audio the instant the server reports an interruption.
+- The session reconnects transparently when the server rotates the connection (every 10 to 15 minutes).
+- The sliding window is set (5,000 tokens trigger, 3,500 target) and step instructions replace the system instruction rather than stacking in history.
+- A fact store under 60 tokens carries the caller's details across the whole call.
+- Cloud Run runs with CPU always allocated, a 60-minute timeout, reconnects routed to the same server instance, and at least one warm instance.
+- Dashboards show per-turn latency and per-turn tokens, recorded once per turn.
+- The launch runbook includes the [Troubleshooting](/gemini-live/troubleshooting/) table.
+
+## 7. Plain-English glossary
+
+| Term | What it means here |
+| :--- | :--- |
+| Token | The unit Gemini bills in. Audio converts at roughly 25 tokens per second in each direction; text is billed per token as well. |
+| Turn | One exchange: the caller speaks, the agent replies. |
+| Barge-in | The caller talking over the agent. The server reports it as `interrupted`. |
+| VAD | Voice activity detection. The server's judgment of when speech starts and stops. |
+| System instruction | The standing brief you give the model: who it is, how it speaks, what the current step is. |
+| Tool call | The model asking your backend to do something (look up an order, book a seat) and waiting for the answer. |
+| Session resumption | Reconnecting after the server rotates the connection without losing the conversation. |
+| Sliding window | The server dropping the oldest audio once the conversation passes a token limit. |
+| Prompt card | A short set of instructions (about 100 to 200 tokens) for one step of a call, swapped in as the call moves on. |
+
+## 8. Every page on this site, in one line
+
+| Page | What it gives you |
+| :--- | :--- |
+| [Getting started](/gemini-live/getting-started/) | A first spoken reply in about fifteen minutes. |
+| [Voice Studio](/gemini-live/voice-playground/) | A browser sandbox to hear the voices and watch per-turn cost. |
+| [Gemini Live Skill](/gemini-live/gemini-live-skill/) | The whole reference as one file for coding agents. |
+| [Architecture](/gemini-live/architecture/) | How a call flows, turn by turn, and how reconnects work. |
+| [Configuration reference](/gemini-live/gemini-live-configuration/) | Every setting you can send, in one table. |
+| [Capture, buffers and backpressure](/gemini-live/audio-engineering/) | Clean audio in, smooth audio out, fast interruptions. |
+| [Noise, background speech and VAD](/gemini-live/audio-engineering/noise-and-vad/) | What to do about fans, traffic, other voices, and echo. |
+| [Tools and function calling](/gemini-live/tools/) | How the agent asks your systems to do things mid-conversation. |
+| [Choosing a framework](/gemini-live/frameworks/) | Raw SDK, ADK, Pipecat, or LiveKit, and native versus cascade. |
+| [Token economics and pricing](/gemini-live/pricing/) | The rate card and why unmanaged calls compound. |
+| [Pricing calculator](/gemini-live/pricing-calculator/) | Your traffic numbers, unmanaged versus optimized. |
+| [Optimization patterns](/gemini-live/optimization/) | The four patterns, with one page each: [sliding window](/gemini-live/optimization/sliding-window/), [prompt cards](/gemini-live/optimization/prompt-cards/), [fact pruning](/gemini-live/optimization/history-pruning/), [cached lines](/gemini-live/optimization/cached-tts/). |
+| [How to write a better prompt](/gemini-live/prompt-optimization/) | Short standing rules plus a short card per step. |
+| [Prompt engineering](/gemini-live/prompt-engineering/) | The detailed prompt layout and the phrasing traps. |
+| [Latency and telemetry](/gemini-live/latency-and-telemetry/) | The two numbers to put on a dashboard. |
+| [Deployment](/gemini-live/deployment/) | The Cloud Run and GKE settings that keep calls alive. |
+| [Troubleshooting](/gemini-live/troubleshooting/) | Symptom, cause, fix. |
+
+## 9. Where to go next
+
+<CardGrid>
+  <LinkCard
+    title="Getting started"
+    href="/gemini-live/getting-started/"
+    description="A working spoken reply in about fifteen minutes, on AI Studio or Vertex AI."
+  />
+  <LinkCard
+    title="Pricing calculator"
+    href="/gemini-live/pricing-calculator/"
+    description="Put in your call length and turn rate and see unmanaged versus optimized cost per minute."
+  />
+  <LinkCard
+    title="Optimization patterns"
+    href="/gemini-live/optimization/"
+    description="The four patterns that make cost flat and latency stable on long calls."
+  />
+  <LinkCard
+    title="Gemini Live Skill"
+    href="/gemini-live/gemini-live-skill/"
+    description="The full engineering reference as one file your coding agent can load."
+  />
+</CardGrid>

@@ -26,3 +26,22 @@ test('double-click expands, and a second double-click restores', () => {
   assert.equal(toggleLogHeight(280, 1000), 850);
   assert.equal(toggleLogHeight(850, 1000), LOG_HEIGHT.initial);
 });
+
+test('a stored height is read safely: blocked storage or junk falls back to the default', async () => {
+  const { readStoredLogHeight, writeStoredLogHeight } = await import('../src/lib/log-resize.ts');
+  const throwing = { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('QuotaExceeded'); } };
+  assert.equal(readStoredLogHeight(throwing, 1000), LOG_HEIGHT.initial);
+  assert.doesNotThrow(() => writeStoredLogHeight(throwing, 400));
+  const throwingGetter = () => { throw new Error('SecurityError: window.localStorage getter denied'); };
+  assert.equal(readStoredLogHeight(throwingGetter, 1000), LOG_HEIGHT.initial);
+  assert.doesNotThrow(() => writeStoredLogHeight(throwingGetter, 400));
+  const store = new Map();
+  const memory = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) };
+  assert.equal(readStoredLogHeight(() => memory, 1000), LOG_HEIGHT.initial);
+  memory.setItem('voice-studio.diagnostics-log-height', 'abc');
+  assert.equal(readStoredLogHeight(() => memory, 1000), LOG_HEIGHT.initial);
+  writeStoredLogHeight(() => memory, 5000);
+  assert.equal(readStoredLogHeight(() => memory, 1000), 850); // re-clamped to this viewport
+  assert.equal(readStoredLogHeight(undefined, 1000), LOG_HEIGHT.initial);
+});
+

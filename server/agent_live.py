@@ -171,6 +171,59 @@ def _rejection_detail(error: BaseException) -> str:
     return details if isinstance(details, str) and details.strip() else str(error)
 
 
+MAX_AVATAR_MP4_BUFFER_BYTES = 4 * 1024 * 1024
+_TOP_LEVEL_MP4_BOXES = frozenset(
+    {b"ftyp", b"moov", b"styp", b"sidx", b"emsg", b"prft", b"moof", b"mdat", b"free", b"skip", b"uuid"}
+)
+_SEGMENT_START_BOXES = frozenset({b"ftyp", b"styp", b"moof"})
+
+
+def _is_valid_segment_start(buf: bytearray, offset: int) -> bool:
+    n = len(buf)
+    if offset + 8 > n:
+        return False
+    sz, btype = struct.unpack(">I4s", buf[offset : offset + 8])
+    if btype not in _SEGMENT_START_BOXES or sz < 16 or sz > MAX_AVATAR_MP4_BUFFER_BYTES:
+        return False
+    if btype == b"moof":
+        if offset + 16 <= n:
+            csz, ctype = struct.unpack(">I4s", buf[offset + 8 : offset + 16])
+            if ctype in (b"mfhd", b"traf") and 8 <= csz <= sz - 8:
+                return True
+        if offset + sz + 8 <= n:
+            msz, mtype = struct.unpack(">I4s", buf[offset + sz : offset + sz + 8])
+            if mtype == b"mdat" and 8 <= msz <= MAX_AVATAR_MP4_BUFFER_BYTES:
+                return True
+        return offset == 0 and offset + sz > n and sz <= 65536
+    if btype in (b"ftyp", b"styp") and offset + 12 <= n:
+        if not all(32 <= b <= 126 for b in buf[offset + 8 : offset + 12]):
+            return False
+    return True
+
+
+def _resync_to_segment_start(buf: bytearray, search_from: int = 1) -> bool:
+    n = len(buf)
+    pos = max(0, search_from)
+    while pos + 8 <= n:
+        next_moof = buf.find(b"moof", pos + 4)
+        next_ftyp = buf.find(b"ftyp", pos + 4)
+        candidates = [idx - 4 for idx in (next_moof, next_ftyp) if idx != -1 and idx - 4 >= pos]
+        if not candidates:
+            break
+        cand = min(candidates)
+        if cand + 16 > n:
+            if cand > 0:
+                del buf[:cand]
+            return False
+        if _is_valid_segment_start(buf, cand):
+            if cand > 0:
+                del buf[:cand]
+            return True
+        pos = cand + 1
+    buf.clear()
+    return False
+
+
 def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
     """Reassemble arbitrary transport slices into complete ISO-BMFF segments.
 
@@ -179,26 +232,42 @@ def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
     only complete `ftyp + moov` (is_init=True) and `moof + mdat` (is_init=False)
     segments guarantees Chrome's MSE SourceBuffer never ingests a truncated box.
     """
+    if len(buf) < 8:
+        return []
+    if not _is_valid_segment_start(buf, 0):
+        if len(buf) < 16 and buf[4:8] in _SEGMENT_START_BOXES:
+            sz = struct.unpack(">I", buf[:4])[0]
+            if 16 <= sz <= MAX_AVATAR_MP4_BUFFER_BYTES:
+                return []
+        if not _resync_to_segment_start(buf, 1):
+            return []
+
     pos = 0
     n = len(buf)
     boxes: list[tuple[bytes, int, int]] = []
+    discard_corrupt_tail = False
     while pos + 8 <= n:
         sz, btype = struct.unpack(">I4s", buf[pos : pos + 8])
         if sz == 1:
             if pos + 16 > n:
                 break
             sz = struct.unpack(">Q", buf[pos + 8 : pos + 16])[0]
-        elif sz < 8:
-            # Malformed or non-box stream: flush buffer as-is to avoid stalling
-            raw = bytes(buf)
-            buf.clear()
-            return [(raw, b"ftyp" in raw[:32] or b"moov" in raw[:64])]
+        if (
+            btype not in _TOP_LEVEL_MP4_BOXES
+            or sz < 8
+            or sz > MAX_AVATAR_MP4_BUFFER_BYTES
+            or (btype == b"moof" and pos + 16 <= n and not _is_valid_segment_start(buf, pos))
+        ):
+            discard_corrupt_tail = True
+            break
         if pos + sz > n:
             break
         boxes.append((btype, pos, pos + sz))
         pos += sz
 
     if not boxes:
+        if discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+            _resync_to_segment_start(buf, 1)
         return []
 
     emitted: list[tuple[bytes, bool]] = []
@@ -207,6 +276,8 @@ def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
     if boxes[0][0] == b"ftyp":
         moov_idx = next((i for i, b in enumerate(boxes) if b[0] == b"moov"), None)
         if moov_idx is None:
+            if discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+                _resync_to_segment_start(buf, 1)
             return []
         init_end = boxes[moov_idx][2]
         emitted.append((bytes(buf[:init_end]), True))
@@ -220,13 +291,20 @@ def extract_complete_mp4_segments(buf: bytearray) -> list[tuple[bytes, bool]]:
             del buf[:last_mdat_end]
         else:
             del buf[:init_end]
+        if discard_corrupt_tail:
+            _resync_to_segment_start(buf, 0)
         return emitted
 
     last_mdat_end = max((b[2] for b in boxes if b[0] == b"mdat"), default=0)
     if last_mdat_end > 0:
         emitted.append((bytes(buf[:last_mdat_end]), False))
         del buf[:last_mdat_end]
+        if discard_corrupt_tail:
+            _resync_to_segment_start(buf, 0)
+    elif discard_corrupt_tail or len(buf) > MAX_AVATAR_MP4_BUFFER_BYTES:
+        _resync_to_segment_start(buf, 1)
     return emitted
+
 
 
 def _iter_mp4_boxes(buf: bytes, start: int = 0, end: Optional[int] = None) -> list[tuple[bytes, int, int]]:
@@ -369,8 +447,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     async def _handle_msg_model_turn(self, message):
-        if getattr(self, "_awaiting_interrupted_turn_complete", False):
-            return
+        interrupted_turn = bool(getattr(self, "_awaiting_interrupted_turn_complete", False))
         if getattr(self, "_avatar_enabled", False):
             sc = getattr(message, "server_content", None)
             mt = getattr(sc, "model_turn", None) if sc else None
@@ -387,6 +464,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                     self._avatar_mp4_buffer.extend(inl.data)
                     for seg_bytes, is_init in extract_complete_mp4_segments(self._avatar_mp4_buffer):
                         b64_str = base64.b64encode(seg_bytes).decode("ascii")
+                        is_decay_or_interrupted = bool(
+                            interrupted_turn or getattr(self, "_avatar_post_turn_decay", False)
+                        )
                         if is_init:
                             self._avatar_init_segment = b64_str
                             seg_has_audio = False
@@ -402,14 +482,18 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                                 seg_has_audio = getattr(self, "_avatar_last_has_audio", False)
                             else:
                                 seg_has_audio = bool(seg_info["has_audio"])
-                                self._avatar_last_has_audio = seg_has_audio
+                                if not interrupted_turn:
+                                    self._avatar_last_has_audio = seg_has_audio
                             if seg_has_audio:
                                 self._avatar_silent_tail_count = 0
-                                saw_active_video_speech = True
-                            elif getattr(self, "_avatar_speaking", False):
-                                self._avatar_silent_tail_count = getattr(self, "_avatar_silent_tail_count", 0) + 1
-                                if self._avatar_silent_tail_count >= 2:
-                                    saw_silent_video_after_speech = True
+                                if not is_decay_or_interrupted:
+                                    saw_active_video_speech = True
+                            else:
+                                self._avatar_post_turn_decay = False
+                                if getattr(self, "_avatar_speaking", False):
+                                    self._avatar_silent_tail_count = getattr(self, "_avatar_silent_tail_count", 0) + 1
+                                    if self._avatar_silent_tail_count >= 2:
+                                        saw_silent_video_after_speech = True
                         seq = getattr(self, "_avatar_seq", 0) + 1
                         self._avatar_seq = seq
                         msg_data: Dict[str, Any] = {
@@ -419,6 +503,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                             "seq": seq,
                             "has_audio": seg_has_audio,
                         }
+                        if not is_init and is_decay_or_interrupted:
+                            msg_data["post_turn_decay"] = True
                         if seg_tfdt is not None:
                             msg_data["tfdt"] = seg_tfdt
                         await self.push_frame(OutputTransportMessageUrgentFrame(message={
@@ -434,8 +520,10 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 await self._begin_avatar_output()
             elif saw_silent_video_after_speech:
                 await self._end_avatar_output()
-            if not has_non_video:
+            if interrupted_turn or not has_non_video:
                 return
+        elif interrupted_turn:
+            return
 
         self._begin_output()
         await super()._handle_msg_model_turn(message)
@@ -521,11 +609,10 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if origin is not None:
             origin.finish("interrupted")
         self._live_output_turn = None
+        await self._end_avatar_output()
         if not was_responding:
-            await self._end_avatar_output()
             return
         if getattr(self, "_avatar_enabled", False):
-            self._avatar_mp4_buffer = bytearray()
             try:
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
@@ -660,6 +747,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             await self._record_bot_interruption()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
             self._user_is_speaking = True
             self._activity_end_sent_for_turn = False
             if not getattr(self, "_mixin_bot_responding", False):
@@ -672,6 +760,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 await self._handle_user_started_speaking(frame)
         elif isinstance(frame, UserStartedSpeakingFrame):
             self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
             self._activity_end_sent_for_turn = False
             if not getattr(self, "_mixin_bot_responding", False):
                 self._my_ttfb_start = None
@@ -682,6 +771,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             if not getattr(self, "_mixin_bot_responding", False):
                 self._last_user_speech_activity_at = time.monotonic()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._avatar_post_turn_decay = False
             self._user_is_speaking = False
             self._activity_start_sent_for_turn = False
             if not getattr(self, "_mixin_bot_responding", False):
@@ -712,6 +802,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
 
     async def _create_single_response(self, messages_list):
         self._awaiting_interrupted_turn_complete = False
+        self._avatar_post_turn_decay = False
         self._ttft_reported_for_response = False
         self._ttft_anchored_to_speech_end = False
         self._my_ttfb_start = time.monotonic()
@@ -760,6 +851,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         it = getattr(sc, "input_transcription", None) if sc else None
         if it and getattr(it, "text", None):
             self._awaiting_interrupted_turn_complete = False
+            self._avatar_post_turn_decay = False
             self._last_user_speech_activity_at = time.monotonic()
         if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
             # Short speech can be consent or a real answer ("आप बताइए").
@@ -826,6 +918,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         self.response_identity.begin()
         has_text = bool(message.server_content.output_transcription and message.server_content.output_transcription.text)
         if has_text:
+            self._avatar_post_turn_decay = False
             self._begin_output()
         await super()._handle_msg_output_transcription(message)
         if has_text:
@@ -857,6 +950,10 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
 
     async def _handle_msg_turn_complete(self, message):
         was_interrupted = getattr(self, "_awaiting_interrupted_turn_complete", False)
+        was_avatar_active = bool(
+            getattr(self, "_avatar_last_has_audio", False)
+            or getattr(self, "_avatar_speaking", False)
+        )
         self._awaiting_interrupted_turn_complete = False
         self._ttft_reported_for_response = False
         self.response_identity.begin()
@@ -866,6 +963,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         self._mixin_bot_responding = False
         self._response_started_at = None
         await self._end_avatar_output()
+        self._avatar_post_turn_decay = bool(was_avatar_active and not was_interrupted)
         if was_interrupted:
             self._bot_turn_text_buffer = ""
         if getattr(self, '_bot_turn_text_buffer', '').strip():
@@ -962,14 +1060,13 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             return False
 
     async def _send_repeat_instruction(self, filler_text: str):
-        """Send a user-role prompt telling the model to repeat itself."""
+        """Send a user-role prompt telling the model to continue where it was cut off."""
         await self.inject_directive(
             (
                 f"The user just said '{filler_text}' which is a short "
                 f"filler/acknowledgment while you were speaking. They did NOT "
-                f"ask a new question. Please REPEAT your previous response "
-                f"from the beginning — resume exactly what you were saying "
-                f"before the interruption."
+                f"ask a new question. Continue your previous response from "
+                f"where you were cut off. Do not restart it from the beginning."
             ),
             tag="RepeatOnFiller",
         )
@@ -1234,6 +1331,12 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             persona_tools = setup_tools(self.get_llm_adapter())
             if persona_tools:
                 config.tools = persona_tools
+        # ...and its current system instruction, so a reconnect never restarts from the greeting.
+        setup_instruction = getattr(architecture, "setup_system_instruction", None)
+        if setup_instruction is not None:
+            live_instruction = setup_instruction()
+            if live_instruction:
+                config.system_instruction = Content(parts=[Part(text=live_instruction)])
 
         # Enforce sliding_window.target_tokens on context compression (80% of trigger_tokens)
         if getattr(config, "context_window_compression", None):
@@ -1386,20 +1489,10 @@ class CustomGeminiLiveVertexLLMService(GeminiSessionLoggerMixin, GeminiLiveVerte
 class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService):
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
-        import os
         from google.genai import Client
-        
-        # Temporarily unset Vertex env vars to force AI Studio mode
-        project = os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
-        creds = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
-        
-        logger.info("Creating Client forcing AI Studio mode (unsetting project/creds temporarily)...")
-        try:
-            self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
-        finally:
-            # Restore them
-            if project: os.environ["GOOGLE_CLOUD_PROJECT"] = project
-            if creds: os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
+
+        logger.info("Creating Client forcing AI Studio mode (vertexai=False)...")
+        self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
 
 
 async def dynamic_tool_handler(params: FunctionCallParams):
@@ -1512,6 +1605,8 @@ class StartTriggerProcessor(FrameProcessor):
         self._max_gate_duration = 12.0  # Safety timeout
         #: Messages a persona seeds ahead of the greeting (e.g. its first prompt card).
         self.opening_messages: list = []
+        #: The persona's own greeting turn, when the language default would read as caller speech.
+        self.greeting_text: Optional[str] = None
         if self._mic_gated:
             logger.info("[StartTriggerProcessor] Client mic gating enabled for initial greeting turn.")
 
@@ -1545,7 +1640,7 @@ class StartTriggerProcessor(FrameProcessor):
                 if not self.triggered:
                     self.triggered = True
                     self._gate_start_time = time.monotonic()
-                    greeting_text = "Hey!" if self.language == "hi-IN" else "Hello!"
+                    greeting_text = self.greeting_text or ("नमस्ते!" if self.language == "hi-IN" else "Hello!")
                     logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
                     messages = [*self.opening_messages, {"role": "user", "content": greeting_text}]
                     await self.push_frame(LLMMessagesAppendFrame(messages=messages))
@@ -2348,6 +2443,7 @@ async def run_agent_live(
     opening_messages = getattr(persona_architecture, "opening_messages", None)
     if opening_messages is not None:
         start_trigger.opening_messages = list(opening_messages())
+    start_trigger.greeting_text = getattr(persona_architecture, "greeting_text", None)
 
     # Padding only makes sense when local VAD frames actually arrive.
     turn_tracker = TurnTracker(current_session_id(), "gemini-live", vad_stop_padding_ms=400 if use_silero else None)

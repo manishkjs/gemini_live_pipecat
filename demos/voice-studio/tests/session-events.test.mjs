@@ -38,10 +38,31 @@ async function harness() {
       const resolved = name.startsWith('@/') ? name.slice(2) : path.relative(root, path.resolve(path.dirname(full), name));
       return load(resolved.endsWith('.ts') ? resolved : `${resolved}.ts`);
     };
+    class HarnessMediaSource {
+      static isTypeSupported() { return true; }
+      constructor() { this.readyState = 'open'; }
+      addEventListener(type, fn) { if (type === 'sourceopen') fn(); }
+      addSourceBuffer() {
+        return {
+          updating: false,
+          mode: 'segments',
+          buffered: { length: 1, start: () => 0, end: () => 2 },
+          addEventListener: () => {},
+          appendBuffer: () => {},
+          remove: () => {},
+        };
+      }
+      endOfStream() { this.readyState = 'ended'; }
+    }
     vm.runInNewContext(compiled, {
       exports, require, crypto: webcrypto, console, performance, AbortController,
-      URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval,
-      window: { location: { protocol: 'http:', origin: 'http://localhost:7860' } },
+      URL: Object.assign(URL, { createObjectURL: () => 'blob:harness', revokeObjectURL: () => {} }),
+      URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval,
+      window: {
+        location: { protocol: 'http:', origin: 'http://localhost:7860' },
+        ManagedMediaSource: HarnessMediaSource,
+        atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+      },
     }, { filename: full });
     if (!Object.keys(overrides).length) cache.set(full, exports);
     return exports;
@@ -327,6 +348,7 @@ test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExce
     }
   }
 
+  const revokedUrls = [];
   const exports = {};
   vm.runInNewContext(compiled, {
     exports,
@@ -336,7 +358,7 @@ test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExce
       atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
     },
     MediaSource: FakeMediaSource,
-    URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
+    URL: { createObjectURL: () => `blob:test-${mediaSources.length}`, revokeObjectURL: url => { revokedUrls.push(url); } },
     console,
   }, { filename: full });
 
@@ -382,10 +404,43 @@ test('useAvatarStream never drops queued fMP4 segments on interrupt or QuotaExce
   ms1.sb.finishUpdate();
   assert.deepEqual(ms1.sb.appended, ['init-1', 'moof-mdat-1', 'moof-mdat-2', 'moof-mdat-3']);
 
-  // 3. When a new isInit=true segment arrives mid-call (after reconnect), MediaSource is recreated for tfdt=0
+  // 3. When a new isInit=true segment arrives mid-call (after reconnect), previous MediaSource is closed and URL revoked
   ctrl.pushChunk(b64('init-2'), true, 5);
+  assert.equal(ms1.readyState, 'ended', 'previous MediaSource must be closed via endOfStream() on mid-call re-init');
+  assert.deepEqual(revokedUrls, ['blob:test-1'], 'previous MediaSource blob URL must be revoked on mid-call re-init');
   assert.equal(mediaSources.length, 2);
   assert.deepEqual(mediaSources[1].sb.appended, ['init-2']);
+});
+
+test('avatar session keeps phase in speaking across early turn_complete while avatar_video speech is active, and updates model to gemini-3.8-live on customVoiceAudio upload', async () => {
+  const h = await harness();
+  // Verify update('customVoiceAudio', ...) forces model to gemini-3.8-live
+  h.render().update('model', 'gemini-live-2.5-flash-native-audio');
+  assert.equal(h.render().settings.model, 'gemini-live-2.5-flash-native-audio');
+  h.render().update('customVoiceAudio', 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=');
+  assert.equal(h.render().settings.model, 'gemini-3.8-live', 'uploading customVoiceAudio must switch model to gemini-3.8-live');
+
+  await h.render().startBackend('live', { avatarEnabled: true, avatarName: 'Kira', model: 'gemini-3.8-live' });
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+
+  // Turn 1: avatar_video with has_audio=true arrives -> phase becomes speaking
+  h.send({ type: 'avatar_video', data: b64('init'), is_init: true, seq: 1, has_audio: false, tfdt: 0 });
+  h.send({ type: 'avatar_video', data: b64('speech-1'), is_init: false, seq: 2, has_audio: true, tfdt: 1.0 });
+  assert.equal(h.render().phase, 'speaking');
+
+  // Early turn_complete arrives on the wire while MSE is still playing buffered speech -> phase must stay speaking
+  h.send({ type: 'metrics', payload: { type: 'turn_complete', response_id: 'r1', event_id: 'tc-1' } });
+  assert.equal(h.render().phase, 'speaking', 'early turn_complete must not clobber speaking phase while avatar video speech is playing');
+
+  // Turn 2: text-only / fallback turn without avatar_video speech chunks -> turn_complete transitions to listening
+  h.send({ type: 'transcription', participant: 'User', text: 'Next question' });
+  assert.equal(h.render().phase, 'thinking');
+  h.send({ type: 'transcription', participant: 'Bot', response_id: 'r2', text: 'Fallback answer' });
+  assert.equal(h.render().phase, 'speaking');
+  h.send({ type: 'metrics', payload: { type: 'turn_complete', response_id: 'r2', event_id: 'tc-2' } });
+  assert.equal(h.render().phase, 'listening', 'turn_complete without avatar_video speech chunks must transition phase to listening');
+
+  await h.render().endSession();
 });
 
 test('useAvatarStream stops lip movement immediately at speechEndTfdt and skips the post-speech phantom lip-flap tail', () => {
@@ -896,8 +951,41 @@ test('useAvatarStream fails immediately when neither MediaSource nor ManagedMedi
   assert.deepEqual(appendedSegments, ['managed-init']);
 });
 
+test('post_turn_decay avatar segments are forwarded to MSE without flipping phase to speaking or recording latency', async () => {
+  const h = await harness();
+  await h.render().startBackend('live', { avatarEnabled: true, avatarName: 'Kira', model: 'gemini-3.8-live' });
 
+  const b64 = str => Buffer.from(str, 'utf8').toString('base64');
+  // User speaks -> phase is thinking, then post-turn mouth-closure decay segment from previous turn arrives
+  h.send({ type: 'transcription', participant: 'User', text: 'Next question' });
+  assert.equal(h.render().phase, 'thinking');
+  const latencyBefore = h.render().latencyMs;
 
+  h.send({
+    type: 'avatar_video',
+    data: b64('decay-segment'),
+    is_init: false,
+    seq: 99,
+    has_audio: true,
+    post_turn_decay: true,
+    tfdt: 4.2,
+  });
 
+  // Phase must stay 'thinking' (not flip to 'speaking') and no bogus latency metric may be recorded
+  assert.equal(h.render().phase, 'thinking');
+  assert.equal(h.render().latencyMs, latencyBefore);
+  await h.render().endSession();
+});
 
+test('settings-dialog and transcript-panel re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const settingsDialogSrc = fs.readFileSync(path.resolve(root, 'components/studio/settings-dialog.tsx'), 'utf8');
+  const transcriptPanelSrc = fs.readFileSync(path.resolve(root, 'components/studio/transcript-panel.tsx'), 'utf8');
+  const pipecatSessionSrc = fs.readFileSync(path.resolve(root, 'lib/pipecat-session.ts'), 'utf8');
+  const obsDrawerSrc = fs.readFileSync(path.resolve(root, 'components/observability-drawer.tsx'), 'utf8');
 
+  assert.match(settingsDialogSrc, /\[settingsOpen,[^\]]*settings\.model[^\]]*\]/);
+  assert.match(transcriptPanelSrc, /\[serverPreset,[^\]]*settings\.model[^\]]*\]/);
+  assert.doesNotMatch(pipecatSessionSrc, /googlers\.com|rangarok|UberProxy/i);
+  assert.doesNotMatch(obsDrawerSrc, /readStoredLogHeight\(window\.localStorage|writeStoredLogHeight\(window\.localStorage/);
+});

@@ -38,11 +38,15 @@ SDK session's websocket. Wire names are camelCase and schema types uppercase.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from loguru import logger
+
+#: Upper bound for one context_update write; on timeout the update stays pending.
+SEND_TIMEOUT_S = 2.0
 
 #: Vertex Live models where a mid-session ``context_update`` tool swap is honoured.
 CONTEXT_UPDATE_TOOL_MODELS = frozenset({"gemini-3.8-live"})
@@ -61,7 +65,8 @@ def context_update_frame(declarations: Optional[List[Dict[str, Any]]] = None,
     """The raw client frame that replaces the declared tools, the system instruction, or both."""
     update: Dict[str, Any] = {}
     if declarations is not None:
-        update["tools"] = {"tools": [{"functionDeclarations": declarations}]}
+        # An empty list sends the bare wrapper {"tools": {}}: the proto's clear-all-tools form.
+        update["tools"] = {"tools": [{"functionDeclarations": declarations}]} if declarations else {}
     if system_instruction is not None:
         update["systemInstruction"] = {"parts": [{"text": system_instruction}]}
     return {"context_update": update}
@@ -159,9 +164,12 @@ class LiveToolSwapper:
         names, instruction = self.pending, self.pending_instruction
         declarations = self._declarations_for(names) if names is not None else None
         try:
-            await websocket.send(json.dumps(context_update_frame(declarations, instruction)))
+            # Bounded: the send runs under the architecture lock, which turn_complete's flush also
+            # waits on, so a stalled socket must not stall the receive loop with it.
+            await asyncio.wait_for(websocket.send(json.dumps(context_update_frame(declarations, instruction))),
+                                   timeout=SEND_TIMEOUT_S)
         except Exception as exc:  # keep it pending: a retry or the next setup carries it
-            logger.warning(f"[{self.label}] context_update send failed: {exc}")
+            logger.warning(f"[{self.label}] context_update send failed: {exc!r}")
             return False
         self.frames += 1
         self.last_frame = {"tools": names, "previous_tools": self.active, "instruction": instruction}

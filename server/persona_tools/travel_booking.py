@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from persona_prompt_cards.tara_cards import (
     AGENT_NAME,
+    CARD_STEPS,
     TARA_CARD_BY_NUMBER,
     STEP_INSTRUCTIONS,
     card_for_step,
@@ -126,19 +127,20 @@ TOOL_DECLARATIONS: List[Dict[str, Any]] = [
     {
         "name": "FlightActionTool",
         "behavior": "NON_BLOCKING",
-        "description": "Gives details of a shown flight, or selects it for booking.",
+        "description": "Gives details of a shown flight, selects it for booking, or reopens the search when the caller wants another date or route.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
-                    "type": "STRING", "enum": ["FLIGHT_DETAILS", "SELECT_FLIGHT"],
-                    "description": "FLIGHT_DETAILS for questions, SELECT_FLIGHT when the caller chooses.",
+                    "type": "STRING", "enum": ["FLIGHT_DETAILS", "SELECT_FLIGHT", "CHANGE_TRIP"],
+                    "description": "FLIGHT_DETAILS for questions, SELECT_FLIGHT when the caller chooses, CHANGE_TRIP for another date or route after a flight is selected.",
                 },
                 "flight_id": {"type": "STRING", "description": "Id of a shown flight. Wins over reference."},
                 "reference": {
                     "type": "STRING", "enum": ["CHEAPEST", "FASTEST", "FIRST", "SECOND"],
                     "description": "Use when no flight_id. FIRST and SECOND mean the most recently offered options.",
                 },
+                "leg": {"type": "STRING", "enum": ["OUTBOUND", "RETURN"], "description": "Round trip: the flight the reference is for."},
                 "passenger_count": {"type": "INTEGER", "description": "Total travellers, only if said in this turn."},
             },
             "required": ["action"],
@@ -177,7 +179,7 @@ TOOL_DECLARATIONS: List[Dict[str, Any]] = [
                 "gender": {"type": "STRING", "description": "As the caller stated it. Never guess."},
                 "date_of_birth": {"type": "STRING", "description": "YYYY-MM-DD, for age 12 or below."},
                 "phone_choice": {"type": "STRING", "enum": ["same", "new"], "description": "same uses the calling number, new collects another."},
-                "phone_number": {"type": "STRING", "description": "New or corrected WhatsApp number."},
+                "phone_number": {"type": "STRING", "description": "WhatsApp number, whenever the caller says one, at any step."},
                 "phone_confirmed": {"type": "BOOLEAN", "description": "Caller accepted the WhatsApp number readback."},
                 "email": {"type": "STRING", "description": "Email as the caller said it."},
                 "email_confirmed": {"type": "BOOLEAN", "description": "Caller accepted the email readback."},
@@ -449,13 +451,18 @@ class Flight:
         }
 
 
-def generate_flights(origin: str, destination: str, day: dt.date, leg: str) -> List[Flight]:
-    """Six deterministic flights for a route and day, sorted by fare."""
+def generate_flights(origin: str, destination: str, day: dt.date, leg: str,
+                     today: Optional[dt.date] = None) -> List[Flight]:
+    """Six deterministic flights for a route and day, sorted by fare.
+
+    ``today`` is the call's booking date (the engine passes ``state.today``); fares depend on the
+    lead time, so a fixed ``today`` keeps results stable across wall-clock days.
+    """
     seed = int(hashlib.md5(f"{origin}|{destination}|{day.isoformat()}".encode()).hexdigest()[:8], 16)
     rng = random.Random(seed)
     km = _km(origin, destination)
     direct_min = int(round((35 + km / 7.8) / 5.0) * 5)
-    lead_days = max(0, (day - today_ist()).days)
+    lead_days = max(0, (day - (today or today_ist())).days)
     urgency = 1.35 if lead_days < 4 else 1.15 if lead_days < 10 else 1.0
     slots = sorted(rng.sample(_DEPARTURES, 6))
     prefix = "F" if leg == "outbound" else "R"
@@ -766,8 +773,10 @@ def resolve_city(raw: Any) -> Tuple[Optional[str], Optional[str]]:
 class TravelBookingEngine:
     """One call's booking backend. Not thread-safe; the architecture serialises calls with a lock."""
 
-    def __init__(self, today: Optional[dt.date] = None) -> None:
+    def __init__(self, today: Optional[dt.date] = None, vocal_tone: Optional[str] = None) -> None:
         self.state = CallState(today=today or today_ist())
+        #: Optional voice anchor added to every tool result as ``vocal_tone`` (None: not sent).
+        self.vocal_tone = vocal_tone
         self.active_card = 1
         self.results: Dict[str, List[Flight]] = {}
         self.offered: Dict[str, List[str]] = {}
@@ -775,6 +784,11 @@ class TravelBookingEngine:
         self.current_leg = "outbound"
         self.calendar: List[Dict[str, Any]] = []
         self.calendar_cheapest: Optional[dt.date] = None
+        #: The last fare calendar's route and days: CALENDAR_CHEAPEST, or a day from it said without a
+        #: route, books that route. Browsing never writes the trip draft once a flight is chosen.
+        self._calendar_query: Dict[str, Any] = {}
+        #: The calendar heard on the call just before this one (one-shot: any other call retires it).
+        self._calendar_fresh: Dict[str, Any] = {}
         self.attach_card_to_next_response = False
         self.last_card_text: Optional[str] = None
         self._current_instruction = "Ask which language the caller would like to talk in."
@@ -782,6 +796,12 @@ class TravelBookingEngine:
         self._pending_name: Dict[int, Traveller] = {}
         self._child_dobs: List[str] = []
         self._payment_link_sent = False
+        #: _booking_fingerprint() of the booking the sent link was issued for.
+        self._link_fingerprint: Optional[str] = None
+        #: Links issued so far: salts the reference, so A -> B -> A never revives a voided one.
+        self._links_issued = 0
+        #: Every flight id offered aloud per leg since its results were built (REFINE MORE keeps them).
+        self._heard_ids: Dict[str, set] = {}
         #: The address last read back at confirm_email; only a yes to that address confirms it.
         self._email_read_back: Optional[str] = None
         #: passenger index -> (first, last) as last read back to the caller.
@@ -791,10 +811,15 @@ class TravelBookingEngine:
 
     # -- card plumbing -------------------------------------------------------
 
-    def build_card(self, number: Optional[int] = None, resend: Optional[str] = None) -> str:
+    def build_card(self, number: Optional[int] = None, resend: Optional[str] = None,
+                   for_instruction: bool = False) -> str:
+        """The current card with the live session state; ``for_instruction`` shapes it for the
+        system instruction (``context_update``) instead of a message in the history."""
         card = TARA_CARD_BY_NUMBER[number or self.active_card]
-        text = format_tara_prompt_card(card, state=self.state.snapshot(), resend=resend)
-        self.last_card_text = text
+        text = format_tara_prompt_card(card, state=self.state.snapshot(), resend=resend,
+                                       for_instruction=for_instruction)
+        if not for_instruction:
+            self.last_card_text = text
         return text
 
     def opening_card(self) -> str:
@@ -831,6 +856,8 @@ class TravelBookingEngine:
         if "prompt_card" in response:
             self.attach_card_to_next_response = False
         response["call_state"] = self.state.one_line()
+        if self.vocal_tone:
+            response["vocal_tone"] = self.vocal_tone
         return response
 
     def _error(self, message: str, instruction: str, **extra: Any) -> Dict[str, Any]:
@@ -861,6 +888,8 @@ class TravelBookingEngine:
         }.get(name)
         if handler is None:
             return self._error(f"Unknown tool {name}.", "Continue from session state.")
+        # A fare calendar is context for the very next call only ("the 22nd", "the cheapest one").
+        self._calendar_fresh, self._calendar_query = self._calendar_query, {}
         return handler(args)
 
     # -- SelectLanguageTool --------------------------------------------------
@@ -871,9 +900,8 @@ class TravelBookingEngine:
         if not language:
             return self._error(f"language must be one of the supported names, got '{raw}'.",
                                "Ask the caller which language they want, then call SelectLanguageTool with its name.")
-        first = self.state.language is None
         self.state.language = language
-        if first or self.active_card == 1:
+        if self.active_card == 1:
             self._set_step("trip_details")
             return self._respond({
                 "status": "saved", "language": language,
@@ -939,17 +967,67 @@ class TravelBookingEngine:
         if isinstance(args.get("passenger_count"), int) and args["passenger_count"] > 0:
             new = min(9, args["passenger_count"])
             if new != s.passenger_count:
+                grew = new > (s.passenger_count or 0)
                 s.passenger_count, s.count_confirmed, s.details_confirmed = new, False, False
+                if new == 1:
+                    s.child_count, s.mix_known, self._child_dobs = 0, True, []
+                elif grew and s.child_count == 0:
+                    s.mix_known = False  # the new travellers may be children
 
-    def _is_return_leg_request(self, origin: Optional[str], destination: Optional[str],
-                               depart: Optional[dt.date]) -> bool:
-        """The return leg of the stored round trip: the reversed route, or just the return date."""
+    def _round_trip_follow_up(self, origin: Optional[str], destination: Optional[str],
+                              depart: Optional[dt.date], return_date: Optional[dt.date],
+                              trip_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """A search about the stored round trip once its outbound is chosen, or None for a new trip.
+
+        - the reversed route, or just the return date: the return leg (a new date moves it);
+        - return_date alone, different from the stored one: the return date moves;
+        - the outbound search again while the return is still open: the return leg, which is the
+          open step (never a reset that drops the chosen outbound). An explicit OW on the same
+          route is a switch to one way: a new trip.
+        """
         s = self.state
         if not (s.trip_type == "RT" and s.outbound and s.origin):
-            return False
-        if origin is None and destination is None:
-            return depart is not None and depart == s.return_date
-        return origin == s.destination and destination == s.origin and (depart is None or depart == s.return_date)
+            return None
+        d = self._draft
+        pending = {k: d[k] for k, held in (("origin", s.origin), ("destination", s.destination), ("depart", s.depart_date))
+                   if d.get(k) not in (None, held)}
+        if pending and origin is None and destination is None and depart is None and return_date is not None:
+            if return_date >= pending.get("depart", s.depart_date):
+                return None  # the return date that completes a half-heard new trip (route or date)
+            if return_date >= s.depart_date:
+                for key in pending:  # before the new date, valid for the stored trip: the caller kept it
+                    d.pop(key)
+        reversed_route = origin == s.destination and destination == s.origin
+        if reversed_route and (return_date or trip_type == "RT"):
+            return None  # Mumbai -> Delhi as its own round trip, not the return leg of this one
+        same_route = origin in (None, s.origin) and destination in (None, s.destination)
+        if reversed_route:
+            new_return = depart if depart and depart != s.return_date else None
+        elif origin is None and destination is None and depart is not None and depart == s.return_date:
+            new_return = None  # "the 12th" on its own: the stored return date
+        elif same_route and depart in (None, s.depart_date) and trip_type != "OW":
+            new_return = return_date if return_date and return_date != s.return_date else None
+            if new_return is None and s.ret is not None:
+                return None  # both legs chosen, same outbound search: alternatives (regular path)
+        else:
+            return None  # another route or outbound date: a new trip
+        if new_return:
+            bad = self._date_problem(new_return) or (
+                "return date is before the departure date." if new_return < s.depart_date else None)
+            if bad:
+                return self._error(bad, "Ask the caller for the return date again.")
+            # The chosen return flight was for the old date: drop it and anything priced with it.
+            s.return_date, s.ret = new_return, None
+            s.total_told = s.per_adult_told = None
+            s.details_confirmed = False
+            if (s.passenger_count or 0) > 1:
+                s.count_confirmed = False
+            self._void_payment_link()
+            self.results["return"] = generate_flights(s.destination, s.origin, new_return, "return", today=self.state.today)
+            self.filters["return"] = {}
+            self._heard_ids.pop("return", None)
+            return self._offer_leg("return")
+        return self._offer_leg("return", changing=s.legs_selected() and self.active_card >= 4)
 
     def search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         sub = str(args.get("query_sub_type") or "").upper()
@@ -959,7 +1037,15 @@ class TravelBookingEngine:
         self._count_from_search(args)
         if sub == "REFINE_RESULTS":
             return self._refine(args)
+        if sub == "DATE_RANGE" and self.state.outbound:
+            kept = dict(self._draft)  # browsing beside a chosen flight: not a new trip yet
+            response = self._search_dates(args, sub)
+            self._draft, self.state.heard = kept, (self._draft_say_of(kept) or None)
+            return response
+        return self._search_dates(args, sub)
 
+    def _search_dates(self, args: Dict[str, Any], sub: str) -> Dict[str, Any]:
+        """SPECIFIC_DATE and DATE_RANGE searches (REFINE_RESULTS is handled by ``_refine``)."""
         origin, problem = self._city_arg(args.get("origin"), "origin")
         if problem:
             return problem
@@ -968,17 +1054,37 @@ class TravelBookingEngine:
             return problem
         depart = _parse_date(args.get("depart_date"))
         if args.get("date_reference") == "CALENDAR_CHEAPEST":
-            if not self.calendar_cheapest:
-                return self._error("There is no fare calendar yet.", "Search DATE_RANGE first, or ask for a date.")
-            depart = self.calendar_cheapest
+            cq = self._calendar_fresh
+            if not cq:  # the cheapest day belongs to the calendar the caller just heard, nothing older
+                return self._error("No fare calendar was just given.",
+                                   "Ask the caller which day, or search DATE_RANGE again.")
+            if (origin or cq["origin"], destination or cq["destination"]) != (cq["origin"], cq["destination"]):
+                return self._error("The cheapest day belongs to the calendar of another route.",
+                                   "Ask the caller which day, or search DATE_RANGE for this route.")
+            depart = cq["cheapest"]
+            origin, destination = cq["origin"], cq["destination"]
         trip_type = str(args.get("trip_type") or "").upper() or None
         if trip_type not in (None, "OW", "RT"):
             trip_type = None
         return_date = _parse_date(args.get("return_date"))
+        cq, s = self._calendar_fresh, self.state
+        if (cq and origin is None and destination is None and depart is not None
+                and (cq["origin"], cq["destination"]) != (s.origin, s.destination)):
+            # A day said right after a calendar for another route: that route. The same route adds
+            # nothing, and leaving it unset keeps the round-trip follow-up rules working.
+            origin, destination = cq["origin"], cq["destination"]
+        # "Make it one way" with nothing else: drop the return, keep the chosen outbound.
+        if (trip_type == "OW" and s.trip_type == "RT" and s.outbound
+                and origin is None and destination is None and depart is None and return_date is None):
+            return self._switch_to_one_way()
 
-        # The return leg of a stored round trip: answer from the stored split search.
-        if self._is_return_leg_request(origin, destination, depart):
-            return self._offer_leg("return", changing=self.state.legs_selected() and self.active_card >= 4)
+        # A follow-up about the stored round trip: answer from the stored split search.
+        if sub == "SPECIFIC_DATE":
+            follow_up = self._round_trip_follow_up(origin, destination, depart, return_date, trip_type)
+            if follow_up is not None:
+                if follow_up.get("status") != "error":
+                    self._draft, self.state.heard = {}, None  # about the stored trip: a half-heard new one is dropped
+                return follow_up
 
         # Fill what the caller did not repeat: first from details heard before a search could
         # run, then from the stored trip. The model sends only what was said in this turn.
@@ -1017,6 +1123,9 @@ class TravelBookingEngine:
             return self._error(bad, "Ask the caller for another travel date.")
 
         if sub == "DATE_RANGE":
+            # Browsing, not a chosen date: CALENDAR_CHEAPEST or a depart_date picks it.
+            self._draft.pop("depart", None)
+            s.heard = self._draft_say() or None
             return self._calendar(origin, destination, depart, _parse_date(args.get("depart_date_end")))
 
         if trip_type == "RT":
@@ -1027,8 +1136,10 @@ class TravelBookingEngine:
 
         # After a selection, a search for a leg of the same trip is a flight change, not a new trip.
         changing = s.legs_selected() and self.active_card >= 4
-        if changing and origin == s.origin and destination == s.destination and depart == s.depart_date:
-            self.results["outbound"] = generate_flights(origin, destination, depart, "outbound")
+        if (changing and origin == s.origin and destination == s.destination and depart == s.depart_date
+                and not (return_date and return_date != s.return_date)):
+            self._draft, s.heard = {}, None
+            self.results["outbound"] = generate_flights(origin, destination, depart, "outbound", today=self.state.today)
             self.filters["outbound"] = {}
             return self._offer_leg("outbound", changing=True)
 
@@ -1041,13 +1152,17 @@ class TravelBookingEngine:
         s.count_confirmed = s.details_confirmed = False
         self._void_payment_link()
         self.filters = {"outbound": {}, "return": {}}
-        self.results = {"outbound": generate_flights(origin, destination, depart, "outbound")}
+        self._heard_ids, self._calendar_query = {}, {}
+        self.results = {"outbound": generate_flights(origin, destination, depart, "outbound", today=self.state.today)}
         if trip_type == "RT":
-            self.results["return"] = generate_flights(destination, origin, return_date, "return")
+            self.results["return"] = generate_flights(destination, origin, return_date, "return", today=self.state.today)
         return self._offer_leg("outbound")
 
     def _draft_say(self) -> str:
-        d = self._draft
+        return self._draft_say_of(self._draft)
+
+    @staticmethod
+    def _draft_say_of(d: Dict[str, Any]) -> str:
         bits = []
         if d.get("origin") or d.get("destination"):
             bits.append(f"{d.get('origin') or '?'} to {d.get('destination') or '?'}")
@@ -1076,13 +1191,15 @@ class TravelBookingEngine:
         days = []
         day = start
         while day <= end:
-            cheapest = generate_flights(origin, destination, day, "outbound")[0]
+            cheapest = generate_flights(origin, destination, day, "outbound", today=self.state.today)[0]
             days.append({"date": day.isoformat(), "date_say": date_say(day), "cheapest_fare": cheapest.fare,
                          "fare_say": rupees(cheapest.fare)})
             day += dt.timedelta(days=1)
         best = min(days, key=lambda d: d["cheapest_fare"])
         self.calendar = days
         self.calendar_cheapest = dt.date.fromisoformat(best["date"])
+        self._calendar_query = {"origin": origin, "destination": destination, "start": start, "end": end,
+                                "cheapest": self.calendar_cheapest}
         self._draft.update({"origin": origin, "destination": destination})
         return self._respond({
             "status": "ok",
@@ -1107,6 +1224,7 @@ class TravelBookingEngine:
             }, informational=changing)
         offered = flights[:2]
         self.offered[leg] = [f.flight_id for f in offered]
+        self._heard_ids.setdefault(leg, set()).update(self.offered[leg])
         day = s.depart_date if leg == "outbound" else s.return_date
         origin, destination = (s.origin, s.destination) if leg == "outbound" else (s.destination, s.origin)
         step = "flight_choice_return" if leg == "return" else ("flight_choice_outbound" if s.trip_type == "RT" else "flight_choice")
@@ -1115,7 +1233,8 @@ class TravelBookingEngine:
         if changing:
             instruction = "Say the two flights in data.flights with fare_say and per_adult_say, then ask which one should replace the current flight."
         elif leg == "return":
-            instruction = "Say the outbound selection in one short line, then the two return flights in data.flights with fare_say and per_adult_say, then ask which one."
+            instruction = ("Say the outbound selection in one short line, then the two return flights in data.flights with fare_say and per_adult_say, then ask which one. "
+                           "If the caller wants another return date, call SearchTool with only return_date; depart_date always means the outbound date.")
         else:
             instruction = "Say the two flights in data.flights with fare_say and per_adult_say, then ask which one."
         data: Dict[str, Any] = {
@@ -1191,7 +1310,7 @@ class TravelBookingEngine:
         elif intent == "FASTEST_ALTERNATIVES":
             pool.sort(key=lambda f: (f.duration_min, f.fare))
         elif intent == "MORE":
-            shown = set(self.offered.get(leg, []))
+            shown = self._heard_ids.get(leg, set()) | set(self.offered.get(leg, []))
             rest = [f for f in pool if f.flight_id not in shown]
             if not rest:
                 note = "These are all the flights for this day."
@@ -1230,9 +1349,23 @@ class TravelBookingEngine:
             match = next((f for f in self.results.get(leg, []) if f.flight_id == flight_id), None)
             if not match:
                 return None, f"flight_id {flight_id} is not in the current results."
+            # From card 4 the offered ids are no longer in the session state: an id the caller
+            # never heard (e.g. guessed after compaction) must not silently become the booking.
+            chosen = self.state.outbound if leg == "outbound" else self.state.ret
+            heard = self._heard_ids.get(leg, set())
+            if self.active_card >= 4 and heard and flight_id not in heard and not (chosen and chosen.flight_id == flight_id):
+                return None, f"flight_id {flight_id} was not offered to the caller; offered: {', '.join(sorted(heard))}."
             return match, None
         reference = str(args.get("reference") or "").upper()
-        leg = self.current_leg
+        named_leg = str(args.get("leg") or "").upper()
+        if named_leg in ("OUTBOUND", "RETURN"):
+            leg = named_leg.lower()
+        elif reference and self.state.trip_type == "RT" and self.state.legs_selected():
+            # After both legs are chosen, current_leg is whichever list was offered last, not
+            # the flight the caller means: a reference without a leg would change the wrong one.
+            return None, "leg is required for a round-trip change: OUTBOUND or RETURN."
+        else:
+            leg = self.current_leg
         flights = self.results.get(leg, [])
         if not flights:
             return None, "There is no flight list yet."
@@ -1242,6 +1375,9 @@ class TravelBookingEngine:
             if index >= len(offered):
                 return None, f"There is no {reference.lower()} offered flight."
             return next(f for f in flights if f.flight_id == offered[index]), None
+        heard = self._heard_ids.get(leg, set())
+        if self.active_card >= 4 and heard:
+            flights = [f for f in flights if f.flight_id in heard] or flights  # never one the caller did not hear
         if reference == "CHEAPEST":
             return min(flights, key=lambda f: (f.fare, f.depart_minutes)), None
         if reference == "FASTEST":
@@ -1250,13 +1386,19 @@ class TravelBookingEngine:
 
     def flight_action(self, args: Dict[str, Any]) -> Dict[str, Any]:
         action = str(args.get("action") or "").upper()
-        if action not in ("FLIGHT_DETAILS", "SELECT_FLIGHT"):
-            return self._error("action must be FLIGHT_DETAILS or SELECT_FLIGHT.", "Call FlightActionTool again with action set.")
+        if action not in ("FLIGHT_DETAILS", "SELECT_FLIGHT", "CHANGE_TRIP"):
+            return self._error("action must be FLIGHT_DETAILS, SELECT_FLIGHT or CHANGE_TRIP.", "Call FlightActionTool again with action set.")
+        if action == "CHANGE_TRIP":
+            return self._change_trip()
         self._count_from_search(args)
         flight, problem = self._resolve_flight(args)
         if not flight:
             if not self.results:
                 return self._error(problem, "Ask for the route and date, then call SearchTool.")
+            if self.active_card >= 4:
+                # SearchTool is not declared from card 4: a new date or route goes through CHANGE_TRIP.
+                return self._error(problem, "Ask the caller which flight they mean from the ones they heard. "
+                                            "For another date or route, call FlightActionTool with CHANGE_TRIP.")
             return self._error(problem, "Ask the caller which flight they mean from the list they heard, or call SearchTool for what they asked.")
         if action == "FLIGHT_DETAILS":
             return self._respond({
@@ -1272,12 +1414,23 @@ class TravelBookingEngine:
     def _select(self, flight: Flight) -> Dict[str, Any]:
         s = self.state
         changing = s.legs_selected() and self.active_card >= 4
+        held = s.ret if flight.leg == "return" else s.outbound
+        if changing and held and held.flight_id == flight.flight_id:
+            # Same flight again: nothing changed, so the review and any payment link stay valid.
+            step, fields = self._next_open_step()
+            if step == "complete" and self._payment_link_sent:
+                # The link is still valid: never a second PROCEED.
+                step, fields = "payment_sent", {"heads_up": "The payment link I sent is still valid for this booking."}
+            change = f"{flight.airline} at {time_say(flight.depart)} is already selected. The total stays {rupees(s.total_fare())}."
+            response = self._step_response(step, {**fields, "change": change}, status="unchanged")
+            response["instruction"] = "Say change exactly as given, then " + response["instruction"][0].lower() + response["instruction"][1:]
+            return response
         if flight.leg == "return":
             if s.trip_type != "RT" or not s.outbound:
                 return self._error("Select the outbound flight first.", "Help the caller pick the outbound flight.")
-            previous, s.ret = s.ret, flight
+            s.ret = flight
         else:
-            previous, s.outbound = s.outbound, flight
+            s.outbound = flight
 
         if changing:
             # The itinerary changed: the caller reviews it again, and any link sent is void.
@@ -1288,8 +1441,6 @@ class TravelBookingEngine:
             leg_word = "return" if flight.leg == "return" else ("outbound" if s.trip_type == "RT" else "")
             change = (f"Your {leg_word + ' ' if leg_word else ''}flight is now {flight.airline} at {time_say(flight.depart)}. "
                       f"The new total is {rupees(total)} for {s.party_say()}.")
-            if previous and previous.flight_id == flight.flight_id:
-                change = f"{flight.airline} at {time_say(flight.depart)} is already selected. The total stays {rupees(total)}."
             step, fields = self._next_open_step()
             response = self._step_response(step, {**fields, "change": change}, status="changed")
             response["instruction"] = "Say change exactly as given, then " + response["instruction"][0].lower() + response["instruction"][1:]
@@ -1330,6 +1481,59 @@ class TravelBookingEngine:
         self._payment_link_sent = False
         self.state.booking_ref = None
 
+    def _switch_to_one_way(self) -> Dict[str, Any]:
+        """"Make it one way" after the outbound is chosen: drop the return side, keep the outbound."""
+        s = self.state
+        s.trip_type, s.return_date, s.ret = "OW", None, None
+        self._draft, s.heard = {}, None  # a half-heard round trip must not refill the next search
+        self.results.pop("return", None)
+        self.offered.pop("return", None)
+        self._heard_ids.pop("return", None)
+        self.filters["return"] = {}
+        self.current_leg = "outbound"
+        s.details_confirmed = False
+        self._void_payment_link()
+        flight = s.outbound
+        if s.passenger_count:
+            s.total_told = s.total_fare()
+            price = f"The total is {rupees(s.total_told)} for {s.party_say()}."
+            step, fields = self._next_open_step()
+        else:
+            s.per_adult_told = s.per_adult_total()
+            price = f"The fare is {rupees(flight.fare)} per adult."
+            step, fields = "passenger_count", {"ask_say": "How many people are travelling?"}
+        change = f"Now one way on {flight.airline} at {time_say(flight.depart)}. {price}"
+        response = self._step_response(step, {**fields, "change": change}, status="changed")
+        response["instruction"] = "Say change exactly as given, then " + response["instruction"][0].lower() + response["instruction"][1:]
+        return response
+
+    def _change_trip(self) -> Dict[str, Any]:
+        """Another date or route after selection: back to card 2, where SearchTool is declared.
+
+        The flights and anything priced for them are dropped; travellers and contact stay. The next
+        search starts a new trip (the fare is read again), and the next selection resumes at the
+        first open traveller step.
+        """
+        s = self.state
+        if not s.outbound:
+            return self._error("No flight is selected yet.", "Continue the current step.")
+        s.outbound = s.ret = None
+        s.total_told = s.per_adult_told = None
+        s.details_confirmed = False
+        self._void_payment_link()
+        self.results, self.offered, self.current_leg = {}, {}, "outbound"
+        self.filters = {"outbound": {}, "return": {}}
+        self._heard_ids, self._calendar_query = {}, {}
+        self._draft, s.heard = {}, None  # a half-heard earlier search must not leak into the new one
+        self._set_step("trip_details")
+        return self._respond({
+            "status": "reopened",
+            "instruction": "Ask what should change: the date, the route or the return date. Then call SearchTool with only what changed.",
+            "data": {"step": "trip_details", "trip_say": f"{s.origin} to {s.destination}, {date_say(s.depart_date)}"},
+            "next": [{"when": "The caller gives the new date or route", "tool": "SearchTool",
+                      "arguments": {"query_sub_type": "SPECIFIC_DATE"}}],
+        }, card=2)
+
     # -- TravellerDetailsTool ------------------------------------------------
 
     def _step_response(self, step: str, extra: Optional[Dict[str, Any]] = None, *, status: str = "ok") -> Dict[str, Any]:
@@ -1341,6 +1545,8 @@ class TravelBookingEngine:
         if step == "complete":
             # Card 8 declares PaymentTool only: the details were confirmed at review.
             payload["next"] = [{"when": "Now", "tool": "PaymentTool", "arguments": {"action": "PROCEED"}}]
+        elif step == "payment_sent":
+            payload["next"] = [{"when": "The caller asks about payment", "tool": "PaymentTool", "arguments": {"action": "INFORMATION"}}]
         else:
             payload["next"] = [{"when": "The caller answers, confirms, or corrects this step", "tool": "TravellerDetailsTool"}]
         payload.update(extra or {})
@@ -1457,6 +1663,12 @@ class TravelBookingEngine:
         if not s.legs_selected():
             return self._error("Flights are not selected yet.",
                                "Help the caller choose the flight first; traveller details come after selection.")
+        # A number volunteered before the contact step (cards 4-5) is saved quietly, ahead of the
+        # name readback so its card shows it. A clipped one is dropped and asked for at card 6;
+        # it never pulls the call into the contact step early.
+        if args.get("phone_number") and card_for_step(s.step) in (4, 5):
+            self._save_phone_quietly(args)
+            args = {k: v for k, v in args.items() if k != "phone_number"}
 
         # Email can arrive at any step: validate and save it at once, never drop it. A yes counts
         # only for the address last read back, and never in the call that changes the address.
@@ -1492,6 +1704,7 @@ class TravelBookingEngine:
             count_changed = True
         elif args.get("add_more_passengers") is True and not args.get("passenger_count"):
             s.count_confirmed = False
+            self._keep_said_fields(args)
             return self._step_response("passenger_count", {"ask_say": "How many more people are travelling?"})
         if count_changed:
             s.count_confirmed = False
@@ -1503,6 +1716,13 @@ class TravelBookingEngine:
             for gone in [i for i in self._pending_name if i > s.passenger_count]:
                 self._pending_name.pop(gone)
                 self._name_read_back.pop(gone, None)
+        # At least one adult travels: an impossible child count is an error, never a silent clip.
+        if (isinstance(args.get("child_count"), int) and s.passenger_count
+                and args["child_count"] >= s.passenger_count):
+            self._keep_said_fields({k: v for k, v in args.items() if k != "child_count"})
+            return self._step_response("child_count", {
+                "error": f"child_count must be fewer than the {s.passenger_count} travellers; at least one adult travels.",
+                "ask_say": "How many of the travellers are children?"})
         # "dono adults hain" often arrives as a count confirmation while the mix question is open.
         if (args.get("passenger_count_confirmed") is True and s.step == "passenger_mix"
                 and args.get("includes_children") is None and not args.get("child_count")):
@@ -1516,6 +1736,9 @@ class TravelBookingEngine:
                 if isinstance(args.get("child_count"), int) and args["child_count"] > 0:
                     s.child_count = args["child_count"]
                 else:
+                    if s.passenger_count != 1:
+                        s.count_confirmed = False
+                    self._keep_said_fields(args)
                     return self._step_response("child_count", {"ask_say": "How many children are travelling?"})
         if isinstance(args.get("child_count"), int) and args["child_count"] >= 0:
             s.child_count = min(args["child_count"], max(0, (s.passenger_count or 1) - 1))
@@ -1524,12 +1747,16 @@ class TravelBookingEngine:
         mix_changed = (s.child_count, s.mix_known) != mix_before
         if mix_changed and s.passenger_count != 1:
             s.count_confirmed = False
-        if args.get("date_of_birth") and s.step == "child_date_of_birth":
-            dob = _parse_date(args["date_of_birth"])
+        if args.get("date_of_birth") and self._is_child_count_dob(args):
+            dob = _parse_date(args.pop("date_of_birth"))  # a child's date, never a traveller field
             if not dob or dob > s.today:
                 return self._step_response("child_date_of_birth", {"error": "date_of_birth must be a past date in YYYY-MM-DD.",
                                                                      "ask_say": "What is the child's date of birth?"})
-            self._child_dobs.append(dob.isoformat())
+            # A date already heard is a twin only where the engine asked for the next child's date;
+            # at the count steps it is the same child said again. A full list is always a resend.
+            twin_or_new = s.step == "child_date_of_birth" or dob.isoformat() not in self._child_dobs
+            if twin_or_new and (not s.child_count or len(self._child_dobs) < s.child_count):
+                self._child_dobs.append(dob.isoformat())
         # At the total readback the model only moves on after the caller's yes: to names, or with
         # the yes sent as another confirmation flag. Never when this same call changed the count or mix.
         at_readback = s.step == "confirm_passenger_count" and not (count_changed or mix_changed)
@@ -1552,6 +1779,7 @@ class TravelBookingEngine:
             saved = f"Saved passenger {self._person_index(args)}'s details; they are read back after this step."
         result = self._apply_traveller_fields(args)
         if result is not None:
+            self._save_phone_quietly(args)  # a number said with the name is not lost to the readback
             return result
 
         # WhatsApp number. At phone_choice a bare phone_confirmed true means "same" (the old bot looped
@@ -1603,6 +1831,56 @@ class TravelBookingEngine:
             response.update(status="step_open", saved=saved,
                             instruction="First finish this step, then continue with the saved details. " + response["instruction"])
         return response
+
+    def _is_child_count_dob(self, args: Dict[str, Any]) -> bool:
+        """A date of birth that answers the children question, not a named traveller's field.
+
+        At the count steps (card 4) a date said while child dates are still owed is a child's,
+        unless the call names a traveller (letters or passenger_index).
+        """
+        s = self.state
+        if s.step == "child_date_of_birth":
+            return True
+        if s.step not in CARD_STEPS[4] or self._names_someone(args):
+            return False
+        dob = _parse_date(args.get("date_of_birth"))
+        resent = bool(dob) and dob.isoformat() in self._child_dobs
+        return resent or (bool(s.child_count) and len(self._child_dobs) < s.child_count)
+
+    @staticmethod
+    def _names_someone(args: Dict[str, Any]) -> bool:
+        return bool(args.get("first_name_letters") or args.get("last_name_letters") or args.get("passenger_index"))
+
+    def _save_phone_quietly(self, args: Dict[str, Any]) -> None:
+        """A WhatsApp answer said alongside another step's answer: save it if valid, never return.
+
+        An invalid number is dropped here; the phone step asks for it again when it comes up.
+        """
+        s = self.state
+        if args.get("phone_choice") == "same":
+            if s.whatsapp != CALLING_NUMBER or not s.whatsapp_confirmed:
+                s.whatsapp, s.whatsapp_confirmed, s.details_confirmed = CALLING_NUMBER, True, False
+        elif args.get("phone_number"):
+            phone = self._normalise_phone(args["phone_number"])
+            if phone and phone != s.whatsapp:
+                s.whatsapp, s.whatsapp_confirmed, s.details_confirmed = phone, False, False
+
+    def _keep_said_fields(self, args: Dict[str, Any]) -> None:
+        """Before a count question returns early, keep the person and phone fields said with it.
+
+        The count is unconfirmed here, so names are held for readback after the count step. A date
+        of birth said with the children answer belongs to a child (kept for the child-date step),
+        never to the first traveller.
+        """
+        s = self.state
+        if args.get("date_of_birth") and s.step in CARD_STEPS[4] and not self._names_someone(args):
+            args = dict(args)
+            dob = _parse_date(args.pop("date_of_birth"))
+            if dob and dob <= s.today and dob.isoformat() not in self._child_dobs:
+                self._child_dobs.append(dob.isoformat())
+        if s.passenger_count:
+            self._apply_traveller_fields(args)
+        self._save_phone_quietly(args)
 
     def _has_person_fields(self, args: Dict[str, Any]) -> bool:
         return bool(args.get("first_name_letters") or args.get("last_name_letters") or args.get("age") is not None
@@ -1734,11 +2012,15 @@ class TravelBookingEngine:
                 "data": {"step": s.step},
                 "next": [{"when": "The caller agrees", "tool": "PaymentTool", "arguments": {"action": "PROCEED"}}],
             }, informational=True)
-        already = self._payment_link_sent
+        # A link already sent is reused only for the exact booking it was issued for: any change
+        # to flights, travellers, contact or total since then issues a new link and reference.
+        fingerprint = self._booking_fingerprint()
+        already = self._payment_link_sent and self._link_fingerprint == fingerprint
         if not already:
-            digest = hashlib.md5(f"{s.outbound.flight_number}{s.whatsapp}{s.total_fare()}".encode()).hexdigest()
+            self._links_issued += 1
+            digest = hashlib.md5(f"{fingerprint}#{self._links_issued}".encode()).hexdigest()
             s.booking_ref = "BMT" + str(int(digest[:8], 16) % 10_000_000).zfill(7)
-            self._payment_link_sent = True
+            self._payment_link_sent, self._link_fingerprint = True, fingerprint
         self._set_step("payment_sent")
         s.total_told = s.total_fare()
         return self._respond({
@@ -1749,6 +2031,13 @@ class TravelBookingEngine:
                      "booking_status": "pending payment"},
             "next": [{"when": "The caller asks about payment", "tool": "PaymentTool", "arguments": {"action": "INFORMATION"}}],
         }, card=8)
+
+    def _booking_fingerprint(self) -> str:
+        """Everything the payment link is issued for: both flights with dates, travellers, contact, total."""
+        s = self.state
+        legs = [f"{f.flight_id}:{f.flight_number}:{day}" for f, day in ((s.outbound, s.depart_date), (s.ret, s.return_date)) if f]
+        people = [f"{t.name}:{t.age}:{t.gender}:{t.date_of_birth}" for t in s.travellers]
+        return "|".join([*legs, *people, s.whatsapp or "", s.email or "", str(s.total_fare())])
 
     # -- telemetry -----------------------------------------------------------
 

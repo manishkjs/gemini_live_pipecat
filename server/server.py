@@ -240,6 +240,7 @@ async def persona_prompt(
     engine: Optional[str] = "live",
     tone: str = "professional",
     language: str = "en-US",
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return the system prompt the backend will actually run for a persona.
 
@@ -277,7 +278,13 @@ async def persona_prompt(
             # Per-card tool sets (Tara on Vertex 3.8): report what the session declares on this phase.
             preview = getattr(persona_arch_obj, "preview_tool_schemas", None)
             if preview is not None and effective_engine != "cascade":
-                raw_tools = list(preview(phase))
+                if model:
+                    # The session's model and gateway decide whether tools swap per card.
+                    from agent_live import resolve_live_model_gateway
+                    is_ai_studio, clean_model = resolve_live_model_gateway(model)
+                    raw_tools = list(preview(phase, model=clean_model, vertex=not is_ai_studio))
+                else:
+                    raw_tools = list(preview(phase))
             else:
                 raw_tools = list(persona_arch_obj.get_tool_schemas(effective_engine))
         else:
@@ -521,7 +528,7 @@ async def get_current_trace_endpoint(session_id: str = Depends(diagnostic_sessio
 @app.get("/api/visits")
 async def get_studio_visits_endpoint():
     import visit_counter
-    return visit_counter.get_visits()
+    return await asyncio.to_thread(visit_counter.get_visits)
 
 
 @app.post("/api/visits")
@@ -530,14 +537,21 @@ async def record_studio_visit_endpoint(request: Request):
     import visit_counter
     page_load_id: Optional[str] = None
     try:
-        raw = await request.body()
+        chunks = bytearray()
+        async for chunk in request.stream():
+            chunks.extend(chunk)
+            if len(chunks) > 4096:
+                raise HTTPException(status_code=413, detail="Payload too large")
+        raw = bytes(chunks)
         if raw:
             body = json.loads(raw)
             if isinstance(body, dict) and isinstance(body.get("page_load_id"), str):
                 page_load_id = body["page_load_id"]
+    except HTTPException:
+        raise
     except Exception:
         pass
-    return visit_counter.record_visit(page_load_id=page_load_id)
+    return await asyncio.to_thread(visit_counter.record_visit, page_load_id=page_load_id)
 
 
 # Mount the static files directory

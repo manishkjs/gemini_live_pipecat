@@ -597,6 +597,11 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         self._tts_pace = tts_pace
         self._tts_pace_label = tts_pace_label
 
+    def _create_client(self, credentials: Optional[str] = None, credentials_path: Optional[str] = None):
+        # Skip GoogleBaseTTSService's unused Cloud TTS gRPC channel creation;
+        # CustomVertexGeminiTTSService replaces self._client with genai.Client in __init__.
+        return None
+
     async def process_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         if isinstance(frame, OutputTransportMessageFrame):
             await self.push_frame(frame, direction)
@@ -871,7 +876,34 @@ class _MeteredGeminiLLMMixin:
     """Shared metering, response_id stamping, and latency telemetry for Vertex & AI Studio LLMs."""
     _cost_provider: str = "vertex"
 
+    async def _ensure_warm_aiohttp_session(self):
+        """Extend the google-genai aiohttp TCPConnector keepalive_timeout from 15s to 300s
+        so idle voice cascade turns (>15s between LLM requests) reuse the warm TLS socket."""
+        if getattr(self, "_keepalive_configured", False):
+            return
+        self._keepalive_configured = True
+        try:
+            api_client = getattr(getattr(self, "_client", None), "_api_client", None)
+            if api_client is None or not api_client._use_aiohttp():
+                return
+            session = await api_client._get_aiohttp_session()
+            auth_req = getattr(session, "_auth_request", None)
+            if auth_req is not None:
+                if getattr(auth_req, "_session", None) is None:
+                    import aiohttp
+                    auth_req._session = aiohttp.ClientSession(
+                        connector=aiohttp.TCPConnector(limit=0, keepalive_timeout=300.0),
+                        trust_env=True,
+                    )
+                elif getattr(auth_req._session, "connector", None) is not None:
+                    auth_req._session.connector._keepalive_timeout = 300.0
+            elif getattr(session, "connector", None) is not None:
+                session.connector._keepalive_timeout = 300.0
+        except Exception as e:
+            logger.debug(f"Failed to extend aiohttp keepalive_timeout: {e}")
+
     async def _stream_content(self, context):
+        await self._ensure_warm_aiohttp_session()
         meter = getattr(self, "_cascade_meter", None)
         if meter is None:
             return await super()._stream_content(context)
@@ -1111,6 +1143,16 @@ class StartTriggerProcessor(FrameProcessor):
                     await self.push_frame(LLMRunFrame())
                 return
         await self.push_frame(frame, direction)
+
+
+def cascade_greeting_text(persona_architecture, stt_language) -> str:
+    """The user turn that opens a cascade call: the persona's own text when it has one (Tara's
+    neutral stub), else a greeting in the session language."""
+    persona_text = getattr(persona_architecture, "greeting_text", None)
+    if persona_text:
+        return persona_text
+    is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
+    return "नमस्ते!" if is_hindi else "Hello!"
 
 
 async def run_agent(
@@ -1406,8 +1448,7 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
-    is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
-    initial_greeting = "नमस्ते!" if is_hindi else "Hello!"
+    initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
     if skip_stt:
         from processors.audio_accumulator import AudioAccumulator

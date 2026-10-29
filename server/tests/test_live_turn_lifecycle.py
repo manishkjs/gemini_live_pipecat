@@ -316,8 +316,8 @@ class TestAvatarTurns(_Harness):
     async def test_video_only_turn_reports_ttft_and_speaking_state(self):
         await self.llm.start_ttfb_metrics()
         await asyncio.sleep(0.05)
-        await self.llm._handle_msg_model_turn(_msg(video=b"\x00" * 16))
-        await self.llm._handle_msg_model_turn(_msg(video=b"\x00" * 16))
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(0, active_audio=True)))
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(1, active_audio=True)))
 
         latencies = self.metrics("llm_latency")
         self.assertEqual(len(latencies), 1)
@@ -378,7 +378,141 @@ class TestAvatarTurns(_Harness):
         await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
         self.assertEqual(len(self.frames(BotStoppedSpeakingFrame, FrameDirection.UPSTREAM)), 1)
 
+    async def test_post_turn_complete_decay_does_not_reopen_turn_or_trigger_false_interruption(self):
+        # 1. Active speech segment during Turn 1
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(20, active_audio=True)))
+        self.assertTrue(self.llm._mixin_bot_responding)
+        self.assertTrue(self.llm._avatar_speaking)
+        first_resp_id = self.llm.response_identity.current
+        self.assertIsNotNone(first_resp_id)
 
+        # 2. Vertex AI sends turn_complete before the ~300ms mouth-closure decay finishes arriving
+        await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
+        self.assertFalse(self.llm._mixin_bot_responding)
+        self.assertFalse(self.llm._avatar_speaking)
+        self.assertIsNone(self.llm.response_identity.current)
+
+        # 3. Trailing ~300ms mouth-closure decay segment (active_audio=True) + 2 silent tail segments arrive
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(21, active_audio=True)))
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(22, active_audio=False)))
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(23, active_audio=False)))
+
+        # Must still forward all avatar_video segments to the browser MSE player
+        avatar_msgs = self.server_messages("avatar_video")
+        self.assertEqual(len(avatar_msgs), 4)
+        self.assertFalse(avatar_msgs[0].get("post_turn_decay", False))
+        self.assertTrue(avatar_msgs[1].get("post_turn_decay", False))
+        # Must NOT re-open _mixin_bot_responding or mint a dangling response_identity
+        self.assertFalse(self.llm._mixin_bot_responding)
+        self.assertFalse(self.llm._avatar_speaking)
+        self.assertIsNone(self.llm.response_identity.current)
+
+        # 4. When caller starts speaking Turn 2, InterruptionFrame must be a no-op (not a false barge-in)
+        with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+            await self.llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+        self.assertEqual(len(self.metrics("interruption")), 0)
+        self.assertEqual(len(self.server_messages("avatar_interrupted")), 0)
+        self.assertFalse(getattr(self.llm, "_repeat_on_filler_pending", False))
+
+        # 5. Next turn's active speech segment must start avatar output normally
+        await self.llm._handle_msg_model_turn(_msg(video=_build_iso_avatar_segment(24, active_audio=True)))
+        self.assertTrue(self.llm._mixin_bot_responding)
+        self.assertTrue(self.llm._avatar_speaking)
+
+    async def test_barge_in_mid_fmp4_segment_does_not_desync_or_drop_subsequent_segments(self):
+        # Build 3 segments where Segment 31 is sliced in half across a barge-in and awaiting_interrupted_turn_complete
+        seg30 = _build_iso_avatar_segment(30, active_audio=True)
+        seg31 = _build_iso_avatar_segment(31, active_audio=True)
+        seg32 = _build_iso_avatar_segment(32, active_audio=True)
+        split_at = len(seg31) // 2
+
+        # 1. Segment 30 + first half of Segment 31 arrive during Turn 1
+        await self.llm._handle_msg_model_turn(_msg(video=seg30 + seg31[:split_at]))
+        self.assertTrue(self.llm._mixin_bot_responding)
+        self.assertEqual(len(self.server_messages("avatar_video")), 1)
+
+        # 2. User barges in while Segment 31 is half-buffered
+        await self.llm.broadcast_interruption()
+        self.assertTrue(self.llm._awaiting_interrupted_turn_complete)
+        self.assertFalse(self.llm._mixin_bot_responding)
+
+        # 3. Second half of Segment 31 arrives before turn_complete
+        await self.llm._handle_msg_model_turn(_msg(video=seg31[split_at:]))
+        avatar_msgs = self.server_messages("avatar_video")
+        self.assertEqual(len(avatar_msgs), 2)
+        self.assertTrue(avatar_msgs[1].get("post_turn_decay", False))
+        self.assertFalse(self.llm._mixin_bot_responding)
+
+        # 4. Interrupted turn's turn_complete arrives
+        await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
+        self.assertFalse(self.llm._awaiting_interrupted_turn_complete)
+
+        # 5. Turn 2 Segment 32 arrives and must reassemble cleanly and start speaking
+        await self.llm._handle_msg_model_turn(_msg(video=seg32))
+        avatar_msgs = self.server_messages("avatar_video")
+        self.assertEqual(len(avatar_msgs), 3)
+        self.assertFalse(avatar_msgs[2].get("post_turn_decay", False))
+        self.assertTrue(self.llm._mixin_bot_responding)
+        self.assertTrue(self.llm._avatar_speaking)
+
+    def test_extract_complete_mp4_segments_bounds_corrupt_or_oversized_buffers(self):
+        import random
+        import struct
+        # Oversized box header (> MAX_AVATAR_MP4_BUFFER_BYTES) must clear buffer instead of growing forever
+        corrupt_buf = bytearray(struct.pack(">I4s", 0x7FFFFFFF, b"mdat") + b"x" * 1024)
+        self.assertEqual(agent_live.extract_complete_mp4_segments(corrupt_buf), [])
+        self.assertEqual(len(corrupt_buf), 0)
+
+        # Valid segment followed by corrupt trailing sz < 8 must emit the valid segment and discard corrupt tail
+        valid_seg = _build_iso_avatar_segment(1, active_audio=True)
+        mixed_buf = bytearray(valid_seg + struct.pack(">I4s", 2, b"mdat"))
+        emitted = agent_live.extract_complete_mp4_segments(mixed_buf)
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0], (valid_seg, False))
+        self.assertEqual(len(mixed_buf), 0)
+
+        # Arbitrary mid-mdat truncation (8 seeds, 16 KiB chunks) must resync to next moof with zero garbage segments
+        for seed in range(8):
+            rng = random.Random(seed)
+            init_seg = _mp4_box(b"ftyp", b"isom" * 4) + _mp4_box(b"moov", b"\x00" * 600)
+            segs = []
+            for i in range(60):
+                v_moof = _mp4_box(
+                    b"moof",
+                    _mp4_box(
+                        b"traf",
+                        _mp4_box(b"tfhd", struct.pack(">II", 0x020000, 1))
+                        + _mp4_box(b"tfdt", struct.pack(">IQ", 0x01000000, i * 512)),
+                    ),
+                )
+                v_mdat = _mp4_box(b"mdat", rng.randbytes(rng.randint(1500, 5000)))
+                a_moof = _mp4_box(
+                    b"moof",
+                    _mp4_box(
+                        b"traf",
+                        _mp4_box(b"tfhd", struct.pack(">II", 0x020000, 2))
+                        + _mp4_box(b"tfdt", struct.pack(">IQ", 0x01000000, i * 1024)),
+                    ),
+                )
+                a_mdat = _mp4_box(b"mdat", rng.randbytes(683))
+                segs.append(v_moof + v_mdat + a_moof + a_mdat)
+            stream = init_seg + b"".join(segs)
+            chunks = [stream[j : j + 16384] for j in range(0, len(stream), 16384)]
+            buf = bytearray()
+            after_ok = after_bad = 0
+            reset_at = 5
+            for ci, c in enumerate(chunks):
+                if ci == reset_at:
+                    buf = bytearray()  # simulate forced mid-box truncation
+                buf.extend(c)
+                for s, is_init in agent_live.extract_complete_mp4_segments(buf):
+                    if ci >= reset_at:
+                        if s[4:8] == b"moof" and not is_init:
+                            after_ok += 1
+                        else:
+                            after_bad += 1
+            self.assertEqual(after_bad, 0, f"seed {seed} emitted garbage segment")
+            self.assertEqual(after_ok, len(chunks) - reset_at, f"seed {seed} failed to resync")
 
 class TestTtftFromSpeechEnd(_Harness):
     async def test_ttft_counts_from_vad_stop_even_when_turn_timeout_fires_late(self):

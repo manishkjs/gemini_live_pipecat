@@ -479,14 +479,14 @@ class TestVisitCounterRoutes(unittest.TestCase):
         import visit_counter
         prev = os.environ.get("GCP_PROJECT_ID")
         try:
-            os.environ["GCP_PROJECT_ID"] = "deep-clock-339817"
+            os.environ["GCP_PROJECT_ID"] = "example-gcp-project"
             self.assertEqual(
                 visit_counter._firestore_db_path(),
-                "projects/deep-clock-339817/databases/v2v-demo-visits",
+                "projects/example-gcp-project/databases/v2v-demo-visits",
             )
             self.assertEqual(
                 visit_counter._firestore_doc_path(),
-                "projects/deep-clock-339817/databases/v2v-demo-visits/documents/studio_telemetry/v2v_demo_visits",
+                "projects/example-gcp-project/databases/v2v-demo-visits/documents/studio_telemetry/v2v_demo_visits",
             )
         finally:
             if prev is None:
@@ -494,8 +494,55 @@ class TestVisitCounterRoutes(unittest.TestCase):
             else:
                 os.environ["GCP_PROJECT_ID"] = prev
 
+    def test_firestore_transient_failure_does_not_poison_retry_or_double_fetch(self):
+        import visit_counter
+        from unittest.mock import patch
+
+        visit_counter._use_firestore = True
+        visit_counter._firestore_synced = False
+        visit_counter._count = 42
+        visit_counter._seen_page_loads.clear()
+
+        lock_held_during_io = []
+
+        def fake_fail_inc():
+            lock_held_during_io.append(visit_counter._lock.locked())
+            return None
+
+        with patch.object(visit_counter, "_firestore_increment_visits", side_effect=fake_fail_inc) as mock_inc, \
+             patch.object(visit_counter, "_firestore_get_visits", return_value=None) as mock_get:
+            r_fail = self.client.post("/api/visits", json={"page_load_id": "pl_retry_1"})
+            self.assertEqual(r_fail.status_code, 200)
+            self.assertEqual(r_fail.json()["visits"], 42)
+            self.assertEqual(mock_inc.call_count, 1)
+            self.assertEqual(mock_get.call_count, 0)
+            self.assertFalse(visit_counter._firestore_synced)
+            self.assertEqual(lock_held_during_io, [False])
+            self.assertNotIn("pl_retry_1", visit_counter._seen_page_loads)
+
+        with patch.object(visit_counter, "_firestore_increment_visits", return_value=101) as mock_inc2, \
+             patch.object(visit_counter, "_firestore_get_visits", return_value=101) as mock_get2:
+            r_ok = self.client.post("/api/visits", json={"page_load_id": "pl_retry_1"})
+            self.assertEqual(r_ok.status_code, 200)
+            self.assertEqual(r_ok.json()["visits"], 101)
+            self.assertTrue(visit_counter._firestore_synced)
+            self.assertEqual(mock_inc2.call_count, 1)
+            self.assertEqual(mock_get2.call_count, 0)
+
+            # Duplicate page_load_id and subsequent GET /api/visits must use cached _count without hitting Firestore
+            r_dup = self.client.post("/api/visits", json={"page_load_id": "pl_retry_1"})
+            self.assertEqual(r_dup.status_code, 200)
+            self.assertEqual(r_dup.json()["visits"], 101)
+            r_get = self.client.get("/api/visits")
+            self.assertEqual(r_get.status_code, 200)
+            self.assertEqual(r_get.json()["visits"], 101)
+            self.assertEqual(mock_inc2.call_count, 1)
+            self.assertEqual(mock_get2.call_count, 0)
+
+    def test_post_visits_rejects_oversized_payload(self):
+        r_big = self.client.post("/api/visits", content=b"x" * 5000)
+        self.assertEqual(r_big.status_code, 413)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

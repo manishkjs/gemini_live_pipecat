@@ -352,7 +352,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
     return () => {
       cancelled = true;
     };
-  }, [settingsOpen, settings.personaId, settings.engine, settings.backendUrl, settings.tone, settings.language, currentPhase]);
+  }, [settingsOpen, settings.personaId, settings.engine, settings.model, settings.backendUrl, settings.tone, settings.language, currentPhase]);
 
   const effectivePresetPrompt = backendPrompt || getPersonaPrompt(persona, settings.tone);
   const effectiveToolsText = settings.toolsJson?.trim() ? settings.toolsJson : backendToolsJson;
@@ -835,12 +835,14 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                           disabled={active || voiceRecording}
                           style={{ display: "none" }}
                           onChange={async (e) => {
-                            const file = e.target.files?.[0];
+                            const file = e.currentTarget.files?.[0];
+                            e.currentTarget.value = "";
                             if (!file) return;
                             try {
                               setVoiceError("");
                               const { dataUrl, durationSec, byteLength } = await normalizeUploadedVoiceAudioFile(file);
                               update("customVoiceAudio", dataUrl);
+                              update("model", "gemini-3.8-live");
                               setVoiceMetaNote(`24 kHz · 16-bit mono WAV · ${durationSec.toFixed(1)}s (${Math.round(byteLength / 1024)} KB)`);
                             } catch (err) {
                               setVoiceError(err instanceof Error ? err.message : "Failed to normalize audio file.");

@@ -561,7 +561,20 @@ export function useAvatarStream(
         queuedBytesRef.current = 0;
         setQueuedBytes(0);
         sourceBufferRef.current = null;
-        mediaSourceRef.current = null;
+        if (mediaSourceRef.current) {
+          try {
+            if (mediaSourceRef.current.readyState === "open") {
+              mediaSourceRef.current.endOfStream();
+            }
+          } catch {
+            // Ignore
+          }
+          mediaSourceRef.current = null;
+        }
+        if (objectUrlRef.current) {
+          URL.revokeObjectURL(objectUrlRef.current);
+          objectUrlRef.current = null;
+        }
         hasAppendedInitRef.current = false;
         isOpeningRef.current = false;
         lastRemovedStartRef.current = -1;

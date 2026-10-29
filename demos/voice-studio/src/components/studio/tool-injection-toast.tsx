@@ -28,6 +28,16 @@ export default function ToolInjectionToast({ event, onDismiss }: ToolInjectionTo
     return () => clearTimeout(timer);
   }, [event?.id, onDismiss]);
 
+  // Keyboard users dismiss with Escape. A status toast must not take focus, so listen on the window.
+  useEffect(() => {
+    if (!event) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [event?.id, onDismiss]);
+
   return (
     <AnimatePresence>
       {event && (

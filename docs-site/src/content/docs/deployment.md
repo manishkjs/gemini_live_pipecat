@@ -3,6 +3,19 @@ title: Cloud Run & GKE Production Deployment
 description: Deploying stateful, long-lived Gemini Live WebSocket servers on Google Cloud Run and GKE.
 ---
 
+<aside class="one-minute" aria-label="In one minute">
+  <div class="one-minute-head">
+    <span class="badge badge-blue">In one minute</span>
+    <span class="one-minute-audience">For product managers and solution architects</span>
+  </div>
+  <dl class="one-minute-grid">
+    <div class="one-minute-cell"><dt>What this page covers</dt><dd>How to run a voice server on Cloud Run or Google Kubernetes Engine (GKE) when each call holds a connection open for 5 to 60 minutes.</dd></div>
+    <div class="one-minute-cell"><dt>Why it matters</dt><dd>The defaults built for short web requests kill live calls: CPU is paused between requests and connections are cut at five minutes.</dd></div>
+    <div class="one-minute-cell one-minute-number"><dt>The number to remember</dt><dd>Five Cloud Run settings to change, starting with the request timeout (default 300 seconds, needed 3,600).</dd></div>
+    <div class="one-minute-cell"><dt>The decision you own</dt><dd>Cloud Run with the five overrides below, or GKE when you need more control over networking and scaling.</dd></div>
+  </dl>
+</aside>
+
 Deploying a real-time bidirectional voice server is fundamentally different from deploying stateless REST APIs. Each active voice call holds an open WebSocket connection, continuous audio buffers, and asyncio tasks for 5 to 60 minutes.
 
 ---
