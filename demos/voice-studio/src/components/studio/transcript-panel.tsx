@@ -368,7 +368,13 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                                 <span>TTS: {Math.round(message.metrics.ttsLatency * 1000)}ms</span>
                               )}
                               {message.metrics.usage?.total_token_count ? (
-                                <span className="token-tag">{message.metrics.usage.total_token_count} tok</span>
+                                <span className="token-tag">
+                                  {message.metrics.usage.total_token_count} tok
+                                  {(message.metrics.usage as { cached_content_token_count?: number }).cached_content_token_count &&
+                                  message.metrics.usage.prompt_token_count
+                                    ? ` · ${Math.round((((message.metrics.usage as { cached_content_token_count?: number }).cached_content_token_count ?? 0) / message.metrics.usage.prompt_token_count) * 100)}% cache`
+                                    : ""}
+                                </span>
                               ) : null}
                             </div>
                           ) : null
@@ -416,6 +422,7 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
             title={
               `Input ${totalIn(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioIn.toLocaleString()}` +
               ` + text ${tokenSplit.textIn.toLocaleString()}` +
+              (tokenSplit.cachedIn ? ` (${tokenSplit.cachedIn.toLocaleString()} cached · ${Math.round((tokenSplit.cachedIn / Math.max(1, totalIn(tokenSplit))) * 100)}% hit)` : "") +
               (tokenSplit.videoIn ? ` + video ${tokenSplit.videoIn.toLocaleString()}` : "") +
               (tokenSplit.residualIn ? ` + ${tokenSplit.residualIn.toLocaleString()} unattributed by the server` : "") +
               `\nOutput ${totalOut(tokenSplit).toLocaleString()} = audio ${tokenSplit.audioOut.toLocaleString()}` +
@@ -434,6 +441,9 @@ export default function TranscriptPanel({ studio }: { studio: VoiceStudio }) {
                   <span className="tok-dir">in {formatTokens(totalIn(tokenSplit))}</span>
                   <span className="tok-modality">
                     {" "}aud {formatTokens(tokenSplit.audioIn)} · txt {formatTokens(tokenSplit.textIn)}
+                    {tokenSplit.cachedIn > 0 && totalIn(tokenSplit) > 0 && (
+                      <> · cache {formatTokens(tokenSplit.cachedIn)} ({Math.round((tokenSplit.cachedIn / totalIn(tokenSplit)) * 100)}%)</>
+                    )}
                     {tokenSplit.videoIn > 0 && <> · vid {formatTokens(tokenSplit.videoIn)}</>}
                     {tokenSplit.residualIn > 0 && <> · ?{formatTokens(tokenSplit.residualIn)}</>}
                   </span>

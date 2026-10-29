@@ -11,6 +11,13 @@ export type CascadeStageCost = {
   rates: Record<string, string>[];
   /** Priced from measured inputs (e.g. streamed audio seconds) because the provider returns no usage. */
   estimated?: boolean;
+  /** Aggregated LLM usage_metadata counters across requests in this call. */
+  prompt_tokens?: number;
+  cached_tokens?: number;
+  uncached_prompt_tokens?: number;
+  output_tokens?: number;
+  thoughts_tokens?: number;
+  cache_hit_rate?: number;
 };
 export type CascadeCost = {
   session_id: string;
@@ -24,6 +31,8 @@ export type CascadeCost = {
 };
 
 const amount = (v: unknown) => typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) && Number(v) >= 0;
+const optNonNegInt = (v: unknown) => v === undefined || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0);
+const optRatio = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1);
 
 export function readCascadeCost(value: unknown, sessionId: string, previousRevision = -1): CascadeCost | null {
   if (!value || typeof value !== "object") return null;
@@ -37,7 +46,10 @@ export function readCascadeCost(value: unknown, sessionId: string, previousRevis
         typeof s.complete !== "boolean" || typeof s.disabled !== "boolean" ||
         !Number.isSafeInteger(s.requests) || s.requests < 0 || !Array.isArray(s.issues) ||
         s.issues.some(i => typeof i !== "string") || !Array.isArray(s.rates) ||
-        s.rates.some(r => !r || typeof r !== "object" || Object.values(r).some(x => typeof x !== "string"))) return null;
+        s.rates.some(r => !r || typeof r !== "object" || Object.values(r).some(x => typeof x !== "string")) ||
+        !optNonNegInt(s.prompt_tokens) || !optNonNegInt(s.cached_tokens) ||
+        !optNonNegInt(s.uncached_prompt_tokens) || !optNonNegInt(s.output_tokens) ||
+        !optNonNegInt(s.thoughts_tokens) || !optRatio(s.cache_hit_rate)) return null;
     if (s.complete && s.issues.length) return null;
     names.add(s.stage);
   }
@@ -55,3 +67,11 @@ export function stageLabel(row: CascadeStageCost | undefined): string {
   const amount = `${row.estimated ? "~" : ""}${formatCost(known)}`;
   return row.complete ? amount : `${amount} + in flight`;
 }
+
+/** Formats the LLM implicit/explicit cache hit rate reported in usage_metadata. */
+export function formatCacheHit(row: CascadeStageCost | undefined): string | null {
+  if (!row || row.stage !== "llm" || !(row.prompt_tokens && row.prompt_tokens > 0)) return null;
+  const pct = Math.round((row.cache_hit_rate ?? (row.cached_tokens ?? 0) / row.prompt_tokens) * 100);
+  return `${pct}% cache`;
+}
+

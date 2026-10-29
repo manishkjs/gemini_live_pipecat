@@ -250,6 +250,8 @@ export function estimateTokens(text: string): number {
 export interface TokenSplit {
   textIn: number;
   audioIn: number;
+  /** Cached prompt tokens (`cached_content_token_count`), subset of `totalIn`. */
+  cachedIn: number;
   /** Input video/image tokens (`prompt_tokens_details[VIDEO|IMAGE]`). */
   videoIn: number;
   /** Billed on input but unattributed to any modality by the server. */
@@ -267,6 +269,7 @@ export interface TokenSplit {
 export const EMPTY_TOKEN_SPLIT: TokenSplit = {
   textIn: 0,
   audioIn: 0,
+  cachedIn: 0,
   videoIn: 0,
   residualIn: 0,
   textOut: 0,
@@ -311,10 +314,12 @@ export function accumulateSplit(acc: TokenSplit, usage?: UsageTokenData | null):
 
   const promptTotal = num(usage.prompt_token_count);
   const responseTotal = num(usage.response_token_count);
+  const cachedIn = Math.min(promptTotal || Number.MAX_SAFE_INTEGER, num((usage as { cached_content_token_count?: unknown }).cached_content_token_count));
 
   return {
     textIn: acc.textIn + textIn,
     audioIn: acc.audioIn + audioIn,
+    cachedIn: acc.cachedIn + cachedIn,
     videoIn: acc.videoIn + videoIn,
     residualIn: acc.residualIn + Math.max(0, promptTotal - textIn - audioIn - videoIn),
     // Per Google Gemini pricing, thoughts_token_count is billed at the Output Text rate ($4.50/1M)

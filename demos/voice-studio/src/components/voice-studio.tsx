@@ -222,7 +222,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
       sessionTurnCount={turnCount}
       sessionTokens={tokenCount}
       sessionTokenSplit={tokenSplit}
-      sessionCost={sessionCostUSD}
+      sessionCost={settings.engine === "cascade" ? Number(studio.cascadeCost?.known_usd ?? 0) : sessionCostUSD}
       sessionInterrupts={interruptCount}
     />
   </main>

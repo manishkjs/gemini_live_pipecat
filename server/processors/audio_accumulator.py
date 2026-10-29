@@ -17,7 +17,7 @@ from cascade_metering import billed_duration, publish_cost
 
 
 class AudioAccumulator(FrameProcessor):
-    def __init__(self, context, *, project_id, stt_languages=None, cost_meter=None, **kwargs):
+    def __init__(self, context, *, project_id, stt_languages=None, cost_meter=None, enable_parallel_stt=False, **kwargs):
         super().__init__(**kwargs)
         self._context = context
         self._audio_frames = []
@@ -28,8 +28,11 @@ class AudioAccumulator(FrameProcessor):
         self._stt_client = None
         self._stt_task = None
         self._cascade_meter = cost_meter
+        self._enable_parallel_stt = bool(enable_parallel_stt)
         self._push_lock = asyncio.Lock()
-        logger.info(f"AudioAccumulator initialized with parallel STT (languages={self._stt_languages})")
+        logger.info(
+            f"AudioAccumulator initialized (parallel_stt={self._enable_parallel_stt}, languages={self._stt_languages})"
+        )
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
         async with self._push_lock:
@@ -162,21 +165,26 @@ class AudioAccumulator(FrameProcessor):
 
                 # Emit User transcription frame FIRST so pipecat-session.ts creates the User bubble
                 # and resets turnStarted=false before the Bot's first LLM text chunk arrives.
+                # When parallel STT is off (Skip STT), keep context.messages append-only so
+                # multi-turn LLM memory stays intact and Gemini implicit prefix caching caches prior audio turns.
+                dur_s = len(audio_data) / 32000.0
+                bubble_label = "🎤 Audio Message" if self._enable_parallel_stt else f"🎤 Audio Message ({dur_s:.1f}s)"
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
                     "type": "server-message",
                     "data": {
                         'type': 'transcription',
                         'participant': 'User',
-                        'text': '🎤 Audio Message'
+                        'text': bubble_label
                     }
                 }))
 
                 await self.push_frame(LLMContextFrame(self._context))
 
-                self._stt_task = asyncio.create_task(
-                    self._run_parallel_stt(audio_data, target_msg=target_msg)
-                )
+                if self._enable_parallel_stt:
+                    self._stt_task = asyncio.create_task(
+                        self._run_parallel_stt(audio_data, target_msg=target_msg)
+                    )
         elif isinstance(frame, AudioRawFrame):
             if self._accumulating:
                 self._audio_frames.append(frame)

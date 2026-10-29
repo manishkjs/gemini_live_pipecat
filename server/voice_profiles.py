@@ -121,10 +121,18 @@ def get_gemini_voice_key_file(gender: str) -> Optional[str]:
         return env_path
     name = _GEMINI_KEY_FILES[gender]
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    for c in (os.path.join(base_dir, name), os.path.join(os.getcwd(), "server", name), f"/keys/{name}"):
+    for c in (f"/keys/{name}", os.path.join(base_dir, name), os.path.join(os.getcwd(), "server", name)):
         if os.path.isfile(c):
             return c
     return None
+
+
+GEMINI_VOICE_KEY_PREFIXES = ("voicekey_", "voice_")
+
+
+def is_valid_gemini_voice_key(key: Optional[str]) -> bool:
+    """True when `key` is a valid stateless (`voicekey_`) or stateful (`voice_`) Gemini voice ID."""
+    return bool(key and str(key).strip().startswith(GEMINI_VOICE_KEY_PREFIXES))
 
 
 def load_gemini_voice_key(gender: str) -> Optional[str]:
@@ -139,15 +147,15 @@ def load_gemini_voice_key(gender: str) -> Optional[str]:
 
 
 def resolve_gemini_voice_key(voice: Optional[str]) -> Optional[str]:
-    """Return the voicekey for a Gemini clone selection, None for any other voice."""
+    """Return the voicekey/voice ID for a Gemini clone selection, None for any other voice."""
     if not is_gemini_clone_voice(voice):
         return None
     gender = GEMINI_CLONE_VOICES[str(voice).strip()]
     key = load_gemini_voice_key(gender)
     if not key:
         raise ValueError(f"The Gemini 3.8 cloned voice ({gender}) has no configured voice key.")
-    if not key.startswith("voicekey_"):
-        raise ValueError("The Gemini 3.8 cloned voice key must start with voicekey_.")
+    if not is_valid_gemini_voice_key(key):
+        raise ValueError("The Gemini 3.8 cloned voice key must start with voicekey_ or voice_.")
     return key
 
 

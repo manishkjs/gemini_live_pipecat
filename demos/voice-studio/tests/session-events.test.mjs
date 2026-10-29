@@ -989,3 +989,78 @@ test('settings-dialog and transcript-panel re-fetch persona prompt when settings
   assert.doesNotMatch(pipecatSessionSrc, /googlers\.com|rangarok|UberProxy/i);
   assert.doesNotMatch(obsDrawerSrc, /readStoredLogHeight\(window\.localStorage|writeStoredLogHeight\(window\.localStorage/);
 });
+
+test('gemma-4-26b-a4b-it-maas is listed in Cascade LLMs, clamps skip_stt=false, parses cascade_cost, and renders expired_key fallback headline', async () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const compileLib = rel => {
+    const full = path.resolve(root, rel);
+    const js = ts.transpileModule(fs.readFileSync(full, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const mod = { exports: {} };
+    vm.runInNewContext(js, {
+      module: mod,
+      exports: mod.exports,
+      require: id => {
+        const resolved = id.startsWith('@/')
+          ? id.slice(2)
+          : path.relative(root, path.resolve(path.dirname(full), id));
+        return compileLib(resolved.endsWith('.ts') ? resolved : `${resolved}.ts`);
+      },
+      URL,
+      URLSearchParams,
+      window: { location: { origin: 'https://v2v-demo.example.com', protocol: 'https:', host: 'v2v-demo.example.com' } },
+    }, { filename: full });
+    return mod.exports;
+  };
+
+  const vs = compileLib('lib/voice-session.ts');
+  const cc = compileLib('lib/cascade-cost.ts');
+
+  assert.ok(vs.CASCADE_LLM_MODELS.some(([id]) => id === 'gemma-4-26b-a4b-it-maas'));
+  assert.equal(vs.supportsCascadeAudioInput('gemma-4-26b-a4b-it-maas'), false);
+  assert.equal(vs.supportsCascadeAudioInput('gemini-3.8-flash'), true);
+
+  const connectUrl = vs.buildConnectUrl({
+    ...vs.DEFAULT_SETTINGS,
+    engine: 'cascade',
+    llmModel: 'gemma-4-26b-a4b-it-maas',
+    skipStt: true,
+  });
+  assert.equal(connectUrl.searchParams.get('llm_model'), 'gemma-4-26b-a4b-it-maas');
+  assert.equal(connectUrl.searchParams.get('skip_stt'), 'false');
+
+  const headline = vs.fallbackHeadline('voice', 'Puck', 'expired_key');
+  assert.match(headline, /expired/i);
+  assert.match(headline, /Puck/);
+
+  const parsedCost = cc.readCascadeCost({
+    session_id: 'sess-gemma',
+    revision: 1,
+    currency: 'USD',
+    basis: 'public-list-price',
+    known_usd: '0.000216',
+    complete: true,
+    reviewed_at: '2026-10-29',
+    stages: [
+      { stage: 'stt', known_usd: '0', complete: true, disabled: true, requests: 0, rates: [], issues: [] },
+      {
+        stage: 'llm', known_usd: '0.000216', complete: true, disabled: false, requests: 1,
+        rates: [{ model: 'gemma-4-26b-a4b-it-maas', provider: 'vertex', region: 'global', reviewed_at: '2026-10-29', text_in: '0.15', cached_text_in: '0.015', text_out: '0.60', source: 'https://docs.cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing' }],
+        prompt_tokens: 1000,
+        cached_tokens: 400,
+        uncached_prompt_tokens: 600,
+        output_tokens: 200,
+        thoughts_tokens: 0,
+        cache_hit_rate: 0.4,
+        issues: [],
+      },
+      { stage: 'tts', known_usd: '0', complete: true, disabled: false, requests: 0, rates: [], issues: [] },
+    ],
+  }, 'sess-gemma');
+  assert.ok(parsedCost, 'readCascadeCost must accept Gemma 4 MaaS string rate card and LLM cache_hit_rate');
+  assert.equal(parsedCost.known_usd, '0.000216');
+  assert.equal(cc.stageLabel(parsedCost.stages[0]), 'off');
+  assert.equal(cc.formatCacheHit(parsedCost.stages[1]), '40% cache');
+});
+

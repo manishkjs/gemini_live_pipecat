@@ -22,16 +22,18 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_stt_model("unknown_stt"), "gemini-3.5-transcribe-live-aistudio")
 
     def test_llm_model_validation(self):
-        from agent import build_cascade_thinking_config
+        from agent import build_cascade_thinking_config, supports_cascade_audio_input
 
-        # Gemini tiers
+        # Gemini & Vertex MaaS tiers
         self.assertEqual(validate_llm_model("gemini-3.5-flash-lite"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-3.8-flash"), "gemini-3.8-flash")
         self.assertEqual(validate_llm_model("gemini-3.8-flash-aistudio"), "gemini-3.8-flash-aistudio")
         self.assertEqual(validate_llm_model("gemini-3.7-flash"), "gemini-3.7-flash")
         self.assertEqual(validate_llm_model("gemini-2.5-flash"), "gemini-2.5-flash")
         self.assertEqual(validate_llm_model("gemini-2.5-flash-lite"), "gemini-2.5-flash-lite")
-        # Removed models should fallback to gemini-3.5-flash-lite
+        self.assertEqual(validate_llm_model("gemma-4-26b-a4b-it-maas"), "gemma-4-26b-a4b-it-maas")
+        # Unlaunched / removed models should fallback to gemini-3.5-flash-lite
+        self.assertEqual(validate_llm_model("gemma-4-31b-it-maas"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-2.5-pro"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-3.5-pro"), "gemini-3.5-flash-lite")
         self.assertEqual(validate_llm_model("gemini-2.0-flash"), "gemini-3.5-flash-lite")
@@ -49,6 +51,12 @@ class TestModelRouting(unittest.TestCase):
         cfg_35_lite = build_cascade_thinking_config("gemini-3.5-flash-lite")
         self.assertIsNotNone(cfg_35_lite)
         self.assertEqual(getattr(cfg_35_lite, "thinking_level", None), "minimal")
+
+        # Gemma 4 MaaS does not support thinkingConfig or raw audio input (skip_stt).
+        self.assertIsNone(build_cascade_thinking_config("gemma-4-26b-a4b-it-maas"))
+        self.assertFalse(supports_cascade_audio_input("gemma-4-26b-a4b-it-maas"))
+        self.assertTrue(supports_cascade_audio_input("gemini-3.5-flash-lite"))
+        self.assertTrue(supports_cascade_audio_input("gemini-3.8-flash"))
 
     def test_tts_model_validation(self):
         self.assertEqual(validate_tts_model("gemini-3.8-flash-tts"), "gemini-3.8-flash-tts")
