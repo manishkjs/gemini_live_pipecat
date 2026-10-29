@@ -27,6 +27,7 @@ The **Voice Studio** is a real-time, dark-mode conversational workspace engineer
    * **Abhay (Car Negotiator):** Sarcastic Delhi/NCR dealer haggling over a flagship AeroNxt EV (asking ₹20 lakh; server-enforced ₹14.5 lakh floor, perks before price cuts).
    * **Ananya (Mutual Fund Advisor):** Senior wealth advisor at Cymbal Investments managing portfolios, risk profiling, live scheme NAV lookups, and a 4-phase SOP progress bar.
    * **Pragya (Lamborghini Concierge):** Multimodal appointment concierge booking test drives for exotic hypercars (Revuelto / Temerario / Urus SE) with real-time monotonic SOP phase progression and `CallSlots` booking state.
+   * **Tara (Travel Advisor):** Multilingual holiday concierge at Cymbal Holidays planning flights, hotels, itineraries, and phase-scoped booking cards across Hindi, English, Spanish, and French.
    * **Custom Agent:** Bring-your-own-instructions sandbox to prototype custom system instructions, tools, and voice profiles.
 
 2. **Choose the Conversational Engine:**
