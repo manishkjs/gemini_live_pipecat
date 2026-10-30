@@ -204,15 +204,8 @@ export function useVoiceSession() {
   }, [messages, partialUser, reduced]);
 
   useEffect(() => {
-    if (audio.current) {
-      audio.current.srcObject = track ? new MediaStream([track]) : null;
-      if (track) {
-        void audio.current
-          .play()
-          .catch(() => setError("Audio playback was blocked. Use the speaker control to enable sound."));
-      }
-    }
-  }, [track]);
+    session.current?.setSound?.(sound);
+  }, [sound]);
 
   const addMessage = useCallback((role: Message["role"], text: string, metrics?: MessageMetrics) => {
     setMessages((items) => [...items, transcriptMessage(role, text, metrics)]);
@@ -539,6 +532,7 @@ export function useVoiceSession() {
         return;
       }
       session.current = live;
+      live.setSound?.(sound);
       await live.connect();
     } catch (e) {
       if (run.current !== current) return;
@@ -549,10 +543,12 @@ export function useVoiceSession() {
   };
 
   const toggleSound = () => {
-    setSound((value) => !value);
+    setSound((value) => {
+      const next = !value;
+      session.current?.setSound?.(next);
+      return next;
+    });
     if (sound) window.speechSynthesis?.cancel();
-    else if (audio.current && track)
-      void audio.current.play().catch(() => setError("Your browser is blocking audio playback."));
   };
 
   const update = (key: keyof SessionSettings, value: string) =>

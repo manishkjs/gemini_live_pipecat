@@ -124,6 +124,12 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None
+        audio_bytes = getattr(frame, "audio", None)
+        if isinstance(audio_bytes, (bytes, bytearray)) and (len(audio_bytes) & 1):
+            even_len = len(audio_bytes) & ~1
+            if even_len == 0:
+                return None
+            frame.audio = bytes(audio_bytes[:even_len])
         data = await super().serialize(frame)
         return data.encode("utf-8") if isinstance(data, str) else data
 
@@ -2226,10 +2232,14 @@ def normalize_custom_voice_audio(raw_bytes: bytes) -> tuple[bytes, dict]:
 
     target_sr = 24000
     if orig_sr != target_sr and len(samples) > 1:
-        new_len = int(round(len(samples) * target_sr / orig_sr))
-        old_x = np.linspace(0.0, 1.0, num=len(samples), endpoint=False)
-        new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
-        samples = np.interp(new_x, old_x, samples).astype(np.float32)
+        try:
+            import soxr
+            samples = soxr.resample(samples, orig_sr, target_sr).astype(np.float32)
+        except Exception:
+            new_len = int(round(len(samples) * target_sr / orig_sr))
+            old_x = np.linspace(0.0, 1.0, num=len(samples), endpoint=False)
+            new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+            samples = np.interp(new_x, old_x, samples).astype(np.float32)
 
     if len(samples) < target_sr:
         raise ValueError("Voice sample must be at least 1 second long")
@@ -2373,7 +2383,11 @@ async def run_agent_live(
     transport = FastAPIWebsocketTransport(
         websocket,
         params=FastAPIWebsocketParams(
-            audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False,
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=24000,
+            add_wav_header=False,
             serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
@@ -2668,6 +2682,8 @@ async def run_agent_live(
     task = PipelineTask(pipeline, params=PipelineParams(
         enable_metrics=True,
         enable_usage_metrics=True,
+        audio_in_sample_rate=16000,
+        audio_out_sample_rate=24000,
     ))
     
     if os.getenv("ENABLE_WHISKER") == "1":

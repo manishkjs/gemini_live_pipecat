@@ -3,7 +3,8 @@ from contextvars import ContextVar
 from diagnostic_buffer import record_provider_usage, record_metric
 from pipecat.frames.frames import (
     CancelFrame, EndFrame, InterruptionFrame, LLMContextFrame,
-    LLMFullResponseEndFrame, OutputTransportMessageFrame, OutputTransportMessageUrgentFrame, TTSAudioRawFrame,
+    LLMFullResponseEndFrame, OutputTransportMessageFrame, OutputTransportMessageUrgentFrame,
+    TTSAudioRawFrame, TTSStoppedFrame,
     UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
 )
@@ -28,15 +29,6 @@ class TurnBoundaryProcessor(FrameProcessor):
                 not local_vad and isinstance(frame, UserStartedSpeakingFrame)
             ):
                 self.tracker.start()
-                if getattr(self.tracker, "bot_type", None) == "tts-llm-stt":
-                    await self.push_frame(OutputTransportMessageUrgentFrame(message={
-                        "label": "rtvi-ai",
-                        "type": "server-message",
-                        "data": {
-                            "type": "metrics",
-                            "payload": {"type": "interruption", "count": 1},
-                        },
-                    }))
             elif isinstance(frame, VADUserStoppedSpeakingFrame) or (
                 not local_vad and isinstance(frame, UserStoppedSpeakingFrame)
             ):
@@ -163,14 +155,58 @@ class TurnOriginMixin:
 
 
 class ServerAudioTimingProcessor(FrameProcessor):
-    """Boundary immediately before the output transport; not client playback."""
+    """Boundary immediately before the output transport; enforces 2-byte s16le alignment and flushes MediaSender tail."""
+
+    def __init__(self):
+        super().__init__()
+        self._pcm_carry = b""
+        self._utterance_pcm_bytes = 0
+        self._utterance_sample_rate = 24000
+        self._utterance_channels = 1
+
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
+        if isinstance(frame, (InterruptionFrame, CancelFrame, EndFrame)):
+            self._pcm_carry = b""
+            self._utterance_pcm_bytes = 0
+            await self.push_frame(frame, direction)
+            return
+
         origin = frame.metadata.get(ORIGIN_KEY)
-        if direction == FrameDirection.DOWNSTREAM and origin is not None:
+        if direction == FrameDirection.DOWNSTREAM:
             if isinstance(frame, TTSAudioRawFrame) and frame.audio:
-                origin.audio()
-            elif isinstance(frame, LLMFullResponseEndFrame):
+                raw = (self._pcm_carry + bytes(frame.audio)) if self._pcm_carry else bytes(frame.audio)
+                even_len = len(raw) & ~1
+                self._pcm_carry = raw[even_len:]
+                if even_len == 0:
+                    return
+                if even_len != len(frame.audio) or isinstance(frame.audio, bytearray):
+                    frame.audio = raw[:even_len]
+                self._utterance_pcm_bytes += even_len
+                self._utterance_sample_rate = frame.sample_rate or 24000
+                self._utterance_channels = frame.num_channels or 1
+                if origin is not None:
+                    origin.audio()
+            elif isinstance(frame, TTSStoppedFrame):
+                self._pcm_carry = b""
+                if self._utterance_pcm_bytes > 0:
+                    # Pipecat 1.2.1 MediaSender buffers output in 40ms (4 x 10ms) chunks
+                    # (1920 bytes @ 24kHz mono) and discards any sub-chunk tail inside
+                    # _bot_stopped_speaking() when TTSStoppedFrame arrives. Pad to chunk
+                    # boundary so the final spoken syllable flushes completely.
+                    chunk_bytes = max(2, int(self._utterance_sample_rate / 100) * self._utterance_channels * 2 * 4)
+                    rem = self._utterance_pcm_bytes % chunk_bytes
+                    self._utterance_pcm_bytes = 0
+                    if rem:
+                        tail = TTSAudioRawFrame(
+                            b"\x00" * (chunk_bytes - rem),
+                            self._utterance_sample_rate,
+                            self._utterance_channels,
+                        )
+                        if origin is not None:
+                            tail.metadata[ORIGIN_KEY] = origin
+                        await self.push_frame(tail, direction)
+            elif isinstance(frame, LLMFullResponseEndFrame) and origin is not None:
                 # A tool-only generation is not the end of the spoken response.
                 if origin.first_audio is not None:
                     origin.finish("ok")
