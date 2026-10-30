@@ -19,7 +19,7 @@ import google.auth
 def get_rag_config():
     """Dynamically fetch RAG configuration."""
     corpus_id = os.getenv("RAG_CORPUS_RESOURCE_ID")
-    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     
     def extract_location(cid):
         if not cid: return "us-central1"

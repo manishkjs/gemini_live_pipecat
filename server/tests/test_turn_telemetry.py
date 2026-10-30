@@ -235,3 +235,46 @@ class TestFrameOrigins(unittest.IsolatedAsyncioTestCase):
         records = [r for r in TURN_LATENCY_RECORDS if r["session_id"] == "output" and r["turn_id"] == turn.turn_id]
         self.assertEqual(len(records), 1)
         self.assertIn("vad_stop_to_first_server_audio_ms", records[0])
+
+    async def test_turn_boundary_only_emits_interruption_on_interruption_frame(self):
+        from unittest.mock import AsyncMock, patch
+        from pipecat.frames.frames import (
+            InterruptionFrame, OutputTransportMessageUrgentFrame, VADUserStartedSpeakingFrame,
+        )
+        from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+        from processors.turn_telemetry import TurnBoundaryProcessor
+
+        tracker = TurnTracker("cascade-int", "tts-llm-stt", vad_stop_padding_ms=400)
+        boundary = TurnBoundaryProcessor(tracker)
+        emitted = []
+        boundary.push_frame = AsyncMock(side_effect=lambda f, d=FrameDirection.DOWNSTREAM: emitted.append(f))
+        with patch.object(FrameProcessor, "process_frame", new=AsyncMock()):
+            await boundary.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            urgent_after_vad = [f for f in emitted if isinstance(f, OutputTransportMessageUrgentFrame)]
+            self.assertEqual(len(urgent_after_vad), 0)
+
+            await boundary.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+            urgent_after_int = [f for f in emitted if isinstance(f, OutputTransportMessageUrgentFrame)]
+            self.assertEqual(len(urgent_after_int), 1)
+
+    async def test_server_audio_timing_aligns_odd_bytes_and_flushes_media_sender_tail(self):
+        from unittest.mock import AsyncMock, patch
+        from pipecat.frames.frames import TTSAudioRawFrame, TTSStoppedFrame
+        from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+        from processors.turn_telemetry import ServerAudioTimingProcessor
+
+        processor = ServerAudioTimingProcessor()
+        emitted = []
+        processor.push_frame = AsyncMock(side_effect=lambda f, d=FrameDirection.DOWNSTREAM: emitted.append(f))
+        with patch.object(FrameProcessor, "process_frame", new=AsyncMock()):
+            await processor.process_frame(TTSAudioRawFrame(b"\x01\x02\x03", 24000, 1), FrameDirection.DOWNSTREAM)
+            await processor.process_frame(TTSAudioRawFrame(b"\x04\x05\x06", 24000, 1), FrameDirection.DOWNSTREAM)
+            await processor.process_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
+
+        audio_frames = [f for f in emitted if isinstance(f, TTSAudioRawFrame)]
+        self.assertEqual(audio_frames[0].audio, b"\x01\x02")
+        self.assertEqual(audio_frames[1].audio, b"\x03\x04\x05\x06")
+        total_bytes = sum(len(f.audio) for f in audio_frames)
+        self.assertEqual(total_bytes % 1920, 0)
+        self.assertIsInstance(emitted[-1], TTSStoppedFrame)
+

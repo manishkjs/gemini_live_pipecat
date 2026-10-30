@@ -112,7 +112,7 @@ def _resolve_gemini_api_key(project_id: Optional[str] = None) -> str:
     key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if key:
         return key
-    target_project = project_id or os.getenv("GCP_PROJECT_ID")
+    target_project = project_id or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     if not target_project:
         return ""
     try:
@@ -178,6 +178,12 @@ class CustomProtobufSerializer(ProtobufFrameSerializer):
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if isinstance(frame, (InterruptionFrame, CancelFrame)):
             return None  # Don't serialize these frames
+        audio_bytes = getattr(frame, "audio", None)
+        if isinstance(audio_bytes, (bytes, bytearray)) and (len(audio_bytes) & 1):
+            even_len = len(audio_bytes) & ~1
+            if even_len == 0:
+                return None
+            frame.audio = bytes(audio_bytes[:even_len])
         return await super().serialize(frame)
 
 
@@ -904,7 +910,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 if hasattr(self, "_voice_config")
                 else types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
             )
-            if is_aistudio:
+            if is_aistudio or getattr(self, "_is_gemini_38", False):
                 speech_config = types.SpeechConfig(voice_config=voice_cfg)
                 generate_content_config = types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
@@ -986,6 +992,11 @@ Pace: {getattr(self, '_tts_pace_label', None) or 'Conversational'}.
                     model=self._settings.model, contents=contents, config=generate_content_config,
                 )
 
+            pcm_carry = bytearray()
+            saw_first_audio = False
+            chunk_size = max(2, (self.chunk_size or 8192) & ~1)
+            out_rate = self.sample_rate or 24000
+
             async for chunk in chunk_iter:
                 um = getattr(chunk, "usage_metadata", None)
                 if um and (isinstance(um, dict) or getattr(um, "prompt_token_count", None) is not None or getattr(um, "total_token_count", None) is not None):
@@ -997,13 +1008,25 @@ Pace: {getattr(self, '_tts_pace_label', None) or 'Conversational'}.
                     continue
                 part = parts_list[0]
                 if part.inline_data and part.inline_data.data:
-                    audio_data = part.inline_data.data
+                    pcm_carry.extend(part.inline_data.data)
+                    if not saw_first_audio:
+                        if len(pcm_carry) < 44 and pcm_carry.startswith(b"RIFF"[: len(pcm_carry)]):
+                            continue
+                        if len(pcm_carry) >= 44 and pcm_carry[:4] == b"RIFF" and pcm_carry[8:12] == b"WAVE":
+                            data_idx = pcm_carry.find(b"data", 12, min(len(pcm_carry), 256))
+                            header_end = (data_idx + 8) if data_idx != -1 else 44
+                            del pcm_carry[:header_end]
+                        saw_first_audio = True
                     await self.stop_ttfb_metrics()
-                    CHUNK_SIZE = self.chunk_size
-                    for i in range(0, len(audio_data), CHUNK_SIZE):
-                        chunk_bytes = audio_data[i : i + CHUNK_SIZE]
-                        if not chunk_bytes: break
-                        yield TTSAudioRawFrame(chunk_bytes, self.sample_rate or 24000, 1)
+                    even_len = len(pcm_carry) & ~1
+                    if even_len == 0:
+                        continue
+                    aligned = bytes(pcm_carry[:even_len])
+                    del pcm_carry[:even_len]
+                    for i in range(0, len(aligned), chunk_size):
+                        chunk_bytes = aligned[i : i + chunk_size]
+                        if chunk_bytes:
+                            yield TTSAudioRawFrame(chunk_bytes, out_rate, 1)
 
             completed = True
         except Exception as e:
@@ -1736,6 +1759,9 @@ async def run_agent(
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=24000,
+            add_wav_header=False,
             serializer=CustomProtobufSerializer(),
         ),
     )
@@ -2030,6 +2056,7 @@ async def run_agent(
             enable_usage_metrics=True,
             report_only_initial_ttfb=False,
             audio_in_sample_rate=16000,
+            audio_out_sample_rate=24000,
         ),
     )
 
@@ -2037,6 +2064,12 @@ async def run_agent(
     async def on_client_connected(transport, client):
         logger.info("Pipecat Client connected to STT-LLM-TTS pipeline")
         # Defer greeting until start_trigger message is received when user clicks Start Listening
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        turn_tracker.close()
+        logger.info("Pipecat Client disconnected from STT-LLM-TTS pipeline")
+        await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
     try:

@@ -243,12 +243,15 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
 
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const silentGain = ctx.createGain();
+      silentGain.gain.value = 0;
       processor.onaudioprocess = (ev) => {
         const input = ev.inputBuffer.getChannelData(0);
         voiceChunksRef.current.push(new Float32Array(input));
       };
       source.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(silentGain);
+      silentGain.connect(ctx.destination);
 
       setVoiceRecording(true);
       const startedAt = Date.now();

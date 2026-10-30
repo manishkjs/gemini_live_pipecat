@@ -88,7 +88,6 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
 
   return (
   <main className="studio-shell" style={{ "--persona-color": persona.color } as CSSProperties}>
-    <audio ref={audio} autoPlay muted={!sound} />
 
 
     {/* Header with Observability and Settings (Original UI removed) */}

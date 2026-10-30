@@ -136,14 +136,28 @@ export function encodeFloat32ToWav24kMonoDataUrl(
   } else {
     const newLen = Math.max(1, Math.round((samples.length * targetSr) / sourceSampleRate));
     resampled = new Float32Array(newLen);
-    const ratio = (samples.length - 1) / Math.max(1, newLen - 1);
+    const ratio = sourceSampleRate / targetSr;
+    const cutoff = Math.min(1, targetSr / sourceSampleRate) * 0.46;
+    const halfTaps = 16;
+    const filterRadius = halfTaps / Math.min(1, targetSr / sourceSampleRate);
+    const srcLen = samples.length;
     for (let i = 0; i < newLen; i++) {
-      const pos = i * ratio;
-      const idx = Math.floor(pos);
-      const frac = pos - idx;
-      const s0 = samples[idx] ?? 0;
-      const s1 = samples[Math.min(samples.length - 1, idx + 1)] ?? s0;
-      resampled[i] = s0 + (s1 - s0) * frac;
+      const center = i * ratio;
+      const start = Math.max(0, Math.ceil(center - filterRadius));
+      const end = Math.min(srcLen - 1, Math.floor(center + filterRadius));
+      let acc = 0;
+      let weightSum = 0;
+      for (let j = start; j <= end; j++) {
+        const x = j - center;
+        const winPhase = Math.PI * (x / filterRadius);
+        const blackman = 0.42 + 0.5 * Math.cos(winPhase) + 0.08 * Math.cos(2 * winPhase);
+        const sincArg = 2 * Math.PI * cutoff * x;
+        const sinc = Math.abs(sincArg) < 1e-7 ? 1 : Math.sin(sincArg) / sincArg;
+        const w = blackman * sinc;
+        acc += samples[j] * w;
+        weightSum += w;
+      }
+      resampled[i] = weightSum !== 0 ? acc / weightSum : 0;
     }
   }
 
