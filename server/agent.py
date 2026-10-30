@@ -602,11 +602,19 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             voice_id = "Aoede"
         elif voice_id and "-Chirp3-HD-" in voice_id:
             voice_id = voice_id.split("-Chirp3-HD-")[-1]
-        elif voice_id and "-" in voice_id and not voice_id.startswith("Custom") and not self._voice_key:
+        elif (
+            voice_id
+            and "-" in voice_id
+            and not voice_id.startswith("Custom")
+            and not self._voice_key
+            and not voice_profiles.is_library_voice_id(voice_id)
+        ):
             voice_id = voice_id.split("-")[-1]
 
         self._is_aistudio = bool(self._voice_key) or model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
         clean_tts_model = (model or "gemini-3.8-flash-lite-tts").replace("-aistudio", "")
+        if tts_script.is_gemini_38_tts(clean_tts_model) and not self._voice_key:
+            voice_id = voice_profiles.resolve_gemini_38_voice(voice_id, tts_accent)
         if self._is_aistudio:
             api_key = _resolve_gemini_api_key(project_id) or "dummy"
         else:
@@ -619,6 +627,11 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             language=language_code or "en-US",
         )
         super().__init__(api_key=api_key, settings=settings, **kwargs)
+        if tts_script.is_gemini_38_tts(clean_tts_model):
+            # Each run_tts call is its own 3.8 generation: merge 1-3 word fragments into the next sentence.
+            self._text_aggregator = tts_script.MinWordsSentenceAggregator(
+                aggregation_type=self._text_aggregation_mode
+            )
         if self._is_aistudio:
             self._client = genai.Client(api_key=api_key)
             self._cost_provider = "gemini"
@@ -687,10 +700,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             }))
 
     def _voice_config(self) -> "types.VoiceConfig":
-        """Cloned voicekeys go in VoiceConfig(voice=...). PrebuiltVoiceConfig only
-        accepts named voices and 400s on a voicekey ("No matching speaker voice")."""
+        """Cloned voicekeys and Voice Library ids (en-in-csagent-3) go in VoiceConfig(voice=...).
+        PrebuiltVoiceConfig only accepts the 30 studio names and 400s on a voicekey
+        ("No matching speaker voice")."""
         if getattr(self, "_voice_key", None):
             return types.VoiceConfig(voice=self._voice_key)
+        if voice_profiles.is_library_voice_id(self._settings.voice):
+            return types.VoiceConfig(voice=self._settings.voice)
         return types.VoiceConfig(prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._settings.voice))
 
     @staticmethod
@@ -777,26 +793,25 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             yield chunk
 
     def _build_speech_metadata_style(self, lang_code: Optional[str], direction: Optional[str] = None) -> str:
-        """Constructs the SpeechMetadata style string for one Gemini 3.8 TTS part.
+        """The speech_metadata.style for one Gemini 3.8 TTS part: situational delivery only.
 
-        With the LLM's per-part direction ([[emotion, pitch, pace]]) the direction
-        leads and the session supplies only the accent and character anchor:
-        'mock outrage, high pitch, fast. Accent: Indian. Sharp, witty Delhi car dealer...'
-        Without one, the session's static design is used:
-        'Style: Empathetic. Pace: Natural. Accent: Indian. Pitch: Default.'
+        The 3.8 guide ("Consistency across generations") names long character notes
+        and accent or age text in `style` as the most common cause of voice drift;
+        those traits belong to the voice itself (a regional library voice, a designed
+        voice (voice_...), or a clone). A part therefore carries only the LLM's
+        [[emotion, pitch, pace]] direction, or without one the session's short
+        style, pace and non-default pitch: 'Empathetic, natural pace'.
         """
         if direction:
-            anchor = (self._voice_prompt or "").strip()
-            return " ".join(p for p in (f"{direction}.", f"Accent: {self._accent_label(lang_code)}.", anchor) if p)
+            situational = tts_script.situational_style(direction)
+            if situational:
+                return situational
 
         if self._voice_prompt and self._voice_prompt.strip().lower().startswith("style:"):
-            # Allow full manual override if user typed a raw "Style: ... Pace: ..." string
+            # Explicit raw "Style: ... Pace: ..." string typed by the user.
             return self._voice_prompt.strip()
 
-        parts = []
         style_val = (self._tts_style or "Empathetic").strip()
-        parts.append(f"Style: {style_val}.")
-
         if self._tts_pace_label:
             pace_val = self._tts_pace_label.strip()
         elif self._tts_pace is not None:
@@ -808,27 +823,11 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 pace_val = "Natural"
         else:
             pace_val = "Natural"
-        parts.append(f"Pace: {pace_val}.")
-
-        parts.append(f"Accent: {self._accent_label(lang_code)}.")
-
-        pitch_val = (self._tts_pitch or "Default").strip()
-        parts.append(f"Pitch: {pitch_val}.")
-
-        if self._voice_prompt and self._voice_prompt.strip():
-            parts.append(self._voice_prompt.strip())
-
-        return " ".join(parts)
-
-    def _accent_label(self, lang_code: Optional[str]) -> str:
-        if self._tts_accent and self._tts_accent.strip().lower() not in ("auto", "auto (from language)", ""):
-            return self._tts_accent.strip()
-        code = (lang_code or "").lower()
-        if "gb" in code:
-            return "British"
-        if "au" in code:
-            return "Australian"
-        return "Indian"
+        parts = [style_val, f"{pace_val.lower()} pace"]
+        pitch_val = (self._tts_pitch or "").strip()
+        if pitch_val and pitch_val.lower() != "default":
+            parts.append(f"{pitch_val.lower()} pitch")
+        return ", ".join(parts)
 
     async def run_tts(self, text: str, context_id: str):
         # Split at the LLM's [[emotion, pitch, pace]] blocks into directed parts; a
@@ -1777,6 +1776,8 @@ async def run_agent(
     gemini_voice_key = voice_profiles.resolve_gemini_voice_key(tts_voice)
     if gemini_voice_key and not voice_profiles.supports_gemini_clone(clean_tts_model):
         raise ValueError("The Gemini 3.8 cloned voice requires gemini-3.8-flash-tts or gemini-3.8-flash-lite-tts.")
+    if voice_profiles.is_library_voice_id(tts_voice) and not tts_script.is_gemini_38_tts(clean_tts_model):
+        raise ValueError("Voice Library voices (en-in-...) require gemini-3.8-flash-tts or gemini-3.8-flash-lite-tts.")
     is_clone = voice_profiles.is_custom_clone_voice(tts_voice)
     if is_clone and clean_tts_model != "google-tts":
         raise ValueError("Cloned voices require Google TTS (Chirp 3 HD). Select it before starting Cascade.")
@@ -1800,7 +1801,11 @@ async def run_agent(
         effective_voice = tts_voice
         if "-Chirp3-HD-" in effective_voice:
             effective_voice = effective_voice.split("-Chirp3-HD-")[-1]
-        elif "-" in effective_voice and not effective_voice.startswith("Custom"):
+        elif (
+            "-" in effective_voice
+            and not effective_voice.startswith("Custom")
+            and not voice_profiles.is_library_voice_id(effective_voice)
+        ):
             effective_voice = effective_voice.split("-")[-1]
 
         if effective_voice.lower() == "callirhoe":

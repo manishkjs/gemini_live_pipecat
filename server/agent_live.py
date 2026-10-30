@@ -2198,7 +2198,14 @@ async def run_agent_live(
                 params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
             )
         else:
-            voice_id = voice if voice and not voice.startswith("Custom") and "clone" not in voice.lower() else "Aoede"
+            voice_id = (
+                voice
+                if voice
+                and not voice.startswith("Custom")
+                and "clone" not in voice.lower()
+                and not voice_profiles.is_library_voice_id(voice)
+                else "Aoede"
+            )
             tts_service = CustomGoogleTTSService(
                 voice_id=voice_id if "-Chirp3-HD-" in voice_id else f"{language}-Chirp3-HD-{voice_id}",
                 params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
@@ -2209,7 +2216,11 @@ async def run_agent_live(
     voice_name = voice if not use_external_tts else None
     if not voice_name and not use_external_tts:
         voice_name = "Aoede"
-    if voice_name and (voice_name.startswith("Custom") or "clone" in voice_name.lower()):
+    if voice_name and (
+        voice_name.startswith("Custom")
+        or "clone" in voice_name.lower()
+        or voice_profiles.is_library_voice_id(voice_name)
+    ):
         voice_name = "Puck" if gender == "male" else "Aoede"
 
     # Voice compatibility guard:

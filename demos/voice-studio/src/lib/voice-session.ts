@@ -545,6 +545,28 @@ export const GEMINI_VOICES: [string, string][] = [
   ["Custom-Key", "Custom Voice Cloning Key"],
 ];
 
+/**
+ * Indian English voices from the Gemini 3.8 TTS Extended Voice Library (Cascade + 3.8 TTS
+ * only). The accent lives in the voice itself, so speech_metadata.style never asks for it:
+ * the 3.8 guide says accent text in style makes the voice drift between sentences.
+ */
+export const GEMINI_38_LIBRARY_VOICES: [string, string][] = [
+  ["en-in-csagent-3", "Indian English · Call Center Agent 3 (Female, low)"],
+  ["en-in-csagent-5", "Indian English · Call Center Agent 5 (Female, medium)"],
+  ["en-in-concierge-2", "Indian English · Concierge 2 (Female, medium)"],
+  ["en-in-concierge-3", "Indian English · Concierge 3 (Female, low)"],
+  ["en-in-commercial-5", "Indian English · Commercial 5 (Female, high)"],
+  ["en-in-assistant-8", "Indian English · Digital Assistant 8 (Female, high)"],
+  ["en-in-csagent-1", "Indian English · Call Center Agent 1 (Male, low)"],
+  ["en-in-csagent-4", "Indian English · Call Center Agent 4 (Male, low)"],
+  ["en-in-concierge-1", "Indian English · Concierge 1 (Male, low)"],
+  ["en-in-commercial-7", "Indian English · Commercial 7 (Male, medium)"],
+];
+
+export function isLibraryVoice(voice: string): boolean {
+  return GEMINI_38_LIBRARY_VOICES.some(([id]) => id === voice);
+}
+
 export const CHIRP_HD_VOICES: [string, string][] = [
   ["Custom-Male", "Chirp 3 HD Voice Clone (Male)"],
   ["Custom-Female", "Chirp 3 HD Voice Clone (Female)"],
@@ -619,7 +641,7 @@ export function reconcileVoiceForEngine(
 ): string {
   const fallback = getPersona(settings.personaId).defaultVoice || DEFAULT_SETTINGS.voice;
   if (nextEngine === "live") {
-    if (settings.voice.includes("Chirp")) {
+    if (settings.voice.includes("Chirp") || isLibraryVoice(settings.voice)) {
       return fallback;
     }
     return settings.voice;
@@ -633,7 +655,7 @@ export function reconcileVoiceForEngine(
   if (isClonedVoice(settings.voice) || isLiveCustomVoice(settings.voice) || settings.voice.includes("Chirp")) {
     return fallback;
   }
-  if (isGeminiClonedVoice(settings.voice) && !supportsGeminiClone(settings.ttsModel)) {
+  if ((isGeminiClonedVoice(settings.voice) || isLibraryVoice(settings.voice)) && !supportsGeminiClone(settings.ttsModel)) {
     return fallback;
   }
   return settings.voice;
