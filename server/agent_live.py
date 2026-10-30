@@ -1316,12 +1316,13 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
 
         lang_code = getattr(self, "_language_code", None) or "en-US"
+        transcription_lang_code = getattr(self, "_transcription_language_code", None) or lang_code
         architecture = getattr(self, "persona_architecture", None)
         if isinstance(self, GeminiLiveVertexLLMService):
             # Transcription language pinning is Vertex AI Enterprise only.
             from google.genai.types import AudioTranscriptionConfig
             codes = live_transcription_language_codes(
-                lang_code, getattr(architecture, "transcription_language_codes", None)
+                transcription_lang_code, getattr(architecture, "transcription_language_codes", None)
             )
             config.input_audio_transcription = AudioTranscriptionConfig(language_codes=codes)
             config.output_audio_transcription = AudioTranscriptionConfig(language_codes=codes)
@@ -1597,7 +1598,7 @@ class StartTriggerProcessor(FrameProcessor):
         gate_mic_on_greeting: bool = False,
     ):
         super().__init__()
-        self.language = language
+        self.language = normalize_language_code(language) or "en-US"
         self.triggered = False
         self.gate_mic_on_greeting = gate_mic_on_greeting
         self._mic_gated = gate_mic_on_greeting
@@ -1835,7 +1836,104 @@ def compose_live_system_prompt(
         base = f"{base}\n\n{gender_rule}"
     if not language_directive:
         return base
-    return f"{base}\n\n{LIVE_LANGUAGE_RULE.format(language=language)}"
+    effective_language = normalize_language_code(language) or "en-US"
+    return f"{base}\n\n{LIVE_LANGUAGE_RULE.format(language=effective_language)}"
+
+
+SUPPORTED_INDIC_SPEECH_CODES = frozenset({"en-IN", "hi-IN", "mr-IN", "ta-IN", "te-IN"})
+INDIC_FALLBACK_SPEECH_CODES = frozenset({
+    "bn-IN", "gu-IN", "kn-IN", "ml-IN", "or-IN", "pa-IN", "as-IN", "ur-IN",
+})
+_BARE_LANGUAGE_DEFAULTS = {
+    "ar": "ar-XA", "as": "as-IN", "bn": "bn-IN", "cmn": "cmn-CN", "zh": "cmn-CN",
+    "de": "de-DE", "en": "en-US", "es": "es-US", "fr": "fr-FR", "gu": "gu-IN",
+    "hi": "hi-IN", "id": "id-ID", "it": "it-IT", "ja": "ja-JP", "kn": "kn-IN",
+    "ko": "ko-KR", "ml": "ml-IN", "mr": "mr-IN", "nl": "nl-NL", "or": "or-IN",
+    "pa": "pa-IN", "pl": "pl-PL", "pt": "pt-BR", "ru": "ru-RU", "ta": "ta-IN",
+    "te": "te-IN", "th": "th-TH", "tr": "tr-TR", "ur": "ur-IN", "vi": "vi-VN",
+}
+LIVE_LANGUAGE_MAP = {
+    "ar-XA": Language.AR, "as-IN": Language.AS_IN,
+    "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
+    "en-US": Language.EN_US, "en-GB": Language.EN_GB, "en-IN": Language.EN_IN, "en-AU": Language.EN_AU,
+    "es-ES": Language.ES_ES, "es-US": Language.ES_US, "fr-FR": Language.FR_FR, "fr-CA": Language.FR_CA,
+    "gu-IN": Language.GU_IN, "hi-IN": Language.HI_IN, "id-ID": Language.ID_ID, "it-IT": Language.IT_IT,
+    "ja-JP": Language.JA_JP, "kn-IN": Language.KN_IN, "ko-KR": Language.KO_KR, "ml-IN": Language.ML_IN,
+    "mr-IN": Language.MR_IN, "nl-NL": Language.NL_NL, "or-IN": Language.OR_IN,
+    "pa-IN": Language.PA_IN, "pl-PL": Language.PL_PL, "pt-BR": Language.PT_BR,
+    "ru-RU": Language.RU_RU, "ta-IN": Language.TA_IN, "te-IN": Language.TE_IN, "th-TH": Language.TH_TH,
+    "tr-TR": Language.TR_TR, "ur-IN": Language.UR_IN, "vi-VN": Language.VI_VN,
+}
+
+
+def normalize_language_code(language: Optional[str]) -> Optional[str]:
+    """Normalize a BCP-47 or bare ISO language tag into canonical ``ll-RR`` form."""
+    if not language:
+        return None
+    cleaned = language.strip().replace("_", "-")
+    if not cleaned:
+        return None
+    if "-" not in cleaned:
+        return _BARE_LANGUAGE_DEFAULTS.get(cleaned.lower(), cleaned.lower())
+    lang_part, region_part = cleaned.split("-", 1)
+    return f"{lang_part.lower()}-{region_part.upper()}"
+
+
+def resolve_transcription_language_code(
+    language: Optional[str],
+    persona_architecture: Any = None,
+) -> str:
+    """Resolve the requested BCP-47 locale for transcription and external TTS."""
+    normalized = normalize_language_code(language)
+    persona_speech_code = getattr(persona_architecture, "speech_language_code", None)
+    if (not normalized or normalized == "en-US") and persona_speech_code:
+        return persona_speech_code
+    return normalized or "en-US"
+
+
+def resolve_speech_language_code(
+    language: Optional[str],
+    persona_architecture: Any = None,
+) -> str:
+    """Resolve the BCP-47 code passed to ``SpeechConfig.language_code``.
+
+    1. When the caller leaves the UI language at default ``"en-US"`` (or empty)
+       and the persona declares ``speech_language_code`` (such as ``"en-IN"``
+       for Indian English / Hinglish personas), use the persona's studio sample
+       code so Turn 1 does not load the ``en-US`` studio sample.
+    2. When the caller selects an Indic language whose studio voice sample is
+       not in ``SUPPORTED_INDIC_SPEECH_CODES`` (``bn-IN``, ``gu-IN``, ``kn-IN``,
+       ``ml-IN``, ``or-IN``, ``pa-IN``, ``as-IN``, ``ur-IN``), anchor
+       ``SpeechConfig.language_code`` to ``"en-IN"`` so the server loads the
+       Indian voice sample instead of falling back to ``en-US``.
+    """
+    requested = resolve_transcription_language_code(language, persona_architecture)
+    if requested in INDIC_FALLBACK_SPEECH_CODES:
+        return "en-IN"
+    return requested
+
+
+def resolve_tts_voice_and_language(
+    language: Optional[str],
+    voice: Optional[str],
+    persona_architecture: Any = None,
+) -> tuple[str, Any]:
+    """Build a matching ``(voice_id, pipecat_language)`` pair for external Chirp 3 HD TTS."""
+    base_voice = (
+        voice
+        if voice
+        and not voice.startswith("Custom")
+        and "clone" not in voice.lower()
+        and not voice_profiles.is_library_voice_id(voice)
+        else "Aoede"
+    )
+    if "-Chirp3-HD-" in base_voice:
+        prefix = normalize_language_code(base_voice.split("-Chirp3-HD-", 1)[0]) or "en-US"
+        locale = prefix if prefix in LIVE_LANGUAGE_MAP else "en-US"
+        return base_voice, LIVE_LANGUAGE_MAP[locale]
+    requested = resolve_transcription_language_code(language, persona_architecture)
+    locale = requested if requested in LIVE_LANGUAGE_MAP else "en-US"
+    return f"{locale}-Chirp3-HD-{base_voice}", LIVE_LANGUAGE_MAP[locale]
 
 
 def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:
@@ -2144,26 +2242,22 @@ async def run_agent_live(
             f"{persona_architecture.pattern.value}; client-provided text ignored."
         )
 
+    speech_language = resolve_speech_language_code(language, persona_architecture)
+    if speech_language not in LIVE_LANGUAGE_MAP:
+        logger.warning(
+            f"Unmapped speech language '{speech_language}' (requested='{language}'); falling back to en-US."
+        )
+    pipecat_language = LIVE_LANGUAGE_MAP.get(speech_language, Language.EN_US)
+    transcription_language = resolve_transcription_language_code(language, persona_architecture)
+
     prompt_text = compose_live_system_prompt(
-        effective_instruction, gender, language, voice,
+        effective_instruction, gender, transcription_language, voice,
         language_directive=not getattr(persona_architecture, "owns_language_policy", False),
     )
 
     initial_user_id = os.getenv("ACTIVE_USER_ID", "default_user")
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
-    
-    language_map = {
-        "ar-XA": Language.AR, "bn-IN": Language.BN_IN, "cmn-CN": Language.CMN_CN, "de-DE": Language.DE_DE,
-        "en-US": Language.EN_US, "en-GB": Language.EN_GB, "en-IN": Language.EN_IN, "en-AU": Language.EN_AU,
-        "es-ES": Language.ES_ES, "es-US": Language.ES_US, "fr-FR": Language.FR_FR, "fr-CA": Language.FR_CA,
-        "gu-IN": Language.GU_IN, "hi-IN": Language.HI_IN, "id-ID": Language.ID_ID, "it-IT": Language.IT_IT,
-        "ja-JP": Language.JA_JP, "kn-IN": Language.KN_IN, "ko-KR": Language.KO_KR, "ml-IN": Language.ML_IN,
-        "mr-IN": Language.MR_IN, "nl-NL": Language.NL_NL, "pl-PL": Language.PL_PL, "pt-BR": Language.PT_BR,
-        "ru-RU": Language.RU_RU, "ta-IN": Language.TA_IN, "te-IN": Language.TE_IN, "th-TH": Language.TH_TH,
-        "tr-TR": Language.TR_TR, "vi-VN": Language.VI_VN,
-    }
-    pipecat_language = language_map.get(language, Language.EN_US)
 
     effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(vad, vad_mode)
     logger.info(
@@ -2178,18 +2272,6 @@ async def run_agent_live(
             serializer=CustomProtobufSerializer(),
             audio_filter=None,
         )
-    )
-
-    # Dynamic Tool & RAG / Memory Registration
-    # Persona tooling is resolved from the persona_id supplied at connect time.
-    # The system instruction is NEVER inspected to decide this: prompt text
-    # describes behaviour, it must not select infrastructure. Editing a prompt
-    # can no longer silently disable an engine, and a persona that happens to
-    # mention a car no longer inherits car tooling.
-    persona_architecture = get_persona_architecture(persona_id)
-    logger.info(
-        f"Persona architecture: {persona_architecture.pattern.value} "
-        f"(persona_id={persona_id or 'unspecified'})"
     )
 
     from tool_catalog import resolve_session_tools
@@ -2225,17 +2307,12 @@ async def run_agent_live(
                 params=GoogleTTSService.InputParams(language=clone_lang, speaking_rate=tts_pace),
             )
         else:
-            voice_id = (
-                voice
-                if voice
-                and not voice.startswith("Custom")
-                and "clone" not in voice.lower()
-                and not voice_profiles.is_library_voice_id(voice)
-                else "Aoede"
+            tts_voice_id, tts_pipecat_language = resolve_tts_voice_and_language(
+                language, voice, persona_architecture
             )
             tts_service = CustomGoogleTTSService(
-                voice_id=voice_id if "-Chirp3-HD-" in voice_id else f"{language}-Chirp3-HD-{voice_id}",
-                params=GoogleTTSService.InputParams(language=pipecat_language, speaking_rate=tts_pace),
+                voice_id=tts_voice_id,
+                params=GoogleTTSService.InputParams(language=tts_pipecat_language, speaking_rate=tts_pace),
             )
 
     llm_modalities = GeminiModalities.TEXT if use_external_tts else GeminiModalities.AUDIO
@@ -2376,6 +2453,7 @@ async def run_agent_live(
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     # Avatar & Voice Clone flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
+    llm._transcription_language_code = transcription_language
     llm._avatar_enabled = bool(avatar_enabled)
     llm._avatar_name = resolved_avatar_name
     llm._avatar_custom_image = avatar_custom_image
@@ -2444,7 +2522,7 @@ async def run_agent_live(
 
     gate_mic_on_greeting = "3.1" in (model or "")
     start_trigger = StartTriggerProcessor(
-        language=language,
+        language=transcription_language,
         gate_mic_on_greeting=gate_mic_on_greeting,
     )
     llm.start_trigger = start_trigger

@@ -398,3 +398,24 @@ def respond(payload: dict, call_state: str) -> dict:
 
 Keep the same wording as the accent line in your system instruction, and list `vocal_tone` among the fields the model never speaks. In field testing on Indian-English agents, this removed most post-tool accent drift.
 
+### Stop redundant tool sweeps on empty lookups (`retryable: False`)
+
+When a search or directory lookup returns an empty list (`[]`) or `{}` without a terminal status, `gemini-3.8-live` often treats the miss as a query-formatting mistake and fires 2 to 5 follow-up calls with shortened names or alternative filters before replying to the caller. Distinguish between **argument validation errors** (where you want the model to fix the argument and retry once) and **valid lookups that found zero records** (where the model must stop searching and ask the caller):
+
+```python
+if not matches:
+    return respond(
+        {
+            "status": "no_results",
+            "retryable": False,
+            "matches": [],
+            "ask_say": f"I couldn't find a match for {query}. Could you check the spelling or try another date?",
+            "instruction": "No matching records exist. Tell the caller and ask for an alternative without calling this tool again.",
+        },
+        call_state=state.summary(),
+    )
+```
+
+Keep the `instruction` field to a single concise sentence and `call_state` under 60 tokens. Never dump full state dictionaries or multi-paragraph instructions into every `FunctionResponse`, because every tool result stays in `ROLE_USER` history and is re-billed on every later turn until `SlidingWindow` trims it.
+
+

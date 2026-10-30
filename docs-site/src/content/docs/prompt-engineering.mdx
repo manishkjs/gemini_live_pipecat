@@ -26,7 +26,7 @@ When Gemini Live processes a turn, it assembles the model context in eight order
 ```text
 ROLE_SYSTEM:
   1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from (voiceName, speechConfig.languageCode) or replicatedVoiceConfig
 
 ROLE_DEVELOPER:
   3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
@@ -51,8 +51,8 @@ ROLE_CONTEXT:
 
 ### Four architectural consequences of this layout
 
-1. **Why public `systemInstruction` lives in `ROLE_DEVELOPER` (after `tools`)**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 large tool schemas, they sit ahead of your `systemInstruction` inside `ROLE_DEVELOPER`. Keeping declared tools pruned to 1 to 5 active schemas (`CallSlots`) prevents tool definitions from crowding out your persona and turn-taking rules.
+1. **Why public `systemInstruction` lives in `ROLE_DEVELOPER` (after `tools`) and why `speechConfig.languageCode` governs Turn 1**:
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode the studio voice sample for `(voiceName, speechConfig.languageCode)` (or your custom `replicatedVoiceConfig` clip). Omitting `speechConfig.languageCode` on Vertex AI loads an `en-US` studio recording into `ROLE_SYSTEM`, which overrides prompt-only accent rules on Turn 1 before caller audio exists. Always set `speechConfig.languageCode` explicitly (such as `"en-IN"` or `"hi-IN"`) at setup. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 large tool schemas, they sit ahead of your `systemInstruction` inside `ROLE_DEVELOPER`. Keeping declared tools pruned to 1 to 5 active schemas (`CallSlots`) prevents tool definitions from crowding out your persona and turn-taking rules.
 2. **The newest turn is the last thing the model reads (Recency Steering)**:
    Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, twenty turns of accumulated audio and transcript history eventually separate your opening instructions from the caller's latest sentence. A tool result returned in the current turn lands at the end of the prompt, right before the model starts decoding audio, so it carries the most weight for the next reply. Use that slot for short, per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it.
 3. **`systemInstruction` and `tools` form the prefix-cached preamble**:
@@ -108,12 +108,15 @@ Under real-time audio streaming, negative instructions (*"Do NOT narrate tool ca
 | :--- | :--- |
 | *"Do NOT announce when you are calling a function or read out parameter names."* | *"Before invoking a tool, speak one natural sentence ('Let me check that for you.'), emit the tool call, and immediately stop speaking."* |
 | *"Never ask multiple questions in the same turn or give long paragraphs."* | *"Ask exactly one question per turn, keep your reply under 30 words, and wait for the caller to answer."* |
-| *"Do not switch languages if you hear background noise."* | *"Speak exclusively in English on every turn, even if background voices or accents sound like another language."* |
+| *"Do not switch languages if you hear background noise."* | *"Speak unmistakably in the call language on every turn, even if background voices or accents sound like another language."* |
 
-#### B. Prescriptive `a -> b -> c` sequences prevent turn-boundary guessing
+#### B. Pair `speechConfig.languageCode` with short turns (`<60 words`) and in-place phonetic spellings
+For regional accents and multilingual voice agents, pair `speechConfig.languageCode` (for example `"en-IN"`) with positive phrasing (`"RESPOND UNMISTAKABLY IN HINGLISH with a natural Indian accent on every word"`). Keep every spoken reply under 2 to 3 short sentences (under 60 words total) so the voice does not accelerate into a rushed read-aloud cadence on long explanations. When a brand name or model code needs a specific pronunciation, write the phonetic spelling directly in place in Latin script (`"B-E six Sporteq"`): in field testing, native audio models often read both sides of an inline `"Pronounce X as Y"` table aloud or stumble over mixed-script mid-word hyphenation (`"BE 6 को 'बी-ई सिक्स' बोलें"`).
+
+#### C. Prescriptive `a -> b -> c` sequences prevent turn-boundary guessing
 When a phase requires asking a question and calling a tool, spell out the exact turn boundary using lettered steps (`a, b, c`) so the model does not call the tool before the caller answers.
 
-#### C. Single source of truth (no duplicate instructions)
+#### D. Single source of truth (no duplicate instructions)
 If a phase directive or follow-up question is delivered dynamically (in the current card or a tool response), **remove that instruction from the base rules**. Keeping the same instruction in both places causes the model to deliver the prompt twice.
 
 ---
@@ -132,8 +135,10 @@ Native speech-to-speech models process text instructions directly in the acousti
    Asking the model to read back text inside tags such as `<verbatim>...</verbatim>` makes `gemini-3.8-live` dump the whole line into the output transcript in one or two frames and send `generationComplete` after less than a second of audio (or none). In one test this cut off 7 of 25 turns (28%). Put the exact line in a plain `*_say` field of a tool result and tell the model to say it exactly as given.
 5. **Ban non-lexical fillers (`"Hmm..."`, `"Umm..."`, `"Ahh..."`)**:
    The model renders these as breathy sounds, and on female voices they can drop the pitch into a deep chest register that does not match the rest of the call. Ask for short real words instead: "Sure", "Right", "One moment", or "जी" on Hindi calls.
-6. **Do not use greedy sampling to get consistent wording**:
-   `temperature: 0` or `topK: 1` can send the audio decoder into a long droning loop after a tool result. Keep `temperature` at `0.7` to `0.8` and leave `topK` and `topP` unset. See [Sampling for audio output](/gemini-live/gemini-live-configuration/#sampling-for-audio-output).
+6. **Do not use greedy decoding (`temperature: 0` or `topK: 1`) or low-temperature sampling (`temperature <= 0.3`) to get consistent wording**:
+   When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head can finish speaking the natural question in ~3 seconds while the text stream (`outputTranscription`) keeps flushing the remaining title words over 4 to 5 seconds of near-silence. Inside that silent window, the model fails to emit its end-of-turn token (so `turnComplete` never arrives) and can lock into a ~20-second nasal hum near the voice's fundamental pitch (~187 to 200 Hz in one measured cloned-voice session) until the server's turn-length cap cuts it off. Leave `temperature` unset (default `1.0`) or between `0.7` and `1.0`, leave `topK` and `topP` unset, and keep spoken `*_say` strings concise. See [Sampling for audio output](/gemini-live/gemini-live-configuration/#sampling-for-audio-output).
+7. **Do not paste inline pronunciation tables (`"Pronounce X as Y"`) into `systemInstruction`**:
+   Write phonetic spellings for brand acronyms directly in place in Latin script (`"B-E six Sporteq"`; see [Short turns and in-place phonetic spellings](#b-pair-speechconfiglanguagecode-with-short-turns-60-words-and-in-place-phonetic-spellings)).
 
 ---
 
@@ -148,7 +153,7 @@ To steer the model across a multi-step call without growing history on every pha
 
 ### Opening the call: a language-neutral Turn-0 stub
 
-Many clients open the call by sending a short user turn so the model speaks first. Do not make that turn a greeting in any language. On a multilingual agent, a stub like `"नमस्ते!"` reads as the caller choosing Hindi: the model skips its introduction and calls the language tool on Turn 0. Send a neutral stage note, and pair it with an opening rule in the first system instruction:
+Many clients open the call by sending a short text-only user turn on Turn 0 so the model speaks first. Because that opening trigger has zero caller audio in history, `ROLE_SYSTEM` is the only acoustic reference for the greeting: always set `speechConfig.languageCode` explicitly (for example, `"en-IN"`) in `setup` so the opening greeting does not default to the `en-US` studio voice. Do not make that trigger turn a greeting in any language. On a multilingual agent, a stub like `"नमस्ते!"` reads as the caller choosing Hindi: the model skips its introduction and calls the language tool on Turn 0. Send a neutral stage note (`GREETING_STUB` below), and pair it with an opening rule in the first system instruction:
 
 ```python
 GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"

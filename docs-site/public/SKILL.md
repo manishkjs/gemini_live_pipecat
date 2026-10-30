@@ -949,7 +949,7 @@ const stream = await navigator.mediaDevices.getUserMedia({
 
 ### E. Telephony 8 kHz Downsampling (`mulaw`), Gain Caps & Prebuilt Voice Register Stability
 * **Why 8 kHz Telephony Alters Voice Timbre**: PSTN/SIP telephony gateways (Twilio, Exotel, Genesys `PCMU`/`mulaw`) downsample Gemini Live's 24 kHz PCM output to 8 kHz, cutting acoustic energy above 4 kHz (Nyquist limit).
-* **Prebuilt Voice Selection for 8 kHz Trunks**: Higher-pitched female prebuilt voices such as `Aoede` are more susceptible to audible register drops on 8 kHz lines after non-lexical fillers (`"Hmm"`, `"Umm"`) or low-energy phrases. Lower-variance voices such as `Kore`, `Despina`, and `Sulafat` maintain steadier pitch across 8 kHz downsampling.
+* **Prebuilt Voice Selection for 8 kHz Trunks**: Higher-pitched female prebuilt voices such as `Aoede` are more susceptible to audible register drops on 8 kHz lines after non-lexical fillers (`"Hmm"`, `"Umm"`) or low-energy phrases. Lower-variance voices such as `Kore` and `Despina` maintain steadier pitch across 8 kHz downsampling.
 * **Gain Cap (`4x to 5x` max) & Anti-Aliased Resampling**: Never apply `10x` (`+20 dB`) linear sample multiplication before `mulaw` encoding; it clips `int16` peaks (`[-32768, 32767]`) into harsh square-wave buzz. Cap software gain boost at `4x to 5x` (`+12 dB to +14 dB`) with `np.clip` or a `tanh` soft limiter, and resample `24 kHz <-> 8 kHz` with an anti-aliasing filter (`soxr` or `scipy.signal.resample_poly`).
 
 ---
@@ -960,7 +960,7 @@ There are three distinct "model finished" signals in a duplex WebSocket session.
 
 | Signal | Definition | Firing Timing & Hazard |
 |---|---|---|
-| **Server `turnComplete`** | Server finished transmitting response chunks over the socket. | Fires **early** while several seconds of PCM audio are still buffered and playing through the user's speakers. Injecting `turnComplete: true` text here immediately cuts off audible speech. |
+| **Server `turnComplete`** | Server finished transmitting the turn following assumed real-time playback (`generationComplete` fires ~4x faster as soon as token synthesis ends). | Arrives after the server's assumed real-time playout (which can be many seconds after `generationComplete` on long replies), while client jitter buffers or telephony queues may still have a short tail playing out. Wait for client buffer drain before injecting `turnComplete: true` text. |
 | **Client `isAiSpeaking = false`** | Zero active audio sources playing in the browser. | Unreliable on its own because brief network jitter between audio chunks causes momentary zero-source gaps. |
 | **Composite `onTurnComplete`** | Both `serverTurnDone === true` AND `activeSources.size === 0` after a 300ms drain debounce. | The **authoritative signal** that the model has completely finished speaking. |
 
@@ -1001,7 +1001,7 @@ In a Gemini Live session, `systemInstruction`, `tools`, conversation history, an
 ```text
 ROLE_SYSTEM:
   1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from (voiceName, speechConfig.languageCode) or replicatedVoiceConfig
+  2. <voice reference embedding>               <- ~224-239 audio tokens for a prebuilt voice sample (or ~25 tokens/sec for a custom clip in replicatedVoiceConfig)
 
 ROLE_DEVELOPER:
   3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
@@ -1169,11 +1169,11 @@ Tool results are the last thing the model reads before it generates audio, and t
       return {"context_update": update}
   ```
 
-### P. Four Production Audio & Sampling Traps (`gemini-3.8-live`)
-* **Greedy sampling (`temperature <= 0.3` or `top_k: 1`) causes a ~20s droning audio loop**:
+### P. Five Production Audio & Sampling Traps (`gemini-3.8-live`)
+* **Greedy decoding (`temperature: 0` or `top_k: 1`) or low-temperature sampling (`temperature <= 0.3`) causes a ~20s droning audio loop**:
   1. When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody while the text stream (`outputTranscription`) keeps flushing the remaining title words.
-  2. While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because end-of-turn (`<eos>` / `turnComplete`) depends on joint text-and-audio prediction, `<eos>` fails to fire when the text stream ends inside a silent audio window.
-  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio head locks into a self-reinforcing ~187 to 200 Hz nasal hum (*"Mmmmm..."*) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
+  2. While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because the model's end-of-turn token (`<eos>`) depends on joint text-and-audio prediction, the model never emits `<eos>` when the text stream ends inside a silent audio window, so `turnComplete` never arrives.
+  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio head locks into a self-reinforcing nasal hum (*"Mmmmm..."*) near the voice's fundamental pitch (~187 to 200 Hz in one measured cloned-voice session) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
   - **Mitigation**: Keep `temperature` unset (default `1.0`) or between `0.7` and `1.0`, leave `top_k` / `top_p` unset, and keep spoken `*_say` strings concise and conversational without long corporate titles or parenthetical codes.
 * **Never write "stay silent and wait" in a prompt**: When the model declines to answer, the server sends no `turnComplete` or reason, so the caller hears dead air. On 3.8, `<no speech>` placeholder text can leak into the output transcript and may be spoken after tool-response turns. This adds to the §18.G transcription trap. Use backchannel recovery (§19.C) or a short reprompt instead.
 * **Never wrap spoken lines in `<verbatim>` XML tags**: Under `<verbatim>...</verbatim>` readback prompts, `gemini-3.8-live` can dump the full text into the output transcript in 1 to 2 frames and send `generationComplete` after less than a second of audio, or none (28% of turns in one test). Put the line in a `*_say` field instead (§18.M).

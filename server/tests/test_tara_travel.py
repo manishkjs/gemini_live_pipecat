@@ -1099,6 +1099,92 @@ class TestAgentLiveHooks(unittest.TestCase):
         self.assertIn("LANGUAGE: Start the call in en-IN",
                       compose_live_system_prompt(si, "female", "en-IN", "Sulafat"))
 
+    def test_indian_multilingual_personas_own_language_policy_and_speech_code(self):
+        from persona_registry import get_persona_architecture
+        for persona_id in (
+            "travel-concierge",
+            "lamborghini-concierge",
+            "ananya-advisor",
+            "kavya-glass-buddy",
+            "car-negotiator",
+        ):
+            arch = get_persona_architecture(persona_id)
+            self.assertTrue(getattr(arch, "owns_language_policy", False), persona_id)
+            self.assertEqual(getattr(arch, "speech_language_code", None), "en-IN", persona_id)
+            codes = tuple(getattr(arch, "transcription_language_codes", None) or ())
+            self.assertGreaterEqual(len(codes), 2, persona_id)
+            self.assertIn("en-IN", codes)
+            self.assertIn("hi-IN", codes)
+        meera = get_persona_architecture("debt-collector")
+        self.assertEqual(meera.speech_language_code, "en-IN")
+        self.assertIsNone(get_persona_architecture("custom").speech_language_code)
+
+    def test_resolve_speech_and_transcription_language_codes(self):
+        from agent_live import (
+            SUPPORTED_INDIC_SPEECH_CODES,
+            resolve_speech_language_code,
+            resolve_transcription_language_code,
+            resolve_tts_voice_and_language,
+        )
+        from persona_registry import get_persona_architecture
+
+        tara = get_persona_architecture("travel-concierge")
+        custom = get_persona_architecture("custom")
+        self.assertEqual(resolve_speech_language_code("en-US", tara), "en-IN")
+        self.assertEqual(resolve_speech_language_code("en", tara), "en-IN")
+        self.assertEqual(resolve_speech_language_code(None, tara), "en-IN")
+        self.assertEqual(resolve_speech_language_code("en-US", custom), "en-US")
+        self.assertEqual(resolve_speech_language_code("hi", custom), "hi-IN")
+        self.assertEqual(resolve_speech_language_code("hi_in", custom), "hi-IN")
+        for supported in SUPPORTED_INDIC_SPEECH_CODES:
+            self.assertEqual(resolve_speech_language_code(supported, custom), supported)
+            self.assertEqual(resolve_transcription_language_code(supported, custom), supported)
+        for fallback_indic in ("bn-IN", "gu-IN", "kn-IN", "ml-IN", "or-IN", "pa-IN", "as-IN", "ur-IN"):
+            self.assertEqual(resolve_speech_language_code(fallback_indic, custom), "en-IN")
+            self.assertEqual(resolve_speech_language_code(fallback_indic.lower(), custom), "en-IN")
+            self.assertEqual(resolve_transcription_language_code(fallback_indic, custom), fallback_indic)
+        self.assertEqual(resolve_speech_language_code("bn", custom), "en-IN")
+        self.assertEqual(resolve_transcription_language_code("bn", custom), "bn-IN")
+
+        for lang, persona, expected_locale in (
+            ("bn-IN", custom, "bn-IN"),
+            ("en-US", tara, "en-IN"),
+            ("hi", custom, "hi-IN"),
+            ("en-US", custom, "en-US"),
+        ):
+            voice_id, tts_lang = resolve_tts_voice_and_language(lang, "Aoede", persona)
+            self.assertEqual(voice_id, f"{expected_locale}-Chirp3-HD-Aoede")
+            self.assertEqual(str(tts_lang.value if hasattr(tts_lang, "value") else tts_lang), expected_locale)
+        prefixed_id, prefixed_lang = resolve_tts_voice_and_language("en-US", "en-GB-Chirp3-HD-Aoede", custom)
+        self.assertEqual(prefixed_id, "en-GB-Chirp3-HD-Aoede")
+        self.assertEqual(str(prefixed_lang.value if hasattr(prefixed_lang, "value") else prefixed_lang), "en-GB")
+
+    def test_vertex_connection_task_handler_separates_speech_and_transcription_locale(self):
+        from unittest.mock import patch
+        from google.genai import types
+        from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMService
+        from agent_live import CustomGeminiLiveVertexLLMService, live_transcription_language_codes
+        from persona_registry import get_persona_architecture
+
+        svc = object.__new__(CustomGeminiLiveVertexLLMService)
+        svc._language_code = "en-IN"
+        svc._transcription_language_code = "bn-IN"
+        svc.persona_architecture = get_persona_architecture("custom")
+        svc.get_llm_adapter = lambda: None
+        svc._avatar_enabled = False
+        svc._replicated_voice_sample = None
+        cfg = types.LiveConnectConfig()
+
+        async def _noop_super(self_inner, config_inner):
+            return None
+
+        with patch.object(GeminiLiveVertexLLMService, "_connection_task_handler", _noop_super):
+            run(CustomGeminiLiveVertexLLMService._connection_task_handler(svc, cfg))
+        expected = live_transcription_language_codes("bn-IN")
+        self.assertEqual(cfg.input_audio_transcription.language_codes[0], "bn-IN")
+        self.assertEqual(list(cfg.input_audio_transcription.language_codes), expected)
+        self.assertEqual(list(cfg.output_audio_transcription.language_codes), expected)
+
     def test_start_trigger_sends_opening_card_before_hello(self):
         from pipecat.frames.frames import InputTransportMessageFrame, LLMMessagesAppendFrame
         from pipecat.processors.frame_processor import FrameDirection

@@ -61,8 +61,8 @@ Sent once at session start. Most fields last for the life of the socket. Two can
 | `model` | The Live model identifier | Vertex requires `projects/.../locations/.../publishers/google/models/...` |
 | `systemInstruction` | The agent's persona and base rules | Replaceable mid-call: `session.send_context_update(system_instruction="...")` (`google-genai >= 2.32.0`) or `clientContent` with `role="system"` (Vertex AI). Each update replaces the whole instruction and rebuilds the prefix cache, so update at stage transitions rather than on every turn. See [Pillar 2: Dynamic prompt cards](/gemini-live/optimization/prompt-cards/) |
 | `generationConfig.responseModalities` | `["AUDIO"]` **or** `["TEXT"]` | Never pass both (`["AUDIO","TEXT"]` closes with code `1007`) |
-| `generationConfig.speechConfig` | Prebuilt voice + BCP-47 language | Voice names are **case-sensitive** (`Aoede`, not `aoede`) |
-| `generationConfig.temperature` | Sampling temperature | Keep `0.7` to `0.8` for audio output. Leave `topK` and `topP` unset. See [Sampling](#sampling-for-audio-output) |
+| `generationConfig.speechConfig` | Prebuilt or replicated voice + BCP-47 language | Voice names are **case-sensitive** (`Aoede`, not `aoede`). Always set `languageCode` explicitly (omitting it on Vertex AI falls back to `en-US`). See [Voices and language](#voices-and-language) |
+| `generationConfig.temperature` | Sampling temperature | Leave unset (`1.0`) or keep `0.7` to `1.0` for audio output. Leave `topK` and `topP` unset. See [Sampling](#sampling-for-audio-output) |
 | `generationConfig.thinkingConfig` | Reasoning level | Depends on the model. See [Thinking config by model](#thinking-config-by-model) |
 | `tools` | Function declarations | Set `behavior: "NON_BLOCKING"` for async tools. Replaceable mid-call with `session.send_context_update(tools=[...])` (or `tools=[]` to clear all tools) in `google-genai >= 2.32.0`. See [Tools & function calling](/gemini-live/tools/) |
 | `realtimeInputConfig.automaticActivityDetection` | Server VAD thresholds | Sensitivity, `silenceDurationMs`, `prefixPaddingMs` |
@@ -75,8 +75,10 @@ For a complete `setup` payload with production values, see [Getting started -> W
 
 ## Voices and language
 
-- **Voice**: Pass a prebuilt voice name in `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`. Names are **case-sensitive**; an invalid casing closes the connection with `1007` during setup.
-- **Language**: Configure output language with a BCP-47 code (`en-US`, `en-IN`, `hi-IN`, etc.).
+- **Prebuilt voice (`voiceName`)**: Pass a prebuilt voice name in `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`. Names are **case-sensitive**; an invalid casing closes the connection with `1007` during setup. On 8 kHz telephony trunks (`mulaw`), higher-pitched female voices such as `Aoede` are more prone to dropping into a deeper chest register after nasal fillers or low-energy words; steadier voices such as `Kore` or `Despina` hold their timbre better across 8 kHz downsampling.
+- **How `speechConfig.languageCode` selects the studio voice sample**: On the server, the pair `(voiceName, speechConfig.languageCode)` selects a `~224 to 239`-token studio audio recording and places it in `ROLE_SYSTEM` ahead of your `systemInstruction`. Even though consumer documentation notes that native audio models can pick a language automatically, omitting `speechConfig.languageCode` on Vertex AI falls back to the `en-US` studio recording. Passing a bare language code without a region (`"en"`, `"hi"`) or a regional Indic code that has no dedicated prebuilt studio voice entry (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`) also falls back to `en-US`.
+- **Anchoring Indian and multilingual voices from Turn 1**: Set `speechConfig.languageCode` explicitly to `"en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`). Setting `"en-IN"` loads the Indian-accented studio voice sample from the first word of Turn 1 while still allowing the model to switch fluidly into Hindi, Hinglish, or regional languages mid-call when the caller speaks them.
+- **Custom voice cloning (`replicatedVoiceConfig`)**: When a prebuilt voice does not match your regional accent target, pass `speechConfig.voiceConfig.replicatedVoiceConfig` with a 10 to 20 second clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in the exact target accent and speaking pace. That reference clip replaces the prebuilt voice sample in `ROLE_SYSTEM`.
 - **Single-speaker**: Native audio output uses a single voice per session.
 
 ## Voice-activity detection (VAD)
@@ -114,7 +116,13 @@ For the full list of prompt patterns that break native audio (silence rules, XML
 
 ## Sampling for audio output
 
-Audio tokens need some randomness. With greedy decoding (`temperature: 0` or `topK: 1`), the audio decoder can lose track of the text it was speaking and loop on one sound for many seconds. On `gemini-3.8-live` this shows up as a long droning or buzzing tail, most often right after a tool result. Keep `temperature` at `0.7` to `0.8` and leave `topK` and `topP` unset so the model uses its own defaults. Get consistent wording from the prompt and from `*_say` fields in tool results, not from greedy sampling.
+Audio tokens need sampling diversity. With greedy decoding (`temperature: 0` or `topK: 1`) or low-temperature sampling (`temperature <= 0.3`), a post-tool reply can get stuck in a ~20-second droning or buzzing loop on `gemini-3.8-live`:
+
+1. **Text and audio finish at different times**: When a tool result contains a long formal string (for example, a person's name followed by a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody, while the text stream (`outputTranscription`) keeps emitting the remaining title words.
+2. **Trailing silence blocks end-of-turn**: While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because the model's end-of-turn token (`<eos>`) relies on joint text-and-audio token prediction, the model never emits `<eos>` when the text stream ends inside a silent audio window, so `turnComplete` never arrives.
+3. **Greedy limit-cycle hum**: With no text tokens left to condition on and `temperature: 0` / `topK: 1` forcing the single highest-probability continuation token at every step, the audio head locks into a self-reinforcing nasal murmur (*"Mmmmm..."*) near the voice's fundamental pitch (~187 to 200 Hz in one measured cloned-voice session) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
+
+Leave `temperature` unset (default `1.0`) or between `0.7` and `1.0`, and leave `topK` and `topP` unset so the model uses its native sampling distribution. Get consistent wording from your prompt and from concise, conversational `*_say` fields in tool results (without long titles or parenthetical codes), not from greedy sampling.
 
 ## Thinking config by model
 
@@ -134,15 +142,28 @@ The server generates audio faster than real time (about 4x) and sends `generatio
 
 A Live session returns **either audio or text** in `generationConfig.responseModalities`, never both. To receive live text transcripts alongside spoken audio, enable `inputAudioTranscription: {}` and `outputAudioTranscription: {}` in `setup`. Transcripts stream incrementally; accumulate fragments until `finished: true` or `turnComplete`.
 
-**Pin transcript languages on Vertex AI.** On multilingual calls, transcripts can drift into the wrong script (Hindi speech written in Urdu, Arabic, or Cyrillic script). On Vertex AI, list the languages you expect:
+**Pin both speech voice locale and transcript languages on Vertex AI.** Keep `speechConfig.languageCode` set to a supported studio voice locale (`"en-IN"`, `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`, using `"en-IN"` or `"hi-IN"` as the voice anchor when a caller speaks a regional Indic language without its own prebuilt studio sample), and list the expected spoken languages in `AudioTranscriptionConfig(language_codes=[...])` so transcripts render in the right script instead of drifting into Urdu, Arabic, or Cyrillic script:
 
 ```python
 from google.genai import types
 
+INDIC_FALLBACK_SPEECH_CODES = {
+    "bn-IN", "gu-IN", "kn-IN", "ml-IN", "or-IN", "pa-IN", "as-IN", "ur-IN",
+}
+target_locale = "bn-IN"  # e.g., Bengali caller on an Indian voice agent
+speech_locale = "en-IN" if target_locale in INDIC_FALLBACK_SPEECH_CODES else target_locale
+transcript_locales = list(dict.fromkeys(["en-IN", target_locale]))
+
 config = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
-    input_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"]),
-    output_audio_transcription=types.AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"]),
+    speech_config=types.SpeechConfig(
+        language_code=speech_locale,
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Kore")
+        ),
+    ),
+    input_audio_transcription=types.AudioTranscriptionConfig(language_codes=transcript_locales),
+    output_audio_transcription=types.AudioTranscriptionConfig(language_codes=transcript_locales),
 )
 ```
 
