@@ -1601,12 +1601,34 @@ def cascade_greeting_text(persona_architecture, stt_language) -> str:
     return "नमस्ते!" if is_hindi else "Hello!"
 
 
+CASCADE_LANGUAGE_RULE = (
+    "LANGUAGE: Start the call in {language}. If the caller speaks a whole turn in another "
+    "language, or asks for one, reply in that language from your next sentence and stay in it "
+    "until they switch again. Do not announce or comment on the switch. Use the everyday spoken "
+    "form of each language (Hinglish for Hindi, not formal Hindi)."
+)
+
+
+def _normalize_cascade_language(language: Optional[str]) -> Optional[str]:
+    if not language:
+        return None
+    primary = language.split(",")[0].strip().replace("_", "-")
+    if not primary:
+        return None
+    if "-" not in primary:
+        return "hi-IN" if primary.lower() in ("hi", "hindi") else primary.lower()
+    lang_part, region_part = primary.split("-", 1)
+    return f"{lang_part.lower()}-{region_part.upper()}"
+
+
 def compose_cascade_system_prompt(
     system_instruction: Optional[str],
     tts_voice: Optional[str] = None,
     clean_tts_model: str = "gemini-3.8-flash-tts",
     persona_id: Optional[str] = None,
     skip_stt: bool = False,
+    language: Optional[str] = None,
+    language_directive: bool = True,
 ) -> str:
     """Build the system prompt for a Cascade session without mutating caller prompts.
 
@@ -1628,12 +1650,18 @@ def compose_cascade_system_prompt(
     if gender_rule:
         final_system_instruction += "\n\n" + gender_rule
 
+    if language_directive and language:
+        effective_lang = _normalize_cascade_language(language)
+        if effective_lang:
+            final_system_instruction += "\n\n" + CASCADE_LANGUAGE_RULE.format(language=effective_lang)
+
     if skip_stt:
         final_system_instruction += (
             "\n\nIMPORTANT: The user's input is raw audio. Listen to it and respond naturally. "
             "Strictly answer ONLY the current user query. Do not bring up previous topics or simulate future turns."
         )
     return final_system_instruction
+
 
 
 async def run_agent(
@@ -1763,6 +1791,8 @@ async def run_agent(
         clean_tts_model=clean_tts_model,
         persona_id=persona_id,
         skip_stt=skip_stt,
+        language=stt_language,
+        language_directive=not getattr(persona_architecture, "owns_language_policy", False),
     )
 
     is_aistudio_llm = "aistudio" in clean_llm_model or clean_llm_model == "gemma-4-26b-a4b-it"

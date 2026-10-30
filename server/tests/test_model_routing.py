@@ -233,6 +233,31 @@ class TestVoiceGender(unittest.TestCase):
                          "Be terse.\n\n" + LIVE_LANGUAGE_RULE.format(language="hi-IN"),
                          "named voices are left to the persona")
 
+    def test_cascade_prompt_injects_hinglish_language_rule_when_language_provided(self):
+        from agent import CASCADE_LANGUAGE_RULE, compose_cascade_system_prompt
+
+        prompt = compose_cascade_system_prompt(
+            "Resolve INR 8,500 overdue balance.",
+            tts_voice="Gemini-Clone-Male",
+            clean_tts_model="gemini-3.8-flash-tts",
+            persona_id="debt-collector",
+            language="hi-IN,en-US",
+        )
+        self.assertIn(CASCADE_LANGUAGE_RULE.format(language="hi-IN"), prompt)
+        self.assertIn("Hinglish for Hindi, not formal Hindi", prompt)
+        self.assertIn("सकता हूँ", prompt)
+
+        no_lang_rule = compose_cascade_system_prompt(
+            "Tara base prompt.",
+            tts_voice="Sulafat",
+            clean_tts_model="gemini-3.8-flash-tts",
+            persona_id="travel-concierge",
+            language="en-IN",
+            language_directive=False,
+        )
+        self.assertNotIn("LANGUAGE: Start the call", no_lang_rule)
+
+
     def test_normalize_custom_avatar_image_produces_704x1280_rgb_png(self):
         import io
         from PIL import Image
