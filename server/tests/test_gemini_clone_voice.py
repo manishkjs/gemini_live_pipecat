@@ -47,9 +47,11 @@ class TestGeminiCloneSelection(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "voicekey_"):
                 voice_profiles.resolve_gemini_voice_key("Gemini-Clone-Male")
 
-    def test_stateful_voice_id_prefix_is_accepted(self):
+    def test_stateful_voice_id_prefix_is_accepted_with_fidelity_warning(self):
         with patch.object(voice_profiles, "load_gemini_voice_key", return_value="voice_stateful_1yr_id"):
-            self.assertEqual(voice_profiles.resolve_gemini_voice_key("Gemini-Clone-Male"), "voice_stateful_1yr_id")
+            with self.assertLogs("voice_profiles", level="WARNING") as cm:
+                self.assertEqual(voice_profiles.resolve_gemini_voice_key("Gemini-Clone-Male"), "voice_stateful_1yr_id")
+            self.assertTrue(any("voicekey_" in msg for msg in cm.output))
 
     def test_keys_mount_takes_priority_over_local_server_copy(self):
         checked = []
@@ -195,6 +197,53 @@ class TestGeminiCloneSpeechConfig(unittest.TestCase):
                 self.assertIn("<redacted-voice-key>", msg["reason"])
 
         asyncio.run(run())
+
+    def test_404_not_found_and_replicated_disabled_fall_back_cleanly(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        for err_msg, expected_code in (
+            ("404 NOT_FOUND: The voice was not found or the caller does not have permission to access it.", "not_found"),
+            ("400 INVALID_ARGUMENT: Replicated voice is not enabled for this model.", "rejected"),
+        ):
+            svc = self._service(voice_id="Gemini-Clone-Male", model="gemini-3.8-flash-tts", voice_key="voice_missing123")
+            svc._sample_rate = 24000
+            pushed = []
+
+            async def fake_push(frame, *a, _p=pushed, **kw):
+                _p.append(frame)
+
+            async def fake_noop(*a, **kw):
+                pass
+
+            svc.push_frame = fake_push
+            svc.start_ttfb_metrics = fake_noop
+            svc.stop_ttfb_metrics = fake_noop
+
+            async def fake_stream(*, model, contents, config, _msg=err_msg):
+                vc = config.speech_config.voice_config
+                if vc.voice == "voice_missing123":
+                    raise RuntimeError(_msg)
+
+                async def ok_chunks():
+                    yield SimpleNamespace(
+                        usage_metadata=None,
+                        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"\x01\x02" * 16))],
+                        candidates=[],
+                    )
+
+                return ok_chunks()
+
+            svc._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=fake_stream)))
+
+            async def run(_svc=svc, _pushed=pushed, _code=expected_code):
+                with patch.object(voice_profiles, "load_gemini_voice_key", return_value="voice_missing123"):
+                    frames = [f async for f in _svc.run_tts("Hello world", "ctx-404")]
+                    self.assertEqual(len(frames), 1)
+                    self.assertEqual(_svc._settings.voice, "Puck")
+                    self.assertEqual(_pushed[0].message["data"]["code"], _code)
+
+            asyncio.run(run())
 
 
 class TestGeminiLiveReplicatedVoice(unittest.TestCase):

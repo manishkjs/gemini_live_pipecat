@@ -199,7 +199,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   instructions: "",
   sttModel: "gemini-3.5-transcribe-live-aistudio",
   llmModel: "gemini-3.5-flash-lite",
-  ttsModel: "gemini-3.8-flash-lite-tts",
+  ttsModel: "gemini-3.8-flash-tts",
   ttsPace: 1.0,
   ttsStyle: "Empathetic",
   ttsAccent: "Indian",
@@ -458,8 +458,8 @@ export const CASCADE_TTS_MODEL_GROUPS: { label: string; options: [string, string
   {
     label: "AI Studio (Gemini 3.8 TTS)",
     options: [
-      ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (AI Studio - $0.50/$6.00 - Default)"],
-      ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (AI Studio Voice Design - $0.50/$9.00)"],
+      ["gemini-3.8-flash-tts", "gemini-3.8-flash-tts (AI Studio Voice Design - $0.50/$9.00 - Default)"],
+      ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts (AI Studio Budget - $0.50/$6.00)"],
     ],
   },
   {

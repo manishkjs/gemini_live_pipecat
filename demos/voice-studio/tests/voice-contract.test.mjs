@@ -424,12 +424,16 @@ test('every built-in persona has a tailored Voice Design entry and Abhay uses Ex
 });
 
 test('visit counter targets /api/visits on configured backend and uses studio-appropriate label', async () => {
-  const { buildVisitsUrl, VISIT_COUNTER_LABEL } = await import('../src/lib/voice-session.ts');
-  assert.equal( buildVisitsUrl('https://voice.example.com'), 'https://voice.example.com/api/visits');
-  assert.equal( buildVisitsUrl('https://voice.example.com/demo/'), 'https://voice.example.com/demo/api/visits');
+  const { buildVisitsUrl, VISIT_COUNTER_LABEL, CASCADE_TTS_MODELS } = await import('../src/lib/voice-session.ts');
+  assert.equal(buildVisitsUrl('https://voice.example.com'), 'https://voice.example.com/api/visits');
+  assert.equal(buildVisitsUrl('https://voice.example.com/demo/'), 'https://voice.example.com/demo/api/visits');
   assert.equal(VISIT_COUNTER_LABEL, 'live studio visits');
   assert.equal(VISIT_COUNTER_LABEL.includes('since 30 Jul'), false);
+  assert.equal(DEFAULT_SETTINGS.ttsModel, 'gemini-3.8-flash-tts');
+  assert.equal(CASCADE_TTS_MODELS[0][0], 'gemini-3.8-flash-tts');
+  assert.equal(CASCADE_TTS_MODELS[1][0], 'gemini-3.8-flash-lite-tts');
 });
+
 
 
 

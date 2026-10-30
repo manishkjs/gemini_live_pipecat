@@ -1122,10 +1122,18 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                       <p className="field-hint" style={{ marginTop: "2px" }}>
                         {supportsGeminiClone(settings.ttsModel) ? (
                           <>
-                            Gemini 3.8 TTS gets the plain transcript, no per-sentence style: the voice
-                            carries identity and the LLM&apos;s vocal tags carry delivery. Set{" "}
-                            <code>GEMINI_38_TTS_STYLE=1</code> on
-                            the server to send{" "}
+                            {settings.ttsModel === "gemini-3.8-flash-lite-tts" ? (
+                              <>
+                                <code>gemini-3.8-flash-lite-tts</code> sends a single-call clean transcript with a constant{" "}
+                                <code>SpeechMetadata(style=&quot;calm, conversational&quot;)</code> baseline to lock speaker pitch across turns.
+                              </>
+                            ) : (
+                              <>
+                                <code>gemini-3.8-flash-tts</code> sends a single-call clean transcript with no{" "}
+                                <code>speech_metadata</code> or vocal tags so the voice itself carries identity and cadence.
+                              </>
+                            )}{" "}
+                            Set <code>GEMINI_38_TTS_STYLE=1</code> on the server to send{" "}
                             <code>
                               SpeechMetadata(style=&quot;{settings.ttsStyle ?? "Empathetic"},{" "}
                               {(settings.ttsPaceLabel ?? "Natural").toLowerCase()} pace
@@ -1134,7 +1142,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                                 : ""}
                               &quot;)
                             </code>{" "}
-                            per part instead (measured to reduce speaker consistency).
+                            per part instead.
                           </>
                         ) : (
                           <code>

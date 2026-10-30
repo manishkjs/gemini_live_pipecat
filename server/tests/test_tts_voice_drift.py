@@ -92,13 +92,32 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
     async def _collect(self, agg, text):
         return [a.text async for a in agg.aggregate(text)]
 
+    def test_default_holds_normal_reply_for_single_tts_generation(self):
+        agg = tts_script.MinWordsSentenceAggregator()
+        text = (
+            "Namaste ji, Sahaj Finance se baat kar raha hoon. "
+            "Aapka loan payment past due hai. "
+            "Aap aaj kitna payment kar sakte hain?"
+        )
+        out = run(self._collect(agg, text))
+        self.assertEqual(out, [], "normal 1-3 sentence reply is held for one single-call synthesis")
+        flushed = run(agg.flush())
+        self.assertEqual(flushed.text, text)
+
+    def test_default_releases_early_when_reply_exceeds_max_hold_words(self):
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=0, max_hold_words=12)
+        text = "First sentence has five words. Second sentence also has five words. Third pushes past twelve words. Tail "
+        out = run(self._collect(agg, text))
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("Third pushes past twelve words.", out[0])
+
     def test_one_word_greeting_rides_with_the_next_sentence(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out = run(self._collect(agg, "नमस्ते. Aapka Sahaj Finance ka loan overdue hai. Aap "))
         self.assertEqual(out, ["नमस्ते. Aapka Sahaj Finance ka loan overdue hai."])
 
     def test_markup_does_not_count_as_words(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out = run(self._collect(agg, "[[calm, low pitch, slow]] <breath> Haan. Main sun raha hoon ji. Aur "))
         self.assertEqual(out, ["[[calm, low pitch, slow]] <breath> Haan. Main sun raha hoon ji."])
         self.assertEqual(tts_script.spoken_word_count("[[calm, low pitch]] <breath> Haan."), 1)
@@ -107,23 +126,23 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
         self.assertEqual(tts_script.spoken_word_count("calm empathetic, warm low pitch]] Haan."), 1)
 
     def test_ellipsis_and_interrobang_are_not_split_mid_cluster(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out = run(self._collect(agg, "[[calm, low pitch, slow]] Hmm... theek hai. Main abhi dekhta hoon. Aur "))
         self.assertEqual(out, ["[[calm, low pitch, slow]] Hmm... theek hai. Main abhi dekhta hoon."])
 
-        agg2 = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg2 = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out2 = run(self._collect(agg2, "[[calm, low pitch, slow]] Aapka loan overdue hai?! Haan ji. "))
         tail2 = run(agg2.flush())
         self.assertEqual(out2, ["[[calm, low pitch, slow]] Aapka loan overdue hai?!"])
         self.assertEqual(tail2.text, "Haan ji.")
 
     def test_period_inside_direction_block_does_not_emit_half_open_fragment(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out = run(self._collect(agg, "[[calm empathetic, warm low pitch. measured]] Haan ji, main abhi dekhta hoon. Aur "))
         self.assertEqual(out, ["[[calm empathetic, warm low pitch. measured]] Haan ji, main abhi dekhta hoon."])
 
     def test_short_tail_is_flushed_at_end_of_reply(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         out = run(self._collect(agg, "Aap aaj kitna pay kar sakte hain? Theek hai."))
         self.assertEqual(out, ["Aap aaj kitna pay kar sakte hain?"])
         tail = run(agg.flush())
@@ -143,7 +162,7 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
         self.assertIsNone(run(agg.flush()))
 
     def test_after_the_lead_sentence_the_rest_of_the_reply_is_one_generation(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1)
         text = ("Namaste ji, Sahaj Finance se baat kar raha hoon. Aapka loan payment past due hai. "
                 "Main samajh sakta hoon ki thodi problem chal rahi hai. Aap aaj kitna payment kar sakte hain? ")
         out = run(self._collect(agg, text))
@@ -156,7 +175,7 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
         self.assertEqual(out2, ["Theek hai ji, main note kar leta hoon."])
 
     def test_long_held_tail_is_released_before_the_reply_ends(self):
-        agg = tts_script.MinWordsSentenceAggregator(min_words=4, max_hold_words=12)
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, lead_sentences=1, max_hold_words=12)
         text = "Lead sentence goes out first. Second one is held. Third one is also held here. Fourth makes it long enough now. Aur "
         out = run(self._collect(agg, text))
         self.assertEqual(out[0], "Lead sentence goes out first.")
@@ -171,7 +190,7 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
 
 
 class TestNoPerPartStyleOn38(unittest.TestCase):
-    """The 3.8 request carries a plain transcript unless GEMINI_38_TTS_STYLE=1."""
+    """3.8 full omits speech_metadata; 3.8 lite sends constant 'calm, conversational' unless overridden."""
 
     def _captured_contents(self, svc, text):
         captured = {}
@@ -200,21 +219,41 @@ class TestNoPerPartStyleOn38(unittest.TestCase):
         run(drain())
         return captured
 
-    def test_38_sends_plain_transcript_without_speech_metadata(self):
-        svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
-        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji, <short pause> Sahaj Finance se bol raha hoon.")
+    def test_38_full_sends_plain_transcript_without_speech_metadata_and_strips_tags(self):
+        svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-tts", language_code="hi-IN")
+        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji <short pause> Sahaj Finance se bol raha hoon. <laugh>")
         parts = cap["contents"][0].parts
         self.assertEqual(len(parts), 1)
         self.assertIsNone(getattr(parts[0], "speech_metadata", None))
-        self.assertIn("Namaste ji, <short pause> Sahaj Finance se bol raha hoon.", parts[0].text)
+        self.assertEqual(parts[0].text, "Namaste ji, Sahaj Finance se bol raha hoon.")
         self.assertNotIn("[[", parts[0].text)
+        self.assertNotIn("<", parts[0].text)
         self.assertEqual(cap["config"].speech_config.voice_config.voice, "en-in-csagent-4")
 
-    def test_style_can_be_switched_back_on(self):
+    def test_38_lite_sends_constant_baseline_style_unless_disabled(self):
         svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
-        svc._use_speech_style = True
-        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji, Sahaj Finance se bol raha hoon.")
+        cap = self._captured_contents(svc, "[[excited, high pitch, fast]] Namaste ji <short pause> Sahaj Finance se bol raha hoon.")
+        parts = cap["contents"][0].parts
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].speech_metadata.style, "calm, conversational")
+        self.assertEqual(parts[0].text, "Namaste ji, Sahaj Finance se bol raha hoon.")
+
+        with patch.dict(os.environ, {"GEMINI_38_LITE_BASELINE_STYLE": "none"}):
+            svc_none = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
+        cap_none = self._captured_contents(svc_none, "Namaste ji.")
+        self.assertIsNone(getattr(cap_none["contents"][0].parts[0], "speech_metadata", None))
+
+    def test_tag_only_chunk_skips_tts_call_when_vocal_tags_disabled(self):
+        svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-tts", language_code="hi-IN")
+        cap = self._captured_contents(svc, " <laugh> <sigh> ")
+        self.assertEqual(cap, {})
+
+    def test_vocal_tags_and_per_part_style_can_be_opted_back_in(self):
+        with patch.dict(os.environ, {"GEMINI_38_VOCAL_TAGS": "1", "GEMINI_38_TTS_STYLE": "1"}):
+            svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-tts", language_code="hi-IN")
+        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji, <short pause> Sahaj Finance se bol raha hoon.")
         self.assertEqual(cap["contents"][0].parts[0].speech_metadata.style, "calm, low pitch, measured")
+        self.assertIn("<short pause>", cap["contents"][0].parts[0].text)
 
     def test_style_default_comes_from_env(self):
         with patch.dict(os.environ, {"GEMINI_38_TTS_STYLE": "1"}):

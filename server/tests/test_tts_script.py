@@ -5,8 +5,10 @@ In 3.8, `text` is a verbatim transcript: everything is spoken except inline
 performable script, and the text pipeline must deliver the tags intact.
 """
 import asyncio
+import os
 import random
 import unittest
+from unittest.mock import patch
 
 import tts_script
 
@@ -16,13 +18,24 @@ def run(coro_or_value):
 
 
 class TestSpeechPrompt(unittest.TestCase):
-    def test_38_models_get_the_expressive_script_prompt(self):
+    def test_38_models_default_to_clean_speaker_stable_prompt(self):
         for model in ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts-aistudio"):
             p = tts_script.speech_prompt_for(model)
+            self.assertIn("TEXT-TO-SPEECH", p, model)
+            self.assertIn("verbatim", p, model)
+            self.assertIn("...", p, model)
+            self.assertIn("never write [[direction]]", p, model)
+            self.assertIn("|pipe|", p, "must forbid pipe backchannels for a single speaker")
+
+    def test_38_models_opt_into_expressive_script_prompt_via_flag_or_env(self):
+        for model in ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts", "gemini-3.8-flash-lite-tts-aistudio"):
+            p = tts_script.speech_prompt_for(model, expressive=True)
             for must in ("<laugh>", "<sigh>", "<short pause>", "verbatim", "..."):
                 self.assertIn(must, p, f"{model}: {must}")
             self.assertIn("English", p, "tags stay in English even in Hindi")
             self.assertIn("|", p, "must forbid pipe backchannels for a single speaker")
+        with patch.dict(os.environ, {"GEMINI_38_VOCAL_TAGS": "1"}):
+            self.assertIn("<throat-clearing>", tts_script.speech_prompt_for("gemini-3.8-flash-tts"))
 
     def test_older_gemini_tts_never_learns_38_tags(self):
         for model in ("gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"):
@@ -36,6 +49,7 @@ class TestSpeechPrompt(unittest.TestCase):
     def test_prompt_stays_small(self):
         # ~3.8 chars/token heuristic; keep the per-turn tax well under 400 tokens.
         self.assertLess(len(tts_script.speech_prompt_for("gemini-3.8-flash-tts")) / 3.8, 400)
+        self.assertLess(len(tts_script.speech_prompt_for("gemini-3.8-flash-tts", expressive=True)) / 3.8, 400)
 
 
 class TestGemini38TextFilter(unittest.TestCase):
@@ -89,41 +103,87 @@ class TestNormalizeSpokenText(unittest.TestCase):
         self.assertEqual(tts_script.normalize_spoken_text("[warmly] Namaste!"), "Namaste!")
 
 
+class TestStripVocalTagsForTts(unittest.TestCase):
+    def test_pause_tags_become_natural_punctuation(self):
+        self.assertEqual(
+            tts_script.strip_vocal_tags_for_tts("Namaste ji <short pause> main bol raha hoon."),
+            "Namaste ji, main bol raha hoon.",
+        )
+        self.assertEqual(
+            tts_script.strip_vocal_tags_for_tts("सुनो <short pause> भाई <long pause> आगे बढ़ते हैं।"),
+            "सुनो, भाई... आगे बढ़ते हैं।",
+        )
+        self.assertEqual(
+            tts_script.strip_vocal_tags_for_tts("Haan, <short pause> theek hai! <long pause> Chaliye."),
+            "Haan, theek hai! Chaliye.",
+        )
+        self.assertEqual(
+            tts_script.strip_vocal_tags_for_tts("<short pause> Namaste!"),
+            "Namaste!",
+        )
+
+    def test_non_pause_vocal_tags_are_dropped_cleanly(self):
+        self.assertEqual(
+            tts_script.strip_vocal_tags_for_tts("<throat-clearing> Arre wah! <laugh> Bahut badhiya <sigh>."),
+            "Arre wah! Bahut badhiya.",
+        )
+        self.assertEqual(tts_script.strip_vocal_tags_for_tts(" <laugh> <sigh> "), "")
+
+    def test_math_comparisons_survive(self):
+        self.assertEqual(tts_script.strip_vocal_tags_for_tts("2 < 3 and 5 > 4"), "2 < 3 and 5 > 4")
+
+
 class TestTtsFooter(unittest.TestCase):
     """Every persona's prompt ends with a footer: 'your output is fed to TTS, write it like this'."""
 
     PERSONAS = ("storyteller", "car-negotiator", "debt-collector", "ai-companion",
                 "lamborghini-concierge", "ananya-advisor", "kavya-glass-buddy")
 
-    def test_footer_tells_the_llm_its_output_goes_to_tts(self):
-        p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts")
-        self.assertIn("TEXT-TO-SPEECH", p)
-        self.assertIn("[[", p, "must teach the per-part direction block")
+    def test_default_footer_is_tag_free_and_expressive_footer_has_tags(self):
+        clean = tts_script.speech_prompt_for("gemini-3.8-flash-tts")
+        self.assertIn("TEXT-TO-SPEECH", clean)
+        self.assertIn("never write [[direction]]", clean)
+
+        expr = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", expressive=True)
+        self.assertIn("TEXT-TO-SPEECH", expr)
+        self.assertIn("[[", expr, "must teach the per-part direction block in expressive mode")
         for tag in ("<breath>", "<cough>", "<sneeze>", "<throat-clearing>", "<gasp>", "<snort>"):
-            self.assertIn(tag, p)
+            self.assertIn(tag, expr)
         for knob in ("pitch", "pace"):
-            self.assertIn(knob, p)
+            self.assertIn(knob, expr)
 
-    def test_every_persona_gets_its_own_voice_notes(self):
-        generic = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts")
-        notes = set()
+    def test_every_persona_gets_its_own_voice_notes_in_both_modes(self):
+        generic_clean = tts_script.speech_prompt_for("gemini-3.8-flash-tts")
+        clean_notes = set()
         for pid in self.PERSONAS:
-            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
-            self.assertTrue(p.startswith(generic), pid)
-            extra = p[len(generic):]
-            self.assertIn("[[", extra, f"{pid}: persona notes must show a direction example")
-            notes.add(extra)
-        self.assertEqual(len(notes), len(self.PERSONAS), "notes must be persona-specific")
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-tts", pid)
+            self.assertTrue(p.startswith(generic_clean), pid)
+            extra = p[len(generic_clean):]
+            self.assertNotIn("[[", extra, f"{pid}: default notes must not emit [[direction]] blocks")
+            self.assertNotIn("<", extra, f"{pid}: default notes must not emit <vocal tags>")
+            clean_notes.add(extra)
+        self.assertEqual(len(clean_notes), len(self.PERSONAS), "default notes must be persona-specific")
 
-    def test_kabir_and_abhay_contrast_high_and_low_pitch(self):
+        generic_expr = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", expressive=True)
+        expr_notes = set()
+        for pid in self.PERSONAS:
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid, expressive=True)
+            self.assertTrue(p.startswith(generic_expr), pid)
+            extra = p[len(generic_expr):]
+            self.assertIn("[[", extra, f"{pid}: expressive persona notes must show a direction example")
+            expr_notes.add(extra)
+        self.assertEqual(len(expr_notes), len(self.PERSONAS))
+
+    def test_kabir_and_abhay_contrast_high_and_low_pitch_in_expressive_mode(self):
         for pid in ("storyteller", "car-negotiator"):
-            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid, expressive=True)
             self.assertIn("high pitch", p, pid)
             self.assertIn("low pitch", p, pid)
 
     def test_kabir_voice_notes_cap_scene_length(self):
-        p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", "storyteller")
-        self.assertIn("2-3 short", p)
+        for expr in (False, True):
+            p = tts_script.speech_prompt_for("gemini-3.8-flash-tts", "storyteller", expressive=expr)
+            self.assertIn("2-3 short", p)
 
     def test_persona_aliases_resolve(self):
         self.assertEqual(tts_script.speech_prompt_for("gemini-3.8-flash-tts", "mf-advisor"),
@@ -139,8 +199,9 @@ class TestTtsFooter(unittest.TestCase):
 
     def test_footer_with_persona_notes_stays_small(self):
         for pid in self.PERSONAS:
-            p = tts_script.speech_prompt_for("gemini-3.8-flash-lite-tts", pid)
-            self.assertLess(len(p) / 3.8, 530, pid)
+            for expr in (False, True):
+                p = tts_script.speech_prompt_for("gemini-3.8-flash-tts", pid, expressive=expr)
+                self.assertLess(len(p) / 3.8, 530, f"{pid} expressive={expr}")
 
 
 class TestStyledParts(unittest.TestCase):

@@ -1,16 +1,55 @@
 """Per-persona voice notes: the persona half of the TTS footer.
 
-``tts_script.GEMINI_38_SPEECH_PROMPT`` teaches the LLM what a Gemini 3.8 voice
-can perform ([[emotion, pitch, pace]] blocks, <vocal tags>, fillers). These
-notes tell it how *this* character uses that range. They are appended only
-when the reply is spoken by Gemini 3.8 TTS (cascade), never to Gemini Live
-native audio, which would read the markup aloud.
+By default, Gemini 3.8 TTS receives clean, punctuation-paced dialogue with no
+``[[direction]]`` or ``<vocal tags>`` (because autoregressive non-speech vocal
+tags can hijack speaker timbre across turns or be read aloud in Hinglish).
+When ``GEMINI_38_VOCAL_TAGS=1`` or ``GEMINI_38_TTS_STYLE=1`` is explicitly enabled,
+``EXPRESSIVE_VOICE_NOTES`` restores the full ``[[emotion, pitch, pace]]`` +
+``<vocal tag>`` script instructions.
 """
 from __future__ import annotations
 
 from persona_identity import normalize_persona_id
 
 VOICE_NOTES: dict[str, str] = {
+    "storyteller": (
+        "KABIR'S VOICE: a storyteller by lantern light (2-3 short vivid sentences, ~35 words max per reply). "
+        "Pace suspense with commas, \"...\", and stretched vowels (\"raaat\", \"dheeere\"). "
+        "At a sudden turn, use a sharp short sentence with \"?!\" and at most one CAPS word, "
+        "then return to quiet, unhurried phrasing for the listener's choice."
+    ),
+    "car-negotiator": (
+        "ABHAY'S VOICE: lively showroom banter. React to lowball offers with playful disbelief "
+        "(\"Arre bhai, BARAH lakh?!\"), brisk colloquial phrasing, and short rhetorical questions. "
+        "When offering perks or quoting a final concession, slow down with commas and \"...\" as if "
+        "parting with every rupee hurts."
+    ),
+    "debt-collector": (
+        "MEERA'S VOICE: calm, empathetic, and steady. Place a comma pause before any rupee amount or "
+        "due date so numbers land clearly. Keep firmness measured and respectful without exclamation "
+        "spikes or teasing."
+    ),
+    "ai-companion": (
+        "AISHA'S VOICE: warm, playful, and conversational with natural fillers (\"arre\", \"achha\", "
+        "\"hmm...\"). In tender moments, use softer, shorter clauses separated by commas and \"...\"."
+    ),
+    "lamborghini-concierge": (
+        "PRAGYA'S VOICE: polished, welcoming luxury concierge. Let performance specs and numbers "
+        "breathe with a clean comma before the figure, keeping phrasing poised and effortless."
+    ),
+    "ananya-advisor": (
+        "ANANYA'S VOICE: reassuring, clear financial advisor. Pause with a comma before every "
+        "number, percentage, or horizon, and keep good news warm and grounded."
+    ),
+    "kavya-glass-buddy": (
+        "KAVYA'S VOICE: upbeat, friendly, and crisp. Keep step-by-step guidance light, direct, "
+        "and easy to follow at a glance."
+    ),
+}
+
+VOICE_NOTES["mf-advisor"] = VOICE_NOTES["ananya-advisor"]  # legacy id, mirrors persona_identity
+
+EXPRESSIVE_VOICE_NOTES: dict[str, str] = {
     "storyteller": (
         "KABIR'S VOICE: a storyteller by lantern light (2-3 short vivid sentences, ~35 words max per reply). "
         "Live mostly in [[hushed eerie whisper, low pitch, slow drawn-out]], with <breath>, <heavy breath>, "
@@ -52,9 +91,10 @@ VOICE_NOTES: dict[str, str] = {
     ),
 }
 
-VOICE_NOTES["mf-advisor"] = VOICE_NOTES["ananya-advisor"]  # legacy id, mirrors persona_identity
+EXPRESSIVE_VOICE_NOTES["mf-advisor"] = EXPRESSIVE_VOICE_NOTES["ananya-advisor"]
 
 
-def voice_notes_for(persona_id: str | None) -> str:
-    """This persona's voice notes, or "" for custom/unknown personas (generic footer only)."""
-    return VOICE_NOTES.get(normalize_persona_id(persona_id), "")
+def voice_notes_for(persona_id: str | None, *, expressive: bool = False) -> str:
+    """This persona's voice notes, or '' for custom/unknown personas (generic footer only)."""
+    table = EXPRESSIVE_VOICE_NOTES if expressive else VOICE_NOTES
+    return table.get(normalize_persona_id(persona_id), "")

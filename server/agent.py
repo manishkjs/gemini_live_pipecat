@@ -152,10 +152,10 @@ def supports_cascade_audio_input(llm_model: Optional[str]) -> bool:
 
 
 def validate_tts_model(tts_model: Optional[str]) -> str:
-    """Validates and sanitizes TTS model choice, defaulting to gemini-3.8-flash-lite-tts."""
+    """Validates and sanitizes TTS model choice, defaulting to gemini-3.8-flash-tts."""
     if tts_model in VALID_TTS_MODELS:
         return tts_model
-    return "gemini-3.8-flash-lite-tts"
+    return "gemini-3.8-flash-tts"
 
 
 def build_cascade_thinking_config(actual_llm_model: str):
@@ -581,7 +581,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         project_id: str,
         location: str,
         voice_id: str = "Puck",
-        model: str = "gemini-3.8-flash-lite-tts",
+        model: str = "gemini-3.8-flash-tts",
         voice_prompt: Optional[str] = None,
         language_code: Optional[str] = None,
         tts_style: Optional[str] = None,
@@ -612,7 +612,7 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             voice_id = voice_id.split("-")[-1]
 
         self._is_aistudio = bool(self._voice_key) or model in AI_STUDIO_TTS_MODELS or "aistudio" in (model or "").lower()
-        clean_tts_model = (model or "gemini-3.8-flash-lite-tts").replace("-aistudio", "")
+        clean_tts_model = (model or "gemini-3.8-flash-tts").replace("-aistudio", "")
         if tts_script.is_gemini_38_tts(clean_tts_model) and not self._voice_key:
             voice_id = voice_profiles.resolve_gemini_38_voice(voice_id, tts_accent)
         if self._is_aistudio:
@@ -628,13 +628,18 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         )
         super().__init__(api_key=api_key, settings=settings, **kwargs)
         self._is_gemini_38 = tts_script.is_gemini_38_tts(clean_tts_model)
-        # Per-part speech_metadata.style on 3.8 costs speaker consistency across the
-        # reply's generations (A/B 2026-10-30: no style 0.69-0.71 vs any style 0.61-0.66
-        # mean speaker cosine on both a cloned and a library voice). Off unless asked for.
-        self._use_speech_style = os.getenv("GEMINI_38_TTS_STYLE", "").strip().lower() in ("1", "true", "yes")
+        # Dynamic per-part speech_metadata.style and inline <vocal tags> are off by default:
+        # gemini-3.8-flash-tts hits 2.3 Hz F0 spread with no speech_metadata at all, whereas
+        # gemini-3.8-flash-lite-tts stabilizes pitch (37.2 -> 4.0 Hz on library, 16.0 -> 3.4 Hz
+        # on clone) with a constant session baseline ("calm, conversational").
+        self._use_speech_style = tts_script.use_speech_style()
+        self._use_vocal_tags = tts_script.use_vocal_tags()
+        raw_lite_baseline = os.getenv("GEMINI_38_LITE_BASELINE_STYLE", "calm, conversational").strip()
+        self._lite_baseline_style = (
+            None if raw_lite_baseline.lower() in ("", "none", "off", "0", "false") else raw_lite_baseline
+        )
         if self._is_gemini_38:
-            # Each run_tts call is its own 3.8 generation: first sentence out fast, then the
-            # rest of the reply as one generation (see MinWordsSentenceAggregator).
+            # Synthesize normal 1-3 sentence replies in one call (lead_sentences=0, max_hold_words=80).
             self._text_aggregator = tts_script.MinWordsSentenceAggregator(
                 aggregation_type=self._text_aggregation_mode
             )
@@ -718,6 +723,20 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
     @staticmethod
     def _is_voice_key_error(exc: Exception) -> bool:
         msg = str(exc).lower()
+        if "replicated voice is not enabled" in msg:
+            return True
+        if ("404" in msg or "not_found" in msg or "permission_denied" in msg or "403" in msg) and any(
+            token in msg
+            for token in (
+                "the voice was not found",
+                "voices not found",
+                "voice not found",
+                "permission to access it",
+                "voicekey",
+                "voice_",
+            )
+        ):
+            return True
         return ("400" in msg or "invalid_argument" in msg) and any(
             token in msg
             for token in (
@@ -769,7 +788,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
 
         fallback_voice = "Aoede" if gender == "female" else "Puck"
         err_str = re.sub(r"(?:voicekey|voice)_[A-Za-z0-9_\-=+/]+", "<redacted-voice-key>", str(primary_exc))
-        code = "expired_key" if "expired" in err_str.lower() else "rejected"
+        err_low = err_str.lower()
+        if "expired" in err_low:
+            code = "expired_key"
+        elif "404" in err_low or "not_found" in err_low or "not found" in err_low:
+            code = "not_found"
+        else:
+            code = "rejected"
         logger.warning(
             f"[TTS] Gemini 3.8 cloned voice key failed ({code}); falling back to {fallback_voice}: {err_str}"
         )
@@ -836,14 +861,21 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         return ", ".join(parts)
 
     async def run_tts(self, text: str, context_id: str):
-        # Split at the LLM's [[emotion, pitch, pace]] blocks into directed parts; a
-        # direction and any standalone <vocal tags> carry across sentence chunks
-        # until the next spoken words arrive.
-        pending = getattr(self, "_pending_tags", "")
+        # Split at any [[emotion, pitch, pace]] blocks; strip residual <vocal tags>
+        # into clean punctuation unless GEMINI_38_VOCAL_TAGS=1 is explicitly enabled.
+        use_tags = not getattr(self, "_is_gemini_38", False) or getattr(self, "_use_vocal_tags", False)
+        pending = getattr(self, "_pending_tags", "") if use_tags else ""
         combined = f"{pending} {text}" if pending else text
         spoken, self._carried_direction = tts_script.spoken_parts(combined, getattr(self, "_carried_direction", None))
+        if getattr(self, "_is_gemini_38", False) and not use_tags:
+            sanitized: list[tuple[Optional[str], str]] = []
+            for d, segment in spoken:
+                clean_seg = tts_script.strip_vocal_tags_for_tts(segment)
+                if any(ch.isalnum() for ch in tts_script.display_text(clean_seg)):
+                    sanitized.append((d, clean_seg))
+            spoken = sanitized
         if not spoken:
-            self._pending_tags = tts_script.extract_vocal_tags(combined)
+            self._pending_tags = tts_script.extract_vocal_tags(combined) if use_tags else ""
             logger.debug(f"{self}: Skipping non-spoken fragment [{text!r}] (pending_tags={self._pending_tags!r})")
             return
         self._pending_tags = ""
@@ -878,15 +910,37 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                     response_modalities=["AUDIO"],
                     speech_config=speech_config,
                 )
-                # One part per direction, each with its own speech_metadata.style: the
-                # 3.8 guide's multi-part tone transitions (whisper -> shout -> whisper).
-                # Transcript text only: no "## Transcript:" header, NO system_instruction.
                 directed = [(segment, self._build_speech_metadata_style(lang_code, d)) for d, segment in spoken]
                 if getattr(self, "_is_gemini_38", False) and not getattr(self, "_use_speech_style", False):
-                    # Plain transcript, one part: the voice (library id, voicekey) carries identity
-                    # and the LLM's <vocal tags> carry delivery. See __init__ for the A/B numbers.
-                    logger.debug(f"{self}: TTS parts [no style] words={tts_script.spoken_word_count(clean_text)}")
-                    contents = [types.Content(role="user", parts=[types.Part(text=clean_text)])]
+                    is_lite_38 = "lite" in (self._settings.model or "").lower()
+                    lite_style = getattr(self, "_lite_baseline_style", None) if is_lite_38 else None
+                    if lite_style and hasattr(types, "SpeechMetadata"):
+                        logger.debug(
+                            f"{self}: TTS parts [lite constant style={lite_style!r}] "
+                            f"words={tts_script.spoken_word_count(clean_text)}"
+                        )
+                        contents = [
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part(
+                                        text=clean_text,
+                                        speech_metadata=types.SpeechMetadata(style=lite_style),
+                                    )
+                                ],
+                            )
+                        ]
+                    elif lite_style:
+                        contents = [
+                            {
+                                "role": "user",
+                                "parts": [{"text": clean_text, "speech_metadata": {"style": lite_style}}],
+                            }
+                        ]
+                    else:
+                        # gemini-3.8-flash-tts: plain transcript, one part, no speech_metadata.
+                        logger.debug(f"{self}: TTS parts [no style] words={tts_script.spoken_word_count(clean_text)}")
+                        contents = [types.Content(role="user", parts=[types.Part(text=clean_text)])]
                 elif hasattr(types, "SpeechMetadata"):
                     logger.debug(f"{self}: TTS parts {[style for _, style in directed]}")
                     parts = [types.Part(text=segment, speech_metadata=types.SpeechMetadata(style=style))
@@ -1550,7 +1604,7 @@ def cascade_greeting_text(persona_architecture, stt_language) -> str:
 def compose_cascade_system_prompt(
     system_instruction: Optional[str],
     tts_voice: Optional[str] = None,
-    clean_tts_model: str = "gemini-3.8-flash-lite-tts",
+    clean_tts_model: str = "gemini-3.8-flash-tts",
     persona_id: Optional[str] = None,
     skip_stt: bool = False,
 ) -> str:
@@ -1589,7 +1643,7 @@ async def run_agent(
     llm_model: str = "gemini-3.5-flash-lite",
     stt_model: str = "gemini-3.5-transcribe-live-aistudio",
     stt_language: str = "en-US",
-    tts_model: str = "gemini-3.8-flash-lite-tts",
+    tts_model: str = "gemini-3.8-flash-tts",
     tts_voice_prompt: Optional[str] = None,
     tts_style: Optional[str] = None,
     tts_accent: Optional[str] = None,

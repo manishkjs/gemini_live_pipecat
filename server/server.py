@@ -114,7 +114,7 @@ async def websocket_endpoint(
     system_instruction: Optional[str] = None,
     tts: bool = False,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",
-    tts_model: str = "gemini-3.8-flash-lite-tts",
+    tts_model: str = "gemini-3.8-flash-tts",
     tts_pace: float = 0.80,
     tts_style: Optional[str] = None,
     tts_accent: Optional[str] = None,

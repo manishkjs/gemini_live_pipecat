@@ -65,7 +65,7 @@ class TestModelRouting(unittest.TestCase):
         self.assertEqual(validate_tts_model("gemini-2.5-flash-lite-preview-tts"), "gemini-2.5-flash-lite-preview-tts")
         self.assertEqual(validate_tts_model("gemini-2.5-flash-preview-tts"), "gemini-2.5-flash-preview-tts")
         self.assertEqual(validate_tts_model("google-tts"), "google-tts")
-        self.assertEqual(validate_tts_model("unknown_tts"), "gemini-3.8-flash-lite-tts")
+        self.assertEqual(validate_tts_model("unknown_tts"), "gemini-3.8-flash-tts")
 
     def test_live_model_gateway_routing(self):
         from agent_live import resolve_live_model_gateway, build_thinking_config

@@ -157,6 +157,14 @@ def resolve_gemini_voice_key(voice: Optional[str]) -> Optional[str]:
         raise ValueError(f"The Gemini 3.8 cloned voice ({gender}) has no configured voice key.")
     if not is_valid_gemini_voice_key(key):
         raise ValueError("The Gemini 3.8 cloned voice key must start with voicekey_ or voice_.")
+    if key.startswith("voice_"):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Loaded stateful Gemini voice ID (voice_...) for %s; stateless voicekey_... keys "
+            "route through the speaker-prompt Voice Replication synthesizer with higher fidelity.",
+            voice,
+        )
     return key
 
 
