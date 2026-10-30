@@ -627,8 +627,14 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
             language=language_code or "en-US",
         )
         super().__init__(api_key=api_key, settings=settings, **kwargs)
-        if tts_script.is_gemini_38_tts(clean_tts_model):
-            # Each run_tts call is its own 3.8 generation: merge 1-3 word fragments into the next sentence.
+        self._is_gemini_38 = tts_script.is_gemini_38_tts(clean_tts_model)
+        # Per-part speech_metadata.style on 3.8 costs speaker consistency across the
+        # reply's generations (A/B 2026-10-30: no style 0.69-0.71 vs any style 0.61-0.66
+        # mean speaker cosine on both a cloned and a library voice). Off unless asked for.
+        self._use_speech_style = os.getenv("GEMINI_38_TTS_STYLE", "").strip().lower() in ("1", "true", "yes")
+        if self._is_gemini_38:
+            # Each run_tts call is its own 3.8 generation: first sentence out fast, then the
+            # rest of the reply as one generation (see MinWordsSentenceAggregator).
             self._text_aggregator = tts_script.MinWordsSentenceAggregator(
                 aggregation_type=self._text_aggregation_mode
             )
@@ -876,8 +882,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 # 3.8 guide's multi-part tone transitions (whisper -> shout -> whisper).
                 # Transcript text only: no "## Transcript:" header, NO system_instruction.
                 directed = [(segment, self._build_speech_metadata_style(lang_code, d)) for d, segment in spoken]
-                logger.debug(f"{self}: TTS parts {[style for _, style in directed]}")
-                if hasattr(types, "SpeechMetadata"):
+                if getattr(self, "_is_gemini_38", False) and not getattr(self, "_use_speech_style", False):
+                    # Plain transcript, one part: the voice (library id, voicekey) carries identity
+                    # and the LLM's <vocal tags> carry delivery. See __init__ for the A/B numbers.
+                    logger.debug(f"{self}: TTS parts [no style] words={tts_script.spoken_word_count(clean_text)}")
+                    contents = [types.Content(role="user", parts=[types.Part(text=clean_text)])]
+                elif hasattr(types, "SpeechMetadata"):
+                    logger.debug(f"{self}: TTS parts {[style for _, style in directed]}")
                     parts = [types.Part(text=segment, speech_metadata=types.SpeechMetadata(style=style))
                              for segment, style in directed]
                     contents = [types.Content(role="user", parts=parts)]

@@ -159,7 +159,8 @@ class TestSystemPromptComposition(unittest.TestCase):
         from agent_live import compose_live_system_prompt
         instruction = "Be terse."
         prompt = compose_live_system_prompt(instruction, "female", "hi-IN")
-        self.assertEqual(prompt, "Be terse.\n\nIMPORTANT: You must converse in hi-IN language.")
+        from agent_live import LIVE_LANGUAGE_RULE
+        self.assertEqual(prompt, "Be terse.\n\n" + LIVE_LANGUAGE_RULE.format(language="hi-IN"))
 
     def test_default_prompt_still_carries_the_shared_house_rules(self):
         from agent_live import compose_live_system_prompt

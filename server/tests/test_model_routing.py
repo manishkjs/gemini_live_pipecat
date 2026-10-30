@@ -223,14 +223,14 @@ class TestVoiceGender(unittest.TestCase):
         self.assertIn("male AI assistant", compose_live_system_prompt(None, voice_profiles.voice_gender("Puck"), "en-US"))
 
     def test_live_clone_voices_get_self_reference_grammar(self):
-        from agent_live import compose_live_system_prompt
+        from agent_live import LIVE_LANGUAGE_RULE, compose_live_system_prompt
 
         prompt = compose_live_system_prompt("Be terse.", "male", "hi-IN", voice="Gemini-Clone-Male")
         self.assertIn("सकता हूँ", prompt)
         self.assertTrue(prompt.startswith("Be terse.\n\nVOICE GENDER:"), prompt)
-        self.assertTrue(prompt.endswith("IMPORTANT: You must converse in hi-IN language."), prompt)
+        self.assertTrue(prompt.endswith(LIVE_LANGUAGE_RULE.format(language="hi-IN")), prompt)
         self.assertEqual(compose_live_system_prompt("Be terse.", "male", "hi-IN", voice="Puck"),
-                         "Be terse.\n\nIMPORTANT: You must converse in hi-IN language.",
+                         "Be terse.\n\n" + LIVE_LANGUAGE_RULE.format(language="hi-IN"),
                          "named voices are left to the persona")
 
     def test_normalize_custom_avatar_image_produces_704x1280_rgb_png(self):

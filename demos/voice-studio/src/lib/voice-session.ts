@@ -748,7 +748,7 @@ export function buildSessionInstructions(settings: SessionSettings): string {
   if (estimateTokens(settings.instructions) > 4000) throw new Error("Keep custom persona instructions under 4,000 tokens.");
   const prompt = settings.instructions.trim() || getPersonaPrompt(persona, settings.tone);
   if (!prompt) return ""; // Leave the backend’s existing instructions intact in custom mode.
-  return `${prompt} Speak in ${language}, unless the user requests another language.`;
+  return `${prompt} Start in ${language}. If the caller speaks a whole turn in another language, or asks for one, switch to it from your next sentence without announcing it, and stay there until they switch again.`;
 }
 
 function validatedBackendUrl(backendUrl: string): URL {

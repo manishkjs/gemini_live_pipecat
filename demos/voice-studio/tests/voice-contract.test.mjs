@@ -13,7 +13,7 @@ for (const persona of PERSONAS) {
       assert.equal(url.searchParams.get('bot_type'), engine === 'live' ? 'gemini-live' : 'tts-llm-stt');
       if (persona.id === 'custom') assert.deepEqual(body, {});
       else {
-        assert.equal(body.system_instruction, `${persona.prompt} Speak in Hindi, unless the user requests another language.`);
+        assert.equal(body.system_instruction, `${persona.prompt} Start in Hindi. If the caller speaks a whole turn in another language, or asks for one, switch to it from your next sentence without announcing it, and stay there until they switch again.`);
         assert.ok(body.system_instruction.length < 4500, 'Existing backend must accept the complete preset');
       }
       if (engine === 'live') {
@@ -168,7 +168,7 @@ test('3.8 TTS performance markup is hidden from the transcript but words are kep
 test('custom instructions replace any persona preset and are sent in the body for both engines', () => {
   for (const persona of PERSONAS) for (const engine of ['live', 'cascade']) {
     const { url, body } = buildConnectRequest({ ...settings, personaId: persona.id, engine, instructions: '  Say नमस्ते & ask a question?  ' });
-    assert.equal(body.system_instruction, 'Say नमस्ते & ask a question? Speak in Hindi, unless the user requests another language.');
+    assert.equal(body.system_instruction, 'Say नमस्ते & ask a question? Start in Hindi. If the caller speaks a whole turn in another language, or asks for one, switch to it from your next sentence without announcing it, and stay there until they switch again.');
     assert.equal(url.searchParams.has('system_instruction'), false);
     assert.equal(decodeURIComponent(url.href).includes('नमस्ते'), false);
   }

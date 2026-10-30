@@ -1121,14 +1121,21 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
 
                       <p className="field-hint" style={{ marginTop: "2px" }}>
                         {supportsGeminiClone(settings.ttsModel) ? (
-                          <code>
-                            SpeechMetadata(style=&quot;{settings.ttsStyle ?? "Empathetic"},{" "}
-                            {(settings.ttsPaceLabel ?? "Natural").toLowerCase()} pace
-                            {settings.ttsPitch && settings.ttsPitch !== "Default"
-                              ? `, ${settings.ttsPitch.toLowerCase()} pitch`
-                              : ""}
-                            &quot;)
-                          </code>
+                          <>
+                            Gemini 3.8 TTS gets the plain transcript, no per-sentence style: the voice
+                            carries identity and the LLM&apos;s vocal tags carry delivery. Set{" "}
+                            <code>GEMINI_38_TTS_STYLE=1</code> on
+                            the server to send{" "}
+                            <code>
+                              SpeechMetadata(style=&quot;{settings.ttsStyle ?? "Empathetic"},{" "}
+                              {(settings.ttsPaceLabel ?? "Natural").toLowerCase()} pace
+                              {settings.ttsPitch && settings.ttsPitch !== "Default"
+                                ? `, ${settings.ttsPitch.toLowerCase()} pitch`
+                                : ""}
+                              &quot;)
+                            </code>{" "}
+                            per part instead (measured to reduce speaker consistency).
+                          </>
                         ) : (
                           <code>
                             system_instruction=&quot;{settings.ttsVoicePrompt ?? ""}&quot;
