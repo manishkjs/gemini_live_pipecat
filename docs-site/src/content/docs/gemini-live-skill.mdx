@@ -123,15 +123,20 @@ When operating a modular cascaded pipeline alongside native Speech-to-Speech:
 ### C. Gemini 3.8 TTS Voice Consistency in a Cascade (Sentence-Level Generations)
 A Pipecat-style cascade calls TTS once per sentence, so every sentence is a separate Gemini 3.8 generation. Drift between sentences comes from how many generations a reply is split into, and from what each request asks for:
 * **Keep `speech_metadata.style` situational**: emotion, pitch and pace only (`"calm empathetic, warm low pitch, measured"`). Never put accent, age, gender, names or a persona paragraph in `style`. The 3.8 speech generation guide calls long "Audio Profile" and "Director's Notes" blocks "the most common cause of voice drift" and says extra prompt text increases drift.
-* **Put the accent in the voice, not the prompt**: pick a regional voice from the Extended Voice Library (`client.voices.list(language_code=["en-IN"])` returns Indian English `en-in-*` voices) or create one with Voice design (`voices.create`, `type="prompted"`, persistent `voice_...` ID). Send library ids and voice keys as `types.VoiceConfig(voice=<id>)`; `PrebuiltVoiceConfig(voice_name=...)` only takes the 30 studio voice names.
-* **Never send a one-to-three word sentence as its own generation**: hold short sentences ("Namaste.", "Haan.") and send them with the next one, flush whatever is held when the reply ends, and drop it on barge-in. A subclass of Pipecat's `SimpleTextAggregator` that overrides `_check_sentence_with_lookahead`, `flush`, `handle_interruption` and `reset` does this without touching the TTS service.
+* **Put the accent in the voice, not the prompt**: pick a regional voice from the Extended Voice Library (`client.voices.list(language_code=["en-IN"])` returns Indian English `en-in-*` voices) or create one with Voice design (`voices.create`, `type="prompted"`, persistent `voice_...` ID), and map US studio presets to gender-matched `en-in-*` library speakers when an Indian accent is selected on 3.8 TTS. Send library ids and voice keys as `types.VoiceConfig(voice=<id>)`; `PrebuiltVoiceConfig(voice_name=...)` only takes the 30 studio voice names.
+* **Never send a one-to-three word sentence as its own generation**: hold short sentences ("Namaste.", "Haan.") and send them with the next one, keep `...` and `?!` punctuation clusters and unclosed `[[direction]]` blocks intact before lookahead, flush whatever is held when the reply ends, and drop it on barge-in. A subclass of Pipecat's `SimpleTextAggregator` that overrides `_check_sentence_with_lookahead`, `flush`, `handle_interruption` and `reset` does this without touching the TTS service.
 * **Send as few generations per reply as you can**: Gemini 3.8 TTS cannot take earlier audio as context (a prior turn with PCM audio returns `400 INVALID_ARGUMENT: Audio input modality is not enabled for this model`), so each request re-derives the voice. Measured on one seven-sentence reply with a speaker-verification model (cosine between 3 s windows, cloned voice / library voice): seven requests 0.65 / 0.67, first sentence alone then the rest in one request 0.69 / 0.76, whole reply in one request 0.75 / 0.80. A good compromise for latency is to release the first sentence as soon as it is complete, then hold the rest of the reply and send it as one request when the LLM finishes (with a word cap so a long reply does not leave a gap).
 * **Prefer no per-sentence `speech_metadata.style` when identity matters most**: in the same A/B, sending the plain transcript scored 0.69 / 0.71 against 0.61 to 0.66 with any style string, varying or constant. Let the voice (library id, designed voice, or voice key) carry identity and inline vocal tags (`<sigh>`, `<short pause>`) carry delivery; keep `style` as an option you can switch on when expressiveness matters more than consistency.
 * **Keep pitch words when the LLM directs pitch**: in an A/B with the same four-sentence reply, removing pitch words from `style` widened the sentence-to-sentence pitch spread in 3 of 3 voice pairs, while speaker-identity similarity barely moved.
 * **Measure identity, not only pitch**: embed each sentence with an open speaker-verification model (for example WeSpeaker ResNet34 in ONNX) and compare the chunks of one reply with cosine similarity. In that A/B the one-word chunk scored lowest in 7 of 7 variants, and an Indian English library voice scored higher (0.45) than a studio voice asked for an Indian accent in `style` (0.33 to 0.35). Short clips embed less reliably, so treat single runs as a signal, not proof.
 
-### D. Native Audio Language Choice (Live)
-* Native audio output models choose the spoken language automatically and do not support setting a language code (Live API capabilities guide, "Change voice and language"). Steer language with the system instruction and keep the conversation free of hard "always speak X" pins if callers may switch languages mid-call.
+### D. Native Audio Language Choice, `speech_config.language_code` & `ReplicatedVoiceConfig` (Live)
+* **How `(voice_name, speech_config.language_code)` selects the Turn-1 studio voice sample**:
+  - Even though consumer documentation notes that native audio output models can choose the spoken language automatically, on Vertex AI (`gemini-3.8-live`) the pair `(voice_name, speech_config.language_code)` selects which `~224 to 239`-token studio audio recording is injected into `ROLE_SYSTEM` ahead of your `systemInstruction`.
+  - When `speech_config.language_code` is **omitted**, passed as a bare language tag without a region (`"en"`, `"hi"`), or set to a regional Indic code that has no dedicated prebuilt studio voice recording (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`), the server falls back to `"en-US"` and loads an American English studio voice sample into `ROLE_SYSTEM`.
+  - Setting `speech_config.language_code = "en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) loads the Indian-accented studio voice sample from Turn 1 and **does not** prevent the model from switching languages mid-call into Hindi, Hinglish, or regional languages (what blocks mid-call switching is hard-coding `"always speak English only"` inside `system_instruction` on a multilingual agent).
+* **Custom Voice Cloning (`ReplicatedVoiceConfig`)**:
+  - When a prebuilt voice does not match your regional accent target, pass `speech_config.voice_config.replicated_voice_config` with a 10 to 20s clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in the exact target accent and speaking pace. That reference clip replaces the prebuilt voice sample in `ROLE_SYSTEM`.
 
 ---
 
@@ -493,7 +498,7 @@ directive_text = (
 
 ---
 
-## 11. Sub-Millisecond Near-Process Dual-Layer RAG Caching
+## 11. Sub-Millisecond Near-Process Dual-Layer RAG Caching & Two-Tier Multi-Skill Scaling
 
 ### A. The Remote Vector Search Dead Air Hazard
 * **The Anti-Pattern**: Calling remote vector database search APIs inside an active voice turn takes **3,200ms to 3,800ms**, introducing over 3 seconds of dead air.
@@ -505,12 +510,21 @@ directive_text = (
   - **Proactive Background RAG (Between Turns)**: Refresh retrieved context inside the system instruction with `send_client_content(turns=Content(role="system", ...), turn_complete=False)` carrying base rules + current card + the retrieved snippet. It replaces the previous snippet, so you pay for one snippet per turn. Avoid `Content(role="user", parts=[Part.from_text("System context update: ...")])`: that note stays in history and is billed again on every later turn (measurements in §22.C).
   - **Reactive On-Demand RAG (User Asks a Specific Question)**: Expose a non-blocking `search_knowledge_base` tool returning `FunctionResponse(..., scheduling="WHEN_IDLE")`.
 
+### B. Two-Tier Scaling Across Dozens of Markdown Domain Skills (`SectionBlock` BM25F + Compiled Prompt Cards)
+When scaling a voice platform across many raw Markdown domain files (`SKILL.md` + `references/*.md` totaling `25,000 to 30,000+` tokens per workflow), putting the full Markdown bundle into `system_instruction` re-bills the entire catalog on every turn, while relying *only* on a minimal prompt plus an on-demand retrieval tool risks missed flow gates when native audio models skip tool calls entirely (roughly `30%` zero-tool-call rate on unseen holdout calls, where a third of those skipped-tool calls did not pass, mostly on missed discovery/closing facts or greeting loops). Combine two complementary tiers instead:
+1. **Tier 1 (Zero-Touch Onboarding for Every Markdown Skill)**:
+   - Split raw `SKILL.md` and `references/*.md` files by Markdown headings into lossless `SectionBlock` chunks. Whenever a Markdown table spans multiple chunks, repeat the table header and separator rows on each chunk so column labels stay intact.
+   - Index all `SectionBlock` chunks in-process at startup using fielded `BM25F` (`heading` weight `3.0x`, `tags` `2.0x`, `body` `1.0x`) for `<0.5 ms` local RAM lookup (`lookup_facts(query, top_k=3)`) with zero external embedding RPCs or vector-search latency.
+2. **Tier 2 (High-Volume Workflows via `send_context_update`)**:
+   - Compile high-volume workflows into 6 to 8 phase-scoped Prompt Cards (`tools=[]` on Greeting and Closing cards; `tools=[lookup_facts]` on active mid-call cards, §22.C) backed by Tier 1's lossless `SectionBlock` store for long-tail questions.
+   - **Fact-Slice Priority Rule**: When pre-fetching facts into a card's `Pinned Facts` block (`[:3]`), always order router-matched `fact_keys` **ahead of** `card.default_facts` (`ordered_keys = list(dict.fromkeys([*matched_fact_keys, *card.default_facts]))[:3]`) so specific caller questions (such as static IP rules or installation timelines) are never pushed out by generic default facts.
+
 ---
 
 ## 12. Dual-Brain Frontcar / Downcar Architecture & Enterprise Memory Bank
 
 ### A. Frontcar vs. Downcar Decoupling
-* **Frontcar (Fast Path - Synchronous Duplex Voice)**: Ultra-lean real-time pipeline (`gemini-3.1-flash-live-preview` or `gemini-live-2.5-flash-native-audio`) focused on conversational persona, audio pacing, active phase intent, and non-blocking tool execution. At session connect (`t = 0ms`), inject the user's compact Markdown profile (`< 500` tokens) into `system_instruction`. Zero heavy database writes occur on the audio thread.
+* **Frontcar (Fast Path - Synchronous Duplex Voice)**: Ultra-lean real-time pipeline (`gemini-3.8-live`, `gemini-3.1-flash-live-preview`, or `gemini-live-2.5-flash-native-audio`) focused on conversational persona, audio pacing, active phase intent, and non-blocking tool execution. At session connect (`t = 0ms`), inject the user's compact profile (`< 100 to 500` tokens) directly into `Session State JSON` in `system_instruction`. Never declare a live `recall_memory` or `fetch_customer_history` tool for CRM or prior-call facts already known when the call connects: every declared tool schema is billed on every turn on 3.x Live models (§13.G), and calling a memory tool on Turn 1 adds an unnecessary tool round-trip of dead air. Zero heavy database writes occur on the audio thread.
 * **Downcar (Slow Path - Asynchronous Post-Session Worker)**: Triggered on `on_client_disconnected`. Uses `gemini-2.5-flash-lite` (`response_mime_type="application/json"`) to parse session transcripts, extract canonical user facts and action items, generate episodic summaries, and persist them to your cloud memory store.
 
 ### B. Dual-Threshold Vector Memory Standard
@@ -954,6 +968,11 @@ const stream = await navigator.mediaDevices.getUserMedia({
 * When an asynchronous background tool completes and triggers proactive model speech while an earlier conversational turn's audio is still playing out on the client speaker, buffer the incoming tool-response audio in a separate **deferred playback queue**.
 * Drain the deferred queue only after the active playback buffer finishes or is flushed by a user barge-in event. This prevents overlapping audio tracks and premature cutoff of ongoing explanations.
 
+### E. Telephony 8 kHz Downsampling (`mulaw`), Gain Caps & Prebuilt Voice Register Stability
+* **Why 8 kHz Telephony Alters Voice Timbre**: PSTN/SIP telephony gateways (Twilio, Exotel, Genesys `PCMU`/`mulaw`) downsample Gemini Live's 24 kHz PCM output to 8 kHz, cutting acoustic energy above 4 kHz (Nyquist limit).
+* **Prebuilt Voice Selection for 8 kHz Trunks**: Higher-pitched female prebuilt voices such as `Aoede` are more susceptible to audible register drops on 8 kHz lines after non-lexical fillers (`"Hmm"`, `"Umm"`) or low-energy phrases. Lower-variance voices such as `Kore` and `Despina` maintain steadier pitch across 8 kHz downsampling.
+* **Gain Cap (`4x to 5x` max) & Anti-Aliased Resampling**: Never apply `10x` (`+20 dB`) linear sample multiplication before `mulaw` encoding; it clips `int16` peaks (`[-32768, 32767]`) into harsh square-wave buzz. Cap software gain boost at `4x to 5x` (`+12 dB to +14 dB`) with `np.clip` or a `tanh` soft limiter, and resample `24 kHz <-> 8 kHz` with an anti-aliasing filter (`soxr` or `scipy.signal.resample_poly`).
+
 ---
 
 ## 17. Turn Completion Truth (`onTurnComplete`) & Audio Debounce
@@ -962,7 +981,7 @@ There are three distinct "model finished" signals in a duplex WebSocket session.
 
 | Signal | Definition | Firing Timing & Hazard |
 |---|---|---|
-| **Server `turnComplete`** | Server finished transmitting response chunks over the socket. | Fires **early** while several seconds of PCM audio are still buffered and playing through the user's speakers. Injecting `turnComplete: true` text here immediately cuts off audible speech. |
+| **Server `turnComplete`** | Server finished transmitting the turn following assumed real-time playback (`generationComplete` fires ~4x faster as soon as token synthesis ends). | Arrives after the server's assumed real-time playout (which can be many seconds after `generationComplete` on long replies), while client jitter buffers or telephony queues may still have a short tail playing out. Wait for client buffer drain before injecting `turnComplete: true` text. |
 | **Client `isAiSpeaking = false`** | Zero active audio sources playing in the browser. | Unreliable on its own because brief network jitter between audio chunks causes momentary zero-source gaps. |
 | **Composite `onTurnComplete`** | Both `serverTurnDone === true` AND `activeSources.size === 0` after a 300ms drain debounce. | The **authoritative signal** that the model has completely finished speaking. |
 
@@ -1003,7 +1022,7 @@ In a Gemini Live session, `systemInstruction`, `tools`, conversation history, an
 ```text
 ROLE_SYSTEM:
   1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+  2. <voice reference embedding>               <- ~224-239 audio tokens for a prebuilt voice sample (or ~25 tokens/sec for a custom clip in replicatedVoiceConfig)
 
 ROLE_DEVELOPER:
   3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
@@ -1025,8 +1044,8 @@ ROLE_CONTEXT:
 ```
 
 #### Four Architectural Consequences of This Layout
-1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`)**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
+1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`) and Why `speechConfig.languageCode` Governs Turn 1**:
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode the studio voice sample for `(voiceName, speechConfig.languageCode)` (or your custom `replicatedVoiceConfig` clip). Omitting `speechConfig.languageCode` on Vertex AI loads an `en-US` studio recording into `ROLE_SYSTEM`, which overrides prompt-only accent rules on Turn 1 before caller audio exists. Always set `speechConfig.languageCode` explicitly (such as `"en-IN"` or `"hi-IN"`) at setup. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
 2. **The Newest Turn Is the Last Thing the Model Sees (Recency Steering)**:
    Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. A tool result returned in the current turn lands at the end of the prompt, right before the model decodes audio, so it carries the most weight for the next reply. Use that slot for short per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`, §18.M), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it. Phase cards belong in `systemInstruction`, replaced in place (§22.C).
 3. **`systemInstruction` and `tools` Form the Prefix-Cached Preamble**:
@@ -1063,11 +1082,15 @@ ROLE_CONTEXT:
   - **Instead of**: `"Never narrate or announce when you call a function."`
   - **Use**: `"After you emit a tool call, end your sentence there. When the result arrives, speak its spoken fields right away."` (Do not tell the model to "remain silent": see §18.G and §18.P.)
 
-### E. Language Pinning & Acoustic Noise Guardrails
+### E. Language Pinning, Accent Stability (`<60 words`) & Acoustic Noise Guardrails
 * Native audio models can code-switch when exposed to regional caller accents, coughs, or background office chatter.
+* **Pair `speechConfig.languageCode` with Positive Phrasing & Short Turns (`<60 words`)**:
+  - Always set `speechConfig.languageCode` (`"en-IN"`, `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) so `ROLE_SYSTEM` loads the regional studio voice sample (§2.D), and pair it with positive phrasing (`"RESPOND UNMISTAKABLY IN HINGLISH with a natural Indian accent on every word"`).
+  - Cap every spoken response at **2 to 3 short sentences (`<60 words`)** so the audio decoder does not accelerate into a rushed read-aloud cadence or drift toward its US English pretraining prior on long explanations.
+  - Write phonetic spellings for brand acronyms directly in place in Latin script (`"B-E six Sporteq"`) instead of pasting inline `"Pronounce X as Y"` tables or mixing scripts mid-word (`"BE 6 को 'बी-ई सिक्स' बोलें"`), which causes acoustic stumbling and literal readback.
 * Include explicit language-pinning and acoustic-filtering directives in every production System Instruction, with an explicit carve-out for English email/code spelling and untranslated proper nouns when the call language is non-English (see §18.J):
   ```text
-  LANGUAGE PINNING: Speak exclusively in the target language (for example English, Spanish, or Hindi). Keep every word in the target language regardless of background noise or caller accent, except when using English letter names and structural words ("at", "dot", "dash", "underscore") to spell email addresses or alphanumeric codes, or when saying untranslated proper nouns.
+  LANGUAGE PINNING: Speak unmistakably in the target language (for example English, Spanish, or Hindi). Keep every word in the target language regardless of background noise or caller accent, except when using English letter names and structural words ("at", "dot", "dash", "underscore") to spell email addresses or alphanumeric codes, or when saying untranslated proper nouns.
   ACOUSTIC FILTERING: The caller is in a noisy environment. Ignore background conversations, side chatter, and non-directed sounds.
   ```
 
@@ -1136,9 +1159,10 @@ Tool results are the last thing the model reads before it generates audio, and t
   response = {**payload, "call_state": state_line, "vocal_tone": VOCAL_TONE}
   ```
   List `vocal_tone` in the base prompt's never-speak list (above). In field testing on Indian-English agents, this removed most post-tool accent drift.
+* **Stop Redundant Tool Sweeps on Empty Lookups (`retryable: False`)**: When a search or directory lookup returns `[]` or `{}` without a terminal status, `gemini-3.8-live` frequently interprets the miss as a query-syntax mistake and fires 2 to 5 follow-up calls with shortened names or broader filters before speaking to the caller. Distinguish between **argument validation errors** (where the model should fix the named argument and retry once) and **valid lookups with zero matching records**: return `{"status": "no_results", "retryable": False, "matches": [], "ask_say": "...", "instruction": "No matching records exist. Tell the caller and ask for an alternative without calling this tool again."}`.
 
 ### N. Language-Neutral Turn-0 Greeting Stub & the `START` -> `IN_CALL` Swap
-* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0.
+* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0. Because `GREETING_STUB` is a text-only Turn-1 trigger with zero caller audio in history, `ROLE_SYSTEM` is the sole acoustic reference on Turn 1: always set `speechConfig.languageCode` explicitly (for example `"en-IN"`) at setup so Turn 1 does not default to the `en-US` studio voice (§2.D).
 * **Use a stage note plus an opening rule**:
   ```python
   GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"
@@ -1166,12 +1190,29 @@ Tool results are the last thing the model reads before it generates audio, and t
       return {"context_update": update}
   ```
 
-### P. Four Production Audio & Sampling Traps (`gemini-3.8-live`)
-* **Greedy sampling causes a long audio loop**: With `temperature: 0.0` and `top_k: 1`, the audio decoder can lose its end-of-speech signal after a tool call and loop on one sound for about 20 seconds. Keep `temperature` at `0.7` to `0.8` and leave `top_k` / `top_p` unset.
+### P. Five Production Audio & Sampling Traps (`gemini-3.8-live`)
+* **Greedy decoding (`temperature: 0` or `top_k: 1`) or low-temperature sampling (`temperature <= 0.3`) causes a ~20s droning audio loop**:
+  1. When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody while the text stream (`outputTranscription`) keeps flushing the remaining title words.
+  2. While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because the model's end-of-turn token (`<eos>`) depends on joint text-and-audio prediction, the model never emits `<eos>` when the text stream ends inside a silent audio window, so `turnComplete` never arrives.
+  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio head locks into a self-reinforcing nasal hum (*"Mmmmm..."*) near the voice's fundamental pitch (~187 to 200 Hz in one measured cloned-voice session) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
+  - **Mitigation**: Keep `temperature` unset (default `1.0`) or between `0.7` and `1.0`, leave `top_k` / `top_p` unset, and keep spoken `*_say` strings concise and conversational without long corporate titles or parenthetical codes.
 * **Never write "stay silent and wait" in a prompt**: When the model declines to answer, the server sends no `turnComplete` or reason, so the caller hears dead air. On 3.8, `<no speech>` placeholder text can leak into the output transcript and may be spoken after tool-response turns. This adds to the §18.G transcription trap. Use backchannel recovery (§19.C) or a short reprompt instead.
 * **Never wrap spoken lines in `<verbatim>` XML tags**: Under `<verbatim>...</verbatim>` readback prompts, `gemini-3.8-live` can dump the full text into the output transcript in 1 to 2 frames and send `generationComplete` after less than a second of audio, or none (28% of turns in one test). Put the line in a `*_say` field instead (§18.M).
 * **Gate turns on `turnComplete`, not `generationComplete`**: The server generates audio at about 4x real time and sends `generationComplete` when synthesis ends, while `turnComplete` follows real-time playback. Unmute the mic and advance the state machine on `turnComplete` (§17).
 * **Ban non-lexical fillers ("Hmm...", "Umm...", "Ahh...")**: They can pull female voices down into a deep chest register. Use lexical acknowledgments: "जी", "Sure", "Right".
+
+### Q. Live-Audio vs. Text Pre-Gate Timing (`send_context_update`) & Deterministic Router Hygiene
+* **Typed Text (`send_client_content`) vs. Server-VAD Live Audio (`send_realtime_input`) Timing**:
+  - In text-replay harnesses (`send_client_content`), a synchronous pre-turn Python gate can call `send_context_update(system_instruction=..., tools=...)` *before* sending the text turn, achieving 0-turn lag on Turn `N`.
+  - Under live microphone audio (`send_realtime_input`) with server-side VAD (`automatic_activity_detection.disabled=False`), the server closes the caller's audio turn and starts Turn `N` model generation **before** `input_transcription(finished=True)` arrives at the client. Calling `send_context_update` from an `input_transcription.finished` callback therefore lands *mid-generation*, so the updated card only takes effect from Turn `N+1` (a 1-turn lag that text-only replay hides) and risks ending an in-flight reply early (§22.C).
+  - **Safe Production Rule**: Never fire `send_context_update` directly from `input_transcription.finished` when server VAD is active. Either (a) record the detected intent and flush `send_context_update` at `turnComplete` or inside a blocking `lookup_facts` tool handler while the model is paused waiting on the tool response (§22.C), or (b) run client-side VAD (`automatic_activity_detection.disabled=True` + Silero VAD + streaming ASR) so `send_context_update` lands *before* `send_activity_end`. Always validate voice routers with a PCM audio loopback harness (§25.A) in addition to text replay.
+* **Prefix-Cache-Safe `Session State JSON` (No Free-Text `phase_note` Strings)**:
+  - Keep the dynamic `Session State JSON` inside `system_instruction` strictly deterministic and enum-bounded (`card_id`, `language`, `active_line`, `discovery_done`, `preferred_slot`). Avoid appending LLM-generated prose notes, wall-clock timestamps, or per-turn free-text summaries that change every turn and waste prompt tokens on every swap.
+* **Four Deterministic Router Traps in Multilingual Voice Flows**:
+  1. **Silence / Nudge Turn Bypass**: Synthetic silence-reprompt triggers (`NUDGE_1..3`, `FINAL_NUDGE`, backchannel reprompts) must early-return before card-progression logic; otherwise Turn-2/Turn-3 nudges advance from Greeting to Discovery and pitch products to a silent line.
+  2. **Monotonic Card Guard on In-Tool Routing**: When a blocking `lookup_facts(query)` tool also updates card state, pass the live `session.turn` (never a hardcoded default `turn_num=2`) plus the caller's utterance, and enforce a monotonic guard so mid-call price or FAQ lookups when a slot is still `"unknown"` never roll late-stage objection or closing cards backward to early discovery cards.
+  3. **Python `re` `\b` Word-Boundary Bug After Indic Combining Vowel Signs (`Mc` / `Mn`)**: In Python `re`, Indic dependent vowel matras and virama (such as Devanagari `ा` `U+093E`, `ि`, `ी`, `े`, `ो`, Bengali `ে`, Gujarati `ે`, Gurmukhi `ੀ`, Odia `ି`) have Unicode category `Mc` or `Mn`, which Python `re` classifies as **non-word (`\W`)**, whereas base consonants (`क`, `न`, `ક`) are `\w` (`Lo`). Because `ा` (`\W`) followed by space or punctuation (`\W`) has **no `\b` boundary**, `re.search(r"का\b", "कितने का है")` evaluates to **`None`**. Replace `\b` after Indic tokens with an explicit delimiter lookahead: `(?=\s|$|[।?.,!])`.
+  4. **Native-Script Card Purity Invariant**: Render pure native-script card templates per language (do not leave shared Devanagari or Hinglish phrases inside non-Hindi cards) and add a unit test scanning every rendered `(language, card_id)` string for zero cross-script character leaks.
 
 ---
 
@@ -1222,8 +1263,13 @@ realtime_input_config = types.RealtimeInputConfig(
   ```
 * **`prefix_padding_ms` semantics**: it is the required duration of detected speech before start-of-speech is committed. Lower values catch shorter sounds. A spoken letter lasts roughly 250 to 450 ms, so `prefix_padding_ms: 600` drops letters during name and email spelling ("S-A-C-H-I-N"). Keep it at `200` to `300` ms on any flow that collects spelled input.
 
-### D. Transcription Language Pinning (`language_codes`) & the Single-Letter Vocabulary Trap
+### D. Transcription Language Pinning (`language_codes`), `speech_config` vs. ASR Locale Split & the Single-Letter Vocabulary Trap
 * **Pin transcript languages on Vertex AI**: pass `AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"])` for both `input_audio_transcription` and `output_audio_transcription`. This stops Hindi transcripts from drifting into Urdu, Arabic, or Cyrillic script. `language_codes` is Vertex-only (see the AI Studio `AudioTranscriptionConfig` Invariant in §2).
+* **Separate `speech_config.language_code` from `AudioTranscriptionConfig.language_codes` Across Indic Locales**:
+  - On Vertex AI Live (`gemini-3.8-live`), output voice synthesis (`speech_config.language_code`) and audio transcription (`AudioTranscriptionConfig(language_codes=[...])`) have **different Indic locale coverage** and should be configured separately.
+  - Passing an unsupported Indic locale (such as `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `bn-IN`, `ur-IN`) in `speech_config.language_code` falls back to `"en-US"` studio voice samples. **Do not omit `speech_config.language_code` either**, because omitting it also falls back to `"en-US"`. Instead, map unsupported Indic speech locales to `"en-IN"` (or `"hi-IN"`) in `speech_config.language_code` so `ROLE_SYSTEM` loads the Indian studio voice sample, while passing the specific regional Indic locale (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`) into `AudioTranscriptionConfig(language_codes=[...])`.
+  - **Assamese `bn-IN` Orthography Watchout**: Mapping Assamese transcription to `"bn-IN"` transcribes speech in standard Bengali orthography and omits Assamese-specific `ৰ` (`U+09F0`) and `ৱ` (`U+09F1`). Guard any script-based language switcher so an Assamese session does not auto-switch to `Bengali` on `[ৰৱ]` absence unless the caller explicitly requests Bengali.
+  - **Single-Locale Input ASR Lock vs. Mid-Call Language Switching**: Pinning `input_audio_transcription` to a single `[opening_locale]` locks input recognition for the whole session (and ignoring Latin characters in script detection blocks implicit switches to English). Pass a curated multi-locale list on `input_audio_transcription` whenever mid-call language switching is supported.
 * **Never put single letters (`A` to `Z`) or single digits (`0` to `9`) in a custom vocabulary or phrase hints**: single-character entries bias recognition toward one-character tokens, so short Hindi words such as "जी" (*ji*) are transcribed as "G". Add whole words and names only.
 
 ---
@@ -1281,6 +1327,8 @@ Because Gemini Live and Gemini TTS share the same prebuilt voice names (`Aoede`,
    * When the call connects, **first** add the greeting text to Gemini Live's history as a `role="model"` turn with `send_client_content(turn_complete=False)`.
    * Set a `caller_audio_ok: asyncio.Event` gate immediately after the seed so your caller-audio loop waits until the greeting is in history before sending its first `send_realtime_input` chunk. That way the greeting is recorded before the model can hear anything, and the caller can still talk over the clip.
    * Play the saved clip in 20ms (`960`-byte) chunks and stop playback if the caller interrupts. Skip any kick-off `"Hello"` text message that you would normally send to make the model speak first.
+   * **Google ADK (`google-adk >= 2.12.0`) `Runner.run_live` Wiring & Outbound Human-VAD Gate**: Pre-appending `Event(author=agent.name, content=Content(role="model", parts=[Part.from_text(text=GREETING_TEXT)]))` to `InMemorySessionService` before `runner.run_live()` triggers ADK's built-in history seeding (`send_client_content(..., turn_complete=False)`), **but** ADK only seeds text history. Your media gateway must still: (1) delay WebSocket setup or greeting playout on outbound telephony until human pickup (`human-VAD` / answering-machine detection) is confirmed so unanswered dials burn `0` Turn-1 tokens, (2) stream the pre-synthesized 24kHz PCM audio frames to the caller (emitting a transcript JSON string alone leaves the caller in silence), and (3) hold `caller_audio_ok` until the seed completes.
+   * **Compounded Multi-Turn Savings Math (Do Not Subtract Only Turn 1)**: Because Gemini Live carries 100% of uninterrupted Turn-1 model output audio (`25 tok/s` at `$3.00/1M`, `4x` the `$0.75/1M` text input rate) into `Prompt AUDIO` on *every* subsequent turn `2..N` (§13.C), replacing an ~8s (`~190`-token) Live-generated greeting with a `~35`-token text seed saves **both** Turn-1 generation **and** `~((190 * 4) - (35 * 1)) * (N - 1)` weighted input units across turns `2..N`. Always measure `seed_greeting` in a live multi-turn benchmark rather than subtracting Turn 1 client-side.
    ```python
    import asyncio
    from google.genai import types
@@ -1424,8 +1472,7 @@ Starting in `google-genai 2.32.0` (`pip install -U "google-genai>=2.32.0"`), `aw
 - Per-card tool registration: On `gemini-3.8-live`, every declared tool schema is billed on every model generation. In an 8-card flight-booking workflow (6 tools totaling `1,326` billed schema tokens in `usage_metadata.prompt_token_count`: `93 + 44 + 511 + 164 + 457 + 57`, or `~2,198` tokens as raw serialized JSON text), each card registers only the tools it still needs (Card 1 greeting registers only `set_call_language` at `93` tokens; Card 2 registers route-search tools at `648` tokens; Card 3 registers selection/search tools at `768` tokens; Cards 4 to 7 drop `find_available_flights` and keep `714` tokens, down from `1,225`; Card 8 registers only `set_call_language` + `dispatch_checkout_link` at `150` tokens).
 - Compaction-proof prompt cards: When `SlidingWindow(5000/3500)` trims older turns, it drops conversation history but preserves `systemInstruction`. If prompt cards live only in history, compaction evicts them and the model falls back to the opening `setup.systemInstruction`, replaying the Turn-1 greeting (measured live: 6 of 7 replies after a compaction replayed the greeting when the card lived only in history, versus 0 of 7 when the active card and session state lived in `systemInstruction`). Putting the active card + live session state in `send_context_update(system_instruction=...)` also lets the `FunctionResponse` return a one-line pointer instead of repeating a 600-token card in history.
 
-:::caution
-**Operational rules for `send_context_update`:**
+:::caution[Operational rules for `send_context_update`]
 - **Prefix cache invalidation**: `system_instruction` and `tools` sit in the model preamble, so every update invalidates the prefix cache. Update them only at major stage transitions (for example, `3 to 8 times` in a multi-step call), not on every turn.
 - **Set at least one field**: Calling `await session.send_context_update()` with both `system_instruction=None` and `tools=None` raises ``ValueError("At least one of `system_instruction` or `tools` must be set.")``.
 - **Full replacement (no merge)**: Every field you set replaces the previous value. Include global tools (such as `set_call_language`) in each card's `tools` list, and pass `base_rules + current_card + session_state` in `system_instruction`. Pass `tools=[]` (which sends `{"tools": {"tools": []}}` on the wire; `{"tools": {}}` is an equivalent raw form) to clear all tools on a talk-only closing card.
@@ -1580,10 +1627,12 @@ Decouple conversational voice rendering from deterministic UI decision-making:
 
 ## 25. Multi-Tier Voice QA & Cascade vs. Native Duplex Unit Economics
 
-### A. Multi-Tier Voice QA Discipline
+### A. Multi-Tier Voice QA Discipline & Benchmark Hygiene
 1. **Tier 1: Automated Text Injection Harness (`~5 min/run`)**: Expose a test hook (`window.__testService.sendText()`) to drive multi-turn state transitions, tool calls, and deduplication guards without audio timing overhead. Remember to pace turn completion waits (`>= generated_audio_duration`) when measuring `Prompt AUDIO` accumulation so you do not trigger synthetic barge-in truncation (§13.C).
 2. **Tier 2: Virtual Audio Loopback (`~10 min/run`)**: Route synthesized TTS audio through a virtual audio loopback device (`BlackHole 2ch` on macOS or PulseAudio `module-null-sink` on Linux) into Chrome's `getUserMedia` input to test VAD sensitivity, barge-in recovery, and audio gating end to end.
 3. **Statistical Reporting Rule (`N >= 3`)**: Because native audio models are stochastic, never validate a prompt or tool change from a single test run. Run at least `N = 3` trials (`N = 5` for tool-routing edge cases) and verify 100% pass consistency.
+4. **Apples-to-Apples Token Benchmarking (`thoughts_token_count` & Uniform `SlidingWindow`)**: Under Live rate weighting (`$0.75/1M` text in, `$3.00/1M` audio in, `$4.50/1M` text out + `thoughts_token_count`, `$12.00/1M` audio out), live `thoughts_token_count` (`~800 to 1,100` tokens/call when thinking is enabled) carries a `6x` cost weight relative to text input and must never be compared against cached text-replay traces where `thoughts_token_count == 0`. Keep `SlidingWindow` `trigger_tokens` and `target_tokens` identical across all compared variants.
+5. **SSOT-Synced Judge Rubrics & Output-ASR Script Grading**: Generate or unit-test LLM-as-judge pricing and perk rubrics directly from the runtime skill's single source of truth (`pricing.md` / `cards.yaml`) and filter holdout cases targeting intentionally excluded policy updates so valid agent answers are not penalized as false hallucinations. When grading script purity on `output_audio_transcription`, remember it grades audio transcription output rather than raw LLM text; pin `AudioTranscriptionConfig(language_codes=[...])` (§19.D) to minimize single-character homophone slips across related Indic scripts.
 
 ### B. Cascade (`STT -> LLM -> TTS`) vs. Native Duplex (`Gemini Live`) Unit Economics
 

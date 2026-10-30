@@ -216,6 +216,10 @@ class MonolithicArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.MONOLITHIC_STATIC
 
+    @property
+    def speech_language_code(self) -> Optional[str]:
+        return "en-IN" if getattr(self, "persona_id", None) == "debt-collector" else None
+
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         return []
 
@@ -227,6 +231,9 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
     """Abhay. Server-authoritative rupee concession ladder via ``negotiation.Deal``."""
 
     pattern = ArchitecturePattern.STATE_LADDER_NEGOTIATOR
+    owns_language_policy = True
+    speech_language_code = "en-IN"
+    transcription_language_codes = ("en-IN", "hi-IN")
 
     def __init__(self) -> None:
         self._deal = None
@@ -293,6 +300,9 @@ class JITPhaseCardsArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.JIT_PHASE_CARDS
     model_controls_conversation = True
+    owns_language_policy = True
+    speech_language_code = "en-IN"
+    transcription_language_codes = ("en-IN", "hi-IN")
 
     def __init__(self) -> None:
         self._tracker = None
@@ -573,6 +583,9 @@ class AnanyaMFAdvisorArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.JIT_MF_ADVISOR
     model_controls_conversation = True
+    owns_language_policy = True
+    speech_language_code = "en-IN"
+    transcription_language_codes = ("en-IN", "hi-IN")
 
     def __init__(self) -> None:
         self._llm = None
@@ -683,6 +696,9 @@ class KavyaGlassBuddyArchitecture(BasePersonaArchitecture):
 
     pattern = ArchitecturePattern.GLASS_BUDDY
     model_controls_conversation = True
+    owns_language_policy = True
+    speech_language_code = "en-IN"
+    transcription_language_codes = ("en-IN", "hi-IN")
 
     def __init__(self) -> None:
         self._llm = None
@@ -805,6 +821,7 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
     #: The base SI owns the language policy (Indian English until SelectLanguageTool), so the
     #: session must not append a fixed "converse in <language>" directive.
     owns_language_policy = True
+    speech_language_code = "en-IN"
     #: Transcription hints for the languages Tara's callers most often use (Vertex only).
     transcription_language_codes = ("en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "bn-IN", "mr-IN")
 
