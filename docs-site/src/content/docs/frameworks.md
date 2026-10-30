@@ -53,6 +53,15 @@ Both Pipecat and LiveKit support two fundamentally different pipeline modes. Mak
 - **Acoustic understanding**: Hears frustration, sarcasm, background noise, and language switches natively.
 - **Single unified stream**: Emits 24kHz audio (`inlineData`), input/output transcriptions, and `toolCall` events over one connection.
 
+### If you keep a cascade: hold the TTS voice steady
+A cascade sends one TTS request per sentence, so each sentence is a fresh generation. With Gemini 3.8 TTS:
+- Put the accent and character in the voice itself: an Extended Voice Library voice (for example the Indian English `en-in-*` voices from `client.voices.list`) or a Voice design voice. Asking for an accent inside `speech_metadata.style` on every sentence makes the voice wander.
+- Keep `style` to short situational delivery: emotion, pitch and pace.
+- Do not send one-word sentences ("Namaste.") as their own request; merge them into the next sentence.
+- Check results with a speaker-verification model across the sentences of one reply, not only by ear or pitch.
+
+See [Agent Skill §2.C](/gemini-live/gemini-live-skill/) for the full rules and the A/B numbers.
+
 ---
 
 ## 3. When a hybrid pipeline still makes sense

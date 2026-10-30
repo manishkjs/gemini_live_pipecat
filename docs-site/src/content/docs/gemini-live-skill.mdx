@@ -120,6 +120,17 @@ When operating a modular cascaded pipeline alongside native Speech-to-Speech:
 * **Default LLM**: `gemini-2.5-flash-lite` or `gemini-2.5-flash` (`thinking_budget=0` for low-latency dialogue).
 * **Default TTS**: Cloud Text-to-Speech `chirp_3` HD voices or Gemini TTS (`gemini-2.5-flash-preview-tts`).
 
+### C. Gemini 3.8 TTS Voice Consistency in a Cascade (Sentence-Level Generations)
+A Pipecat-style cascade calls TTS once per sentence, so every sentence is a separate Gemini 3.8 generation. Most drift between sentences comes from what the request asks for:
+* **Keep `speech_metadata.style` situational**: emotion, pitch and pace only (`"calm empathetic, warm low pitch, measured"`). Never put accent, age, gender, names or a persona paragraph in `style`. The 3.8 speech generation guide calls long "Audio Profile" and "Director's Notes" blocks "the most common cause of voice drift" and says extra prompt text increases drift.
+* **Put the accent in the voice, not the prompt**: pick a regional voice from the Extended Voice Library (`client.voices.list(language_code=["en-IN"])` returns Indian English `en-in-*` voices) or create one with Voice design (`voices.create`, `type="prompted"`, persistent `voice_...` ID). Send library ids and voice keys as `types.VoiceConfig(voice=<id>)`; `PrebuiltVoiceConfig(voice_name=...)` only takes the 30 studio voice names.
+* **Never send a one-to-three word sentence as its own generation**: hold short sentences ("Namaste.", "Haan.") and send them with the next one, flush whatever is held when the reply ends, and drop it on barge-in. A subclass of Pipecat's `SimpleTextAggregator` that overrides `_check_sentence_with_lookahead`, `flush`, `handle_interruption` and `reset` does this without touching the TTS service.
+* **Keep pitch words when the LLM directs pitch**: in an A/B with the same four-sentence reply, removing pitch words from `style` widened the sentence-to-sentence pitch spread in 3 of 3 voice pairs, while speaker-identity similarity barely moved.
+* **Measure identity, not only pitch**: embed each sentence with an open speaker-verification model (for example WeSpeaker ResNet34 in ONNX) and compare the chunks of one reply with cosine similarity. In that A/B the one-word chunk scored lowest in 7 of 7 variants, and an Indian English library voice scored higher (0.45) than a studio voice asked for an Indian accent in `style` (0.33 to 0.35). Short clips embed less reliably, so treat single runs as a signal, not proof.
+
+### D. Native Audio Language Choice (Live)
+* Native audio output models choose the spoken language automatically and do not support setting a language code (Live API capabilities guide, "Change voice and language"). Steer language with the system instruction and keep the conversation free of hard "always speak X" pins if callers may switch languages mid-call.
+
 ---
 
 ## 3. IAM Permissions & Local Dev Tunneling

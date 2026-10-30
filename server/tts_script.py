@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import re
 
+from pipecat.utils.string import SENTENCE_ENDING_PUNCTUATION
+from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
+from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
 GEMINI_38_TTS_MODELS = frozenset({"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"})
 
@@ -183,6 +186,83 @@ def spoken_parts(text: str, carried: str | None) -> tuple[list[tuple[str | None,
     return parts, carried
 
 
+_IDENTITY_TRAIT = re.compile(
+    r"\b(?:accent|accented|cadence|lilt|indian|british|american|australian|hinglish|gender|male|female|man|woman|boy|girl|young|old|mature|elderly)\b"
+    r"|\b\d+\s*-?\s*years?\s*-?\s*old\b",
+    re.I,
+)
+
+
+def situational_style(direction: str | None) -> str | None:
+    """An LLM [[direction]] minus accent, age and gender, which belong to the voice.
+
+    The 3.8 guide: never put immutable speaker traits in speech_metadata.style;
+    emotion, pitch and pace stay.
+    """
+    if not direction:
+        return None
+    kept = [seg.strip() for seg in direction.split(",") if seg.strip() and not _IDENTITY_TRAIT.search(seg)]
+    return ", ".join(kept) or None
+
+
+def spoken_word_count(text: str) -> int:
+    """Words a listener would hear: markup removed, Devanagari words counted whole."""
+    cleaned = _OPEN_FRAGMENT.sub(" ", text or "")
+    cleaned = _CLOSE_FRAGMENT.sub(" ", cleaned)
+    cleaned = _BRACKETED.sub(" ", cleaned)
+    return sum(1 for token in display_text(cleaned).split() if any(ch.isalnum() for ch in token))
+
+
+class MinWordsSentenceAggregator(SimpleTextAggregator):
+    """Sentence aggregator that never hands TTS a sentence shorter than ``min_words``.
+
+    Every run_tts call is a separate Gemini 3.8 generation, and a one-word call
+    ("नमस्ते.", "Haan.") gives the model almost nothing to hold the voice steady
+    with. A short sentence is held and sent together with the next one; whatever
+    is still held when the reply ends goes out on flush().
+    """
+
+    def __init__(self, min_words: int = 4, **kwargs):
+        super().__init__(**kwargs)
+        self._min_words = min_words
+        self._held = ""
+
+    @property
+    def text(self) -> Aggregation:
+        joined = f"{self._held} {self._text}" if self._held else self._text
+        return Aggregation(text=joined.strip(" "), type=AggregationType.SENTENCE)
+
+    async def _check_sentence_with_lookahead(self, char: str) -> Aggregation | None:
+        if self._needs_lookahead and char in SENTENCE_ENDING_PUNCTUATION:
+            # Keep '...' and '?!' together before running NLTK lookahead.
+            return None
+        result = await super()._check_sentence_with_lookahead(char)
+        if result is None:
+            return None
+        combined = f"{self._held} {result.text}".strip() if self._held else result.text
+        if _OPEN_FRAGMENT.search(combined) or spoken_word_count(combined) < self._min_words:
+            self._held = combined
+            return None
+        self._held = ""
+        return Aggregation(text=combined, type=result.type)
+
+    async def flush(self) -> Aggregation | None:
+        held, self._held = self._held, ""
+        tail = await super().flush()
+        pieces = [p for p in (held, tail.text if tail else "") if p and p.strip()]
+        if not pieces:
+            return None
+        return Aggregation(text=" ".join(pieces).strip(), type=AggregationType.SENTENCE)
+
+    async def handle_interruption(self):
+        await super().handle_interruption()
+        self._held = ""
+
+    async def reset(self):
+        await super().reset()
+        self._held = ""
+
+
 
 class Gemini38TextFilter(MarkdownTextFilter):
     """MarkdownTextFilter that preserves Gemini 3.8 vocal tags and [[direction]] blocks, and drops |backchannels|."""
@@ -309,19 +389,22 @@ _FEMININE_RULE = ("VOICE GENDER: you are speaking in a female voice. Refer to yo
 
 
 def voice_gender_rule(tts_voice: str | None) -> str:
-    """Self-reference grammar for cloned voices, whose gender is fixed by the recording.
+    """Self-reference grammar for cloned and Voice Library voices, whose gender is fixed by the speaker.
 
-    A cloned male voice saying "कर सकती हूँ" is jarring. Named voices are left to
+    A male voice saying "कर सकती हूँ" is jarring. Studio preset voices are left to
     the persona prompt, which already sets gender for its preset voice.
     """
     import voice_profiles  # local import: keeps tts_script free of credential code at import time
 
-    if voice_profiles.is_gemini_clone_voice(tts_voice):
-        gender = voice_profiles.GEMINI_CLONE_VOICES[str(tts_voice).strip()]
-    elif voice_profiles.is_female_clone_voice(tts_voice):
+    v = str(tts_voice or "").strip()
+    if voice_profiles.is_gemini_clone_voice(v):
+        gender = voice_profiles.GEMINI_CLONE_VOICES[v]
+    elif voice_profiles.is_female_clone_voice(v):
         gender = "female"
-    elif voice_profiles.is_male_clone_voice(tts_voice):
+    elif voice_profiles.is_male_clone_voice(v):
         gender = "male"
+    elif v in voice_profiles.GEMINI_38_LIBRARY_VOICES:
+        gender = voice_profiles.GEMINI_38_LIBRARY_VOICES[v]
     else:
         return ""
     return _MASCULINE_RULE if gender == "male" else _FEMININE_RULE

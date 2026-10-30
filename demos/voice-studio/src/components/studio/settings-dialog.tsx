@@ -21,7 +21,9 @@ import {
   TTS_PACE_OPTIONS,
   GEMINI_VOICES,
   GEMINI_CLONE_VOICES,
+  GEMINI_38_LIBRARY_VOICES,
   isGeminiClonedVoice,
+  isLibraryVoice,
   isLiveCustomVoice,
   supportsGeminiClone,
   CHIRP_HD_VOICES,
@@ -1012,6 +1014,7 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         onChange={(value) => update("voice", value)}
                         options={[
                           ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_CLONE_VOICES : []),
+                          ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_38_LIBRARY_VOICES : []),
                           ...GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom") && !isGeminiClonedVoice(voice)),
                         ]}
                       />
@@ -1081,7 +1084,11 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         <Picker
                           label="Accent"
                           value={settings.ttsAccent ?? "Indian"}
-                          disabled={active}
+                          disabled={
+                            active ||
+                            (supportsGeminiClone(settings.ttsModel) &&
+                              (isLibraryVoice(settings.voice) || isGeminiClonedVoice(settings.voice)))
+                          }
                           onChange={(value) => update("ttsAccent", value)}
                           options={TTS_ACCENT_OPTIONS}
                         />
@@ -1094,24 +1101,40 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                         />
                       </div>
 
-                      <div className="field">
-                        <label htmlFor="tts-voice-prompt">
-                          Persona Voice Design Prompt (Auto-selected for {persona.name})
-                        </label>
-                        <Textarea
-                          id="tts-voice-prompt"
-                          rows={2}
-                          disabled={active}
-                          placeholder="Automatically populated based on active persona, or customize here."
-                          value={settings.ttsVoicePrompt ?? ""}
-                          onChange={(e) => update("ttsVoicePrompt", e.target.value)}
-                          className="instructions-textarea"
-                          style={{ minHeight: "52px" }}
-                        />
-                        <p className="field-hint" style={{ marginTop: "4px" }}>
-                          <code>SpeechMetadata(style=&quot;Style: {settings.ttsStyle ?? "Empathetic"}. Pace: {settings.ttsPaceLabel ?? "Natural"}. Accent: {settings.ttsAccent ?? "Indian"}.{settings.ttsPitch && settings.ttsPitch !== "Default" ? ` Pitch: ${settings.ttsPitch}.` : ""}{settings.ttsVoicePrompt ? ` ${settings.ttsVoicePrompt}` : ""}&quot;)</code>
-                        </p>
-                      </div>
+                      {!supportsGeminiClone(settings.ttsModel) ? (
+                        <div className="field">
+                          <label htmlFor="tts-voice-prompt">
+                            Persona Voice Design Prompt (Vertex 2.5 / 3.1 TTS System Instruction)
+                          </label>
+                          <Textarea
+                            id="tts-voice-prompt"
+                            rows={2}
+                            disabled={active}
+                            placeholder="Automatically populated based on active persona, or customize here."
+                            value={settings.ttsVoicePrompt ?? ""}
+                            onChange={(e) => update("ttsVoicePrompt", e.target.value)}
+                            className="instructions-textarea"
+                            style={{ minHeight: "52px" }}
+                          />
+                        </div>
+                      ) : null}
+
+                      <p className="field-hint" style={{ marginTop: "2px" }}>
+                        {supportsGeminiClone(settings.ttsModel) ? (
+                          <code>
+                            SpeechMetadata(style=&quot;{settings.ttsStyle ?? "Empathetic"},{" "}
+                            {(settings.ttsPaceLabel ?? "Natural").toLowerCase()} pace
+                            {settings.ttsPitch && settings.ttsPitch !== "Default"
+                              ? `, ${settings.ttsPitch.toLowerCase()} pitch`
+                              : ""}
+                            &quot;)
+                          </code>
+                        ) : (
+                          <code>
+                            system_instruction=&quot;{settings.ttsVoicePrompt ?? ""}&quot;
+                          </code>
+                        )}
+                      </p>
                     </div>
                   </>
                 )}

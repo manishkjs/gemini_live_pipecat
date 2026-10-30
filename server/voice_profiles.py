@@ -21,6 +21,7 @@ session starts or the TTL lapses.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import threading
 import time
@@ -181,6 +182,71 @@ _MALE_VOICES = frozenset({
     "orus", "puck", "rasalgethi", "sadachbia", "sadaltager", "schedar", "umbriel", "zubenelgenubi",
 })
 
+# Indian English (Hinglish) voices from the Gemini 3.8 TTS Extended Voice Library
+# (`client.voices.list(language_code=["en-IN"])`). The accent lives in the voice, so
+# speech_metadata.style never has to ask for it (3.8 guide: accent text in style drifts).
+GEMINI_38_LIBRARY_VOICES: dict[str, str] = {
+    "en-in-csagent-3": "female",
+    "en-in-csagent-5": "female",
+    "en-in-concierge-2": "female",
+    "en-in-concierge-3": "female",
+    "en-in-commercial-5": "female",
+    "en-in-assistant-8": "female",
+    "en-in-csagent-1": "male",
+    "en-in-csagent-4": "male",
+    "en-in-concierge-1": "male",
+    "en-in-commercial-7": "male",
+}
+
+_LIBRARY_VOICE_ID = re.compile(r"[a-z]{2,3}-[a-z]{2}-[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+
+# Studio preset voices used by personas on Live mapped to Indian English Extended Voice Library
+# speakers on Gemini 3.8 TTS when tts_accent is "Indian", so the accent comes from the speaker
+# rather than per-part speech_metadata.style text.
+INDIAN_LIBRARY_VOICE_FOR_STUDIO: dict[str, str] = {
+    "gacrux": "en-in-csagent-3",
+    "aoede": "en-in-concierge-2",
+    "kore": "en-in-assistant-8",
+    "sulafat": "en-in-concierge-3",
+    "vindemiatrix": "en-in-csagent-5",
+    "despina": "en-in-commercial-5",
+    "fenrir": "en-in-commercial-7",
+    "puck": "en-in-concierge-1",
+    "charon": "en-in-csagent-4",
+    "algenib": "en-in-csagent-1",
+}
+
+
+def is_library_voice_id(voice: Optional[str]) -> bool:
+    """True for an Extended Voice Library id such as `en-in-csagent-3` (all lowercase)."""
+    v = str(voice or "").strip()
+    return bool(_LIBRARY_VOICE_ID.fullmatch(v)) and "chirp" not in v
+
+
+def resolve_gemini_38_voice(voice: Optional[str], tts_accent: Optional[str] = None) -> Optional[str]:
+    """Resolve the speaker identifier for Gemini 3.8 TTS.
+
+    When `tts_accent` is 'Indian' and `voice` is a US studio preset (e.g. Gacrux, Aoede,
+    Fenrir), return a gender-matched `en-in-*` Extended Voice Library speaker so the
+    Indian accent is carried by the voice itself instead of `speech_metadata.style`.
+    """
+    if not voice:
+        return voice
+    v = str(voice).strip()
+    if is_library_voice_id(v) or is_gemini_clone_voice(v) or is_valid_gemini_voice_key(v):
+        return v
+    if (tts_accent or "").strip().lower() != "indian":
+        return v
+    key = v.lower()
+    if key in INDIAN_LIBRARY_VOICE_FOR_STUDIO:
+        return INDIAN_LIBRARY_VOICE_FOR_STUDIO[key]
+    gender = voice_gender(v)
+    if gender == "male":
+        return "en-in-csagent-4"
+    if gender == "female":
+        return "en-in-csagent-3"
+    return v
+
 
 def voice_gender(voice: Optional[str]) -> Optional[str]:
     """'male' or 'female' when the voice's gender is known; None otherwise (e.g. a recorded voice)."""
@@ -193,6 +259,8 @@ def voice_gender(voice: Optional[str]) -> Optional[str]:
         return "female"
     if is_male_clone_voice(v):
         return "male"
+    if v in GEMINI_38_LIBRARY_VOICES:
+        return GEMINI_38_LIBRARY_VOICES[v]
     name = v.rsplit("-", 1)[-1].lower()  # "hi-IN-Chirp3-HD-Charon" -> "charon"
     if name in _FEMALE_VOICES:
         return "female"
