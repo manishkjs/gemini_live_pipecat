@@ -100,15 +100,22 @@ When operating a modular cascaded pipeline alongside native Speech-to-Speech:
 * **Default TTS**: Cloud Text-to-Speech `chirp_3` HD voices or Gemini TTS (`gemini-2.5-flash-preview-tts`).
 
 ### C. Gemini 3.8 TTS Voice Consistency in a Cascade (Sentence-Level Generations)
-A Pipecat-style cascade calls TTS once per sentence, so every sentence is a separate Gemini 3.8 generation. Most drift between sentences comes from what the request asks for:
+A Pipecat-style cascade calls TTS once per sentence, so every sentence is a separate Gemini 3.8 generation. Drift between sentences comes from how many generations a reply is split into, and from what each request asks for:
 * **Keep `speech_metadata.style` situational**: emotion, pitch and pace only (`"calm empathetic, warm low pitch, measured"`). Never put accent, age, gender, names or a persona paragraph in `style`. The 3.8 speech generation guide calls long "Audio Profile" and "Director's Notes" blocks "the most common cause of voice drift" and says extra prompt text increases drift.
 * **Put the accent in the voice, not the prompt**: pick a regional voice from the Extended Voice Library (`client.voices.list(language_code=["en-IN"])` returns Indian English `en-in-*` voices) or create one with Voice design (`voices.create`, `type="prompted"`, persistent `voice_...` ID), and map US studio presets to gender-matched `en-in-*` library speakers when an Indian accent is selected on 3.8 TTS. Send library ids and voice keys as `types.VoiceConfig(voice=<id>)`; `PrebuiltVoiceConfig(voice_name=...)` only takes the 30 studio voice names.
 * **Never send a one-to-three word sentence as its own generation**: hold short sentences ("Namaste.", "Haan.") and send them with the next one, keep `...` and `?!` punctuation clusters and unclosed `[[direction]]` blocks intact before lookahead, flush whatever is held when the reply ends, and drop it on barge-in. A subclass of Pipecat's `SimpleTextAggregator` that overrides `_check_sentence_with_lookahead`, `flush`, `handle_interruption` and `reset` does this without touching the TTS service.
+* **Send as few generations per reply as you can**: Gemini 3.8 TTS cannot take earlier audio as context (a prior turn with PCM audio returns `400 INVALID_ARGUMENT: Audio input modality is not enabled for this model`), so each request re-derives the voice. Measured on one seven-sentence reply with a speaker-verification model (cosine between 3 s windows, cloned voice / library voice): seven requests 0.65 / 0.67, first sentence alone then the rest in one request 0.69 / 0.76, whole reply in one request 0.75 / 0.80. A good compromise for latency is to release the first sentence as soon as it is complete, then hold the rest of the reply and send it as one request when the LLM finishes (with a word cap so a long reply does not leave a gap).
+* **Prefer no per-sentence `speech_metadata.style` when identity matters most**: in the same A/B, sending the plain transcript scored 0.69 / 0.71 against 0.61 to 0.66 with any style string, varying or constant. Let the voice (library id, designed voice, or voice key) carry identity and inline vocal tags (`<sigh>`, `<short pause>`) carry delivery; keep `style` as an option you can switch on when expressiveness matters more than consistency.
 * **Keep pitch words when the LLM directs pitch**: in an A/B with the same four-sentence reply, removing pitch words from `style` widened the sentence-to-sentence pitch spread in 3 of 3 voice pairs, while speaker-identity similarity barely moved.
 * **Measure identity, not only pitch**: embed each sentence with an open speaker-verification model (for example WeSpeaker ResNet34 in ONNX) and compare the chunks of one reply with cosine similarity. In that A/B the one-word chunk scored lowest in 7 of 7 variants, and an Indian English library voice scored higher (0.45) than a studio voice asked for an Indian accent in `style` (0.33 to 0.35). Short clips embed less reliably, so treat single runs as a signal, not proof.
 
-### D. Native Audio Language Choice (Live)
-* Native audio output models choose the spoken language automatically and do not support setting a language code (Live API capabilities guide, "Change voice and language"). Steer language with the system instruction and keep the conversation free of hard "always speak X" pins if callers may switch languages mid-call.
+### D. Native Audio Language Choice, `speech_config.language_code` & `ReplicatedVoiceConfig` (Live)
+* **How `(voice_name, speech_config.language_code)` selects the Turn-1 studio voice sample**:
+  - Even though consumer documentation notes that native audio output models can choose the spoken language automatically, on Vertex AI (`gemini-3.8-live`) the pair `(voice_name, speech_config.language_code)` selects which `~224 to 239`-token studio audio recording is injected into `ROLE_SYSTEM` ahead of your `systemInstruction`.
+  - When `speech_config.language_code` is **omitted**, passed as a bare language tag without a region (`"en"`, `"hi"`), or set to a regional Indic code that has no dedicated prebuilt studio voice recording (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`), the server falls back to `"en-US"` and loads an American English studio voice sample into `ROLE_SYSTEM`.
+  - Setting `speech_config.language_code = "en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) loads the Indian-accented studio voice sample from Turn 1 and **does not** prevent the model from switching languages mid-call into Hindi, Hinglish, or regional languages (what blocks mid-call switching is hard-coding `"always speak English only"` inside `system_instruction` on a multilingual agent).
+* **Custom Voice Cloning (`ReplicatedVoiceConfig`)**:
+  - When a prebuilt voice does not match your regional accent target, pass `speech_config.voice_config.replicated_voice_config` with a 10 to 20s clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in the exact target accent and speaking pace. That reference clip replaces the prebuilt voice sample in `ROLE_SYSTEM`.
 
 ---
 
@@ -940,6 +947,11 @@ const stream = await navigator.mediaDevices.getUserMedia({
 * When an asynchronous background tool completes and triggers proactive model speech while an earlier conversational turn's audio is still playing out on the client speaker, buffer the incoming tool-response audio in a separate **deferred playback queue**.
 * Drain the deferred queue only after the active playback buffer finishes or is flushed by a user barge-in event. This prevents overlapping audio tracks and premature cutoff of ongoing explanations.
 
+### E. Telephony 8 kHz Downsampling (`mulaw`), Gain Caps & Prebuilt Voice Register Stability
+* **Why 8 kHz Telephony Alters Voice Timbre**: PSTN/SIP telephony gateways (Twilio, Exotel, Genesys `PCMU`/`mulaw`) downsample Gemini Live's 24 kHz PCM output to 8 kHz, cutting acoustic energy above 4 kHz (Nyquist limit).
+* **Prebuilt Voice Selection for 8 kHz Trunks**: Higher-pitched female prebuilt voices such as `Aoede` are more susceptible to audible register drops on 8 kHz lines after non-lexical fillers (`"Hmm"`, `"Umm"`) or low-energy phrases. Lower-variance voices such as `Kore`, `Despina`, and `Sulafat` maintain steadier pitch across 8 kHz downsampling.
+* **Gain Cap (`4x to 5x` max) & Anti-Aliased Resampling**: Never apply `10x` (`+20 dB`) linear sample multiplication before `mulaw` encoding; it clips `int16` peaks (`[-32768, 32767]`) into harsh square-wave buzz. Cap software gain boost at `4x to 5x` (`+12 dB to +14 dB`) with `np.clip` or a `tanh` soft limiter, and resample `24 kHz <-> 8 kHz` with an anti-aliasing filter (`soxr` or `scipy.signal.resample_poly`).
+
 ---
 
 ## 17. Turn Completion Truth (`onTurnComplete`) & Audio Debounce
@@ -989,7 +1001,7 @@ In a Gemini Live session, `systemInstruction`, `tools`, conversation history, an
 ```text
 ROLE_SYSTEM:
   1. <base spoken-dialog preamble>             <- Server-internal spoken dialog mode instructions
-  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName
+  2. <voice reference embedding>               <- ~224-239 audio hard tokens resolved from (voiceName, speechConfig.languageCode) or replicatedVoiceConfig
 
 ROLE_DEVELOPER:
   3. <function declarations>                   <- setup.tools (serialized FIRST inside ROLE_DEVELOPER)
@@ -1011,8 +1023,8 @@ ROLE_CONTEXT:
 ```
 
 #### Four Architectural Consequences of This Layout
-1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`)**:
-   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode your selected `voiceName`. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
+1. **Why Public `systemInstruction` Lives in `ROLE_DEVELOPER` (After `tools`) and Why `speechConfig.languageCode` Governs Turn 1**:
+   True `ROLE_SYSTEM` is reserved for the server's spoken-dialog preamble and the `~224 to 239` audio hard tokens that encode the studio voice sample for `(voiceName, speechConfig.languageCode)` (or your custom `replicatedVoiceConfig` clip). Omitting `speechConfig.languageCode` on Vertex AI loads an `en-US` studio recording into `ROLE_SYSTEM`, which overrides prompt-only accent rules on Turn 1 before caller audio exists. Always set `speechConfig.languageCode` explicitly (such as `"en-IN"` or `"hi-IN"`) at setup. Your `setup.systemInstruction` is placed in `ROLE_DEVELOPER` immediately **after** `<function declarations>` (`setup.tools`). If you declare 15 to 20 heavy tool schemas, they sit ahead of your `systemInstruction` in `ROLE_DEVELOPER`, which is another reason to keep declared tools pruned to 1 to 5 active schemas (`CallSlots`).
 2. **The Newest Turn Is the Last Thing the Model Sees (Recency Steering)**:
    Because `ROLE_DEVELOPER` (`tools` + `systemInstruction`) sits at the very top of the prompt, accumulated multi-turn audio and transcript history (`ROLE_USER / ROLE_ASSISTANT`) gradually separates your opening instructions from the caller's latest utterance. A tool result returned in the current turn lands at the end of the prompt, right before the model decodes audio, so it carries the most weight for the next reply. Use that slot for short per-turn reminders (a `<60-token` `call_state` line and a one-line `vocal_tone`, §18.M), not for whole phase cards: anything in history is billed again every turn and is lost when `SlidingWindow` trims it. Phase cards belong in `systemInstruction`, replaced in place (§22.C).
 3. **`systemInstruction` and `tools` Form the Prefix-Cached Preamble**:
@@ -1049,11 +1061,15 @@ ROLE_CONTEXT:
   - **Instead of**: `"Never narrate or announce when you call a function."`
   - **Use**: `"After you emit a tool call, end your sentence there. When the result arrives, speak its spoken fields right away."` (Do not tell the model to "remain silent": see §18.G and §18.P.)
 
-### E. Language Pinning & Acoustic Noise Guardrails
+### E. Language Pinning, Accent Stability (`<60 words`) & Acoustic Noise Guardrails
 * Native audio models can code-switch when exposed to regional caller accents, coughs, or background office chatter.
+* **Pair `speechConfig.languageCode` with Positive Phrasing & Short Turns (`<60 words`)**:
+  - Always set `speechConfig.languageCode` (`"en-IN"`, `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) so `ROLE_SYSTEM` loads the regional studio voice sample (§2.D), and pair it with positive phrasing (`"RESPOND UNMISTAKABLY IN HINGLISH with a natural Indian accent on every word"`).
+  - Cap every spoken response at **2 to 3 short sentences (`<60 words`)** so the audio decoder does not accelerate into a rushed read-aloud cadence or drift toward its US English pretraining prior on long explanations.
+  - Write phonetic spellings for brand acronyms directly in place in Latin script (`"B-E six Sporteq"`) instead of pasting inline `"Pronounce X as Y"` tables or mixing scripts mid-word (`"BE 6 को 'बी-ई सिक्स' बोलें"`), which causes acoustic stumbling and literal readback.
 * Include explicit language-pinning and acoustic-filtering directives in every production System Instruction, with an explicit carve-out for English email/code spelling and untranslated proper nouns when the call language is non-English (see §18.J):
   ```text
-  LANGUAGE PINNING: Speak exclusively in the target language (for example English, Spanish, or Hindi). Keep every word in the target language regardless of background noise or caller accent, except when using English letter names and structural words ("at", "dot", "dash", "underscore") to spell email addresses or alphanumeric codes, or when saying untranslated proper nouns.
+  LANGUAGE PINNING: Speak unmistakably in the target language (for example English, Spanish, or Hindi). Keep every word in the target language regardless of background noise or caller accent, except when using English letter names and structural words ("at", "dot", "dash", "underscore") to spell email addresses or alphanumeric codes, or when saying untranslated proper nouns.
   ACOUSTIC FILTERING: The caller is in a noisy environment. Ignore background conversations, side chatter, and non-directed sounds.
   ```
 
@@ -1122,9 +1138,10 @@ Tool results are the last thing the model reads before it generates audio, and t
   response = {**payload, "call_state": state_line, "vocal_tone": VOCAL_TONE}
   ```
   List `vocal_tone` in the base prompt's never-speak list (above). In field testing on Indian-English agents, this removed most post-tool accent drift.
+* **Stop Redundant Tool Sweeps on Empty Lookups (`retryable: False`)**: When a search or directory lookup returns `[]` or `{}` without a terminal status, `gemini-3.8-live` frequently interprets the miss as a query-syntax mistake and fires 2 to 5 follow-up calls with shortened names or broader filters before speaking to the caller. Distinguish between **argument validation errors** (where the model should fix the named argument and retry once) and **valid lookups with zero matching records**: return `{"status": "no_results", "retryable": False, "matches": [], "ask_say": "...", "instruction": "No matching records exist. Tell the caller and ask for an alternative without calling this tool again."}`.
 
 ### N. Language-Neutral Turn-0 Greeting Stub & the `START` -> `IN_CALL` Swap
-* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0.
+* **Do not open the call with a word in any language.** A dummy `"Hello!"` or `"नमस्ते!"` user turn that makes the model speak first is risky on a multilingual agent: `"नमस्ते!"` reads as the caller choosing Hindi, so the model skips its introduction and calls the language tool on Turn 0. Because `GREETING_STUB` is a text-only Turn-1 trigger with zero caller audio in history, `ROLE_SYSTEM` is the sole acoustic reference on Turn 1: always set `speechConfig.languageCode` explicitly (for example `"en-IN"`) at setup so Turn 1 does not default to the `en-US` studio voice (§2.D).
 * **Use a stage note plus an opening rule**:
   ```python
   GREETING_STUB = "(The call has connected. The caller has not spoken yet.)"
@@ -1153,7 +1170,11 @@ Tool results are the last thing the model reads before it generates audio, and t
   ```
 
 ### P. Four Production Audio & Sampling Traps (`gemini-3.8-live`)
-* **Greedy sampling causes a long audio loop**: With `temperature: 0.0` and `top_k: 1`, the audio decoder can lose its end-of-speech signal after a tool call and loop on one sound for about 20 seconds. Keep `temperature` at `0.7` to `0.8` and leave `top_k` / `top_p` unset.
+* **Greedy sampling (`temperature <= 0.3` or `top_k: 1`) causes a ~20s droning audio loop**:
+  1. When a tool result contains a long formal string (such as a person's name plus a corporate title), the audio head finishes speaking the natural question in ~3 seconds with rising prosody while the text stream (`outputTranscription`) keeps flushing the remaining title words.
+  2. While those remaining text tokens flush, the audio head outputs 4 to 5 seconds of near-silence. Because end-of-turn (`<eos>` / `turnComplete`) depends on joint text-and-audio prediction, `<eos>` fails to fire when the text stream ends inside a silent audio window.
+  3. Under greedy decoding (`temperature: 0.0` or `top_k: 1`), with no text tokens left to condition on, the audio head locks into a self-reinforcing ~187 to 200 Hz nasal hum (*"Mmmmm..."*) that grows louder for ~20 seconds until the server's turn-length cap cuts it off.
+  - **Mitigation**: Keep `temperature` unset (default `1.0`) or between `0.7` and `1.0`, leave `top_k` / `top_p` unset, and keep spoken `*_say` strings concise and conversational without long corporate titles or parenthetical codes.
 * **Never write "stay silent and wait" in a prompt**: When the model declines to answer, the server sends no `turnComplete` or reason, so the caller hears dead air. On 3.8, `<no speech>` placeholder text can leak into the output transcript and may be spoken after tool-response turns. This adds to the §18.G transcription trap. Use backchannel recovery (§19.C) or a short reprompt instead.
 * **Never wrap spoken lines in `<verbatim>` XML tags**: Under `<verbatim>...</verbatim>` readback prompts, `gemini-3.8-live` can dump the full text into the output transcript in 1 to 2 frames and send `generationComplete` after less than a second of audio, or none (28% of turns in one test). Put the line in a `*_say` field instead (§18.M).
 * **Gate turns on `turnComplete`, not `generationComplete`**: The server generates audio at about 4x real time and sends `generationComplete` when synthesis ends, while `turnComplete` follows real-time playback. Unmute the mic and advance the state machine on `turnComplete` (§17).
@@ -1225,7 +1246,7 @@ realtime_input_config = types.RealtimeInputConfig(
 * **Pin transcript languages on Vertex AI**: pass `AudioTranscriptionConfig(language_codes=["en-IN", "hi-IN"])` for both `input_audio_transcription` and `output_audio_transcription`. This stops Hindi transcripts from drifting into Urdu, Arabic, or Cyrillic script. `language_codes` is Vertex-only (see the AI Studio `AudioTranscriptionConfig` Invariant in §2).
 * **Separate `speech_config.language_code` from `AudioTranscriptionConfig.language_codes` Across Indic Locales**:
   - On Vertex AI Live (`gemini-3.8-live`), output voice synthesis (`speech_config.language_code`) and audio transcription (`AudioTranscriptionConfig(language_codes=[...])`) have **different Indic locale coverage** and should be configured separately.
-  - Passing an unsupported Indic locale (such as `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `bn-IN`) in `speech_config.language_code` falls back to `en-US` voice samples. Restrict `speech_config.language_code` to verified supported speech locales (`en-IN`, `hi-IN`, `mr-IN`, `ta-IN`, `te-IN`) and omit `speech_config.language_code` for the remaining Indic languages so the model speaks natively from the localized prompt, while still passing the broader Indic locale (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`) into `AudioTranscriptionConfig`.
+  - Passing an unsupported Indic locale (such as `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `bn-IN`, `ur-IN`) in `speech_config.language_code` falls back to `"en-US"` studio voice samples. **Do not omit `speech_config.language_code` either**, because omitting it also falls back to `"en-US"`. Instead, map unsupported Indic speech locales to `"en-IN"` (or `"hi-IN"`) in `speech_config.language_code` so `ROLE_SYSTEM` loads the Indian studio voice sample, while passing the specific regional Indic locale (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`) into `AudioTranscriptionConfig(language_codes=[...])`.
   - **Assamese `bn-IN` Orthography Watchout**: Mapping Assamese transcription to `"bn-IN"` transcribes speech in standard Bengali orthography and omits Assamese-specific `ৰ` (`U+09F0`) and `ৱ` (`U+09F1`). Guard any script-based language switcher so an Assamese session does not auto-switch to `Bengali` on `[ৰৱ]` absence unless the caller explicitly requests Bengali.
   - **Single-Locale Input ASR Lock vs. Mid-Call Language Switching**: Pinning `input_audio_transcription` to a single `[opening_locale]` locks input recognition for the whole session (and ignoring Latin characters in script detection blocks implicit switches to English). Pass a curated multi-locale list on `input_audio_transcription` whenever mid-call language switching is supported.
 * **Never put single letters (`A` to `Z`) or single digits (`0` to `9`) in a custom vocabulary or phrase hints**: single-character entries bias recognition toward one-character tokens, so short Hindi words such as "जी" (*ji*) are transcribed as "G". Add whole words and names only.

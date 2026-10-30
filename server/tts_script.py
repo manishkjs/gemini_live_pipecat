@@ -214,18 +214,28 @@ def spoken_word_count(text: str) -> int:
 
 
 class MinWordsSentenceAggregator(SimpleTextAggregator):
-    """Sentence aggregator that never hands TTS a sentence shorter than ``min_words``.
+    """Sentence aggregator that keeps Gemini 3.8 TTS generations few and long.
 
-    Every run_tts call is a separate Gemini 3.8 generation, and a one-word call
-    ("नमस्ते.", "Haan.") gives the model almost nothing to hold the voice steady
-    with. A short sentence is held and sent together with the next one; whatever
-    is still held when the reply ends goes out on flush().
+    Every run_tts call is a separate Gemini 3.8 generation with no memory of the
+    previous one (the model rejects prior audio as input), so the voice is
+    re-derived on every call and drifts between calls. Measured on the exact
+    production reply (WeSpeaker cosine between 3 s windows, 2 voices x 2 runs):
+    7 calls 0.65-0.67, first sentence then the rest 0.69-0.76, one call 0.75-0.80.
+
+    So the aggregator releases the first ``lead_sentences`` sentences as soon as
+    they are complete (fast first audio), then holds the rest of the reply and
+    sends it as one generation on flush() (LLMFullResponseEndFrame), or earlier
+    once ``max_hold_words`` spoken words are waiting. A sentence shorter than
+    ``min_words`` ("नमस्ते.", "Haan.") is never sent on its own.
     """
 
-    def __init__(self, min_words: int = 4, **kwargs):
+    def __init__(self, min_words: int = 4, lead_sentences: int = 1, max_hold_words: int = 45, **kwargs):
         super().__init__(**kwargs)
         self._min_words = min_words
+        self._lead_sentences = lead_sentences
+        self._max_hold_words = max_hold_words
         self._held = ""
+        self._released = 0
 
     @property
     def text(self) -> Aggregation:
@@ -240,14 +250,21 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
         if result is None:
             return None
         combined = f"{self._held} {result.text}".strip() if self._held else result.text
-        if _OPEN_FRAGMENT.search(combined) or spoken_word_count(combined) < self._min_words:
+        words = spoken_word_count(combined)
+        if _OPEN_FRAGMENT.search(combined) or words < self._min_words:
+            self._held = combined
+            return None
+        if self._released >= self._lead_sentences and words < self._max_hold_words:
+            # Past the lead: keep collecting so the rest of the reply is one generation.
             self._held = combined
             return None
         self._held = ""
+        self._released += 1
         return Aggregation(text=combined, type=result.type)
 
     async def flush(self) -> Aggregation | None:
         held, self._held = self._held, ""
+        self._released = 0
         tail = await super().flush()
         pieces = [p for p in (held, tail.text if tail else "") if p and p.strip()]
         if not pieces:
@@ -257,10 +274,12 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
     async def handle_interruption(self):
         await super().handle_interruption()
         self._held = ""
+        self._released = 0
 
     async def reset(self):
         await super().reset()
         self._held = ""
+        self._released = 0
 
 
 

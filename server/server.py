@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore", message=".*grpcio < 1.83.0.*", category=Future
 warnings.filterwarnings("ignore", message=".*vertexai.preview.rag.*")
 import importlib
 import os
+import threading
 import time
 import argparse
 from contextlib import asynccontextmanager
@@ -381,6 +382,20 @@ async def persona_prompt(
     }
 
 
+def _record_googler_activity(request: Request, kind: str, **extras) -> None:
+    """Best-effort daily usage record keyed on the Cloud IAP email header."""
+    import demo_users
+    email = demo_users.googler_email(request.headers)
+    if not email:
+        return
+    threading.Thread(
+        target=demo_users.record_activity,
+        args=(email, kind),
+        kwargs=extras,
+        daemon=True,
+    ).start()
+
+
 MAX_CONNECT_BODY_BYTES = 12 * 1024 * 1024
 MAX_AVATAR_IMAGE_B64_CHARS = 7_000_000  # ~5 MB binary
 MAX_VOICE_AUDIO_B64_CHARS = 4_000_000   # ~3 MB binary
@@ -570,6 +585,13 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
             if profile_id:
                 params_dict["voice_profile_id"] = profile_id
         ws_url = f"{ws_scheme}://{host}/ws?{urlencode(params_dict)}"
+        _record_googler_activity(
+            request,
+            "session",
+            persona=params_dict.get("persona_id"),
+            engine="cascade" if bot_type == "tts-llm-stt" else "live",
+            model=params_dict.get("model") or params_dict.get("llm_model"),
+        )
         return {"ws_url": ws_url, "session_id": session_id, "diagnostic_token": viewer_token}
     except SharedStoreError as exc:
         try:
@@ -665,6 +687,7 @@ async def record_studio_visit_endpoint(request: Request):
         raise
     except Exception:
         pass
+    _record_googler_activity(request, "visit")
     return await asyncio.to_thread(visit_counter.record_visit, page_load_id=page_load_id)
 
 

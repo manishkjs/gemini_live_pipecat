@@ -160,6 +160,13 @@ _LANGUAGE_NAMES = {
 }
 
 
+# Appended to static persona presets; the studio appends the same sentence to custom prompts.
+PRESET_LANGUAGE_RULE = (
+    "Start in {language}. If the caller speaks a whole turn in another language, or asks for one, "
+    "switch to it from your next sentence without announcing it, and stay there until they switch again."
+)
+
+
 def get_session_preset(persona_id: str, engine="live", tone="professional", language="en-US"):
     """One runtime/preview source. Custom instructions bypass preset resolution."""
     prompt = get_persona_system_instruction(persona_id, engine=engine, tone=tone)
@@ -167,5 +174,5 @@ def get_session_preset(persona_id: str, engine="live", tone="professional", lang
         name = _LANGUAGE_NAMES.get(language)
         if not name:
             raise ValueError("Unsupported preset language")
-        prompt += f" Speak in {name}, unless the user requests another language."
+        prompt += f" {PRESET_LANGUAGE_RULE.format(language=name)}"
     return prompt

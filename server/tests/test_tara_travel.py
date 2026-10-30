@@ -1094,9 +1094,9 @@ class TestAgentLiveHooks(unittest.TestCase):
     def test_language_directive_is_skipped_for_tara(self):
         from agent_live import compose_live_system_prompt
         si = get_tara_root_system_instruction()
-        self.assertNotIn("IMPORTANT: You must converse in",
+        self.assertNotIn("LANGUAGE: Start the call in",
                          compose_live_system_prompt(si, "female", "en-IN", "Sulafat", language_directive=False))
-        self.assertIn("IMPORTANT: You must converse in en-IN",
+        self.assertIn("LANGUAGE: Start the call in en-IN",
                       compose_live_system_prompt(si, "female", "en-IN", "Sulafat"))
 
     def test_start_trigger_sends_opening_card_before_hello(self):

@@ -1320,9 +1320,11 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if isinstance(self, GeminiLiveVertexLLMService):
             # Transcription language pinning is Vertex AI Enterprise only.
             from google.genai.types import AudioTranscriptionConfig
-            persona_codes = list(getattr(architecture, "transcription_language_codes", None) or [])
-            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
-            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=persona_codes or [lang_code])
+            codes = live_transcription_language_codes(
+                lang_code, getattr(architecture, "transcription_language_codes", None)
+            )
+            config.input_audio_transcription = AudioTranscriptionConfig(language_codes=codes)
+            config.output_audio_transcription = AudioTranscriptionConfig(language_codes=codes)
 
         # A persona that swaps tools per step declares its current group in every setup,
         # so a reconnect (resumed or not) starts with the tools the step needs.
@@ -1779,6 +1781,31 @@ def build_thinking_config(model: str, thinking: bool, thinking_level: Optional[s
     return {"thinking_level": level}
 
 
+# Native audio Live models pick the spoken language from the conversation (the Live API
+# guide: they "automatically choose the appropriate language and don't support explicitly
+# setting the language code"), so the prompt only fixes the opening language and tells the
+# model to follow the caller after that.
+LIVE_LANGUAGE_RULE = (
+    "LANGUAGE: Start the call in {language}. If the caller speaks a whole turn in another "
+    "language, or asks for one, reply in that language from your next sentence and stay in it "
+    "until they switch again. Do not announce or comment on the switch. Use the everyday spoken "
+    "form of each language (Hinglish for Hindi, not formal Hindi)."
+)
+
+# Languages the Vertex Live transcriber listens for on every persona, so a mid-call switch
+# still produces readable captions. The session language is placed first.
+DEFAULT_LIVE_TRANSCRIPTION_LANGUAGE_CODES = ("en-IN", "hi-IN", "ta-IN", "te-IN", "kn-IN", "bn-IN", "mr-IN")
+
+
+def live_transcription_language_codes(lang_code: Optional[str], persona_codes=None) -> list:
+    """Session language first, then the persona's list or the multilingual default, no repeats."""
+    ordered = [lang_code] if lang_code else []
+    for code in list(persona_codes or []) or DEFAULT_LIVE_TRANSCRIPTION_LANGUAGE_CODES:
+        if code and code not in ordered:
+            ordered.append(code)
+    return ordered
+
+
 def compose_live_system_prompt(
     system_instruction: Optional[str],
     gender: str,
@@ -1800,7 +1827,7 @@ def compose_live_system_prompt(
     fixed by the recording, whatever the persona says.
 
     ``language_directive=False`` is for a persona whose prompt owns the language
-    policy (Tara starts in Indian English and switches only through a tool).
+    policy (Tara starts in Indian English and records switches through a tool).
     """
     base = system_instruction if system_instruction else SYSTEM_PROMPT.replace("female", gender)
     gender_rule = tts_script.voice_gender_rule(voice)
@@ -1808,7 +1835,7 @@ def compose_live_system_prompt(
         base = f"{base}\n\n{gender_rule}"
     if not language_directive:
         return base
-    return f"{base}\n\nIMPORTANT: You must converse in {language} language."
+    return f"{base}\n\n{LIVE_LANGUAGE_RULE.format(language=language)}"
 
 
 def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:

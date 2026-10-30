@@ -50,7 +50,7 @@ TOOL_DECLARATIONS: List[Dict[str, Any]] = [
     {
         "name": "SelectLanguageTool",
         "behavior": "BLOCKING",
-        "description": "Saves the caller's language for the rest of the call. Call when the caller names a language or clearly asks to switch.",
+        "description": "Saves the caller's language for the rest of the call. Call when the caller names a language, asks to switch, or speaks a whole turn in another supported language.",
         "parameters": {
             "type": "OBJECT",
             "properties": {

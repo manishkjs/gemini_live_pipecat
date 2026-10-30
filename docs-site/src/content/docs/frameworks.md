@@ -58,6 +58,8 @@ A cascade sends one TTS request per sentence, so each sentence is a fresh genera
 - Put the accent and character in the voice itself: an Extended Voice Library voice (for example the Indian English `en-in-*` voices from `client.voices.list`) or a Voice design voice. Asking for an accent inside `speech_metadata.style` on every sentence makes the voice wander.
 - Keep `style` to short situational delivery: emotion, pitch and pace.
 - Do not send one-word sentences ("Namaste.") as their own request; merge them into the next sentence.
+- Send as few requests per reply as you can: the model cannot take earlier audio as context, so every request re-derives the voice. Release the first sentence quickly, then send the rest of the reply as one request. Measured: seven requests 0.65 to 0.67 speaker similarity, first sentence then the rest 0.69 to 0.76, one request 0.75 to 0.80.
+- When identity matters more than expressiveness, send the plain transcript with no `speech_metadata.style` at all (0.69 to 0.71 against 0.61 to 0.66 with any style string).
 - Check results with a speaker-verification model across the sentences of one reply, not only by ear or pitch.
 
 See [Agent Skill §2.C](/gemini-live/gemini-live-skill/) for the full rules and the A/B numbers.

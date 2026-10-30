@@ -6,7 +6,9 @@ of voice drift; those traits belong to the voice. Each Pipecat run_tts call is a
 separate generation, so one-word fragments must not be sent on their own.
 """
 import asyncio
+import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from google.genai import types
@@ -140,11 +142,86 @@ class TestMinWordsSentenceAggregator(unittest.TestCase):
         run(agg.handle_interruption())
         self.assertIsNone(run(agg.flush()))
 
+    def test_after_the_lead_sentence_the_rest_of_the_reply_is_one_generation(self):
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4)
+        text = ("Namaste ji, Sahaj Finance se baat kar raha hoon. Aapka loan payment past due hai. "
+                "Main samajh sakta hoon ki thodi problem chal rahi hai. Aap aaj kitna payment kar sakte hain? ")
+        out = run(self._collect(agg, text))
+        self.assertEqual(out, ["Namaste ji, Sahaj Finance se baat kar raha hoon."], "only the lead sentence goes out early")
+        tail = run(agg.flush())
+        self.assertEqual(tail.text, "Aapka loan payment past due hai. Main samajh sakta hoon ki thodi problem chal rahi hai. "
+                                    "Aap aaj kitna payment kar sakte hain?")
+        # The next reply starts fresh: its first sentence is released again.
+        out2 = run(self._collect(agg, "Theek hai ji, main note kar leta hoon. Aur kuch? "))
+        self.assertEqual(out2, ["Theek hai ji, main note kar leta hoon."])
+
+    def test_long_held_tail_is_released_before_the_reply_ends(self):
+        agg = tts_script.MinWordsSentenceAggregator(min_words=4, max_hold_words=12)
+        text = "Lead sentence goes out first. Second one is held. Third one is also held here. Fourth makes it long enough now. Aur "
+        out = run(self._collect(agg, text))
+        self.assertEqual(out[0], "Lead sentence goes out first.")
+        self.assertEqual(len(out), 2, out)
+        self.assertTrue(out[1].startswith("Second one is held."), out[1])
+
     def test_only_38_tts_gets_the_merging_aggregator(self):
         svc38 = make_service(voice_id="Puck", model="gemini-3.8-flash-tts")
         self.assertIsInstance(svc38._text_aggregator, tts_script.MinWordsSentenceAggregator)
         svc25 = make_service(voice_id="Puck", model="gemini-2.5-flash-preview-tts")
         self.assertNotIsInstance(svc25._text_aggregator, tts_script.MinWordsSentenceAggregator)
+
+
+class TestNoPerPartStyleOn38(unittest.TestCase):
+    """The 3.8 request carries a plain transcript unless GEMINI_38_TTS_STYLE=1."""
+
+    def _captured_contents(self, svc, text):
+        captured = {}
+
+        class _Stream:
+            def __init__(self):
+                self._done = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        async def fake_stream(model, contents, config):
+            captured["contents"] = contents
+            captured["config"] = config
+            return _Stream()
+
+        svc._client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=fake_stream)))
+        svc._cascade_meter = None
+
+        async def drain():
+            return [f async for f in svc.run_tts(text, "ctx")]
+
+        run(drain())
+        return captured
+
+    def test_38_sends_plain_transcript_without_speech_metadata(self):
+        svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
+        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji, <short pause> Sahaj Finance se bol raha hoon.")
+        parts = cap["contents"][0].parts
+        self.assertEqual(len(parts), 1)
+        self.assertIsNone(getattr(parts[0], "speech_metadata", None))
+        self.assertIn("Namaste ji, <short pause> Sahaj Finance se bol raha hoon.", parts[0].text)
+        self.assertNotIn("[[", parts[0].text)
+        self.assertEqual(cap["config"].speech_config.voice_config.voice, "en-in-csagent-4")
+
+    def test_style_can_be_switched_back_on(self):
+        svc = make_service(voice_id="en-in-csagent-4", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
+        svc._use_speech_style = True
+        cap = self._captured_contents(svc, "[[calm, low pitch, measured]] Namaste ji, Sahaj Finance se bol raha hoon.")
+        self.assertEqual(cap["contents"][0].parts[0].speech_metadata.style, "calm, low pitch, measured")
+
+    def test_style_default_comes_from_env(self):
+        with patch.dict(os.environ, {"GEMINI_38_TTS_STYLE": "1"}):
+            self.assertTrue(make_service(voice_id="Puck", model="gemini-3.8-flash-tts")._use_speech_style)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GEMINI_38_TTS_STYLE", None)
+            self.assertFalse(make_service(voice_id="Puck", model="gemini-3.8-flash-tts")._use_speech_style)
 
 
 class TestLibraryVoices(unittest.TestCase):
