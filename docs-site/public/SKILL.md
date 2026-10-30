@@ -110,14 +110,18 @@ A cascaded pipeline synthesizes each text chunk as an independent Gemini 3.8 TTS
   - For regional accents, select an Extended Voice Library speaker (`client.voices.list(language_code=["en-IN"])` returns `en-in-*` voices) or map US studio presets to gender-matched regional library voices rather than asking for an accent in `style`.
   - Pass library IDs and cloned voice keys via `types.VoiceConfig(voice=<id>)`; `PrebuiltVoiceConfig(voice_name=...)` accepts only the 30 studio voice names.
   - When creating cloned voices via `CreateVoice`, prefer stateless `voicekey_...` keys (`store=False`) over stored `voice_...` resource IDs for higher speaker-prompt cloning fidelity, rotate expiring keys automatically, and catch `400` / `403` / `404` voice errors (`expired`, `not found`, or `replicated voice is not enabled`) to hot-reload a fresh key or fall back cleanly to a prebuilt voice.
+* **Use the structured `types.Content` request format and enforce 2-byte `s16le` PCM alignment**:
+  - Send Gemini 3.8 TTS requests (`gemini-3.8-flash-tts` and `gemini-3.8-flash-lite-tts`) using structured `types.Content(parts=[...])` across both Google AI Studio and Vertex AI rather than legacy `# AUDIO PROFILE` string prompts.
+  - Streamed `inline_data.data` chunks can split on odd byte boundaries (`len(chunk) % 2 == 1`), swapping low and high bytes on every subsequent `Int16` sample. Carry any trailing odd byte across chunks (`even_len = len(raw) & ~1`) and strip any `RIFF...WAVE` header before emitting raw PCM frames.
 
 ### D. Native Audio Language Choice, `speech_config.language_code`, `ReplicatedVoiceConfig` & Silence Watchdogs (Live)
 * **How `(voice_name, speech_config.language_code)` selects the Turn-1 studio voice sample**:
   - Even though native audio output models can switch spoken languages mid-call, on Vertex AI (`gemini-3.8-live`) the pair `(voice_name, speech_config.language_code)` selects which `~224 to 239`-token studio audio recording is loaded into the system prompt at session start.
   - When `speech_config.language_code` is **omitted**, passed as a bare language tag without a region (`"en"`, `"hi"`), or set to a regional code without a dedicated studio recording (`bn-IN`, `gu-IN`, `kn-IN`, `ml-IN`, `or-IN`, `pa-IN`, `as-IN`, `ur-IN`), the server falls back to `"en-US"` and loads an American English studio voice sample.
   - Setting `speech_config.language_code = "en-IN"` (or `"hi-IN"`, `"mr-IN"`, `"ta-IN"`, `"te-IN"`) loads the Indian-accented studio voice sample from Turn 1 without blocking mid-call language switching into Hindi, Hinglish, or regional languages (avoid hard-coding `"always speak English only"` in `system_instruction` on multilingual agents).
-* **Custom Voice Cloning (`ReplicatedVoiceConfig`) & Solo Reference Audio Hygiene**:
+* **Custom Voice Cloning (`ReplicatedVoiceConfig`), Solo Reference Audio & Anti-Aliased `24 kHz` Resampling**:
   - Pass `speech_config.voice_config.replicated_voice_config` with a 10 to 20s clean 24 kHz mono 16-bit PCM (`audio/pcm;rate=24000`) reference clip recorded in a quiet room by a single speaker. Trim any leading/trailing room chatter or secondary voices: even under one second of background speech in the reference clip is tokenized into the voice conditioning prompt and causes mid-call pitch or speaker shifts.
+  - When capturing reference clips in the browser at `48 kHz` and downsampling to `24 kHz`, use an anti-aliased low-pass resampler (a Blackman-windowed sinc filter in JavaScript and `soxr.resample(..., quality="HQ")` on the server) rather than 2-point linear interpolation (`np.interp`), which folds `12 to 24 kHz` sibilance back into the speech band. Connect browser recording nodes to a muted `GainNode(0)` sink rather than directly to `AudioContext.destination` so live microphone audio never bleeds out of the speakers during capture.
 * **Server-Side Trailing Digital-Silence Watchdog**:
   - On cloned-voice Live sessions, the stream can occasionally finish audible speech and then emit prolonged `0x0000` PCM silence frames before `turn_complete` arrives, stalling turn-end events and downstream state transitions. Track consecutive near-zero PCM bytes (`peak <= 2` in 16-bit PCM) *after* audible speech in the active turn; if silent PCM exceeds `2.5s` without `turn_complete`, close the local turn once, drop subsequent silent tail frames, and deduplicate the delayed `turn_complete` when it arrives.
 
@@ -236,6 +240,17 @@ Grant the runtime service account the following least-privilege IAM roles:
           sliding_window=types.SlidingWindow(target_tokens=target_tokens),
       )
   ```
+
+### F. Pipecat `1.2+` Output `MediaSender` `40 ms` Tail Flush, 2-Byte `s16le` Alignment & `InterruptionFrame`-Only RTVI Interruptions
+* **Flush sub-chunk utterance tails before `TTSStoppedFrame`**:
+  - In Pipecat `1.2+`, `BaseOutputTransport.MediaSender` slices outgoing audio into `40 ms` chunks (`int(sample_rate / 100) * channels * 2 * 4`, or `1920` bytes at `24 kHz` mono) and resets `self._audio_buffer = bytearray()` on `TTSStoppedFrame` / `BotStoppedSpeakingFrame` without transmitting trailing bytes smaller than one `40 ms` chunk, clipping final syllables.
+  - Pad the end of each spoken utterance with `b"\x00" * ((chunk_bytes - (utterance_bytes % chunk_bytes)) % chunk_bytes)` right before `TTSStoppedFrame`, and set `audio_in_sample_rate=16000, audio_out_sample_rate=24000, add_wav_header=False` explicitly on `FastAPIWebsocketParams` plus `audio_out_sample_rate=24000` on `PipelineParams` so `24 kHz` model output is never resampled through a `16 kHz` default.
+* **Preserve 2-byte `s16le` alignment in custom WebSocket serializers**:
+  - Carry any trailing odd byte (`pcm_carry`) across outgoing audio frames and strip any `RIFF...WAVE` header before serializing raw PCM over WebSocket so odd-byte boundaries never byte-swap `Int16` samples.
+* **Emit RTVI `interruption` frames only on `InterruptionFrame`**:
+  - `VADUserStartedSpeakingFrame` fires on every normal caller turn start, including when the bot is silent. Emit urgent RTVI `interruption` messages strictly on `InterruptionFrame` (genuine barge-in) so normal Turn 2+ caller utterances do not inflate interruption metrics or flush client playback queues.
+* **Cancel cascaded pipelines on `on_client_disconnected`**:
+  - Register `@transport.event_handler("on_client_disconnected")` calling `await task.cancel()` on cascaded pipelines so upstream streaming STT WebSockets close immediately when a caller hangs up.
 
 ---
 
@@ -955,6 +970,16 @@ const stream = await navigator.mediaDevices.getUserMedia({
 * **Why 8 kHz Telephony Alters Voice Timbre**: PSTN/SIP telephony gateways (Twilio, Exotel, Genesys `PCMU`/`mulaw`) downsample Gemini Live's 24 kHz PCM output to 8 kHz, cutting acoustic energy above 4 kHz (Nyquist limit).
 * **Prebuilt Voice Selection for 8 kHz Trunks**: Higher-pitched female prebuilt voices such as `Aoede` are more susceptible to audible register drops on 8 kHz lines after non-lexical fillers (`"Hmm"`, `"Umm"`) or low-energy phrases. Lower-variance voices such as `Kore` and `Despina` maintain steadier pitch across 8 kHz downsampling.
 * **Gain Cap (`4x to 5x` max) & Anti-Aliased Resampling**: Never apply `10x` (`+20 dB`) linear sample multiplication before `mulaw` encoding; it clips `int16` peaks (`[-32768, 32767]`) into harsh square-wave buzz. Cap software gain boost at `4x to 5x` (`+12 dB to +14 dB`) with `np.clip` or a `tanh` soft limiter, and resample `24 kHz <-> 8 kHz` with an anti-aliasing filter (`soxr` or `scipy.signal.resample_poly`).
+
+### F. Direct `AudioContext.destination` Playback vs. `<audio srcObject={MediaStream}>` Turn-2 WebRTC Ducking
+* **Why Bot Voice Timbre Can Shift on Turn 2+ Over WebSocket Transports**:
+  - Client media wrappers built for WebRTC (such as `@pipecat-ai/daily-media-manager`) instantiate a WebRTC call object even when paired with raw `WebsocketTransport`, routing `24 kHz` WebAudio output through `createMediaStreamDestination()` into `<audio srcObject={MediaStream} autoPlay>`.
+  - On Turn 1 (before caller speech), playback sounds natural. As soon as the caller speaks into an active `getUserMedia` microphone between Turn 1 and Turn 2, OS/browser WebRTC communication-mode audio processing (such as macOS `VoiceProcessingIO` and Chrome WebRTC ducking/AGC) engages on `<audio srcObject={MediaStream}>`, shifting voice EQ, warmth, and loudness from Turn 2 onward across both native Live and cascaded TTS pipelines.
+  - In addition, some default client recorder worklets copy input channel 0 directly to `output[channel]` and append every recorded frame to an internal array without clearing it, causing speaker bleed and unbounded memory growth on long calls.
+* **Canonical Browser WebAudio Architecture**:
+  1. Play `24000 Hz` bot PCM directly to hardware output (`AudioBufferSourceNode -> GainNode -> audioContext.destination`) with a `40 ms` initial jitter cushion and immediate source teardown on `InterruptionFrame`, avoiding `<audio srcObject={MediaStream}>` for WebSocket sessions.
+  2. Feed UI waveform visualizers from a separate side-chain (`GainNode -> AnalyserNode -> MediaStreamAudioDestinationNode`) that is never attached to an `<audio>` element.
+  3. Capture `16000 Hz` mono `Int16` microphone PCM in a dedicated `AudioWorkletProcessor` with anti-aliased boxcar downsampling when hardware `sampleRate > 16000`, zero retained history arrays, and a muted `GainNode(0) -> destination` sink.
 
 ---
 
