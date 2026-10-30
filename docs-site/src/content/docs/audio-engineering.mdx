@@ -136,11 +136,29 @@ Under `realtimeInputConfig`, `turnCoverage` controls which audio frames are incl
 | **`TURN_INCLUDES_ONLY_ACTIVITY` (Default)** | Includes only segments since the last turn flagged as active speech, excluding silence and inactivity | **Default for voice agents**: strips non-speech silence between turns so room tone does not inflate carried audio tokens |
 | `TURN_INCLUDES_ALL_INPUT` | Includes all realtime input since the last turn, including inactivity and silence | Only when the model needs continuous ambient audio between utterances |
 
+## Play bot PCM directly to `AudioContext.destination` over WebSockets
+
+When streaming `24 kHz` raw PCM over a WebSocket, connect `AudioBufferSourceNode -> GainNode -> audioContext.destination` directly instead of routing WebAudio through `createMediaStreamDestination()` into an HTML `<audio srcObject={MediaStream}>` element (as WebRTC media wrappers such as `@pipecat-ai/daily-media-manager` do by default).
+
+- **Why voice timbre shifts on Turn 2+ with `<audio srcObject>`**: On Turn 1 (before caller speech), `<audio srcObject={MediaStream}>` plays cleanly. As soon as the caller speaks into an active `getUserMedia` microphone between Turn 1 and Turn 2, OS and browser WebRTC communication-mode audio processing (such as macOS `VoiceProcessingIO` and Chrome WebRTC ducking/AGC) engages on `<audio srcObject>`, shifting EQ, warmth, and loudness from Turn 2 onward across both Live and cascaded TTS pipelines.
+- **Visualizer side-chain**: Feed UI waveform visualizers from a separate branch (`GainNode -> AnalyserNode -> MediaStreamAudioDestinationNode`) that is never attached to an `<audio>` DOM element.
+- **Clean recorder worklet**: Ensure your capture `AudioWorkletProcessor` leaves `outputs` silent (do not copy `input[0]` to `output[0]`), connects to a `GainNode(0)` sink, and transfers each `Int16Array` buffer without retaining historical chunks in memory.
+
+## Preserve 2-byte `s16le` alignment and flush `40 ms` output tails
+
+Two transport-boundary bugs commonly masquerade as model audio glitches:
+
+1. **Odd-byte `s16le` chunk splits**: Network or streaming TTS chunks can split on an odd byte count (`len(chunk) % 2 === 1`), swapping low and high bytes on every subsequent `Int16` sample into white noise. Carry any trailing odd byte (`pcmCarry`) into the next frame and strip any `RIFF...WAVE` container header before queuing raw PCM.
+2. **Sub-chunk utterance tail drops in media senders**: Output transports that slice audio into fixed `40 ms` frames (`1,920` bytes at `24 kHz` mono, such as Pipecat `1.2+` `BaseOutputTransport.MediaSender`) clear their internal buffer on `TTSStoppedFrame` without flushing trailing bytes smaller than one `40 ms` chunk, clipping final syllables. Pad utterance tails with `0x00` silence up to the `40 ms` frame boundary right before `TTSStoppedFrame`, explicitly set `audio_in_sample_rate=16000` and `audio_out_sample_rate=24000`, and emit urgent client `interruption` messages strictly on `InterruptionFrame` rather than raw `VADUserStartedSpeakingFrame`.
+
 ## Production audio checklist
 
 - [ ] `echoCancellation`, `noiseSuppression`, and `autoGainControl` enabled in `getUserMedia`.
-- [ ] PCM capture and 16 kHz resampling execute inside an `AudioWorklet`.
+- [ ] PCM capture and 16 kHz resampling execute inside an `AudioWorklet` connected to a muted `GainNode(0)` sink (with anti-aliased sinc/`soxr` downsampling when recording `24 kHz` voice-clone reference clips).
+- [ ] `24 kHz` bot PCM plays directly to `AudioContext.destination` (avoiding `<audio srcObject={MediaStream}>` WebRTC ducking on Turn 2+).
+- [ ] Streaming PCM chunks preserve 2-byte `s16le` alignment and pad utterance tails to `40 ms` (`1,920`-byte) transport boundaries before `TTSStoppedFrame`.
 - [ ] Output playout uses an adaptive 150 to 200 ms jitter buffer at 24 kHz.
 - [ ] `socket.bufferedAmount` is checked before every `send()`.
 - [ ] Local VAD halts speaker playout immediately on barge-in, while `interrupted` flushes any newly arrived chunks.
 - [ ] For noisy rooms, PSTN telephony filters (`KrispVivaFilter`, `RNNoiseFilter`), background speech isolation, and cough/backchannel recovery, see [Noise, background speech & VAD](/gemini-live/audio-engineering/noise-and-vad/).
+
