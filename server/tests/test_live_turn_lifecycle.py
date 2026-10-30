@@ -591,6 +591,60 @@ class TestUserIdleProcessorWithLocalVad(_Harness):
         self.assertFalse(idle._bot_speaking)
 
 
+class TestTrailingDigitalSilenceWatchdog(_Harness):
+    async def test_short_natural_silence_before_turn_complete_does_not_trip_watchdog(self):
+        await self.llm._handle_msg_output_transcription(_msg(transcript="Namaste bhai"))
+        await self.llm._handle_msg_model_turn(_msg(audio=b"\x10\x00" * 2400))
+        # 0.5s of 0x0000 silence at 24kHz (24,000 bytes) is well below the 2.5s watchdog
+        await self.llm._handle_msg_model_turn(_msg(audio=b"\x00\x00" * 12000))
+        self.assertTrue(self.llm._mixin_bot_responding)
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 0)
+
+        await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
+        self.assertEqual(len(self.frames(TTSStoppedFrame)), 1)
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 1)
+        self.assertEqual(len(self.metrics("turn_complete")), 1)
+
+    async def test_sustained_trailing_zero_pcm_closes_turn_once_and_drops_60s_tail(self):
+        self.llm._sample_rate = 24000
+        await self.llm._handle_msg_output_transcription(_msg(transcript="Yeh raha aapka jawab."))
+        await self.llm._handle_msg_model_turn(_msg(audio=b"\x20\x00" * 4800))
+
+        # Five 0.5s chunks of 0x0000 PCM = 2.5s total -> 5th chunk trips the watchdog
+        half_sec_zero = b"\x00\x00" * 12000
+        for _ in range(4):
+            await self.llm._handle_msg_model_turn(_msg(audio=half_sec_zero))
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 0)
+
+        await self.llm._handle_msg_model_turn(_msg(audio=half_sec_zero))
+        self.assertFalse(self.llm._mixin_bot_responding)
+        self.assertFalse(self.llm._bot_is_responding)
+        self.assertEqual(len(self.frames(TTSStoppedFrame)), 1)
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 1)
+        self.assertEqual(len(self.metrics("turn_complete")), 1)
+        audio_frames_at_close = len(self.frames(TTSAudioRawFrame))
+
+        # Subsequent 10s of 0x0000 packets must be dropped without re-opening the turn
+        for _ in range(20):
+            await self.llm._handle_msg_model_turn(_msg(audio=half_sec_zero))
+        self.assertFalse(self.llm._mixin_bot_responding)
+        self.assertFalse(self.llm._bot_is_responding)
+        self.assertEqual(len(self.frames(TTSAudioRawFrame)), audio_frames_at_close)
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 1)
+
+        # Eventual delayed server turn_complete is deduplicated
+        await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 1)
+        self.assertEqual(len(self.metrics("turn_complete")), 1)
+
+        # Turn 2 recovers cleanly and emits its own response end
+        await self.llm._handle_msg_output_transcription(_msg(transcript="Doosra jawab."))
+        await self.llm._handle_msg_model_turn(_msg(audio=b"\x15\x00" * 2400))
+        await self.llm._handle_msg_turn_complete(_msg(turn_complete=True))
+        self.assertEqual(len(self.frames(LLMFullResponseEndFrame)), 2)
+        self.assertEqual(len(self.metrics("turn_complete")), 2)
+
+
 class TestLiveVadRuns(unittest.TestCase):
     def test_silero_modes_get_a_vad_processor(self):
         from pipecat.processors.audio.vad_processor import VADProcessor

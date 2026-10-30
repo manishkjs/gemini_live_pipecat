@@ -1,9 +1,12 @@
+import array
 import os
 import struct
+import sys
 import websockets
 import json
 import asyncio
 import re
+from types import SimpleNamespace
 import google.auth
 from typing import Optional, List, Dict, Any
 from loguru import logger
@@ -446,6 +449,33 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             self._avatar_speaking = False
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
+    # Guard against Gemini Live voice-clone trailing 0x0000 digital silence without <eos>/turnComplete:
+    # once audible PCM has played in the active turn, >2.5s of consecutive zero/near-zero PCM audio
+    # suppresses the silent tail and closes the local turn cleanly so downstream audio, gates, and
+    # deferred cards never hang for 60+ seconds.
+    LIVE_TRAILING_SILENCE_MAX_SECS = float(os.getenv("LIVE_TRAILING_SILENCE_MAX_SECS", "2.5"))
+    LIVE_SILENT_PCM_PEAK_THRESHOLD = 2
+
+    @classmethod
+    def _is_silent_pcm_chunk(cls, audio: bytes) -> bool:
+        if not audio or not any(audio):
+            return True
+        even_len = len(audio) & ~1
+        if even_len == 0:
+            return True
+        samples = array.array("h")
+        samples.frombytes(audio[:even_len])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        return max(abs(min(samples)), abs(max(samples))) <= cls.LIVE_SILENT_PCM_PEAK_THRESHOLD
+
+    def _reset_trailing_silence_watchdog(self, *, clear_closed_turn: bool = True):
+        self._turn_had_audible_pcm = False
+        self._trailing_silent_pcm_bytes = 0
+        self._suppressing_trailing_silence = False
+        if clear_closed_turn:
+            self._watchdog_closed_current_turn = False
+
     async def _handle_msg_model_turn(self, message):
         interrupted_turn = bool(getattr(self, "_awaiting_interrupted_turn_complete", False))
         if getattr(self, "_avatar_enabled", False):
@@ -525,6 +555,66 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         elif interrupted_turn:
             return
 
+        if not getattr(self, "_avatar_enabled", False):
+            sc = getattr(message, "server_content", None)
+            mt = getattr(sc, "model_turn", None) if sc else None
+            parts = getattr(mt, "parts", None) or []
+            if parts:
+                has_text_part = any(
+                    bool(getattr(p, "text", None)) and not getattr(p, "thought", False)
+                    for p in parts
+                )
+                pcm_chunks = [
+                    getattr(getattr(p, "inline_data", None), "data", None)
+                    for p in parts
+                    if getattr(p, "inline_data", None)
+                    and (getattr(p.inline_data, "mime_type", "") or "").startswith("audio/pcm")
+                    and getattr(p.inline_data, "data", None)
+                ]
+                audio_bytes = b"".join(pcm_chunks) if pcm_chunks else None
+                if has_text_part:
+                    self._suppressing_trailing_silence = False
+                    self._watchdog_closed_current_turn = False
+                    self._trailing_silent_pcm_bytes = 0
+                if audio_bytes:
+                    is_silent = getattr(self, "_is_silent_pcm_chunk", lambda b: not any(b))(audio_bytes)
+                    if is_silent:
+                        if getattr(self, "_suppressing_trailing_silence", False) and not has_text_part:
+                            return
+                        if getattr(self, "_turn_had_audible_pcm", False):
+                            self._trailing_silent_pcm_bytes = getattr(self, "_trailing_silent_pcm_bytes", 0) + len(audio_bytes)
+                            sr = getattr(self, "_sample_rate", None) or 24000
+                            silent_secs = self._trailing_silent_pcm_bytes / float(sr * 2)
+                            max_secs = getattr(self, "LIVE_TRAILING_SILENCE_MAX_SECS", 2.5)
+                            if max_secs > 0 and silent_secs >= max_secs and not getattr(sc, "turn_complete", False):
+                                logger.warning(
+                                    f"[LiveWatchdog] Detected {silent_secs:.2f}s of trailing 0x0000 digital silence "
+                                    "after speech without turn_complete; suppressing silent tail and closing turn."
+                                )
+                                if "append_diagnostic_log" in globals():
+                                    append_diagnostic_log(
+                                        "🛡️ Silence Watchdog",
+                                        f"Closed stuck Live turn after {silent_secs:.2f}s of trailing 0x0000 PCM silence",
+                                    )
+                                self._trailing_silent_pcm_bytes = 0
+                                self._turn_had_audible_pcm = False
+                                if not has_text_part:
+                                    from types import SimpleNamespace as _SNS
+                                    synthetic_tc = _SNS(
+                                        server_content=_SNS(turn_complete=True, grounding_metadata=None),
+                                        usage_metadata=None,
+                                    )
+                                    await self._handle_msg_turn_complete(synthetic_tc)
+                                    self._suppressing_trailing_silence = True
+                                    self._watchdog_closed_current_turn = True
+                                    return
+                                self._suppressing_trailing_silence = True
+                    else:
+                        self._suppressing_trailing_silence = False
+                        self._watchdog_closed_current_turn = False
+                        self._turn_had_audible_pcm = True
+                        self._trailing_silent_pcm_bytes = 0
+
         self._begin_output()
         await super()._handle_msg_model_turn(message)
 
@@ -599,6 +689,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         Idempotent: the first caller clears the responding state and releases
         ``_live_output_turn``, so a follow-up InterruptionFrame is a no-op.
         """
+        self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
         was_responding = bool(
             getattr(self, "_mixin_bot_responding", False)
             or getattr(self, "_bot_turn_text_buffer", "").strip()
@@ -746,6 +837,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if isinstance(frame, InterruptionFrame):
             await self._record_bot_interruption()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
             self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._user_is_speaking = True
@@ -759,6 +851,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 self._activity_start_sent_for_turn = True
                 await self._handle_user_started_speaking(frame)
         elif isinstance(frame, UserStartedSpeakingFrame):
+            self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
             self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._activity_end_sent_for_turn = False
@@ -801,6 +894,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         await super()._handle_user_stopped_speaking(frame)
 
     async def _create_single_response(self, messages_list):
+        self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
         self._awaiting_interrupted_turn_complete = False
         self._avatar_post_turn_decay = False
         self._ttft_reported_for_response = False
@@ -850,6 +944,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         sc = getattr(message, "server_content", None)
         it = getattr(sc, "input_transcription", None) if sc else None
         if it and getattr(it, "text", None):
+            self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
             self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._last_user_speech_activity_at = time.monotonic()
@@ -913,10 +1008,14 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
     async def _handle_msg_output_transcription(self, message):
         if getattr(self, "_awaiting_interrupted_turn_complete", False):
             return
+        has_text = bool(message.server_content.output_transcription and message.server_content.output_transcription.text)
+        if has_text:
+            self._suppressing_trailing_silence = False
+            self._watchdog_closed_current_turn = False
+            self._trailing_silent_pcm_bytes = 0
         if getattr(self, "_live_output_turn", None) is None:
             self._live_output_turn = getattr(self, "_last_input_turn", None)
         self.response_identity.begin()
-        has_text = bool(message.server_content.output_transcription and message.server_content.output_transcription.text)
         if has_text:
             self._avatar_post_turn_decay = False
             self._begin_output()
@@ -949,6 +1048,12 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             }))
 
     async def _handle_msg_turn_complete(self, message):
+        if getattr(self, "_watchdog_closed_current_turn", False):
+            self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
+            if not getattr(self, "_mixin_bot_responding", False) and not getattr(self, "_bot_is_responding", False):
+                logger.debug("[LiveWatchdog] Ignoring delayed server turn_complete for turn already closed by silence watchdog.")
+                return
+        self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
         was_interrupted = getattr(self, "_awaiting_interrupted_turn_complete", False)
         was_avatar_active = bool(
             getattr(self, "_avatar_last_has_audio", False)

@@ -1,28 +1,19 @@
 """Speech-script contract between the cascade LLM and Gemini TTS.
 
 Gemini 3.8 TTS (gemini-3.8-flash-tts / gemini-3.8-flash-lite-tts) treats the
-`text` field as a verbatim transcript. Everything in it is spoken aloud except:
+`text` field as a verbatim transcript. By default, Cascade sends clean,
+punctuation-paced single-call transcripts without `<vocal tags>` or
+`[[direction]]` markup so the voice retains stable speaker identity across
+turns (and never reads English vocal tags aloud in Hinglish).
 
-  * inline vocal tags in <angle brackets>  (<laugh>, <sigh>, <short pause>, ...)
-  * |pipe| backchannels, which a *second* speaker voices over the first
-
-Delivery direction (emotion, pace, accent) belongs in the per-part
-`speech_metadata.style` field, never in the transcript.
-
-This module owns the three places that contract touches the cascade:
-
-  1. `speech_prompt_for(model)`  - what the LLM is told to write.
-  2. `Gemini38TextFilter`        - keeps supported tags intact through the
-                                   markdown filter (which otherwise strips any
-                                   <...> as HTML) and drops pipe backchannels,
-                                   which make no sense for a single speaker.
-  3. `display_text(text)`        - the transcript the user reads, without markup.
-
-Source: Gemini 3.8 Flash TTS developer guide (AI Studio, 2026-09-23).
+Setting `GEMINI_38_VOCAL_TAGS=1` or `GEMINI_38_TTS_STYLE=1` opts back into the
+expressive script mode (`GEMINI_38_EXPRESSIVE_SPEECH_PROMPT`).
 """
 from __future__ import annotations
 
+import os
 import re
+import unicodedata
 
 from pipecat.utils.string import SENTENCE_ENDING_PUNCTUATION
 from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
@@ -86,8 +77,24 @@ def is_gemini_38_tts(model: str | None) -> bool:
     return (model or "").replace("-aistudio", "") in GEMINI_38_TTS_MODELS
 
 
-# The footer every persona prompt ends with when a Gemini 3.8 voice speaks the reply.
-GEMINI_38_SPEECH_PROMPT = """OUTPUT GOES TO TEXT-TO-SPEECH: a Gemini 3.8 voice speaks every character verbatim except [[direction]] blocks and <vocal tags>. Write a script for a real human voice, not text.
+def use_vocal_tags() -> bool:
+    """True when opt-in inline <vocal tags> are enabled via GEMINI_38_VOCAL_TAGS=1."""
+    return os.getenv("GEMINI_38_VOCAL_TAGS", "").strip().lower() in ("1", "true", "yes")
+
+
+def use_speech_style() -> bool:
+    """True when opt-in dynamic per-part speech_metadata.style is enabled via GEMINI_38_TTS_STYLE=1."""
+    return os.getenv("GEMINI_38_TTS_STYLE", "").strip().lower() in ("1", "true", "yes")
+
+
+# Default speaker-stable footer: punctuation-driven cadence with zero <vocal tags> or [[direction]] blocks.
+GEMINI_38_SPEECH_PROMPT = """OUTPUT GOES TO TEXT-TO-SPEECH: a Gemini 3.8 voice speaks every character verbatim. Write natural spoken dialogue for a single human speaker, not written prose.
+1. NATURAL CADENCE: 1-2 short sentences per turn, contractions, and conversational fillers ("hmm...", "arre", "achha", "matlab", "well"). Use commas for natural breath pauses, "..." to hesitate or trail off, "?!" for emphasis, and CAPS on at most 1-2 stressed words.
+2. NO MARKUP OR TAGS: never write [[direction]] blocks, <vocal tags> like <laugh> or <short pause>, [stage directions], (laughs), *sighs*, or |pipe| backchannels. Angle-bracket tags can be read aloud in Hinglish or shift the speaker's voice.
+3. CLEAN SPOKEN TEXT: never use markdown, emojis, bullet lists, URLs, or unspoken symbols. Write numbers, money, and dates as spoken words. For an uncommon name you may add IPA in slashes, e.g. /niːv/."""
+
+# Opt-in expressive footer when GEMINI_38_VOCAL_TAGS=1 or GEMINI_38_TTS_STYLE=1 is set.
+GEMINI_38_EXPRESSIVE_SPEECH_PROMPT = """OUTPUT GOES TO TEXT-TO-SPEECH: a Gemini 3.8 voice speaks every character verbatim except [[direction]] blocks and <vocal tags>. Write a script for a real human voice, not text.
 1. DIRECTION: open every reply with [[emotion, pitch, pace]], e.g. [[amused disbelief, high pitch, fast]]. When the feeling turns mid-reply, start a new block (1-3 per reply). Always name all three: emotion or texture; pitch (high, low, hushed low, rising, bright); pace (fast, brisk, relaxed, slow drawn-out). Contrast them: high pitch for surprise, excitement, teasing; low pitch for secrets, warnings, gravity. Only words and commas inside [[...]].
 2. HUMAN SOUNDS: 1-3 tags per reply, exactly where the sound happens, in English even inside Hindi: <breath> <heavy breath> <exhales> <sigh> <pant> <short pause> <long pause> <laugh> <chuckle> <giggle> <snicker> <snort> <gasp> <tsk> <groan> <throat-clearing> <cough> <sneeze> <yawn>. Breaths and pauses in most replies; <throat-clearing> or <cough> now and then; <sneeze> or <yawn> at most once a call, unless your voice notes say otherwise.
 3. SPEAK, DON'T WRITE: 1-2 short sentences, contractions, real thinking fillers ("hmm...", "arre", "achha", "uff", "matlab", "well"). Commas for breaths, "..." to hesitate or trail off, "?!" for a spike, CAPS on at most 1-2 stressed words.
@@ -99,14 +106,21 @@ LEGACY_GEMINI_SPEECH_PROMPT = """VOICE OUTPUT (Gemini TTS): every character you 
 - Use commas for natural pauses. Never use markdown, emojis, bullet points, or symbols that cannot be spoken."""
 
 
-def speech_prompt_for(tts_model: str | None, persona_id: str | None = None) -> str:
+def speech_prompt_for(
+    tts_model: str | None,
+    persona_id: str | None = None,
+    *,
+    expressive: bool | None = None,
+) -> str:
     """The TTS footer for the LLM: what the voice can perform, then how this persona sounds."""
     model = (tts_model or "").replace("-aistudio", "")
     if model in GEMINI_38_TTS_MODELS:
         from persona_prompt_cards.voice_notes import voice_notes_for  # local: avoids a cycle at import
 
-        notes = voice_notes_for(persona_id)
-        return f"{GEMINI_38_SPEECH_PROMPT}\n{notes}" if notes else GEMINI_38_SPEECH_PROMPT
+        is_expressive = (use_vocal_tags() or use_speech_style()) if expressive is None else expressive
+        base = GEMINI_38_EXPRESSIVE_SPEECH_PROMPT if is_expressive else GEMINI_38_SPEECH_PROMPT
+        notes = voice_notes_for(persona_id, expressive=is_expressive)
+        return f"{base}\n{notes}" if notes else base
     if model.startswith("gemini"):
         return LEGACY_GEMINI_SPEECH_PROMPT
     return ""
@@ -141,6 +155,57 @@ def normalize_spoken_text(text: str) -> str:
     t = re.sub(r"\.{4,}", "...", t)
     t = re.sub(r"(?<!\.)\.\.(?!\.)", ".", t)
     return _SPACES.sub(" ", t).strip()
+
+
+def _is_word_char(ch: str) -> bool:
+    if not ch or ch in "।॥":
+        return False
+    return ch.isalnum() or unicodedata.category(ch)[0] in ("L", "M", "N")
+
+
+def strip_vocal_tags_for_tts(text: str) -> str:
+    """Sanitize residual <vocal tags> into clean punctuation before TTS synthesis.
+
+    Converts <long pause> -> '...', <short pause>/<pause> -> ',' (only after a word,
+    without duplicating punctuation), drops all other known <vocal tags>, and leaves
+    non-tag '<' comparisons (e.g. '2 < 3 and 5 > 4') untouched.
+    """
+    if not text or "<" not in text:
+        return text or ""
+
+    out: list[str] = []
+    last = 0
+    for m in _ANGLE_TAG.finditer(text):
+        raw = re.sub(r"\s+", " ", m.group(1).strip().lower())
+        tag = _TAG_ALIASES.get(raw, raw)
+        if tag not in VOCAL_TAGS:
+            continue
+        out.append(text[last : m.start()])
+        prev_str = "".join(out).rstrip()
+        prev_ch = prev_str[-1] if prev_str else ""
+        if tag == "long pause":
+            if prev_ch in (",", ";", ":"):
+                out = [prev_str[:-1] + "... "]
+            elif prev_ch and prev_ch not in ".!?।…":
+                out = [prev_str + "... "]
+            else:
+                out.append(" ")
+        elif tag == "short pause":
+            if _is_word_char(prev_ch):
+                out = [prev_str + ", "]
+            else:
+                out.append(" ")
+        else:
+            out.append(" ")
+        last = m.end()
+
+    out.append(text[last:])
+    cleaned = "".join(out)
+    cleaned = re.sub(r"\s+([.,!?;:।])", r"\1", cleaned)
+    cleaned = re.sub(r",\s*,+", ",", cleaned)
+    cleaned = re.sub(r",\s*([.!?।])", r"\1", cleaned)
+    cleaned = re.sub(r"\.{4,}", "...", cleaned)
+    return _SPACES.sub(" ", cleaned).strip()
 
 
 def extract_vocal_tags(text: str) -> str:
@@ -214,22 +279,19 @@ def spoken_word_count(text: str) -> int:
 
 
 class MinWordsSentenceAggregator(SimpleTextAggregator):
-    """Sentence aggregator that keeps Gemini 3.8 TTS generations few and long.
+    """Sentence aggregator that synthesizes normal Cascade replies in a single 3.8 TTS call.
 
-    Every run_tts call is a separate Gemini 3.8 generation with no memory of the
-    previous one (the model rejects prior audio as input), so the voice is
-    re-derived on every call and drifts between calls. Measured on the exact
-    production reply (WeSpeaker cosine between 3 s windows, 2 voices x 2 runs):
-    7 calls 0.65-0.67, first sentence then the rest 0.69-0.76, one call 0.75-0.80.
-
-    So the aggregator releases the first ``lead_sentences`` sentences as soon as
-    they are complete (fast first audio), then holds the rest of the reply and
-    sends it as one generation on flush() (LLMFullResponseEndFrame), or earlier
-    once ``max_hold_words`` spoken words are waiting. A sentence shorter than
-    ``min_words`` ("नमस्ते.", "Haan.") is never sent on its own.
+    Every run_tts call is an independent Gemini 3.8 generation with no shared
+    acoustic state (the model rejects prior audio as input), so splitting a reply
+    into multiple calls splices independent speaker draws mid-turn. By default
+    (``lead_sentences=0, max_hold_words=80``), normal 1-3 sentence replies are
+    collected and synthesized in a single generation at ``flush()``
+    (``LLMFullResponseEndFrame``), while unusually long replies flush once
+    ``max_hold_words`` spoken words accumulate (staying well below the ~1,745-byte
+    internal server chunk boundary).
     """
 
-    def __init__(self, min_words: int = 4, lead_sentences: int = 1, max_hold_words: int = 45, **kwargs):
+    def __init__(self, min_words: int = 4, lead_sentences: int = 0, max_hold_words: int = 80, **kwargs):
         super().__init__(**kwargs)
         self._min_words = min_words
         self._lead_sentences = lead_sentences
@@ -255,7 +317,7 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
             self._held = combined
             return None
         if self._released >= self._lead_sentences and words < self._max_hold_words:
-            # Past the lead: keep collecting so the rest of the reply is one generation.
+            # Hold so a normal 1-3 sentence reply is synthesized in one generation.
             self._held = combined
             return None
         self._held = ""
@@ -280,7 +342,6 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
         await super().reset()
         self._held = ""
         self._released = 0
-
 
 
 class Gemini38TextFilter(MarkdownTextFilter):
