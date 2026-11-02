@@ -30,7 +30,7 @@ By combining the first three pillars across the call lifecycle, you flatten quad
     <strong>1. Replace instructions in place, don't stack cards in history:</strong> A prompt card sent as a <code>role="user"</code> turn or inside a tool result stays in conversation history and is billed again on every later turn (<code>2,493 tokens/turn</code> after 3 swaps). Sending it as a system instruction (<code>session.send_context_update()</code> or Vertex AI <code>role="system"</code>) overwrites the old card in place (<code>783 tokens/turn</code>) and survives 5,000-token sliding-window compaction.
   </p>
   <p>
-    <strong>2. Swap per-card tools and instructions with no reconnect:</strong> Starting in <code>google-genai 2.32.0</code>, <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place on <code>gemini-3.8-live</code>. See <a href="/gemini-live/optimization/prompt-cards/">Pillar 2: Dynamic Prompt Cards &amp; Per-Card Tools</a> for the animated walkthrough and 8-card flight-booking breakdown.
+    <strong>2. Swap per-card tools and instructions with no reconnect:</strong> Starting in <code>google-genai 2.32.0</code>, <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place on <code>gemini-3.8-live</code>. See <a href="/gemini-live/optimization/prompt-cards/#video-walkthrough">Pillar 2: Dynamic Prompt Cards &amp; Per-Card Tools</a> for the 4m 42s voiced video walkthrough and 8-card flight-booking breakdown.
   </p>
 </div>
 

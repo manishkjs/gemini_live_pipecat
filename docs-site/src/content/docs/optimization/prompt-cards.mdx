@@ -7,6 +7,7 @@ import OptimizationPillarTabs from '../../../components/OptimizationPillarTabs.a
 import PromptCardFunnel from '../../../components/PromptCardFunnel.astro';
 import ReplaceVsStackFlow from '../../../components/ReplaceVsStackFlow.astro';
 import MidSpeechUpdateFlow from '../../../components/MidSpeechUpdateFlow.astro';
+import ContextUpdateVideoWalkthrough from '../../../components/ContextUpdateVideoWalkthrough.astro';
 import OneMinute from '../../../components/OneMinute.astro';
 
 <OneMinute
@@ -29,6 +30,8 @@ import OneMinute from '../../../components/OneMinute.astro';
     <strong>2. Swap both tools and instructions with no reconnect:</strong> Starting in <code>google-genai 2.32.0</code>, <code>await session.send_context_update(system_instruction=..., tools=...)</code> replaces both the declared <code>tools</code> list and <code>systemInstruction</code> in place during a live call on <code>gemini-3.8-live</code>, with no reconnect.
   </p>
 </div>
+
+<ContextUpdateVideoWalkthrough />
 
 ## 1. Why dynamic prompt cards matter
 
