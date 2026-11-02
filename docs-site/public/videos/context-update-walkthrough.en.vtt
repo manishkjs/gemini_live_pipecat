@@ -1,0 +1,117 @@
+WEBVTT
+
+1
+00:00:00.300 --> 00:00:09.160
+Every long voice call has a hidden cost. The bot rereads everything, you pay for every reread, and it slowly forgets. Here is the fix.
+
+2
+00:00:10.160 --> 00:00:21.520
+Okay, so, quick thing to know before your team builds a voice agent. Every single time the agent speaks, Gemini rereads everything sitting on its desk, and you pay for every reread.
+
+3
+00:00:21.900 --> 00:00:37.640
+Now, in a real phone call, you do not want one giant prompt up front, right? So teams use user-turn client content to slip the agent little updates as the caller moves along, like, hey, they picked Hindi, now ask where they are flying.
+
+4
+00:00:38.020 --> 00:00:44.220
+Sounds super clean on paper. Well, watch what actually happens to your token bill over a few turns.
+
+5
+00:00:45.070 --> 00:00:57.010
+Here is the catch with user-turn client content. When you push each new step into the conversation, the old steps do not leave. They just sit there in chat history, getting reread again and again.
+
+6
+00:00:57.390 --> 00:01:11.370
+Look at this waterfall. Turn one reads five hundred eighty-five tokens. Turn two rereads step one plus step two. By turn four, you are paying nearly twenty-five hundred tokens a turn, and all your tools stay bolted on too.
+
+7
+00:01:11.750 --> 00:01:28.490
+Across an eight-step call, that stacks up almost sixty-four thousand extra tokens. Even worse, once that pile passes the five-thousand-token trim, the oldest rules fall off, so in six out of seven test calls, the agent literally forgot and greeted the caller all over again.
+
+8
+00:01:29.340 --> 00:01:42.200
+And honestly, that is the exact problem context update solves. Think of a news anchor reading a teleprompter. When the story changes, the screen swaps in place. The anchor only sees what matters right now.
+
+9
+00:01:42.580 --> 00:01:51.480
+With context update, you swap the active step script and you swap the active tools mid-call, without hanging up or restarting the session.
+
+10
+00:01:51.860 --> 00:02:04.100
+So, like a technician with a toolbelt, the agent only carries the two or three tools for this step, and the old script is completely gone. Your per-turn cost stays nearly flat.
+
+11
+00:02:04.950 --> 00:02:16.370
+Now, hold on, there is one big precaution every engineer and architect needs to know. Because context update does a clean wipe of the entire system instruction, anything you leave out is gone for good.
+
+12
+00:02:16.750 --> 00:02:29.210
+So if you swap in step three and forget to remind the model who it is or what language the caller chose, well, suddenly your warm Hinglish agent starts sounding like a generic robot in English.
+
+13
+00:02:29.590 --> 00:02:45.370
+The fix is super simple. Keep a pinned footer at the bottom of every single card. Lock in your persona and language rules there, and attach a tiny key-value payload of the caller's choices so far, so the agent keeps what the caller already decided.
+
+14
+00:02:46.220 --> 00:02:57.960
+Let us see how this plays out across a full user journey with Cymbal Travel. Here, the goal is guiding a caller through eight booking steps, from picking a language all the way to a WhatsApp payment link.
+
+15
+00:02:58.340 --> 00:03:14.020
+Watch both sides work together. On the left, step one loads just the language tool at ninety-three tokens instead of thirteen hundred twenty-six. Flight search joins for steps two and three, then drops right off once a flight is picked, all the way down to zero tools at goodbye.
+
+16
+00:03:14.400 --> 00:03:30.240
+Meanwhile, on the right, every time we swap the prompt card, our pinned footer carries Tara's persona, the caller's language, and a growing key-value snapshot: route, flight number, fare, travellers. Fifty tokens of clean state carries the whole ten-minute journey.
+
+17
+00:03:30.620 --> 00:03:34.300
+Here is how that sounds on a live call. Let's listen in.
+
+18
+00:03:34.750 --> 00:03:36.490
+[Caller] Hello, Hindi mein baat karein?
+
+19
+00:03:36.640 --> 00:03:39.283
+[Tara] Bilkul! Main Tara bol rahi hoon. Kahan jaana hai?
+
+20
+00:03:39.433 --> 00:03:42.234
+[Caller] Bangalore se Delhi, kal subah, do adults.
+
+21
+00:03:42.384 --> 00:03:45.446
+[Tara] CY-204, subah saat baje.
+
+22
+00:03:45.596 --> 00:03:46.730
+[Caller] Perfect, wahi book kar do.
+
+23
+00:03:46.880 --> 00:03:50.673
+[Tara] Done! Total fare Rs 9,420.
+
+24
+00:03:50.823 --> 00:03:52.172
+[Caller] Achha, payment link bhej do.
+
+25
+00:03:52.322 --> 00:03:54.201
+[Tara] WhatsApp pe link bhej diya.
+
+26
+00:03:55.051 --> 00:04:05.211
+So, here is the bottom line. Do not stack step prompts as user-turn client content. Swap the script, swap the tools, and pin your footer.
+
+27
+00:04:05.591 --> 00:04:15.271
+You cut token waste in half, the agent keeps its persona and every trip detail across the longest call, and nobody has to hang up or restart the session to change steps.
+
+28
+00:04:15.651 --> 00:04:28.551
+Use context update today on Gemini three point eight Live, and on older two point five models, until they retire on December thirteenth, use system-role updates with that exact same key-value footer.
+
+29
+00:04:29.401 --> 00:04:40.101
+So here is the ask. In fourteen days, we run one real call journey on your calls and measure cost per call and repeat greetings. Swap the script. Pin the footer.

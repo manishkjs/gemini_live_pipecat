@@ -1,0 +1,203 @@
+---
+/**
+ * Self-hosted 1080p MP4 walkthrough for Pillar 2 (session.send_context_update() + Pinned Footer)
+ * with WebVTT captions, chapter markers, and interactive chapter jump pills.
+ */
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const videoSrc = `${base}/videos/context-update-walkthrough.mp4`;
+const posterSrc = `${base}/videos/context-update-poster.jpg`;
+const captionsSrc = `${base}/videos/context-update-walkthrough.en.vtt`;
+const chaptersSrc = `${base}/videos/context-update-walkthrough.chapters.vtt`;
+
+const chapters = [
+  { time: 0, stamp: '00:00', label: 'Hidden cost hook' },
+  { time: 9.86, stamp: '00:10', label: 'Live call desk' },
+  { time: 44.77, stamp: '00:45', label: 'Waterfall trap (2,493 tok)' },
+  { time: 89.04, stamp: '01:29', label: 'send_context_update()' },
+  { time: 124.65, stamp: '02:05', label: 'Pinned footer & state' },
+  { time: 165.92, stamp: '02:46', label: '8-step Cymbal Travel' },
+  { time: 214.75, stamp: '03:35', label: 'Live Hinglish call' },
+  { time: 234.75, stamp: '03:55', label: 'Key takeaway' },
+  { time: 269.1, stamp: '04:29', label: '14-day pilot' },
+];
+---
+
+<section class="cu-video-card" id="video-walkthrough" aria-label="Voiced architectural walkthrough video">
+  <div class="cu-video-head">
+    <div class="cu-video-badges">
+      <span class="badge badge-green">Video Walkthrough · 4m 42s</span>
+      <span class="badge badge-blue">1080p · CC Captions + Live Call Audio</span>
+    </div>
+    <h3>Watch: Swap the script, swap the tools, pin the footer</h3>
+    <p>
+      See why stacking step prompts as <code>role="user"</code> turns climbs to <code>2,493 tokens/turn</code> and triggers repeat greetings after <code>SlidingWindow</code> compaction, and how <code>session.send_context_update()</code> plus a <code>~50-token</code> pinned footer keeps an 8-step flight booking call flat.
+    </p>
+  </div>
+
+  <div class="cu-video-frame">
+    <video
+      class="cu-video-el"
+      controls
+      playsinline
+      preload="metadata"
+      poster={posterSrc}
+    >
+      <source src={videoSrc} type="video/mp4" />
+      <track kind="captions" src={captionsSrc} srclang="en" label="English & Hinglish" />
+      <track kind="chapters" src={chaptersSrc} srclang="en" label="Chapters" default />
+      Your browser does not support HTML5 video. <a href={videoSrc}>Download the MP4 walkthrough</a>.
+    </video>
+  </div>
+
+  <div class="cu-chapters" role="group" aria-label="Jump to video chapter">
+    <span class="cu-chapters-label">Chapters:</span>
+    <div class="cu-chapters-list">
+      {chapters.map((ch, idx) => (
+        <button
+          type="button"
+          class:list={['cu-chapter-btn', { active: idx === 0 }]}
+          data-seek={ch.time}
+          data-idx={idx}
+        >
+          <span class="cu-chapter-stamp">{ch.stamp}</span>
+          <span class="cu-chapter-title">{ch.label}</span>
+        </button>
+      ))}
+    </div>
+  </div>
+</section>
+
+<script>
+  function initWalkthroughVideos() {
+    document.querySelectorAll('.cu-video-card').forEach((card) => {
+      if (card.hasAttribute('data-cu-bound')) return;
+      card.setAttribute('data-cu-bound', 'true');
+
+      const video = card.querySelector('video');
+      const buttons = Array.from(card.querySelectorAll<HTMLButtonElement>('.cu-chapter-btn'));
+      if (!video || buttons.length === 0) return;
+
+      const times = buttons.map((btn) => Number(btn.dataset.seek || '0'));
+
+      buttons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = Number(btn.dataset.seek || '0');
+          video.currentTime = target;
+          video.play().catch(() => {});
+        });
+      });
+
+      video.addEventListener('timeupdate', () => {
+        const t = video.currentTime;
+        let activeIdx = 0;
+        for (let i = 0; i < times.length; i++) {
+          if (t >= times[i] - 0.15) activeIdx = i;
+        }
+        buttons.forEach((btn, idx) => {
+          btn.classList.toggle('active', idx === activeIdx);
+        });
+      });
+    });
+  }
+
+  initWalkthroughVideos();
+  document.addEventListener('astro:page-load', initWalkthroughVideos);
+</script>
+
+<style>
+  .cu-video-card {
+    margin: 1.5rem 0 2.25rem;
+    padding: 1.35rem 1.5rem 1.25rem;
+    border-radius: 0.875rem;
+    background: var(--gl-card-bg);
+    border: 1px solid color-mix(in srgb, var(--sl-color-accent) 30%, var(--gl-card-border));
+    box-shadow: var(--gl-shadow);
+  }
+
+  .cu-video-head h3 {
+    margin: 0.45rem 0 0.4rem !important;
+    font-size: 1.2rem;
+    color: var(--gl-text-primary);
+  }
+
+  .cu-video-head p {
+    margin: 0 0 1rem !important;
+    font-size: 0.94rem;
+    line-height: 1.58;
+    color: var(--gl-text-secondary);
+  }
+
+  .cu-video-frame {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 0.65rem;
+    overflow: hidden;
+    background: #0a0e14;
+    border: 1px solid var(--gl-card-border);
+  }
+
+  .cu-video-el {
+    display: block;
+    width: 100%;
+    height: 100%;
+    margin: 0 !important;
+    object-fit: contain;
+    background: #0a0e14;
+  }
+
+  .cu-chapters {
+    margin-top: 0.95rem;
+  }
+
+  .cu-chapters-label {
+    display: block;
+    font-family: var(--sl-font-mono);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--gl-text-muted);
+    margin-bottom: 0.45rem;
+  }
+
+  .cu-chapters-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+  }
+
+  .cu-chapter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.38rem;
+    padding: 0.32rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid var(--gl-card-border);
+    background: var(--gl-card-bg-elevated);
+    color: var(--gl-text-secondary);
+    font-size: 0.79rem;
+    line-height: 1.25;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .cu-chapter-btn:hover {
+    border-color: var(--sl-color-accent);
+    color: var(--gl-text-primary);
+  }
+
+  .cu-chapter-btn.active {
+    background: var(--gl-blue-bg);
+    border-color: var(--gl-blue-border);
+    color: var(--gl-blue-text);
+    font-weight: 600;
+  }
+
+  .cu-chapter-stamp {
+    font-family: var(--sl-font-mono);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.88;
+  }
+</style>
