@@ -977,15 +977,15 @@ test('post_turn_decay avatar segments are forwarded to MSE without flipping phas
   await h.render().endSession();
 });
 
-test('settings-dialog and transcript-panel re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
+test('settings-dialog and pre-call-card re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
   const root = fileURLToPath(new URL('../src/', import.meta.url));
   const settingsDialogSrc = fs.readFileSync(path.resolve(root, 'components/studio/settings-dialog.tsx'), 'utf8');
-  const transcriptPanelSrc = fs.readFileSync(path.resolve(root, 'components/studio/transcript-panel.tsx'), 'utf8');
+  const preCallCardSrc = fs.readFileSync(path.resolve(root, 'components/studio/pre-call-card.tsx'), 'utf8');
   const pipecatSessionSrc = fs.readFileSync(path.resolve(root, 'lib/pipecat-session.ts'), 'utf8');
   const obsDrawerSrc = fs.readFileSync(path.resolve(root, 'components/observability-drawer.tsx'), 'utf8');
 
   assert.match(settingsDialogSrc, /\[settingsOpen,[^\]]*settings\.model[^\]]*\]/);
-  assert.match(transcriptPanelSrc, /\[serverPreset,[^\]]*settings\.model[^\]]*\]/);
+  assert.match(preCallCardSrc, /\[[^\]]*custom,[^\]]*settings\.model[^\]]*\]/s);
   assert.doesNotMatch(pipecatSessionSrc, /googlers\.com|rangarok|UberProxy/i);
   assert.doesNotMatch(obsDrawerSrc, /readStoredLogHeight\(window\.localStorage|writeStoredLogHeight\(window\.localStorage/);
 });
@@ -1102,5 +1102,51 @@ test('gemma-4-26b-a4b-it-maas is listed in Cascade LLMs, clamps skip_stt=false, 
   assert.equal(parsedCost.known_usd, '0.000216');
   assert.equal(cc.stageLabel(parsedCost.stages[0]), 'off');
   assert.equal(cc.formatCacheHit(parsedCost.stages[1]), '40% cache');
+});
+
+test('cascade turn TTFB sums stt_latency + llm_latency + tts_latency across late TTS metrics', async () => {
+  const h = await harness();
+  await h.render().startBackend('cascade');
+  h.send({
+    type: 'transcription',
+    participant: 'User',
+    stt_latency: 0.102,
+    text: 'Thoda time de dijiye.',
+  });
+  h.send({
+    type: 'metrics',
+    payload: { type: 'llm_latency', response_id: 'cas-1', value: 0.758 },
+  });
+  h.send({
+    type: 'transcription',
+    participant: 'Assistant',
+    response_id: 'cas-1',
+    text: 'Kya aap aaj ek hazaar rupaye se shuruwaat kar sakte hain?',
+  });
+  h.send({
+    type: 'metrics',
+    payload: { type: 'tts_latency', response_id: 'cas-1', value: 1.028 },
+  });
+
+  const state = h.render();
+  const botTurn = state.messages.find((m) => m.role === 'assistant');
+  assert.ok(botTurn, 'expected assistant message');
+  assert.equal(botTurn.metrics.sttLatency, 0.102);
+  assert.equal(botTurn.metrics.llmLatency, 0.758);
+  assert.equal(botTurn.metrics.ttsLatency, 1.028);
+  // 102 + 758 + 1028 = 1888ms (1.9s) instead of 758ms LLM-only
+  assert.equal(state.lastTTFB, 1888);
+  await state.endSession();
+});
+
+test('pre-call mic mute is applied immediately when startBackend creates the live session', async () => {
+  const h = await harness();
+  h.render().setMuted(true);
+  await h.render().startBackend('live');
+  const activeSession = h.render().session.current;
+  assert.ok(activeSession, 'expected active live session');
+  assert.equal(h.render().muted, true);
+  assert.equal(activeSession.isMicEnabled?.(), false);
+  await h.render().endSession();
 });
 

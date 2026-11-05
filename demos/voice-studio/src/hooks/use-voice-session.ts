@@ -20,17 +20,27 @@ import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
+import { computeTurnTtfbSeconds } from "@/lib/call-console";
 import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /** A transcript entry. Assistant text arrives as a raw script; the reader sees `transcriptText` of it. */
-function transcriptMessage(role: Message["role"], text: string, metrics?: MessageMetrics): Message {
+function transcriptMessage(
+  role: Message["role"],
+  text: string,
+  metrics?: MessageMetrics,
+  startedAtMs?: number | null,
+): Message {
+  const now = Date.now();
+  const relSec = startedAtMs != null ? Math.max(0, Math.floor((now - startedAtMs) / 1000)) : 0;
+  const offsetLabel = `+${String(Math.floor(relSec / 60)).padStart(2, "0")}:${String(relSec % 60).padStart(2, "0")}`;
   return {
     id: crypto.randomUUID(),
     role,
     ...(role === "assistant" ? { rawText: text, text: transcriptText(text) } : { text }),
-    time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    createdAt: Date.now(),
+    time: new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    offsetLabel,
+    createdAt: now,
     metrics,
   };
 }
@@ -80,6 +90,30 @@ export function useVoiceSession() {
   const [partialUser, setPartialUser] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showInlineEditor, setShowInlineEditor] = useState(false);
+  const audioLevelRef = useRef(0);
+  const audioLevelListeners = useRef(new Set<() => void>());
+  const publishAudioLevel = useCallback((nextLevel: number) => {
+    const clamped = Math.max(0, Math.min(1, nextLevel));
+    if (Math.abs(audioLevelRef.current - clamped) < 0.0005 && (clamped !== 0 || audioLevelRef.current === 0)) {
+      return;
+    }
+    audioLevelRef.current = clamped;
+    for (const listener of audioLevelListeners.current) {
+      listener();
+    }
+  }, []);
+  const subscribeAudioLevel = useCallback((listener: () => void) => {
+    audioLevelListeners.current.add(listener);
+    return () => {
+      audioLevelListeners.current.delete(listener);
+    };
+  }, []);
+  const getAudioLevel = useCallback((): number => audioLevelRef.current, []);
+  const [playingSample, setPlayingSample] = useState(false);
+  const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sampleToken = useRef(0);
+  const lastLevelUpdateAt = useRef(0);
+  const callStartedAt = useRef<number | null>(null);
   // Live session metric counters
   const [turnCount, setTurnCount] = useState(0);
   const [lastSTT, setLastSTT] = useState<number | null>(null);
@@ -102,6 +136,7 @@ export function useVoiceSession() {
   const [cascadeCost, setCascadeCost] = useState<CascadeCost | null>(null);
   const cascadeCostRevision = useRef(-1);
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
+  const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
   const seenEvents = useRef(new Set<string>());
   const starting = useRef(false);
   const [interruptCount, setInterruptCount] = useState(0);
@@ -171,6 +206,10 @@ export function useVoiceSession() {
   const customInstructions = useRef("");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const session = useRef<LiveSession | null>(null);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+  const soundRef = useRef(sound);
+  soundRef.current = sound;
   const run = useRef(0);
   const audio = useRef<HTMLAudioElement | null>(null);
   const transcript = useRef<HTMLDivElement | null>(null);
@@ -181,12 +220,77 @@ export function useVoiceSession() {
   const custom = persona.id === "custom";
   const engineName = settings.engine === "live" ? "Gemini Live" : "Cascade";
 
+  const stopVoiceSample = useCallback(() => {
+    sampleToken.current++;
+    if (sampleTimer.current) {
+      clearTimeout(sampleTimer.current);
+      sampleTimer.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setPlayingSample(false);
+  }, []);
+
+  const toggleVoiceSample = useCallback(() => {
+    if (active) return;
+    if (playingSample) {
+      stopVoiceSample();
+      return;
+    }
+    if (!sound) return;
+    const token = ++sampleToken.current;
+    setPlayingSample(true);
+    if (sampleTimer.current) clearTimeout(sampleTimer.current);
+    sampleTimer.current = setTimeout(() => {
+      if (sampleToken.current !== token) return;
+      sampleTimer.current = null;
+      setPlayingSample(false);
+    }, 3200);
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+        const sampleLine = persona.opening || `Hello, I am ${persona.agentName}. Ready when you are.`;
+        const utterance = new SpeechSynthesisUtterance(sampleLine);
+        utterance.lang = settings.language;
+        utterance.rate = settings.ttsPace ?? 1.0;
+        utterance.onstart = () => {
+          if (sampleToken.current !== token) return;
+          if (sampleTimer.current) clearTimeout(sampleTimer.current);
+          sampleTimer.current = setTimeout(() => {
+            if (sampleToken.current !== token) return;
+            sampleTimer.current = null;
+            setPlayingSample(false);
+          }, 20000);
+        };
+        utterance.onend = () => {
+          if (sampleToken.current !== token) return;
+          stopVoiceSample();
+        };
+        utterance.onerror = (ev) => {
+          if (sampleToken.current !== token) return;
+          if (ev.error === "canceled" || ev.error === "interrupted") {
+            stopVoiceSample();
+          }
+        };
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        // Fallback to visual timer preview when SpeechSynthesis is unavailable.
+      }
+    }
+  }, [active, persona.agentName, persona.opening, playingSample, settings.language, settings.ttsPace, sound, stopVoiceSample]);
+
   useEffect(() => {
     // Tear the session down if the tab navigates away mid-call; a dangling
     // websocket keeps the backend billing audio nobody is listening to.
     return () => {
       run.current++;
       timers.current.forEach(clearTimeout);
+      if (sampleTimer.current) clearTimeout(sampleTimer.current);
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       void session.current?.disconnect();
     };
   }, []);
@@ -207,12 +311,16 @@ export function useVoiceSession() {
     session.current?.setSound?.(sound);
   }, [sound]);
 
+  useEffect(() => {
+    session.current?.setMic(!muted);
+  }, [muted]);
+
   const addMessage = useCallback((role: Message["role"], text: string, metrics?: MessageMetrics) => {
-    setMessages((items) => [...items, transcriptMessage(role, text, metrics)]);
+    setMessages((items) => [...items, transcriptMessage(role, text, metrics, callStartedAt.current)]);
   }, []);
 
-
   const endSession = useCallback(async () => {
+    stopVoiceSample();
     run.current++;
     timers.current.forEach(clearTimeout);
     timers.current = [];
@@ -220,14 +328,18 @@ export function useVoiceSession() {
     session.current = null;
     setPhase("idle");
     setTrack(null);
+    publishAudioLevel(0);
     setMuted(false);
     setPartialUser("");
     starting.current = false;
     avatarStream.reset();
     if (current) await current.disconnect();
-  }, [avatarStream]);
+  }, [avatarStream, publishAudioLevel, stopVoiceSample]);
 
   const resetConversation = (personaId = settings.personaId) => {
+    stopVoiceSample();
+    callStartedAt.current = null;
+    publishAudioLevel(0);
     setError("");
     setMessages([]);
     setElapsed(0);
@@ -253,6 +365,7 @@ export function useVoiceSession() {
     setConfirmedBooking(null);
     ledger.current = new UsageLedger();
     responseMetrics.current.clear();
+    lastAssistantMetrics.current = null;
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
@@ -330,36 +443,88 @@ export function useVoiceSession() {
     }));
     setSettingsOpen(false);
     resetConversation();
+    callStartedAt.current = null;
     starting.current = true;
     setSource("backend");
     setPhase("connecting");
 
     const current = ++run.current;
+    const syncLastTtfb = (metrics: MessageMetrics | undefined): void => {
+      const totalSec = computeTurnTtfbSeconds(metrics, targetEngine);
+      if (totalSec !== null) {
+        setLastTTFB(Math.round(totalSec * 1000));
+      }
+    };
     const updateResponse = (responseId: string, patch: MessageMetrics) => {
-      const metrics = { ...responseMetrics.current.get(responseId), ...patch, responseId };
+      const prev = responseMetrics.current.get(responseId);
+      const metrics: MessageMetrics = {
+        ...prev,
+        ...patch,
+        llmLatency: patch.llmLatency ?? prev?.llmLatency,
+        ttsLatency: patch.ttsLatency ?? prev?.ttsLatency,
+        sttLatency: patch.sttLatency ?? prev?.sttLatency,
+        turnCostUSD: patch.turnCostUSD ?? prev?.turnCostUSD,
+        costIncomplete: patch.costIncomplete ?? prev?.costIncomplete,
+        usage: patch.usage ?? prev?.usage,
+        responseId,
+      };
       responseMetrics.current.set(responseId, metrics);
+      if (
+        !lastAssistantMetrics.current?.responseId ||
+        lastAssistantMetrics.current.responseId === responseId
+      ) {
+        lastAssistantMetrics.current = metrics;
+      }
+      syncLastTtfb(metrics);
       setMessages(items => items.map(item => item.role === "assistant" && item.metrics?.responseId === responseId
         ? { ...item, metrics: { ...item.metrics, ...metrics } } : item));
     };
     try {
       const live = await createLiveSession(activeSettings, {
         onPhase: (value) => {
-          if (run.current === current) setPhase(value);
+          if (run.current !== current) return;
+          if (value !== "connecting" && value !== "idle" && callStartedAt.current === null) {
+            callStartedAt.current = Date.now();
+          }
+          setPhase(value);
         },
         onMessage: (role, text, append, metrics) => {
           if (run.current !== current) return;
           if (metrics?.responseId) {
-            metrics = { ...metrics, ...responseMetrics.current.get(metrics.responseId) };
+            const prev = responseMetrics.current.get(metrics.responseId);
+            const merged: MessageMetrics = {
+              ...prev,
+              ...metrics,
+              llmLatency: metrics.llmLatency ?? prev?.llmLatency,
+              ttsLatency: metrics.ttsLatency ?? prev?.ttsLatency,
+              sttLatency: metrics.sttLatency ?? prev?.sttLatency,
+              turnCostUSD: metrics.turnCostUSD ?? prev?.turnCostUSD,
+              costIncomplete: metrics.costIncomplete ?? prev?.costIncomplete,
+              usage: metrics.usage ?? prev?.usage,
+              responseId: metrics.responseId,
+            };
+            if (role === "assistant") {
+              responseMetrics.current.set(metrics.responseId, merged);
+            }
+            metrics = merged;
           }
           if (role === "user") {
+            lastAssistantMetrics.current = null;
             setPartialUser("");
             if (metrics?.sttLatency !== undefined) {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
           } else {
-            if (metrics?.llmLatency !== undefined) {
-              setLastTTFB(Math.round(metrics.llmLatency * 1000));
-            }
+            const nextAssistantMetrics: MessageMetrics = {
+              ...(lastAssistantMetrics.current?.responseId &&
+              metrics?.responseId &&
+              lastAssistantMetrics.current.responseId !== metrics.responseId
+                ? undefined
+                : lastAssistantMetrics.current),
+              ...metrics,
+            };
+            lastAssistantMetrics.current = nextAssistantMetrics;
+            syncLastTtfb(nextAssistantMetrics);
             if (metrics?.ttsLatency !== undefined) {
               setLastTTS(Math.round(metrics.ttsLatency * 1000));
             }
@@ -388,7 +553,7 @@ export function useVoiceSession() {
                 return items.map((item, i) => i === index
                   ? { ...last, rawText, text: transcriptText(rawText), metrics: mergedMetrics } : item);
               }
-              return [...items, transcriptMessage(role, text, metrics)];
+              return [...items, transcriptMessage(role, text, metrics, callStartedAt.current)];
             });
           } else {
             addMessage(role, text, metrics);
@@ -451,18 +616,78 @@ export function useVoiceSession() {
               if (seenEvents.current.has(val.event_id)) return;
               seenEvents.current.add(val.event_id);
             }
-            if (type === "turn_complete") setTurnCount(c => c + 1);
-            else setInterruptCount(c => c + 1);
-            if (val?.response_id && val.elapsed_ms !== undefined) {
-              updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
+            if (type === "turn_complete") {
+              setTurnCount(c => c + 1);
+            } else {
+              setInterruptCount(c => c + 1);
+              if (typeof val?.elapsed_ms === "number") {
+                if (val.response_id) {
+                  updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
+                } else {
+                  if (lastAssistantMetrics.current) {
+                    const updated: MessageMetrics = {
+                      ...lastAssistantMetrics.current,
+                      interruptedMs: val.elapsed_ms,
+                    };
+                    lastAssistantMetrics.current = updated;
+                    if (updated.responseId) {
+                      responseMetrics.current.set(updated.responseId, updated);
+                    }
+                    syncLastTtfb(updated);
+                  }
+                  setMessages((items) => {
+                    const idx = items.findLastIndex((m) => m.role === "assistant");
+                    if (idx === -1) return items;
+                    const target = items[idx];
+                    const next = [...items];
+                    next[idx] = {
+                      ...target,
+                      metrics: { ...target.metrics, interruptedMs: val.elapsed_ms },
+                    };
+                    return next;
+                  });
+                }
+              }
             }
           } else if (["stt_latency", "llm_latency", "tts_latency"].includes(type)) {
             const value = typeof val === "number" ? val : val?.value;
             if (!Number.isFinite(value) || value < 0) return;
-            const setter = type === "stt_latency" ? setLastSTT : type === "llm_latency" ? setLastTTFB : setLastTTS;
-            setter(Math.round(value * 1000));
-            if (val?.response_id && type !== "stt_latency") {
-              updateResponse(val.response_id, { [type === "llm_latency" ? "llmLatency" : "ttsLatency"]: value });
+            if (type === "stt_latency") {
+              setLastSTT(Math.round(value * 1000));
+              return;
+            }
+            if (type === "tts_latency") {
+              setLastTTS(Math.round(value * 1000));
+            }
+            const field = type === "llm_latency" ? "llmLatency" : "ttsLatency";
+            if (val?.response_id) {
+              updateResponse(val.response_id, { [field]: value });
+            } else {
+              if (type === "llm_latency" && targetEngine === "live") {
+                setLastTTFB(Math.round(value * 1000));
+              }
+              if (lastAssistantMetrics.current) {
+                const mergedFallback: MessageMetrics = {
+                  ...lastAssistantMetrics.current,
+                  [field]: value,
+                };
+                lastAssistantMetrics.current = mergedFallback;
+                if (mergedFallback.responseId) {
+                  responseMetrics.current.set(mergedFallback.responseId, mergedFallback);
+                }
+                syncLastTtfb(mergedFallback);
+              }
+              setMessages((items) => {
+                const last = items[items.length - 1];
+                if (!last || last.role !== "assistant") return items;
+                const mergedMetrics: MessageMetrics = {
+                  ...last.metrics,
+                  [field]: value,
+                };
+                const next = [...items];
+                next[items.length - 1] = { ...last, metrics: mergedMetrics };
+                return next;
+              });
             }
           } else if (type === "usage") {
             if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
@@ -497,7 +722,14 @@ export function useVoiceSession() {
         onTrack: (value) => {
           if (run.current === current) setTrack(value);
         },
-        onLevel: () => {},
+        onLevel: (value) => {
+          if (run.current !== current) return;
+          const now = performance.now();
+          if (now - lastLevelUpdateAt.current >= 70 || value === 0) {
+            lastLevelUpdateAt.current = now;
+            publishAudioLevel(value);
+          }
+        },
         onLatency: (value) => {
           if (run.current === current) setLatency(value);
         },
@@ -520,6 +752,7 @@ export function useVoiceSession() {
           if (run.current !== current) return;
           setPhase("idle");
           setTrack(null);
+          publishAudioLevel(0);
           setMuted(false);
           setPartialUser("");
           session.current = null;
@@ -532,8 +765,16 @@ export function useVoiceSession() {
         return;
       }
       session.current = live;
-      live.setSound?.(sound);
+      live.setMic(!mutedRef.current);
+      live.setSound?.(soundRef.current);
       await live.connect();
+      if (run.current === current) {
+        live.setMic(!mutedRef.current);
+        live.setSound?.(soundRef.current);
+      }
+      if (run.current === current && callStartedAt.current === null) {
+        callStartedAt.current = Date.now();
+      }
     } catch (e) {
       if (run.current !== current) return;
       const message = e instanceof Error ? e.message : "Unable to connect to your backend.";
@@ -542,16 +783,19 @@ export function useVoiceSession() {
     }
   };
 
-  const toggleSound = () => {
-    setSound((value) => {
-      const next = !value;
-      session.current?.setSound?.(next);
-      return next;
-    });
-    if (sound) window.speechSynthesis?.cancel();
+  const toggleSound = useCallback(() => {
+    if (sound) {
+      stopVoiceSample();
+    }
+    setSound((value) => !value);
+  }, [sound, stopVoiceSample]);
+
+  const resetToSetup = () => {
+    if (active) return;
+    resetConversation();
   };
 
-  const update = (key: keyof SessionSettings, value: string) =>
+  const update = useCallback((key: keyof SessionSettings, value: string) => {
     setSettings((current) => {
       const next = { ...current, [key]: value };
       return {
@@ -561,12 +805,15 @@ export function useVoiceSession() {
         ...(key === "customVoiceAudio" && value ? { model: "gemini-3.8-live" } : {}),
       };
     });
+  }, []);
 
-  const updateBool = (key: keyof SessionSettings, value: boolean) =>
+  const updateBool = useCallback((key: keyof SessionSettings, value: boolean) => {
     setSettings((current) => ({ ...current, [key]: value }));
+  }, []);
 
-  const updateNumber = (key: keyof SessionSettings, value: number) =>
+  const updateNumber = useCallback((key: keyof SessionSettings, value: number) => {
     setSettings((current) => ({ ...current, [key]: value }));
+  }, []);
 
   const copyTranscript = async () => {
     try {
@@ -608,6 +855,7 @@ export function useVoiceSession() {
     // state
     settings, phase, source, messages, elapsed, muted, sound, error, copied,
     latency, track, partialUser, settingsOpen, showInlineEditor,
+    playingSample, subscribeAudioLevel, getAudioLevel,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     toolInjection, dismissToolInjection,
@@ -622,6 +870,7 @@ export function useVoiceSession() {
     active, persona, custom, engineName, phaseLabel, duration, reduced,
     // actions
     endSession, choosePersona, chooseEngine, startBackend, applyCustomAvatarAndStart, toggleSound,
+    toggleVoiceSample, stopVoiceSample, resetToSetup,
     update, updateBool, updateNumber, copyTranscript,
   };
 }

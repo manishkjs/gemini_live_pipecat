@@ -1,111 +1,91 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import { Edit3, Mic, RotateCcw, DollarSign, Maximize2, Minimize2, Wrench, Video, Sparkles, Upload, Check, Camera, Square } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { VoiceStudio } from "@/hooks/use-voice-session";
 import {
-  LANGUAGE_OPTIONS,
-  LIVE_MODELS,
-  LIVE_MODEL_GROUPS,
-  CASCADE_STT_MODELS,
-  CASCADE_STT_MODEL_GROUPS,
-  CASCADE_LLM_MODELS,
+  formatBackendUrlError,
+  formatVoiceShortLabel,
+  getPersonaCastRole,
+  hasCustomBackendOrigin,
+  reconcileCustomDetailsOpen,
+} from "@/lib/call-console";
+import {
+  VOICE_CLONE_READING_SCRIPT,
+  captureVideoFrameToAvatarPng,
+  encodeFloat32ToWav24kMonoDataUrl,
+  normalizeAvatarPortraitFile,
+  normalizeUploadedVoiceAudioFile,
+} from "@/lib/media-capture";
+import { getPersonaPrompt, type PersonaTone } from "@/lib/personas";
+import { estimateTokens, getLiveRateCard, isLivePricingEligible } from "@/lib/pricing";
+import {
+  AVATAR_CHARACTERS,
   CASCADE_LLM_MODEL_GROUPS,
-  CASCADE_TTS_MODELS,
+  CASCADE_STT_MODEL_GROUPS,
   CASCADE_TTS_MODEL_GROUPS,
-  TTS_STYLE_OPTIONS,
-  TTS_ACCENT_OPTIONS,
-  TTS_PITCH_OPTIONS,
-  TTS_PACE_OPTIONS,
-  GEMINI_VOICES,
-  GEMINI_CLONE_VOICES,
+  CHIRP_HD_VOICES,
   GEMINI_38_LIBRARY_VOICES,
+  GEMINI_CLONE_VOICES,
+  GEMINI_VOICES,
+  LANGUAGE_OPTIONS,
+  LIVE_MODEL_GROUPS,
+  THINKING_LEVELS,
+  TTS_ACCENT_OPTIONS,
+  TTS_PACE_OPTIONS,
+  TTS_PITCH_OPTIONS,
+  TTS_STYLE_OPTIONS,
+  VAD_MODES,
+  buildPersonaPromptUrl,
+  getDefaultBackendUrl,
   isGeminiClonedVoice,
   isLibraryVoice,
   isLiveCustomVoice,
-  supportsGeminiClone,
-  CHIRP_HD_VOICES,
-  THINKING_LEVELS,
-  VAD_MODES,
-  AVATAR_CHARACTERS,
-  type VadMode,
-  usesExternalTts,
-  supportsCascadeAudioInput,
-  buildPersonaPromptUrl,
   parseToolsOverride,
+  supportsCascadeAudioInput,
+  supportsGeminiClone,
+  usesExternalTts,
+  type VadMode,
 } from "@/lib/voice-session";
-import {
-  normalizeAvatarPortraitFile,
-  captureVideoFrameToAvatarPng,
-  encodeFloat32ToWav24kMonoDataUrl,
-  normalizeUploadedVoiceAudioFile,
-  VOICE_CLONE_READING_SCRIPT,
-} from "@/lib/media-capture";
-import { getPersonaPrompt, type PersonaTone } from "@/lib/personas";
-import { isLivePricingEligible, getLiveRateCard, estimateTokens } from "@/lib/pricing";
-import type { VoiceStudio } from "@/hooks/use-voice-session";
+import { ChevronRightIcon, CloseIcon, ExpandIcon, MicOnIcon, StopSampleIcon } from "./console-icons";
 
-function Picker({
-  label,
-  value,
-  options,
-  groups,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: readonly (readonly [string, string])[];
-  groups?: readonly { label: string; options: readonly (readonly [string, string])[] }[];
-  disabled: boolean;
-  onChange: (value: string) => void;
-}) {
-  const id = label.toLowerCase().replaceAll(" ", "-");
-  return (
-    <div className="field">
-      <label id={`${id}-label`}>{label}</label>
-      <Select value={value} onValueChange={onChange} disabled={disabled}>
-        <SelectTrigger aria-labelledby={`${id}-label`} className="w-full min-w-0 select-trigger">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent position="popper">
-          {groups
-            ? groups.map((group, idx) => (
-                <SelectGroup key={group.label}>
-                  {idx > 0 && <SelectSeparator />}
-                  <SelectLabel>{group.label}</SelectLabel>
-                  {group.options.map(([v, l]) => (
-                    <SelectItem value={v} key={v}>
-                      {l}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              ))
-            : options.map(([v, l]) => (
-                <SelectItem value={v} key={v}>
-                  {l}
-                </SelectItem>
-              ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
+interface SettingsDialogProps {
+  readonly studio: VoiceStudio;
 }
 
-/** Every engine parameter the backend accepts, in one place, organized logically. */
-export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
+interface BackendToolDef {
+  name?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+/** Mode-dependent Session configuration modal for Gemini 3.8 Live and Cascade STT · TTS. */
+export default function SettingsDialog({ studio }: SettingsDialogProps) {
   const {
-    active, custom, engineName, persona, settings, settingsOpen, setSettingsOpen,
-    startBackend, applyCustomAvatarAndStart, update, updateBool, updateNumber, currentPhase,
+    active,
+    custom,
+    persona,
+    settings,
+    settingsOpen,
+    setSettingsOpen,
+    chooseEngine,
+    startBackend,
+    endSession,
+    applyCustomAvatarAndStart,
+    update,
+    updateBool,
+    updateNumber,
+    currentPhase,
   } = studio;
 
-  const isLive = settings.engine === "live";
+  const isCascade = settings.engine === "cascade";
+  const isLive = !isCascade;
+  const [isWide, setIsWide] = useState(false);
+  const [modeLockFlash, setModeLockFlash] = useState<string | null>(null);
+  const [bodyOverflowing, setBodyOverflowing] = useState(false);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const closeBtnRef = useRef<HTMLButtonElement | null>(null);
 
   // Webcam capture state for Custom Portrait (704×1280 9:16 RGB PNG)
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [cameraError, setCameraError] = useState<string>("");
+  const [cameraError, setCameraError] = useState("");
   const [avatarProcessing, setAvatarProcessing] = useState(false);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -165,17 +145,18 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
     }
   }, [applyCustomAvatarAndStart, stopCamera]);
 
-
   // Browser Microphone Recorder state for Custom Voice Clone (24 kHz 16-bit mono WAV)
   const [voiceRecording, setVoiceRecording] = useState(false);
   const [voiceRecordSec, setVoiceRecordSec] = useState(0);
-  const [voiceMetaNote, setVoiceMetaNote] = useState<string>("");
-  const [voiceError, setVoiceError] = useState<string>("");
+  const [voiceMetaNote, setVoiceMetaNote] = useState("");
+  const [voiceError, setVoiceError] = useState("");
   const voiceAudioCtxRef = useRef<AudioContext | null>(null);
   const voiceStreamRef = useRef<MediaStream | null>(null);
   const voiceChunksRef = useRef<Float32Array[]>([]);
   const voiceSampleRateRef = useRef<number>(24000);
   const voiceTimerRef = useRef<number | null>(null);
+  const voiceUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const avatarUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const cleanupVoiceRecordingResources = useCallback(() => {
     if (voiceTimerRef.current !== null) {
@@ -236,7 +217,8 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
       });
       voiceStreamRef.current = stream;
       const AudioCtx =
-        window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AudioCtx({ sampleRate: 24000 });
       voiceAudioCtxRef.current = ctx;
       voiceSampleRateRef.current = ctx.sampleRate || 24000;
@@ -268,122 +250,172 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
     }
   }, [cleanupVoiceRecordingResources, stopVoiceRecording]);
 
+  const wasOpenRef = useRef(false);
+  const cleanupRef = useRef({
+    stopCamera,
+    stopVoiceRecording,
+    cleanupVoiceRecordingResources,
+  });
+  cleanupRef.current = {
+    stopCamera,
+    stopVoiceRecording,
+    cleanupVoiceRecordingResources,
+  };
+
   useEffect(() => {
     if (!settingsOpen) {
-      stopCamera();
+      wasOpenRef.current = false;
+      setModeLockFlash(null);
+      cleanupRef.current.stopCamera();
       if (voiceStreamRef.current) {
-        stopVoiceRecording();
+        cleanupRef.current.stopVoiceRecording();
       } else {
-        cleanupVoiceRecordingResources();
+        cleanupRef.current.cleanupVoiceRecordingResources();
       }
+      return;
     }
-  }, [settingsOpen, stopCamera, stopVoiceRecording, cleanupVoiceRecordingResources]);
-
-  // Resizable dialog width (drag left/right edge or click expand button)
-  const [dialogWidth, setDialogWidth] = useState<number>(760);
-  const [isExpanded, setIsExpanded] = useState<boolean>(false);
-  const dragRef = useRef<{ startX: number; startWidth: number; side: "left" | "right" } | null>(null);
-
-  const startResize = useCallback((side: "left" | "right", e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragRef.current = { startX: e.clientX, startWidth: dialogWidth, side };
-
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const delta = ev.clientX - dragRef.current.startX;
-      // Since dialog is centered (translateX(-50%)), dragging either edge outward by delta changes width by 2 * delta
-      const signedDelta = dragRef.current.side === "right" ? delta * 2 : -delta * 2;
-      const maxW = Math.min(1440, window.innerWidth * 0.96);
-      const next = Math.max(520, Math.min(maxW, dragRef.current.startWidth + signedDelta));
-      setDialogWidth(next);
-      setIsExpanded(next >= 1000);
-    };
-
-    const onUp = () => {
-      dragRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [dialogWidth]);
-
-  const toggleExpand = useCallback(() => {
-    if (isExpanded) {
-      setDialogWidth(760);
-      setIsExpanded(false);
-    } else {
-      setDialogWidth(Math.min(1160, Math.floor(window.innerWidth * 0.94)));
-      setIsExpanded(true);
-    }
-  }, [isExpanded]);
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
+    const id = requestAnimationFrame(() => {
+      closeBtnRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [settingsOpen]);
 
   // Fetch actual backend tool configuration and server-composed prompt for the selected persona
-  const [backendTools, setBackendTools] = useState<any[]>([]);
-  const [backendToolsJson, setBackendToolsJson] = useState<string>("");
-  const [backendToolsTokens, setBackendToolsTokens] = useState<number>(0);
-  const [backendPrompt, setBackendPrompt] = useState<string>("");
-  const [toolsEditable, setToolsEditable] = useState<boolean>(true);
+  const [backendTools, setBackendTools] = useState<BackendToolDef[]>([]);
+  const [backendToolsJson, setBackendToolsJson] = useState("");
+  const [backendToolsTokens, setBackendToolsTokens] = useState(0);
+  const [backendPrompt, setBackendPrompt] = useState("");
+  const [toolsEditable, setToolsEditable] = useState(true);
+  const [toolsDraft, setToolsDraft] = useState<string | null>(null);
+  const [backendUrlError, setBackendUrlError] = useState<string | null>(null);
+  const [customDetailsOpen, setCustomDetailsOpen] = useState<boolean>(() =>
+    hasCustomBackendOrigin(settings.backendUrl, getDefaultBackendUrl()),
+  );
+  const [compressionDraft, setCompressionDraft] = useState<string>(
+    String(Math.max(5000, settings.contextCompressionTokens ?? 5000)),
+  );
+  const compressionFocusedRef = useRef(false);
+
+  useEffect(() => {
+    setToolsDraft(null);
+  }, [persona.id, settingsOpen]);
+
+  useEffect(() => {
+    if (!compressionFocusedRef.current) {
+      setCompressionDraft(String(Math.max(5000, settings.contextCompressionTokens ?? 5000)));
+    }
+  }, [settings.contextCompressionTokens]);
+
+  useEffect(() => {
+    setCustomDetailsOpen((prev) => reconcileCustomDetailsOpen(prev, backendUrlError));
+  }, [backendUrlError]);
 
   useEffect(() => {
     if (!settingsOpen) return;
+    let promptUrl: string;
+    try {
+      promptUrl = buildPersonaPromptUrl(settings, currentPhase);
+      setBackendUrlError(null);
+    } catch (err) {
+      setBackendUrlError(formatBackendUrlError(err));
+      return;
+    }
+
     let cancelled = false;
-    fetch(buildPersonaPromptUrl(settings, currentPhase))
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: { prompt?: string; tools?: any[]; tools_token_count?: number; tools_editable?: boolean }) => {
-        if (cancelled) return;
-        const canEditTools = data.tools_editable !== false;
-        setToolsEditable(canEditTools);
-        if (data.prompt?.trim()) {
-          setBackendPrompt(data.prompt.trim());
-        } else {
-          setBackendPrompt("");
-        }
-        if (Array.isArray(data.tools)) {
-          setBackendTools(data.tools);
-          const formatted = JSON.stringify(data.tools, null, 2);
-          setBackendToolsJson(formatted);
-          setBackendToolsTokens(data.tools_token_count ?? estimateTokens(formatted));
-        } else {
-          setBackendTools([]);
-          setBackendToolsJson("[]");
-          setBackendToolsTokens(0);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setToolsEditable(true);
-          setBackendTools([]);
-          setBackendToolsJson("");
-          setBackendToolsTokens(0);
-        }
-      });
+    const timer = window.setTimeout(() => {
+      fetch(promptUrl)
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+        .then(
+          (data: {
+            prompt?: string;
+            tools?: BackendToolDef[];
+            tools_token_count?: number;
+            tools_editable?: boolean;
+          }) => {
+            if (cancelled) return;
+            setToolsEditable(data.tools_editable !== false);
+            setBackendPrompt(data.prompt?.trim() ?? "");
+            if (Array.isArray(data.tools)) {
+              setBackendTools(data.tools);
+              const formatted = JSON.stringify(data.tools, null, 2);
+              setBackendToolsJson(formatted);
+              setBackendToolsTokens(data.tools_token_count ?? estimateTokens(formatted));
+            } else {
+              setBackendTools([]);
+              setBackendToolsJson("[]");
+              setBackendToolsTokens(0);
+            }
+          },
+        )
+        .catch(() => {
+          if (!cancelled) {
+            setToolsEditable(true);
+            setBackendTools([]);
+            setBackendToolsJson("");
+            setBackendToolsTokens(0);
+          }
+        });
+    }, 220);
+
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [settingsOpen, settings.personaId, settings.engine, settings.model, settings.backendUrl, settings.tone, settings.language, currentPhase]);
 
-  const effectivePresetPrompt = backendPrompt || getPersonaPrompt(persona, settings.tone);
-  const effectiveToolsText = toolsEditable && settings.toolsJson?.trim() ? settings.toolsJson : backendToolsJson;
-  const effectiveToolsTokens = toolsEditable && settings.toolsJson?.trim()
-    ? estimateTokens(settings.toolsJson)
-    : backendToolsTokens;
+  const syncBodyOverflow = useCallback(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    setBodyOverflowing(el.scrollTop + el.clientHeight < el.scrollHeight - 4);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    syncBodyOverflow();
+    const id = requestAnimationFrame(syncBodyOverflow);
+    return () => cancelAnimationFrame(id);
+  }, [settingsOpen, settings.engine, settings.avatarEnabled, settings.voice, settings.ttsModel, syncBodyOverflow]);
+
+  if (!settingsOpen) return null;
+
+  const effectivePresetPrompt = backendPrompt || getPersonaPrompt(persona, settings.tone) || "";
+  const displayedInstructions = settings.instructions || effectivePresetPrompt;
+  const instructionTokens = estimateTokens(displayedInstructions);
+
+  const activeToolsOverride = toolsEditable
+    ? toolsDraft !== null
+      ? toolsDraft
+      : settings.toolsJson
+    : "";
+
+  const effectiveToolsText = !toolsEditable
+    ? backendToolsJson
+    : toolsDraft !== null
+      ? toolsDraft
+      : settings.toolsJson?.trim()
+        ? settings.toolsJson
+        : backendToolsJson;
+  const effectiveToolsTokens =
+    toolsEditable && activeToolsOverride?.trim()
+      ? estimateTokens(activeToolsOverride)
+      : backendToolsTokens;
+
   const toolsValidationError = (() => {
-    if (!toolsEditable || !settings.toolsJson?.trim()) return null;
+    if (!toolsEditable || !activeToolsOverride?.trim()) return null;
     try {
-      parseToolsOverride(settings.toolsJson);
+      parseToolsOverride(activeToolsOverride);
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : "Invalid tool definitions JSON";
     }
   })();
+
   const effectiveToolCount = (() => {
-    if (toolsEditable && settings.toolsJson?.trim()) {
+    if (toolsEditable && activeToolsOverride?.trim()) {
       try {
-        const parsed = parseToolsOverride(settings.toolsJson);
-        return parsed.length;
+        return parseToolsOverride(activeToolsOverride).length;
       } catch {
         return backendTools.length;
       }
@@ -391,524 +423,351 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
     return backendTools.length;
   })();
 
+  const closeModal = () => {
+    setSettingsOpen(false);
+    requestAnimationFrame(() => {
+      document.getElementById("btn-settings")?.focus();
+    });
+  };
+
+  const handleEngineSwitch = (target: "live" | "cascade") => {
+    if (target === settings.engine) return;
+    if (active) {
+      setModeLockFlash("End or restart the active call to switch engine mode.");
+      return;
+    }
+    setModeLockFlash(null);
+    chooseEngine(target);
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  };
+
+  const handleModeTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    if (active) {
+      setModeLockFlash("End or restart the active call to switch engine mode.");
+      return;
+    }
+    const next = settings.engine === "live" ? "cascade" : "live";
+    handleEngineSwitch(next);
+    const nextId = next === "live" ? "cfg-mode-live" : "cfg-mode-cascade";
+    document.getElementById(nextId)?.focus();
+  };
+
+  const handleStartOrRestart = async () => {
+    if (active) {
+      await endSession();
+      setSettingsOpen(false);
+      await startBackend(settings.engine);
+    } else {
+      await startBackend(settings.engine);
+    }
+  };
+
+  const isChirpTts = settings.ttsModel === "google-tts";
+  const canSkipStt = supportsCascadeAudioInput(settings.llmModel);
+  const liveCard = isLivePricingEligible(settings.engine, settings.model)
+    ? getLiveRateCard(settings.model)
+    : null;
+  const castRole = getPersonaCastRole(persona);
+  const vadValue: VadMode = settings.vadMode ?? (settings.vad === false ? "gemini" : "both");
+
   return (
-    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-      <DialogContent
-        className="studio-dialog"
-        style={{
-          width: `min(${dialogWidth}px, 96vw)`,
-          maxWidth: `min(${dialogWidth}px, 96vw)`,
-        }}
+    <div
+      className="modal-backdrop"
+      id="settings-scrim"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) closeModal();
+      }}
+    >
+      <div
+        className={`settings-dialog ${isWide ? "is-wide" : ""}`}
+        id="settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
       >
-        {/* Left & Right Drag Handles to Expand/Shrink Settings Slider */}
-        <div
-          className="studio-dialog-resize-handle left"
-          onMouseDown={(e) => startResize("left", e)}
-          title="Drag left edge to resize dialog"
-        />
-        <div
-          className="studio-dialog-resize-handle right"
-          onMouseDown={(e) => startResize("right", e)}
-          title="Drag right edge to resize dialog"
-        />
-
-        <DialogHeader>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingRight: "28px" }}>
-            <DialogTitle>Session Configuration: {engineName}</DialogTitle>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={toggleExpand}
-              title={isExpanded ? "Restore standard width" : "Expand dialog width"}
-              aria-label={isExpanded ? "Restore standard width" : "Expand dialog width"}
-              style={{ height: "28px", width: "28px", color: "#a7b4a4" }}
-            >
-              {isExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            </Button>
+        <div className="cfg-header">
+          <div className="cfg-header-top">
+            <h2 className="cfg-title" id="settings-title">
+              Session configuration
+            </h2>
+            <div className="cfg-head-actions">
+              <button
+                type="button"
+                className="ghost-btn"
+                id="btn-settings-expand"
+                aria-pressed={isWide}
+                onClick={() => setIsWide((v) => !v)}
+              >
+                <ExpandIcon />
+                <span>Wide view</span>
+              </button>
+              <button
+                ref={closeBtnRef}
+                type="button"
+                className="ghost-btn"
+                id="btn-settings-close"
+                aria-label="Close"
+                onClick={closeModal}
+              >
+                <CloseIcon />
+              </button>
+            </div>
           </div>
-          <DialogDescription>
-            {persona.name} · {engineName}. Configure voice, persona, and runtime parameters below. Drag side borders to widen.
-          </DialogDescription>
-        </DialogHeader>
 
-        {/* Mid-call Inspection Read-Only Notice */}
+          <div className="segmented-control cfg-mode-tabs" role="tablist" aria-label="Engine mode">
+            <button
+              type="button"
+              role="tab"
+              id="cfg-mode-live"
+              aria-controls="cfg-tabpanel"
+              className="seg-btn"
+              aria-selected={isLive}
+              aria-disabled={active && isCascade ? true : undefined}
+              tabIndex={isLive ? 0 : -1}
+              onClick={() => handleEngineSwitch("live")}
+              onKeyDown={handleModeTabKeyDown}
+            >
+              Gemini 3.8 Live
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="cfg-mode-cascade"
+              aria-controls="cfg-tabpanel"
+              className="seg-btn"
+              aria-selected={isCascade}
+              aria-disabled={active && isLive ? true : undefined}
+              tabIndex={isCascade ? 0 : -1}
+              onClick={() => handleEngineSwitch("cascade")}
+              onKeyDown={handleModeTabKeyDown}
+            >
+              Cascade STT · TTS
+            </button>
+          </div>
+        </div>
+
         {active && (
-          <div className="settings-active-call-banner" role="status">
-            <span>🔒 <strong>Session in progress:</strong> Settings are read-only. Available to edit after this session ends.</span>
+          <div className="cfg-readonly-banner" role="status">
+            {modeLockFlash ??
+              "Session in progress: Engine mode is locked during a live call. Parameter updates apply on restart."}
           </div>
         )}
 
-        <div className="dialog-fields">
-          {/* HERO CARD: GEMINI 3.8 LIVE AVATAR (DEFAULT OFF). Live-only: Cascade has no video path. */}
-          {settings.engine === "live" && <div className={`settings-group avatar-settings-hero ${settings.avatarEnabled ? "avatar-hero-active" : ""}`}>
-            <div className="avatar-hero-header">
-              <div className="avatar-hero-title-wrap">
-                <div className="avatar-hero-icon">
-                  <Video size={18} />
-                </div>
-                <div>
-                  <div className="avatar-hero-title-row">
-                    <h3 className="settings-section-title" style={{ margin: 0 }}>
-                      Gemini 3.8 Live Avatar
-                    </h3>
-                    <span className="avatar-hero-badge">
-                      <Sparkles size={11} /> Vertex AI 3.8 Video
-                    </span>
-                  </div>
-                  <p className="avatar-hero-sub">
-                    Stream a real-time 9:16 portrait lip-synced digital human (704×1280 H.264 + 24 kHz AAC) powered by{" "}
-                    <code>google/gemini-3.8-live</code>. Off by default.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={Boolean(settings.avatarEnabled)}
-                disabled={active}
-                onClick={() => {
-                  const nextVal = !settings.avatarEnabled;
-                  updateBool("avatarEnabled", nextVal);
-                  if (nextVal) {
-                    update("model", "gemini-3.8-live");
-                  }
-                }}
-                className={`avatar-power-toggle ${settings.avatarEnabled ? "is-on" : ""}`}
-              >
-                <span className="avatar-power-thumb" />
-                <span className="avatar-power-label">{settings.avatarEnabled ? "ON" : "OFF"}</span>
-              </button>
-            </div>
-
-            {settings.avatarEnabled && (
-              <div className="avatar-options-panel">
-                <div className="avatar-options-label-row">
-                  <span className="avatar-options-label">Select Digital Human Character</span>
-                  <span className="avatar-options-hint">
-                    Voice: <strong>{settings.voice}</strong> · Model: <strong>gemini-3.8-live (Vertex AI)</strong>
-                  </span>
+        <div
+          ref={bodyRef}
+          className={`cfg-body scroll-area ${bodyOverflowing ? "is-overflowing-y" : ""}`}
+          id="cfg-tabpanel"
+          role="tabpanel"
+          aria-labelledby={isCascade ? "cfg-mode-cascade" : "cfg-mode-live"}
+          onScroll={syncBodyOverflow}
+        >
+          {isLive ? (
+            <>
+              <section className="cfg-group">
+                <h3 className="cfg-group-title">Gemini Live Engine</h3>
+                <div className="cfg-field">
+                  <label htmlFor="cfg-live-model">Live Model</label>
+                  <select
+                    id="cfg-live-model"
+                    className="cfg-select"
+                    value={settings.model}
+                    disabled={active}
+                    onChange={(e) => update("model", e.target.value)}
+                  >
+                    {LIVE_MODEL_GROUPS.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.options.map(([val, lbl]) => (
+                          <option key={val} value={val}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
                 </div>
 
-                <div className="avatar-character-grid" role="radiogroup" aria-label="Avatar character">
-                  {AVATAR_CHARACTERS.map((char) => {
-                    const selected = (settings.avatarName || "auto") === char.id;
-                    return (
-                      <button
-                        key={char.id}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        disabled={active}
-                        onClick={() => update("avatarName", char.id)}
-                        className={`avatar-char-card ${selected ? "selected" : ""}`}
-                        style={{ "--avatar-accent": char.accentColor } as React.CSSProperties}
-                      >
-                        <div className="avatar-char-top">
-                          <span
-                            className="avatar-char-monogram"
-                            style={{ background: char.accentColor }}
-                          >
-                            {char.id === "auto" ? "✨" : char.id === "custom" ? "📷" : char.name.slice(0, 2).toUpperCase()}
-                          </span>
-                          <div className="avatar-char-meta">
-                            <span className="avatar-char-name">{char.name}</span>
-                            <span className="avatar-char-pill">{char.badge}</span>
-                          </div>
-                          {selected && (
-                            <span className="avatar-char-check">
-                              <Check size={13} />
-                            </span>
-                          )}
-                        </div>
-                        <p className="avatar-char-role">{char.role}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {(settings.avatarName === "custom") && (
-                  <div className="avatar-custom-upload-box">
-                    <div className="avatar-custom-upload-info">
-                      <strong>Custom Portrait Upload / Camera (<code>customized_avatar</code> · Auto 704×1280 9:16 PNG)</strong>
-                      <p>
-                        Take a live photo with your webcam or upload any portrait image—automatically cropped &amp; normalized to Vertex AI&apos;s required{" "}
-                        <strong>704×1280 (9:16 RGB PNG)</strong> portrait format and starts processing immediately.
-                      </p>
+                {liveCard && (
+                  <div className="cfg-rate-strip" role="group" aria-label="Selected model token rates">
+                    <div className="cfg-rate-item">
+                      <span className="k">Audio In</span>
+                      <span className="v">${liveCard.audioInPerMillion.toFixed(2)}/1M</span>
                     </div>
-                    <div className="avatar-custom-upload-actions" style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-                      {!cameraOpen ? (
-                        <button
-                          type="button"
-                          disabled={avatarProcessing}
-                          onClick={() => void startCamera()}
-                          className="avatar-upload-btn"
-                          style={{ cursor: avatarProcessing ? "wait" : "pointer" }}
-                        >
-                          <Camera size={14} />
-                          <span>Take Photo (Camera)</span>
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={snapCameraPhoto}
-                            className="avatar-upload-btn"
-                            style={{
-                              background: "rgba(16, 185, 129, 0.22)",
-                              borderColor: "rgba(16, 185, 129, 0.55)",
-                              color: "#ecfdf5",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <Camera size={14} />
-                            <span>Snap Photo &amp; Start</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={stopCamera}
-                            className="avatar-upload-btn"
-                            style={{
-                              cursor: "pointer",
-                              background: "rgba(239, 68, 68, 0.16)",
-                              borderColor: "rgba(239, 68, 68, 0.45)",
-                            }}
-                          >
-                            <span>Close Camera</span>
-                          </button>
-                        </>
-                      )}
-                      <label className="avatar-upload-btn" style={{ cursor: avatarProcessing ? "wait" : "pointer" }}>
-                        <Upload size={14} />
-                        <span>
-                          {avatarProcessing
-                            ? "Processing 704×1280 Portrait…"
-                            : settings.avatarCustomImage
-                              ? "Replace Portrait"
-                              : "Upload Portrait"}
-                        </span>
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          disabled={avatarProcessing}
-                          style={{ display: "none" }}
-                          onChange={async (e) => {
-                            const file = e.currentTarget.files?.[0];
-                            e.currentTarget.value = "";
-                            if (!file) return;
-                            try {
-                              setCameraError("");
-                              setAvatarProcessing(true);
-                              const { dataUrl } = await normalizeAvatarPortraitFile(file);
-                              await applyCustomAvatarAndStart(dataUrl);
-                            } catch (err) {
-                              setCameraError(err instanceof Error ? err.message : "Failed to process portrait.");
-                            } finally {
-                              setAvatarProcessing(false);
-                            }
-                          }}
-                        />
-                      </label>
-                      {settings.avatarCustomImage && (
-                        <div className="avatar-custom-preview">
-                          <img
-                            src={settings.avatarCustomImage}
-                            alt="Custom avatar preview (704x1280 9:16 PNG)"
-                            title="Click portrait to start Live Avatar"
-                            style={{ cursor: "pointer" }}
-                            onClick={() => void applyCustomAvatarAndStart(settings.avatarCustomImage!)}
-                          />
-                          <span className="avatar-norm-spec-tag">704×1280 PNG</span>
-                          <button
-                            type="button"
-                            disabled={active}
-                            onClick={() => update("avatarCustomImage", "")}
-                            className="avatar-custom-clear"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                      )}
+                    <div className="cfg-rate-item">
+                      <span className="k">Audio Out</span>
+                      <span className="v">${liveCard.audioOutPerMillion.toFixed(2)}/1M</span>
                     </div>
-                    {cameraError && (
-                      <p style={{ color: "#f87171", fontSize: "12px", marginTop: "6px" }}>{cameraError}</p>
-                    )}
-                    {cameraOpen && (
-                      <div
-                        style={{
-                          marginTop: "10px",
-                          padding: "10px",
-                          background: "rgba(15, 23, 42, 0.75)",
-                          border: "1px solid rgba(56, 189, 248, 0.35)",
-                          borderRadius: "10px",
-                          display: "flex",
-                          flexDirection: "column",
-                          alignItems: "center",
-                          gap: "8px",
-                        }}
-                      >
-                        <video
-                          ref={bindCameraVideo}
-                          autoPlay
-                          playsInline
-                          muted
-                          onClick={snapCameraPhoto}
-                          title="Click video frame to capture 704×1280 portrait and start"
-                          style={{
-                            width: "176px",
-                            height: "320px",
-                            objectFit: "cover",
-                            borderRadius: "8px",
-                            border: "1px solid rgba(255,255,255,0.2)",
-                            transform: "scaleX(-1)",
-                            cursor: "pointer",
-                          }}
-                        />
-                        <div style={{ display: "flex", gap: "8px" }}>
-                          <button
-                            type="button"
-                            onClick={snapCameraPhoto}
-                            className="avatar-upload-btn"
-                            style={{
-                              background: "rgba(16, 185, 129, 0.22)",
-                              borderColor: "rgba(16, 185, 129, 0.55)",
-                              color: "#ecfdf5",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <Camera size={14} />
-                            <span>Capture 704×1280 Portrait</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={stopCamera}
-                            className="avatar-custom-clear"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <div className="cfg-rate-item">
+                      <span className="k">Text In</span>
+                      <span className="v">${liveCard.textInPerMillion.toFixed(2)}/1M</span>
+                    </div>
+                    <div className="cfg-rate-item">
+                      <span className="k">Text Out</span>
+                      <span className="v">${liveCard.textOutPerMillion.toFixed(2)}/1M</span>
+                    </div>
                   </div>
                 )}
 
-              </div>
-            )}
-          </div>}
+                <div className="cfg-grid-2">
+                  <div className="cfg-field">
+                    <label htmlFor="cfg-live-voice">Voice</label>
+                    <select
+                      id="cfg-live-voice"
+                      className="cfg-select"
+                      value={settings.voice}
+                      disabled={active}
+                      onChange={(e) => {
+                        const nextVoice = e.target.value;
+                        update("voice", nextVoice);
+                        if (isGeminiClonedVoice(nextVoice) || isLiveCustomVoice(nextVoice)) {
+                          update("model", "gemini-3.8-live");
+                        }
+                      }}
+                    >
+                      {GEMINI_VOICES.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-          {/* GROUP 1: ENGINE & PIPELINE (TOP OF SETTINGS: STT -> LLM -> TTS) */}
-          <div className="settings-group">
-            <h3 className="settings-section-title">{engineName} Engine</h3>
-
-            {isLive ? (
-              <>
-                <Picker
-                  label="Live Model"
-                  value={settings.model}
-                  disabled={active}
-                  onChange={(value) => update("model", value)}
-                  options={LIVE_MODELS}
-                  groups={LIVE_MODEL_GROUPS}
-                />
-
-                {isLivePricingEligible(settings.engine, settings.model) && (() => {
-                  const card = getLiveRateCard(settings.model);
-                  if (!card) return null;
-                  return (
-                    <div className="live-pricing-callout">
-                      <div className="pricing-callout-head">
-                        <span className="pricing-badge-title">
-                          <DollarSign size={12} /> {card.displayName} Pricing
-                        </span>
-                        <span className="pricing-est-pill">{card.estHourlyUSD}</span>
-                      </div>
-                      <div className="pricing-rate-grid">
-                        <div className="pricing-rate-col">
-                          <span className="rate-lbl">Audio In:</span>
-                          <span className="rate-val">${card.audioInPerMillion.toFixed(2)}/1M tok</span>
-                        </div>
-                        <div className="pricing-rate-col">
-                          <span className="rate-lbl">Audio Out:</span>
-                          <span className="rate-val">${card.audioOutPerMillion.toFixed(2)}/1M tok</span>
-                        </div>
-                        <div className="pricing-rate-col">
-                          <span className="rate-lbl">Text In:</span>
-                          <span className="rate-val">${card.textInPerMillion.toFixed(2)}/1M tok</span>
-                        </div>
-                        <div className="pricing-rate-col">
-                          <span className="rate-lbl">Text Out:</span>
-                          <span className="rate-val">${card.textOutPerMillion.toFixed(2)}/1M tok</span>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                <div className="settings-pair">
-                  <Picker
-                    label="Voice"
-                    value={settings.voice}
-                    disabled={active}
-                    onChange={(value) => {
-                      update("voice", value);
-                      if (isGeminiClonedVoice(value) || isLiveCustomVoice(value)) {
-                        update("model", "gemini-3.8-live");
-                      }
-                    }}
-                    options={GEMINI_VOICES}
-                  />
-                  <Picker
-                    label="Language"
-                    value={settings.language}
-                    disabled={active}
-                    onChange={(value) => update("language", value)}
-                    options={LANGUAGE_OPTIONS}
-                  />
+                  <div className="cfg-field">
+                    <label htmlFor="cfg-language">Language</label>
+                    <select
+                      id="cfg-language"
+                      className="cfg-select"
+                      value={settings.language}
+                      disabled={active}
+                      onChange={(e) => update("language", e.target.value)}
+                    >
+                      {LANGUAGE_OPTIONS.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 {settings.voice === "Gemini-Clone-Male" && (
-                  <div style={{ padding: "8px 12px", background: "rgba(16, 185, 129, 0.1)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: "8px", fontSize: "12px", color: "#6ee7b7", marginBottom: "8px" }}>
-                    ✨ <strong>Manish · Gemini 3.8 Live Voice Clone:</strong> Uses Manish&apos;s pre-bundled 24 kHz 16-bit mono reference WAV natively on <code>google/gemini-3.8-live</code> via <code>replicated_voice_config</code>.
+                  <div className="cfg-subcard">
+                    <div className="cfg-subcard-head">
+                      <span className="cfg-subcard-title">
+                        Manish · Gemini 3.8 Live Voice Clone (24 kHz 16-bit mono WAV)
+                      </span>
+                      <span className="mono-pill">ReplicatedVoiceConfig</span>
+                    </div>
+                    <p className="cfg-help">
+                      Uses the pre-bundled 24 kHz 16-bit mono reference WAV natively on google/gemini-3.8-live.
+                    </p>
                   </div>
                 )}
 
                 {settings.voice === "Custom-Live-Voice" && (
-                  <div
-                    style={{
-                      padding: "12px",
-                      background: "rgba(56, 189, 248, 0.07)",
-                      border: "1px solid rgba(56, 189, 248, 0.28)",
-                      borderRadius: "10px",
-                      marginBottom: "10px",
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "10px",
-                    }}
-                  >
-                    <div style={{ fontSize: "12px", lineHeight: 1.45 }}>
-                      <strong style={{ color: "#38bdf8", display: "block", marginBottom: "3px" }}>
-                        🎙️ Record or Upload Your Voice (Gemini 3.8 Live Zero-Shot Clone · 24 kHz 16-bit Mono WAV)
-                      </strong>
-                      <span style={{ color: "rgba(226, 232, 240, 0.85)" }}>
-                        Record 10–20 seconds from your microphone or upload an audio clip (<code>.wav</code>, <code>.mp3</code>, <code>.m4a</code>). Automatically converted to <strong>24 kHz 16-bit mono PCM WAV</strong> for Vertex AI <code>replicated_voice_config</code>.
+                  <div className="cfg-subcard">
+                    <div className="cfg-subcard-head">
+                      <span className="cfg-subcard-title">
+                        Zero-Shot Voice Clone (10-20s Reference Audio)
                       </span>
+                      <span className="mono-pill">ReplicatedVoiceConfig</span>
                     </div>
-
-                    <div
-                      style={{
-                        padding: "8px 10px",
-                        background: "rgba(15, 23, 42, 0.65)",
-                        border: "1px dashed rgba(148, 163, 184, 0.3)",
-                        borderRadius: "8px",
-                        fontSize: "11.5px",
-                        color: "#e2e8f0",
-                        lineHeight: 1.5,
-                      }}
-                    >
-                      <span style={{ color: "#94a3b8", fontWeight: 600, display: "block", marginBottom: "2px" }}>
-                        Suggested 15-Second Reading Script:
-                      </span>
-                      &ldquo;{VOICE_CLONE_READING_SCRIPT}&rdquo;
-                    </div>
-
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+                    <p className="cfg-help">
+                      Read aloud for 10 to 20 seconds in a quiet room: &ldquo;{VOICE_CLONE_READING_SCRIPT}&rdquo;
+                    </p>
+                    <div className="cfg-btn-row">
                       {!voiceRecording ? (
                         <button
                           type="button"
+                          className="ghost-btn"
+                          id="cfg-record-voice"
+                          aria-pressed={false}
                           disabled={active}
                           onClick={() => void startVoiceRecording()}
-                          className="avatar-upload-btn"
-                          style={{
-                            cursor: active ? "not-allowed" : "pointer",
-                            background: "rgba(239, 68, 68, 0.16)",
-                            borderColor: "rgba(239, 68, 68, 0.45)",
-                            color: "#fecaca",
-                          }}
                         >
-                          <Mic size={14} />
-                          <span>{settings.customVoiceAudio ? "Re-Record Mic (10–20s)" : "Record Voice (10–20s)"}</span>
+                          <MicOnIcon />
+                          <span>
+                            {settings.customVoiceAudio
+                              ? "Re-record 10-20s sample"
+                              : "Record 10-20s sample"}
+                          </span>
                         </button>
                       ) : (
                         <button
                           type="button"
+                          className="ghost-btn warn"
+                          id="cfg-record-voice"
+                          aria-pressed={true}
                           onClick={stopVoiceRecording}
-                          className="avatar-upload-btn"
-                          style={{
-                            cursor: "pointer",
-                            background: "rgba(239, 68, 68, 0.35)",
-                            borderColor: "#ef4444",
-                            color: "#ffffff",
-                            fontWeight: 600,
-                          }}
                         >
-                          <Square size={14} />
-                          <span>Stop &amp; Save ({voiceRecordSec.toFixed(1)}s / 20s)</span>
+                          <StopSampleIcon />
+                          <span>Stop recording ({voiceRecordSec.toFixed(1)}s)</span>
                         </button>
                       )}
 
-                      <label className="avatar-upload-btn" style={{ cursor: active ? "not-allowed" : "pointer" }}>
-                        <Upload size={14} />
-                        <span>Upload Audio (.wav/.mp3/.m4a)</span>
-                        <input
-                          type="file"
-                          accept="audio/wav,audio/x-wav,audio/mpeg,audio/mp3,audio/mp4,audio/x-m4a,audio/webm,audio/ogg,.wav,.mp3,.m4a"
-                          disabled={active || voiceRecording}
-                          style={{ display: "none" }}
-                          onChange={async (e) => {
-                            const file = e.currentTarget.files?.[0];
-                            e.currentTarget.value = "";
-                            if (!file) return;
-                            try {
-                              setVoiceError("");
-                              const { dataUrl, durationSec, byteLength } = await normalizeUploadedVoiceAudioFile(file);
-                              update("customVoiceAudio", dataUrl);
-                              update("model", "gemini-3.8-live");
-                              setVoiceMetaNote(`24 kHz · 16-bit mono WAV · ${durationSec.toFixed(1)}s (${Math.round(byteLength / 1024)} KB)`);
-                            } catch (err) {
-                              setVoiceError(err instanceof Error ? err.message : "Failed to normalize audio file.");
-                            }
-                          }}
-                        />
-                      </label>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        id="cfg-upload-voice-btn"
+                        disabled={active || voiceRecording}
+                        onClick={() => voiceUploadInputRef.current?.click()}
+                      >
+                        Upload WAV / MP3
+                      </button>
+                      <input
+                        ref={voiceUploadInputRef}
+                        type="file"
+                        id="cfg-upload-voice-file"
+                        accept="audio/wav,audio/x-wav,audio/mpeg,audio/mp3,audio/mp4,audio/x-m4a,audio/webm,audio/ogg,.wav,.mp3,.m4a"
+                        hidden
+                        onChange={async (e) => {
+                          const file = e.currentTarget.files?.[0];
+                          e.currentTarget.value = "";
+                          if (!file) return;
+                          try {
+                            setVoiceError("");
+                            const { dataUrl, durationSec, byteLength } =
+                              await normalizeUploadedVoiceAudioFile(file);
+                            update("customVoiceAudio", dataUrl);
+                            update("model", "gemini-3.8-live");
+                            setVoiceMetaNote(
+                              `24 kHz · 16-bit mono WAV · ${durationSec.toFixed(1)}s (${Math.round(byteLength / 1024)} KB)`,
+                            );
+                          } catch (err) {
+                            setVoiceError(
+                              err instanceof Error ? err.message : "Failed to normalize audio file.",
+                            );
+                          }
+                        }}
+                      />
 
                       {settings.customVoiceAudio && (
                         <button
                           type="button"
+                          className="ghost-btn"
                           disabled={active}
                           onClick={() => {
                             update("customVoiceAudio", "");
                             setVoiceMetaNote("");
                           }}
-                          className="avatar-custom-clear"
                         >
-                          Clear Voice Sample
+                          Clear sample
                         </button>
                       )}
                     </div>
 
-                    {voiceError && (
-                      <p style={{ color: "#f87171", fontSize: "12px", margin: 0 }}>{voiceError}</p>
-                    )}
+                    {voiceError && <p className="cfg-error-note">{voiceError}</p>}
 
                     {settings.customVoiceAudio && (
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "10px",
-                          padding: "6px 10px",
-                          background: "rgba(16, 185, 129, 0.1)",
-                          border: "1px solid rgba(16, 185, 129, 0.3)",
-                          borderRadius: "8px",
-                        }}
-                      >
-                        <span className="avatar-norm-spec-tag" style={{ whiteSpace: "nowrap" }}>
-                          ✓ {voiceMetaNote || "24 kHz 16-bit Mono WAV"}
+                      <div className="cfg-audio-row">
+                        <span className="mono-pill">
+                          {voiceMetaNote || "24 kHz 16-bit Mono WAV"}
                         </span>
                         <audio
+                          className="cfg-audio-preview"
                           controls
                           src={settings.customVoiceAudio}
-                          style={{ height: "28px", flex: 1, minWidth: "160px" }}
                         />
                       </div>
                     )}
@@ -916,674 +775,855 @@ export default function SettingsDialog({ studio }: { studio: VoiceStudio }) {
                 )}
 
                 {settings.voice === "Custom-Key" && (
-                  <div className="field" style={{ marginTop: "4px" }}>
-                    <label htmlFor="settings-custom-voice-key">Custom Voice Key / Replicated ID</label>
-                    <Input
-                      id="settings-custom-voice-key"
-                      type="password"
-                      autoComplete="off"
-                      placeholder="e.g. projects/.../voices/my-voice or voice_key"
-                      value={settings.customVoiceKey ?? ""}
-                      disabled={active}
-                      onChange={(e) => update("customVoiceKey", e.target.value)}
-                    />
-                    <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
-                  </div>
-                )}
-
-                {settings.voice.startsWith("Custom-") && settings.voice !== "Custom-Live-Voice" && (
-                  <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", marginBottom: "8px" }}>
-                    ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
+                  <div className="cfg-subcard">
+                    <div className="cfg-subcard-head">
+                      <span className="cfg-subcard-title">Custom Voice Cloning Key</span>
+                      <span className="mono-pill">Cloud TTS Clone</span>
+                    </div>
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-voice-key">Voice Key</label>
+                      <input
+                        type="password"
+                        id="cfg-voice-key"
+                        className="cfg-input"
+                        autoComplete="off"
+                        placeholder="Paste voice_key or projects/.../voices/my-voice"
+                        value={settings.customVoiceKey ?? ""}
+                        disabled={active}
+                        onChange={(e) => update("customVoiceKey", e.target.value)}
+                      />
+                    </div>
                   </div>
                 )}
 
                 {usesExternalTts(settings) && (
-                  <div className="settings-slider-field">
-                    <div className="slider-label-row">
-                      <label htmlFor="settings-pace-slider-live">Speaking Rate Multiplier (Numeric)</label>
-                      <span className="slider-val">{(settings.ttsPace ?? 1.0).toFixed(2)}x</span>
+                  <div className="cfg-field">
+                    <div className="cfg-label-row">
+                      <label htmlFor="cfg-tts-pace-live">Speaking rate</label>
+                      <span className="mono-pill">{(settings.ttsPace ?? 1.0).toFixed(2)}x</span>
                     </div>
                     <input
-                      id="settings-pace-slider-live"
                       type="range"
+                      id="cfg-tts-pace-live"
+                      className="cfg-range"
                       min="0.25"
                       max="2.0"
                       step="0.05"
                       value={settings.ttsPace ?? 1.0}
                       disabled={active}
                       onChange={(e) => updateNumber("ttsPace", parseFloat(e.target.value))}
-                      className="range-slider"
                     />
                   </div>
                 )}
-              </>
-            ) : (
-              <>
-                {/* 1. STT */}
-                <Picker
-                  label="1. Speech Recognition (STT)"
+              </section>
+
+              <section className="cfg-group">
+                <div className="cfg-card-head">
+                  <div>
+                    <div className="cfg-card-title-row">
+                      <h3 className="cfg-group-title" id="cfg-avatar-heading">
+                        Gemini 3.8 Live Avatar
+                      </h3>
+                      <span className="mono-pill">704×1280 · 24fps</span>
+                    </div>
+                    <p className="cfg-help">
+                      Stream a real-time lip-synced Vertex AI video portrait alongside native audio.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    id="cfg-avatar-switch"
+                    className="switch-btn"
+                    aria-checked={Boolean(settings.avatarEnabled)}
+                    aria-labelledby="cfg-avatar-heading"
+                    disabled={active}
+                    onClick={() => {
+                      const nextVal = !settings.avatarEnabled;
+                      updateBool("avatarEnabled", nextVal);
+                      if (nextVal) update("model", "gemini-3.8-live");
+                    }}
+                  >
+                    <span className="switch-track" aria-hidden="true">
+                      <span className="switch-thumb" />
+                    </span>
+                  </button>
+                </div>
+
+                {settings.avatarEnabled && (
+                  <>
+                    <div className="cfg-avatar-grid" role="group" aria-label="Avatar character">
+                      {AVATAR_CHARACTERS.map((ch) => {
+                        const selected = (settings.avatarName || "auto") === ch.id;
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            id={`cfg-char-${ch.id}`}
+                            className="cfg-char-btn"
+                            aria-pressed={selected}
+                            disabled={active}
+                            onClick={() => update("avatarName", ch.id)}
+                          >
+                            <span className="cfg-char-name">{ch.name}</span>
+                            <span className="cfg-char-sub">{ch.badge}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {settings.avatarName === "custom" && (
+                      <div className="cfg-subcard">
+                        <div className="cfg-subcard-head">
+                          <span className="cfg-subcard-title">
+                            Custom Portrait (704×1280 9:16 RGB PNG)
+                          </span>
+                          <span className="mono-pill">customized_avatar</span>
+                        </div>
+                        <p className="cfg-help">
+                          Capture from your webcam or upload any portrait photo. Automatically cropped and normalized to 704×1280 PNG.
+                        </p>
+                        <div className="cfg-btn-row">
+                          {!cameraOpen ? (
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              disabled={avatarProcessing}
+                              onClick={() => void startCamera()}
+                            >
+                              Take photo (Camera)
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                className="ghost-btn"
+                                onClick={snapCameraPhoto}
+                              >
+                                Snap photo &amp; start
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-btn"
+                                onClick={stopCamera}
+                              >
+                                Close camera
+                              </button>
+                            </>
+                          )}
+
+                          <button
+                            type="button"
+                            className="ghost-btn"
+                            disabled={avatarProcessing}
+                            onClick={() => avatarUploadInputRef.current?.click()}
+                          >
+                            {avatarProcessing
+                              ? "Processing portrait..."
+                              : settings.avatarCustomImage
+                                ? "Replace portrait"
+                                : "Upload portrait"}
+                          </button>
+                          <input
+                            ref={avatarUploadInputRef}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            hidden
+                            onChange={async (e) => {
+                              const file = e.currentTarget.files?.[0];
+                              e.currentTarget.value = "";
+                              if (!file) return;
+                              try {
+                                setCameraError("");
+                                setAvatarProcessing(true);
+                                const { dataUrl } = await normalizeAvatarPortraitFile(file);
+                                await applyCustomAvatarAndStart(dataUrl);
+                              } catch (err) {
+                                setCameraError(
+                                  err instanceof Error ? err.message : "Failed to process portrait.",
+                                );
+                              } finally {
+                                setAvatarProcessing(false);
+                              }
+                            }}
+                          />
+
+                          {settings.avatarCustomImage && (
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              disabled={active}
+                              onClick={() => update("avatarCustomImage", "")}
+                            >
+                              Clear portrait
+                            </button>
+                          )}
+                        </div>
+
+                        {cameraError && <p className="cfg-error-note">{cameraError}</p>}
+
+                        {cameraOpen && (
+                          <div className="cfg-webcam-box">
+                            <video
+                              ref={bindCameraVideo}
+                              autoPlay
+                              playsInline
+                              muted
+                              className="cfg-webcam-video"
+                              onClick={snapCameraPhoto}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            </>
+          ) : (
+            <section className="cfg-group">
+              <h3 className="cfg-group-title">Cascade Engine</h3>
+
+              <div className="cfg-field">
+                <label htmlFor="cfg-stt-model">1. Speech Recognition (STT)</label>
+                <select
+                  id="cfg-stt-model"
+                  className="cfg-select"
                   value={settings.sttModel}
-                  disabled={active}
-                  onChange={(value) => update("sttModel", value)}
-                  options={CASCADE_STT_MODELS}
-                  groups={CASCADE_STT_MODEL_GROUPS}
-                />
+                  disabled={active || (Boolean(settings.skipStt) && canSkipStt)}
+                  onChange={(e) => update("sttModel", e.target.value)}
+                >
+                  {CASCADE_STT_MODEL_GROUPS.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
 
-                <label className="toggle-label" style={{ marginBottom: "10px" }}>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(settings.skipStt) && supportsCascadeAudioInput(settings.llmModel)}
-                    disabled={active || !supportsCascadeAudioInput(settings.llmModel)}
-                    onChange={(e) => updateBool("skipStt", e.target.checked)}
-                  />
-                  <span>
+              <div className="cfg-switch-row">
+                <div>
+                  <div className="cfg-switch-label" id="lbl-skip-stt">
                     Skip STT (Send audio directly to LLM)
-                    {!supportsCascadeAudioInput(settings.llmModel) ? " · requires multimodal audio LLM" : ""}
+                  </div>
+                  <div className="cfg-help">
+                    {!canSkipStt
+                      ? "Selected LLM accepts text input only; STT is required."
+                      : "Stream 16 kHz PCM audio directly into Gemini Flash without a separate STT hop."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  id="cfg-skip-stt"
+                  className="switch-btn"
+                  aria-checked={Boolean(settings.skipStt) && canSkipStt}
+                  aria-labelledby="lbl-skip-stt"
+                  disabled={active || !canSkipStt}
+                  onClick={() => updateBool("skipStt", !settings.skipStt)}
+                >
+                  <span className="switch-track" aria-hidden="true">
+                    <span className="switch-thumb" />
                   </span>
-                </label>
+                </button>
+              </div>
 
-                {/* 2. LLM */}
-                <Picker
-                  label="2. Language Model (LLM)"
+              <div className="cfg-field">
+                <label htmlFor="cfg-llm-model">2. Language Model (LLM)</label>
+                <select
+                  id="cfg-llm-model"
+                  className="cfg-select"
                   value={settings.llmModel}
                   disabled={active}
-                  onChange={(value) => {
-                    update("llmModel", value);
-                    if (!supportsCascadeAudioInput(value) && settings.skipStt) {
+                  onChange={(e) => {
+                    const nextLlm = e.target.value;
+                    update("llmModel", nextLlm);
+                    if (!supportsCascadeAudioInput(nextLlm) && settings.skipStt) {
                       updateBool("skipStt", false);
                     }
                   }}
-                  options={CASCADE_LLM_MODELS}
-                  groups={CASCADE_LLM_MODEL_GROUPS}
-                />
+                >
+                  {CASCADE_LLM_MODEL_GROUPS.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
 
-                {/* 3. TTS */}
-                <Picker
-                  label="3. Voice Model (TTS)"
+              <div className="cfg-field">
+                <label htmlFor="cfg-tts-model">3. Voice Model (TTS)</label>
+                <select
+                  id="cfg-tts-model"
+                  className="cfg-select"
                   value={settings.ttsModel}
                   disabled={active}
-                  onChange={(value) => update("ttsModel", value)}
-                  options={CASCADE_TTS_MODELS}
-                  groups={CASCADE_TTS_MODEL_GROUPS}
-                />
-
-                {settings.ttsModel !== "google-tts" && (
-                  <>
-                    <div className="settings-pair">
-                      <Picker
-                        label="Gemini TTS Voice"
-                        value={settings.voice}
-                        disabled={active}
-                        onChange={(value) => update("voice", value)}
-                        options={[
-                          ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_CLONE_VOICES : []),
-                          ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_38_LIBRARY_VOICES : []),
-                          ...GEMINI_VOICES.filter(([voice]) => !voice.startsWith("Custom") && !isGeminiClonedVoice(voice)),
-                        ]}
-                      />
-                      <Picker
-                        label="Language"
-                        value={settings.language}
-                        disabled={active}
-                        onChange={(value) => update("language", value)}
-                        options={LANGUAGE_OPTIONS}
-                      />
-                    </div>
-
-                    {/* Gemini 3.8 Speaker Settings (SpeechMetadata) - Auto-selected per Persona */}
-                    <div
-                      style={{
-                        padding: "14px",
-                        background: "rgba(56, 189, 248, 0.05)",
-                        border: "1px solid rgba(56, 189, 248, 0.22)",
-                        borderRadius: "10px",
-                        marginTop: "6px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "6px" }}>
-                        <span style={{ fontWeight: 600, fontSize: "13px", color: "#38bdf8" }}>
-                          Voice Design & Speaker Settings (Auto-matched to {persona.name})
-                        </span>
-                        <span
-                          style={{
-                            fontSize: "11px",
-                            padding: "2px 8px",
-                            borderRadius: "999px",
-                            background: "rgba(16, 185, 129, 0.14)",
-                            border: "1px solid rgba(16, 185, 129, 0.3)",
-                            color: "#34d399",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {settings.ttsModel === "gemini-3.8-flash-tts"
-                            ? "$0.50 / 1M in · $9.00 / 1M audio out"
-                            : settings.ttsModel === "gemini-3.8-flash-lite-tts"
-                              ? "$0.50 / 1M in · $6.00 / 1M audio out"
-                              : "Vertex AI Gemini TTS"}
-                        </span>
-                      </div>
-
-                      <div className="settings-pair">
-                        <Picker
-                          label="Style"
-                          value={settings.ttsStyle ?? "Empathetic"}
-                          disabled={active}
-                          onChange={(value) => update("ttsStyle", value)}
-                          options={TTS_STYLE_OPTIONS}
-                        />
-                        <Picker
-                          label="Pace"
-                          value={settings.ttsPaceLabel ?? "Natural"}
-                          disabled={active}
-                          onChange={(value) => update("ttsPaceLabel", value)}
-                          options={TTS_PACE_OPTIONS}
-                        />
-                      </div>
-
-                      <div className="settings-pair">
-                        <Picker
-                          label="Accent"
-                          value={settings.ttsAccent ?? "Indian"}
-                          disabled={
-                            active ||
-                            (supportsGeminiClone(settings.ttsModel) &&
-                              (isLibraryVoice(settings.voice) || isGeminiClonedVoice(settings.voice)))
-                          }
-                          onChange={(value) => update("ttsAccent", value)}
-                          options={TTS_ACCENT_OPTIONS}
-                        />
-                        <Picker
-                          label="Pitch"
-                          value={settings.ttsPitch ?? "Default"}
-                          disabled={active}
-                          onChange={(value) => update("ttsPitch", value)}
-                          options={TTS_PITCH_OPTIONS}
-                        />
-                      </div>
-
-                      {!supportsGeminiClone(settings.ttsModel) ? (
-                        <div className="field">
-                          <label htmlFor="tts-voice-prompt">
-                            Persona Voice Design Prompt (Vertex 2.5 / 3.1 TTS System Instruction)
-                          </label>
-                          <Textarea
-                            id="tts-voice-prompt"
-                            rows={2}
-                            disabled={active}
-                            placeholder="Automatically populated based on active persona, or customize here."
-                            value={settings.ttsVoicePrompt ?? ""}
-                            onChange={(e) => update("ttsVoicePrompt", e.target.value)}
-                            className="instructions-textarea"
-                            style={{ minHeight: "52px" }}
-                          />
-                        </div>
-                      ) : null}
-
-                      <p className="field-hint" style={{ marginTop: "2px" }}>
-                        {supportsGeminiClone(settings.ttsModel) ? (
-                          <>
-                            {settings.ttsModel === "gemini-3.8-flash-lite-tts" ? (
-                              <>
-                                <code>gemini-3.8-flash-lite-tts</code> sends a single-call clean transcript with a constant{" "}
-                                <code>SpeechMetadata(style=&quot;calm, conversational&quot;)</code> baseline to lock speaker pitch across turns.
-                              </>
-                            ) : (
-                              <>
-                                <code>gemini-3.8-flash-tts</code> sends a single-call clean transcript with no{" "}
-                                <code>speech_metadata</code> or vocal tags so the voice itself carries identity and cadence.
-                              </>
-                            )}{" "}
-                            Set <code>GEMINI_38_TTS_STYLE=1</code> on the server to send{" "}
-                            <code>
-                              SpeechMetadata(style=&quot;{settings.ttsStyle ?? "Empathetic"},{" "}
-                              {(settings.ttsPaceLabel ?? "Natural").toLowerCase()} pace
-                              {settings.ttsPitch && settings.ttsPitch !== "Default"
-                                ? `, ${settings.ttsPitch.toLowerCase()} pitch`
-                                : ""}
-                              &quot;)
-                            </code>{" "}
-                            per part instead.
-                          </>
-                        ) : (
-                          <code>
-                            system_instruction=&quot;{settings.ttsVoicePrompt ?? ""}&quot;
-                          </code>
-                        )}
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                {settings.ttsModel === "google-tts" && (
-                  <>
-                    <div className="settings-pair">
-                      <Picker
-                        label="Chirp 3 HD Voice Options"
-                        value={settings.voice}
-                        disabled={active}
-                        onChange={(value) => update("voice", value)}
-                        options={CHIRP_HD_VOICES}
-                      />
-                      <Picker
-                        label="Language"
-                        value={settings.language}
-                        disabled={active}
-                        onChange={(value) => update("language", value)}
-                        options={LANGUAGE_OPTIONS}
-                      />
-                    </div>
-
-                    {settings.voice === "Custom-Key" && (
-                      <div className="field" style={{ marginTop: "4px" }}>
-                        <label htmlFor="settings-custom-voice-key-cascade">Custom Voice Key / Replicated ID</label>
-                        <Input
-                          id="settings-custom-voice-key-cascade"
-                          type="password"
-                          autoComplete="off"
-                          placeholder="e.g. projects/.../voices/my-voice or voice_key"
-                          value={settings.customVoiceKey ?? ""}
-                          disabled={active}
-                          onChange={(e) => update("customVoiceKey", e.target.value)}
-                        />
-                        <p className="field-hint">Enter your EAP Voice Replication Key or cloned voice identifier.</p>
-                      </div>
-                    )}
-
-                    {settings.voice.startsWith("Custom") && (
-                      <div style={{ padding: "8px 12px", background: "rgba(245, 158, 11, 0.1)", border: "1px solid rgba(245, 158, 11, 0.25)", borderRadius: "8px", fontSize: "12px", color: "#fbbf24", margin: "8px 0" }}>
-                        ℹ️ <strong>Custom Voice Mode:</strong> Synthesized via Google Cloud TTS voice cloning pipeline.
-                      </div>
-                    )}
-                  </>
-                )}
-
-                <div className="settings-slider-field">
-                  <div className="slider-label-row">
-                    <label htmlFor="settings-pace-slider">Speaking Rate Multiplier (Numeric)</label>
-                    <span className="slider-val">{(settings.ttsPace ?? 1.0).toFixed(2)}x</span>
-                  </div>
-                  <input
-                    id="settings-pace-slider"
-                    type="range"
-                    min="0.25"
-                    max="2.0"
-                    step="0.05"
-                    value={settings.ttsPace ?? 1.0}
-                    disabled={active}
-                    onChange={(e) => updateNumber("ttsPace", parseFloat(e.target.value))}
-                    className="range-slider"
-                  />
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* GROUP 2: AGENT INSTRUCTIONS */}
-          <div className="settings-group">
-            <h3 className="settings-section-title">Agent Persona & Instructions</h3>
-
-            {/* Persona tone selector */}
-            {!custom && persona.signaturePrompt && (
-              <div className="field">
-                <label htmlFor="persona-tone">Persona Tone</label>
-                <Select
-                  value={settings.tone}
-                  onValueChange={(value) => update("tone", value as PersonaTone)}
-                  disabled={active || Boolean(settings.instructions)}
+                  onChange={(e) => update("ttsModel", e.target.value)}
                 >
-                  <SelectTrigger id="persona-tone">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent position="popper">
-                    <SelectItem value="professional">Professional (default)</SelectItem>
-                    <SelectItem value="signature">Signature ({persona.agentName} in character)</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="field-hint">
-                  {settings.instructions
-                    ? "Custom instructions are in effect, so the persona register is not used."
-                    : settings.tone === "signature"
-                      ? `The original, high-character ${persona.name.toLowerCase()}. Best for audiences who know the demo.`
-                      : "The same scenario played straight. Suited to a general audience."}
-                </p>
+                  {CASCADE_TTS_MODEL_GROUPS.map((group) => (
+                    <optgroup key={group.label} label={group.label}>
+                      {group.options.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+
+              <div className="cfg-grid-2">
+                <div className="cfg-field">
+                  <label htmlFor="cfg-cascade-voice">
+                    {isChirpTts ? "Chirp 3 HD Voice Options" : "Gemini TTS Voice"}
+                  </label>
+                  <select
+                    id="cfg-cascade-voice"
+                    className="cfg-select"
+                    value={settings.voice}
+                    disabled={active}
+                    onChange={(e) => update("voice", e.target.value)}
+                  >
+                    {isChirpTts ? (
+                      CHIRP_HD_VOICES.map(([val, lbl]) => (
+                        <option key={val} value={val}>
+                          {lbl}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <optgroup label="Gemini Standard & Cloned Voices">
+                          {[
+                            ...(supportsGeminiClone(settings.ttsModel) ? GEMINI_CLONE_VOICES : []),
+                            ...GEMINI_VOICES.filter(
+                              ([v]) => !v.startsWith("Custom") && !isGeminiClonedVoice(v),
+                            ),
+                          ].map(([val, lbl]) => (
+                            <option key={val} value={val}>
+                              {lbl}
+                            </option>
+                          ))}
+                        </optgroup>
+                        {supportsGeminiClone(settings.ttsModel) && (
+                          <optgroup label="Indian English · Extended Voice Library">
+                            {GEMINI_38_LIBRARY_VOICES.map(([val, lbl]) => (
+                              <option key={val} value={val}>
+                                {lbl}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div className="cfg-field">
+                  <label htmlFor="cfg-language">Language</label>
+                  <select
+                    id="cfg-language"
+                    className="cfg-select"
+                    value={settings.language}
+                    disabled={active}
+                    onChange={(e) => update("language", e.target.value)}
+                  >
+                    {LANGUAGE_OPTIONS.map(([val, lbl]) => (
+                      <option key={val} value={val}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {isChirpTts && settings.voice === "Custom-Key" && (
+                <div className="cfg-subcard">
+                  <div className="cfg-subcard-head">
+                    <span className="cfg-subcard-title">Custom Voice Cloning Key</span>
+                    <span className="mono-pill">Cloud TTS Clone</span>
+                  </div>
+                  <div className="cfg-field">
+                    <label htmlFor="cfg-voice-key-cascade">Voice Key</label>
+                    <input
+                      type="password"
+                      id="cfg-voice-key-cascade"
+                      className="cfg-input"
+                      autoComplete="off"
+                      placeholder="Paste voice_key or projects/.../voices/my-voice"
+                      value={settings.customVoiceKey ?? ""}
+                      disabled={active}
+                      onChange={(e) => update("customVoiceKey", e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {!isChirpTts && (
+                <div className="cfg-voice-design-card">
+                  <div className="cfg-vd-head">
+                    <span className="cfg-vd-title">Voice Design &amp; Speaker Settings</span>
+                    <span className="mono-pill">
+                      {settings.ttsModel === "gemini-3.8-flash-tts"
+                        ? "$0.50 / 1M in · $9.00 / 1M audio out"
+                        : settings.ttsModel === "gemini-3.8-flash-lite-tts"
+                          ? "$0.50 / 1M in · $6.00 / 1M audio out"
+                          : "Vertex AI Gemini TTS"}
+                    </span>
+                  </div>
+                  <div className="cfg-grid-2">
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-tts-style">Style</label>
+                      <select
+                        id="cfg-tts-style"
+                        className="cfg-select"
+                        value={settings.ttsStyle ?? "Empathetic"}
+                        disabled={active}
+                        onChange={(e) => update("ttsStyle", e.target.value)}
+                      >
+                        {TTS_STYLE_OPTIONS.map(([val, lbl]) => (
+                          <option key={val} value={val}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-tts-pace-label">Pace</label>
+                      <select
+                        id="cfg-tts-pace-label"
+                        className="cfg-select"
+                        value={settings.ttsPaceLabel ?? "Natural"}
+                        disabled={active}
+                        onChange={(e) => update("ttsPaceLabel", e.target.value)}
+                      >
+                        {TTS_PACE_OPTIONS.map(([val, lbl]) => (
+                          <option key={val} value={val}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-tts-accent">Accent</label>
+                      <select
+                        id="cfg-tts-accent"
+                        className="cfg-select"
+                        value={settings.ttsAccent ?? "Indian"}
+                        disabled={
+                          active ||
+                          (supportsGeminiClone(settings.ttsModel) &&
+                            (isLibraryVoice(settings.voice) || isGeminiClonedVoice(settings.voice)))
+                        }
+                        onChange={(e) => update("ttsAccent", e.target.value)}
+                      >
+                        {TTS_ACCENT_OPTIONS.map(([val, lbl]) => (
+                          <option key={val} value={val}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-tts-pitch">Pitch</label>
+                      <select
+                        id="cfg-tts-pitch"
+                        className="cfg-select"
+                        value={settings.ttsPitch ?? "Default"}
+                        disabled={active}
+                        onChange={(e) => update("ttsPitch", e.target.value)}
+                      >
+                        {TTS_PITCH_OPTIONS.map(([val, lbl]) => (
+                          <option key={val} value={val}>
+                            {lbl}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {!supportsGeminiClone(settings.ttsModel) && (
+                    <div className="cfg-field">
+                      <label htmlFor="cfg-tts-voice-prompt">
+                        Persona Voice Design Prompt (Vertex 2.5 / 3.1 TTS)
+                      </label>
+                      <textarea
+                        id="cfg-tts-voice-prompt"
+                        className="cfg-textarea"
+                        rows={2}
+                        disabled={active}
+                        placeholder="Automatically populated from persona, or customize here."
+                        value={settings.ttsVoicePrompt ?? ""}
+                        onChange={(e) => update("ttsVoicePrompt", e.target.value)}
+                      />
+                    </div>
+                  )}
+
+                  <p className="cfg-help">
+                    Auto-matched to {castRole}. Tune delivery style, pace, accent, and pitch for Gemini TTS.
+                  </p>
+                </div>
+              )}
+
+              <div className="cfg-field">
+                <div className="cfg-label-row">
+                  <label htmlFor="cfg-tts-pace">Speaking rate</label>
+                  <span className="mono-pill" id="cfg-pace-val">
+                    {(settings.ttsPace ?? 1.0).toFixed(2)}x
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  id="cfg-tts-pace"
+                  className="cfg-range"
+                  min="0.25"
+                  max="2.0"
+                  step="0.05"
+                  value={settings.ttsPace ?? 1.0}
+                  disabled={active}
+                  onChange={(e) => updateNumber("ttsPace", parseFloat(e.target.value))}
+                />
+              </div>
+            </section>
+          )}
+
+          <section className="cfg-group">
+            <h3 className="cfg-group-title">Agent Persona &amp; Instructions</h3>
+
+            {!custom && persona.signaturePrompt && (
+              <div className="cfg-field">
+                <span className="cfg-label-text">Persona Tone</span>
+                <div className="cfg-tone-row" role="group" aria-label="Persona tone">
+                  <button
+                    type="button"
+                    id="cfg-tone-pro"
+                    className="cfg-tone-btn"
+                    aria-pressed={settings.tone === "professional"}
+                    disabled={active || Boolean(settings.instructions)}
+                    onClick={() => update("tone", "professional" as PersonaTone)}
+                  >
+                    Professional (default)
+                  </button>
+                  <button
+                    type="button"
+                    id="cfg-tone-sig"
+                    className="cfg-tone-btn"
+                    aria-pressed={settings.tone === "signature"}
+                    disabled={active || Boolean(settings.instructions)}
+                    onClick={() => update("tone", "signature" as PersonaTone)}
+                  >
+                    Signature ({persona.agentName} in character)
+                  </button>
+                </div>
               </div>
             )}
 
-            {/* Persona / System Instructions Textarea */}
-            <div className="field">
-              <div className="instructions-label">
-                <div className="instructions-title-group">
-                  <label htmlFor="instructions">{custom ? "System Instructions" : "Persona Instructions"}</label>
-                  <span
-                    style={{
-                      fontSize: "11px",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      background: "rgba(213, 245, 128, 0.12)",
-                      border: "1px solid rgba(213, 245, 128, 0.28)",
-                      color: "#d5f580",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {estimateTokens(settings.instructions || effectivePresetPrompt).toLocaleString()} tokens
+            <div className="cfg-field">
+              <div className="cfg-label-row">
+                <span className="cfg-label-left">
+                  <label htmlFor="cfg-instructions">
+                    {custom ? "System Instructions" : "Persona Instructions"}
+                  </label>
+                  <span className="mono-pill" id="cfg-tok-pill">
+                    {instructionTokens.toLocaleString()} / 4,000 tok
                   </span>
-                  {settings.instructions && (
-                    <span className="customized-indicator-pill">Customized</span>
-                  )}
-                </div>
-                <div className="instructions-btn-group">
-                  {!custom && !settings.instructions && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={active}
-                      onClick={() => update("instructions", effectivePresetPrompt)}
-                      className="edit-instructions-btn"
-                    >
-                      <Edit3 size={12} />
-                      <span>Customize / Edit prompt</span>
-                    </Button>
-                  )}
-                  {settings.instructions && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={active}
-                      onClick={() => update("instructions", "")}
-                      className="restore-preset-btn"
-                    >
-                      <RotateCcw size={12} />
-                      <span>{custom ? "Use backend default" : "Restore preset"}</span>
-                    </Button>
-                  )}
-                </div>
+                </span>
+                {settings.instructions && (
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    id="cfg-restore-prompt"
+                    disabled={active}
+                    onClick={() => update("instructions", "")}
+                  >
+                    {custom ? "Use backend default" : "Restore preset"}
+                  </button>
+                )}
               </div>
-              <Textarea
-                id="instructions"
-                placeholder={custom ? "Leave blank to use your backend’s existing system instructions." : effectivePresetPrompt}
-                value={settings.instructions || effectivePresetPrompt}
+              <textarea
+                id="cfg-instructions"
+                className="cfg-textarea"
+                rows={4}
+                maxLength={16000}
+                disabled={active}
+                placeholder={
+                  custom
+                    ? "Leave blank to use your backend default system instructions."
+                    : effectivePresetPrompt
+                }
+                value={displayedInstructions}
                 onFocus={() => {
-                  if (!custom && !settings.instructions) {
+                  if (!custom && !settings.instructions && effectivePresetPrompt) {
                     update("instructions", effectivePresetPrompt);
                   }
                 }}
                 onChange={(e) => update("instructions", e.target.value)}
-                disabled={active}
-                maxLength={16000}
-                rows={6}
-                className="instructions-textarea"
-                style={{ resize: "vertical", minHeight: "120px" }}
               />
-              <div className="instructions-footer">
-                <p className="field-hint">
-                  {settings.instructions
-                    ? `${estimateTokens(settings.instructions).toLocaleString()} / 4,000 tokens · Replaces default preset`
-                    : custom
-                    ? "Using your backend’s existing system instructions."
-                    : `${estimateTokens(effectivePresetPrompt).toLocaleString()} tokens · Active ${persona.name} backend prompt. Click inside or 'Customize / Edit' to modify it.`}
-                </p>
-                {!settings.instructions && !custom && (
-                  <button
-                    type="button"
-                    className="load-prompt-inline-link"
-                    onClick={() => update("instructions", effectivePresetPrompt)}
-                  >
-                    Load preset into editor
-                  </button>
-                )}
-              </div>
             </div>
-          </div>
+          </section>
 
-          {/* GROUP 4: ADVANCED CONFIGURATION */}
-          <div className="settings-group">
-            <h3 className="settings-section-title">Advanced Configuration</h3>
+          <section className="cfg-group">
+            <h3 className="cfg-group-title">Advanced Configuration</h3>
 
-            {/* VAD Mode Selector */}
-            <div className="field" style={{ marginBottom: "10px" }}>
-              <Picker
-                label="Voice Activity Detection (VAD) Mode"
-                value={settings.vadMode ?? (settings.vad === false ? "gemini" : "both")}
+            <div className="cfg-field">
+              <label htmlFor="cfg-vad-mode">Voice Activity Detection (VAD) Mode</label>
+              <select
+                id="cfg-vad-mode"
+                className="cfg-select"
+                value={vadValue}
                 disabled={active}
-                onChange={(value) => {
-                  const nextMode = value as VadMode;
+                onChange={(e) => {
+                  const nextMode = e.target.value as VadMode;
                   update("vadMode", nextMode);
                   updateBool("vad", nextMode !== "gemini");
                 }}
-                options={VAD_MODES}
-              />
-              <p className="field-hint">
-                {(settings.vadMode ?? (settings.vad === false ? "gemini" : "both")) === "gemini"
-                  ? isLive
-                    ? "Gemini Internal VAD Only — Local Silero VAD is disabled; Gemini's server-side AutomaticActivityDetection decides turn boundaries."
-                    : "Server Endpointing Only — Local Silero VAD is disabled; the STT service's server-side endpointing decides turn boundaries."
-                  : (settings.vadMode ?? "both") === "silero"
-                    ? isLive
-                      ? "Silero VAD Only — Local Pipecat Silero VAD drives explicit ActivityStart/ActivityEnd signals; Gemini's internal VAD is disabled."
-                      : "Silero VAD Only — Local Pipecat Silero VAD marks conversational turn boundaries."
-                    : isLive
-                      ? "Both Active — Local Silero VAD handles immediate barge-in and speech-end telemetry alongside Gemini's server-side AutomaticActivityDetection."
-                      : "Both Active — Local Silero VAD runs alongside STT server-side endpointing."}
-              </p>
+              >
+                {VAD_MODES.map(([val, lbl]) => (
+                  <option key={val} value={val}>
+                    {lbl}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <div className="advanced-toggles">
-
-              {/* Gemini Live specific advanced options */}
-              {isLive && (
-                <>
-                  <label className="toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={settings.tts ?? false}
-                      disabled={active}
-                      onChange={(e) => updateBool("tts", e.target.checked)}
-                    />
-                    <span>Use TTS for output modality</span>
-                  </label>
-
-                  <label className="toggle-label">
-                    <input
-                      type="checkbox"
-                      checked={settings.contextCompression ?? false}
-                      disabled={active}
-                      onChange={(e) => updateBool("contextCompression", e.target.checked)}
-                    />
-                    <span>Context Compression</span>
-                  </label>
-
-                  {settings.contextCompression && (
-                    <div className="field trigger-tokens-field">
-                      <label htmlFor="comp-tokens">Trigger Tokens Threshold (min 5,000)</label>
-                      <Input
-                        id="comp-tokens"
-                        type="number"
-                        min={5000}
-                        step={1000}
-                        value={Math.max(5000, settings.contextCompressionTokens ?? 5000)}
-                        disabled={active}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          updateNumber("contextCompressionTokens", isNaN(val) ? 5000 : Math.max(5000, val));
-                        }}
-                        onBlur={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          if (isNaN(val) || val < 5000) {
-                            updateNumber("contextCompressionTokens", 5000);
-                          }
-                        }}
-                      />
-                      <p className="field-hint">Minimum 5,000 tokens (Vertex AI Live API requires &ge; 5,000 tokens).</p>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Thinking / Reasoning Configuration (Live only) */}
             {isLive && (
-              <div style={{ padding: "12px", background: "rgba(16, 185, 129, 0.06)", border: "1px solid rgba(16, 185, 129, 0.22)", borderRadius: "10px", margin: "12px 0" }}>
-                <div style={{ marginBottom: "8px" }}>
-                  <span style={{ fontWeight: 600, fontSize: "13px", color: "#34d399" }}>Gemini Live Thinking / Reasoning</span>
-                  <p style={{ fontSize: "11px", color: "var(--muted-foreground)", margin: "2px 0 0 0" }}>
-                    Internal reasoning effort before speech. Higher levels add latency.
-                  </p>
-                </div>
-                <div className="field">
-                  <label id="thinking-level-label">Reasoning Level</label>
-                  <Select
-                    value={settings.thinkingLevel ?? "off"}
-                    onValueChange={(val) => update("thinkingLevel", val)}
+              <>
+                <div className="cfg-switch-row">
+                  <div>
+                    <div className="cfg-switch-label" id="lbl-use-tts">
+                      Use TTS for output modality
+                    </div>
+                    <div className="cfg-help">
+                      Request text output from Gemini Live and synthesize audio with Chirp 3 HD or Gemini TTS.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    id="cfg-use-tts"
+                    className="switch-btn"
+                    aria-checked={Boolean(settings.tts)}
+                    aria-labelledby="lbl-use-tts"
                     disabled={active}
+                    onClick={() => updateBool("tts", !settings.tts)}
                   >
-                    <SelectTrigger aria-labelledby="thinking-level-label" className="w-full min-w-0 select-trigger">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent position="popper">
-                      {THINKING_LEVELS.map(([value, label]) => (
-                        <SelectItem key={value} value={value}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="field-hint">
-                    Not every model supports every tier — unsupported levels fall back to the model default.
-                  </p>
+                    <span className="switch-track" aria-hidden="true">
+                      <span className="switch-thumb" />
+                    </span>
+                  </button>
                 </div>
-              </div>
+
+                <div className="cfg-switch-row">
+                  <div>
+                    <div className="cfg-switch-label" id="lbl-compression">
+                      Context Compression (SlidingWindow)
+                    </div>
+                    <div className="cfg-help">
+                      Automatically compress older conversation turns once session context crosses threshold.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    id="cfg-compression"
+                    className="switch-btn"
+                    aria-checked={Boolean(settings.contextCompression)}
+                    aria-labelledby="lbl-compression"
+                    disabled={active}
+                    onClick={() => updateBool("contextCompression", !settings.contextCompression)}
+                  >
+                    <span className="switch-track" aria-hidden="true">
+                      <span className="switch-thumb" />
+                    </span>
+                  </button>
+                </div>
+
+                {settings.contextCompression && (
+                  <div className="cfg-field">
+                    <label htmlFor="cfg-compression-tokens">
+                      Trigger Tokens Threshold (min 5,000)
+                    </label>
+                    <input
+                      type="number"
+                      id="cfg-compression-tokens"
+                      className="cfg-input"
+                      min={5000}
+                      step={500}
+                      disabled={active}
+                      value={compressionDraft}
+                      onFocus={() => {
+                        compressionFocusedRef.current = true;
+                      }}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setCompressionDraft(raw);
+                        const trimmed = raw.trim();
+                        if (trimmed !== "") {
+                          const num = Number(trimmed);
+                          if (Number.isSafeInteger(num) && num >= 5000) {
+                            updateNumber("contextCompressionTokens", num);
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        compressionFocusedRef.current = false;
+                        const num = Number(compressionDraft.trim());
+                        const clamped =
+                          Number.isFinite(num) && num >= 5000 ? Math.round(num) : 5000;
+                        setCompressionDraft(String(clamped));
+                        updateNumber("contextCompressionTokens", clamped);
+                      }}
+                    />
+                  </div>
+                )}
+
+                <div className="cfg-field">
+                  <label htmlFor="cfg-thinking-level">
+                    Gemini Live Thinking / Reasoning Level
+                  </label>
+                  <select
+                    id="cfg-thinking-level"
+                    className="cfg-select"
+                    value={settings.thinkingLevel ?? "off"}
+                    disabled={active}
+                    onChange={(e) => update("thinkingLevel", e.target.value)}
+                  >
+                    {THINKING_LEVELS.map(([val, lbl]) => (
+                      <option key={val} value={val}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
             )}
 
-            {/* Dynamic Tool Definitions (JSON) showing live backend tool configuration + token count */}
-            <div className="field" style={{ marginTop: "12px" }}>
-              <div className="instructions-label">
-                <div className="instructions-title-group">
-                  <label htmlFor="tools-json" style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                    <Wrench size={13} />
-                    <span>Dynamic Tool Definitions (JSON)</span>
-                  </label>
-                  <span
-                    style={{
-                      fontSize: "11px",
-                      padding: "2px 8px",
-                      borderRadius: "999px",
-                      background: "rgba(56, 189, 248, 0.12)",
-                      border: "1px solid rgba(56, 189, 248, 0.28)",
-                      color: "#38bdf8",
-                      fontWeight: 600,
+            <div className="cfg-field">
+              <div className="cfg-label-row">
+                <span className="cfg-label-left">
+                  <label htmlFor="cfg-tools-json">Dynamic Tool Definitions (JSON)</label>
+                  <span className="mono-pill">
+                    {effectiveToolCount} {effectiveToolCount === 1 ? "tool" : "tools"} ·{" "}
+                    {effectiveToolsTokens.toLocaleString()} tok
+                  </span>
+                  {!toolsEditable && <span className="mono-pill">Managed per-card</span>}
+                </span>
+                {toolsEditable && (Boolean(settings.toolsJson) || toolsDraft !== null) && (
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    id="btn-restore-tools"
+                    disabled={active}
+                    onClick={() => {
+                      setToolsDraft(null);
+                      update("toolsJson", "");
                     }}
                   >
-                    {effectiveToolCount} {effectiveToolCount === 1 ? "tool" : "tools"} · {effectiveToolsTokens.toLocaleString()} tokens
-                  </span>
-                  {!toolsEditable && (
-                    <span className="customized-indicator-pill" title="Tools swap per conversation card via context_update on Vertex Gemini 3.8 Live">
-                      Managed per-card
-                    </span>
-                  )}
-                  {toolsEditable && settings.toolsJson && (
-                    <span className="customized-indicator-pill">Customized</span>
-                  )}
-                </div>
-                <div className="instructions-btn-group">
-                  {toolsEditable && !settings.toolsJson && backendToolsJson && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={active}
-                      onClick={() => update("toolsJson", backendToolsJson)}
-                      className="edit-instructions-btn"
-                    >
-                      <Edit3 size={12} />
-                      <span>Customize / Edit tools</span>
-                    </Button>
-                  )}
-                  {toolsEditable && settings.toolsJson && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={active}
-                      onClick={() => update("toolsJson", "")}
-                      className="restore-preset-btn"
-                    >
-                      <RotateCcw size={12} />
-                      <span>Restore backend tools</span>
-                    </Button>
-                  )}
-                </div>
+                    Restore backend tools
+                  </button>
+                )}
               </div>
-              <Textarea
-                id="tools-json"
+              <textarea
+                id="cfg-tools-json"
+                className="cfg-textarea mono"
+                rows={4}
+                disabled={active || !toolsEditable}
+                placeholder='[{"name": "lookup_order", "description": "Lookup order", "properties": {"id": {"type": "string"}}, "required": ["id"]}]'
                 value={effectiveToolsText}
                 onFocus={() => {
-                  if (toolsEditable && !settings.toolsJson && backendToolsJson) {
-                    update("toolsJson", backendToolsJson);
+                  if (toolsEditable && toolsDraft === null) {
+                    setToolsDraft(settings.toolsJson?.trim() ? settings.toolsJson : backendToolsJson);
                   }
                 }}
                 onChange={(e) => {
                   if (toolsEditable) {
+                    setToolsDraft(e.target.value);
                     update("toolsJson", e.target.value);
                   }
                 }}
-                disabled={active || !toolsEditable}
-                placeholder='[{"name": "get_weather", "description": "Get weather", "properties": {"city": {"type": "string"}}, "required": ["city"]}]'
-                rows={7}
-                style={{ fontFamily: "ui-monospace, monospace", fontSize: "12px", resize: "vertical", minHeight: "150px" }}
               />
-              <div className="instructions-footer">
-                {toolsValidationError ? (
-                  <p className="field-hint" style={{ color: "#f87171" }}>
-                    {toolsValidationError}
-                  </p>
-                ) : (
-                  <p className="field-hint">
-                    {!toolsEditable
-                      ? `${effectiveToolCount} active card tool(s) (${backendTools.map((t) => t.name).join(", ") || "none"}) · ${effectiveToolsTokens.toLocaleString()} tokens. Tools swap automatically per conversation card on Vertex Gemini 3.8 Live.`
-                      : settings.toolsJson
-                        ? `${effectiveToolCount} tool definition(s) · ${effectiveToolsTokens.toLocaleString()} tokens · Replaces backend defaults cleanly in Live and Cascade.`
-                        : `${effectiveToolCount} active backend tool(s) (${backendTools.map((t) => t.name).join(", ") || "none"}) · ${effectiveToolsTokens.toLocaleString()} tokens. Click inside or 'Customize / Edit tools' to modify.`}
+              {toolsValidationError && <p className="cfg-error-note">{toolsValidationError}</p>}
+            </div>
+
+            <details
+              className="cfg-details"
+              id="cfg-custom-details"
+              open={customDetailsOpen}
+              onToggle={(e) => setCustomDetailsOpen(e.currentTarget.open)}
+            >
+              <summary>
+                <ChevronRightIcon className="pipe-arrow" />
+                <span>Custom Server URL (Optional)</span>
+              </summary>
+              <div className="cfg-field">
+                <label htmlFor="cfg-backend-url">Pipecat Backend WebSocket / HTTP Origin</label>
+                <input
+                  type="url"
+                  id="cfg-backend-url"
+                  className="cfg-input"
+                  placeholder="http://localhost:7860"
+                  disabled={active}
+                  aria-invalid={Boolean(backendUrlError) || undefined}
+                  aria-describedby={backendUrlError ? "cfg-backend-url-error" : undefined}
+                  value={settings.backendUrl}
+                  onChange={(e) => update("backendUrl", e.target.value)}
+                />
+                {backendUrlError && (
+                  <p className="cfg-error-note" id="cfg-backend-url-error" role="alert">
+                    {backendUrlError}
                   </p>
                 )}
               </div>
-            </div>
-
-            {/* Custom Server URL Override */}
-            <details className="advanced-url-toggle">
-              <summary>Custom Server URL (Optional)</summary>
-              <div className="field" style={{ marginTop: "10px" }}>
-                <Input
-                  id="backend-url"
-                  value={settings.backendUrl}
-                  onChange={(e) => update("backendUrl", e.target.value)}
-                  placeholder="http://localhost:7860"
-                  disabled={active}
-                  type="url"
-                  autoComplete="off"
-                />
-                <p className="field-hint">
-                  Defaults automatically to your backend on port 7860 or host origin. Override only if connecting to an external server.
-                </p>
-              </div>
             </details>
+          </section>
+        </div>
+
+        <div className="cfg-footer">
+          <span className="mono-pill">
+            {castRole} · {formatVoiceShortLabel(settings.voice)} · {settings.language}
+          </span>
+          <div className="cfg-footer-btns">
+            <button
+              type="button"
+              className="ghost-btn"
+              id="btn-settings-done"
+              onClick={closeModal}
+            >
+              Done
+            </button>
+            {active ? (
+              <button
+                type="button"
+                className="ghost-btn"
+                id="btn-settings-start"
+                onClick={() => void handleStartOrRestart()}
+              >
+                Restart call with changes
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="cta cfg-cta"
+                id="btn-settings-start"
+                onClick={() => void handleStartOrRestart()}
+              >
+                <MicOnIcon />
+                <span>{isCascade ? "Start Cascade call" : "Start Gemini Live"}</span>
+              </button>
+            )}
           </div>
         </div>
-
-        <div className="dialog-actions">
-          <Button variant="outline" onClick={() => setSettingsOpen(false)}>
-            Done
-          </Button>
-          {!active && (
-            <Button className="primary-call" onClick={() => void startBackend()}>
-              <Mic size={16} />
-              Start {engineName}
-            </Button>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   );
 }

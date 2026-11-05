@@ -18,39 +18,39 @@
   scrollbar-gutter: stable;
 }
 
- :root {
-  --background: #101216;
-  --foreground: #f0f1ed;
-  --card: #171a1f;
-  --card-foreground: #f0f1ed;
-  --popover: #22262d;
-  --popover-foreground: #f0f1ed;
-  --primary: #d5f580;
-  --primary-foreground: #19200d;
-  --secondary: #252a31;
-  --secondary-foreground: #e7ebe4;
-  --muted: #20242b;
-  --muted-foreground: #a0a7b1;
-  --accent: #2a3036;
-  --accent-foreground: #f0f1ed;
-  --destructive: #ff9191;
-  --border: #30343b;
-  --input: #343a42;
-  --ring: #d5f580;
-  --chart-1: #d5f580;
-  --chart-2: #8ebbe0;
-  --chart-3: #bcade7;
-  --chart-4: #edc482;
-  --chart-5: #a3d6ba;
+:root {
+  --background: #0c0e12;
+  --foreground: #f4f6f9;
+  --card: #12151b;
+  --card-foreground: #f4f6f9;
+  --popover: #181c24;
+  --popover-foreground: #f4f6f9;
+  --primary: #38bdf8;
+  --primary-foreground: #061018;
+  --secondary: #181c24;
+  --secondary-foreground: #f4f6f9;
+  --muted: #181c24;
+  --muted-foreground: #8a97ab;
+  --accent: #38bdf8;
+  --accent-foreground: #061018;
+  --destructive: #f43f5e;
+  --border: rgba(255, 255, 255, 0.14);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #38bdf8;
+  --chart-1: #38bdf8;
+  --chart-2: #10b981;
+  --chart-3: #a78bfa;
+  --chart-4: #f59e0b;
+  --chart-5: #f43f5e;
   --radius: 0.75rem;
-  --sidebar: #15181c;
-  --sidebar-foreground: #f0f1ed;
-  --sidebar-primary: #d5f580;
-  --sidebar-primary-foreground: #19200d;
-  --sidebar-accent: #252a31;
-  --sidebar-accent-foreground: #f0f1ed;
-  --sidebar-border: #30343b;
-  --sidebar-ring: #d5f580;
+  --sidebar: #12151b;
+  --sidebar-foreground: #f4f6f9;
+  --sidebar-primary: #38bdf8;
+  --sidebar-primary-foreground: #061018;
+  --sidebar-accent: #181c24;
+  --sidebar-accent-foreground: #f4f6f9;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #38bdf8;
 }
 
 @theme inline {
@@ -89,9 +89,6 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
-
-body { margin: 0; background: var(--background); color: var(--foreground); font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }

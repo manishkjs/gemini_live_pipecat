@@ -40,6 +40,7 @@ export type LiveSession = {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   setMic: (enabled: boolean) => void;
+  isMicEnabled?: () => boolean;
   setSound: (enabled: boolean) => void;
 };
 
@@ -149,6 +150,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
 
   const controller = new AbortController();
   const sources = new Set<AudioBufferSourceNode>();
+  const scheduledEnvelopes: Array<{ start: number; end: number; rms: number }> = [];
   let context: AudioContext | null = null;
   let speakerGain: GainNode | null = null;
   let destination: MediaStreamAudioDestinationNode | null = null;
@@ -244,6 +246,18 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         if (!this.streamingActive || !this.micEnabled || stopped) return;
         if (ev.data && ev.data.byteLength > 0) {
           this.userAudioCb?.(ev.data);
+          if (sources.size === 0 && !avatarSpeechInTurn) {
+            const samples = new Int16Array(ev.data, 0, ev.data.byteLength >> 1);
+            if (samples.length > 0) {
+              let sumSq = 0;
+              for (let i = 0; i < samples.length; i++) {
+                const norm = samples[i] / 32768;
+                sumSq += norm * norm;
+              }
+              const micRms = Math.sqrt(sumSq / samples.length);
+              events.onLevel(Math.min(1, micRms * 6));
+            }
+          }
         }
       };
 
@@ -307,9 +321,13 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       }
       const buffer = context.createBuffer(1, pcm.length, 24000);
       const channel = buffer.getChannelData(0);
+      let sumSq = 0;
       for (let i = 0; i < pcm.length; i++) {
-        channel[i] = pcm[i] / 32768;
+        const sample = pcm[i] / 32768;
+        channel[i] = sample;
+        sumSq += sample * sample;
       }
+      const chunkRms = Math.sqrt(sumSq / pcm.length);
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(speakerGain);
@@ -321,9 +339,14 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       };
       const minStart = context.currentTime + (sources.size === 1 && nextAudioAt <= context.currentTime ? 0.015 : 0);
       nextAudioAt = Math.max(minStart, nextAudioAt);
-      source.start(nextAudioAt);
+      const startAt = nextAudioAt;
+      source.start(startAt);
       nextAudioAt += buffer.duration;
+      scheduledEnvelopes.push({ start: startAt, end: nextAudioAt, rms: chunkRms });
       events.onPhase("speaking");
+      if (startAt <= context.currentTime + 0.05) {
+        events.onLevel(soundEnabled ? Math.min(1, chunkRms * 6) : 0);
+      }
       if (lastUserAt !== null) {
         events.onLatency(performance.now() - lastUserAt);
         lastUserAt = null;
@@ -331,6 +354,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       if (speakingTimer) clearTimeout(speakingTimer);
       speakingTimer = setTimeout(() => {
         if (!stopped) {
+          scheduledEnvelopes.length = 0;
           events.onPhase("listening");
           events.onLevel(0);
         }
@@ -344,6 +368,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         source.disconnect();
       }
       sources.clear();
+      scheduledEnvelopes.length = 0;
       nextAudioAt = 0;
       if (speakingTimer) clearTimeout(speakingTimer);
       events.onLevel(0);
@@ -654,6 +679,10 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       initialized = true;
       try { await transport.initDevices(); }
       catch { throw new Error("Microphone access failed. Allow microphone access in your browser, then try again."); }
+      if (!media.isMicEnabled) {
+        media.enableMic(false);
+        transport.enableMic?.(false);
+      }
       if (stopped) {
         transport.tracks().local?.audio?.stop();
         await transport.disconnect();
@@ -662,11 +691,26 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       events.onTrack(destination.stream.getAudioTracks()[0]);
       const values = new Float32Array(analyser.fftSize);
       levelTimer = setInterval(() => {
-        if (!analyser || stopped) return;
+        if (!analyser || !context || stopped) return;
+        const nowSec = context.currentTime;
+        while (scheduledEnvelopes.length > 0 && scheduledEnvelopes[0].end < nowSec) {
+          scheduledEnvelopes.shift();
+        }
+        if (sources.size === 0) return;
+        if (!soundEnabled) {
+          events.onLevel(0);
+          return;
+        }
         analyser.getFloatTimeDomainData(values);
-        const rms = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
-        events.onLevel(Math.min(1, rms * 6));
-      }, 100);
+        const analyserRms = Math.sqrt(
+          values.reduce((sum, value) => sum + value * value, 0) / values.length,
+        );
+        const activeEnv = scheduledEnvelopes.find(
+          (entry) => entry.start <= nowSec + 0.04 && entry.end >= nowSec,
+        );
+        const effectiveRms = Math.max(analyserRms, activeEnv?.rms ?? 0);
+        events.onLevel(Math.min(1, effectiveRms * 6));
+      }, 80);
 
       // Prime connection to resolve SNI matching before establishing WebSocket
       if (typeof window !== "undefined" && window.location.protocol === "https:") {
@@ -693,12 +737,24 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     },
     disconnect,
     setMic(enabled) {
-      if (!stopped) transport.enableMic(enabled);
+      if (!stopped) {
+        media.enableMic(enabled);
+        transport.enableMic?.(enabled);
+        if (!enabled && sources.size === 0) {
+          events.onLevel(0);
+        }
+      }
+    },
+    isMicEnabled() {
+      return media.isMicEnabled;
     },
     setSound(enabled) {
       soundEnabled = enabled;
       if (speakerGain) {
         speakerGain.gain.value = enabled ? 1 : 0;
+      }
+      if (!enabled) {
+        events.onLevel(0);
       }
       if (enabled && context && context.state === "suspended") {
         void context.resume().catch(() => {});
