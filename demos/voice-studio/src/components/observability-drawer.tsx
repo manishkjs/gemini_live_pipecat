@@ -463,18 +463,18 @@ export default function ObservabilityDrawer({
         ref={railRef}
         className="console-rail"
         id="console-rail"
-        aria-label="Session console"
+        aria-label="Observability"
         role={isMobileModal ? "dialog" : undefined}
         aria-modal={isMobileModal ? true : undefined}
         hidden={!open}
       >
         <div className="console-head">
-          <h2 className="console-title">Session console</h2>
+          <h2 className="console-title">Observability</h2>
           <button
             type="button"
             className="ghost-btn"
             id="btn-close-console"
-            aria-label="Close console"
+            aria-label="Close observability"
             onClick={onClose}
           >
             Close

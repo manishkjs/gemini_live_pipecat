@@ -10,7 +10,7 @@ import { accumulateSplit, EMPTY_TOKEN_SPLIT, totalIn, totalOut } from "@/lib/pri
 import type { Message } from "@/lib/studio-types";
 import { isAvatarActive } from "@/lib/voice-session";
 import AvatarStagePanel from "./avatar-stage-panel";
-import { SlidersIcon } from "./console-icons";
+import { ArrowLeftIcon, SlidersIcon } from "./console-icons";
 
 interface LiveCallStageProps {
   readonly studio: VoiceStudio;
@@ -227,8 +227,14 @@ export default function LiveCallStage({ studio }: LiveCallStageProps) {
             </button>
           )}
           {!active && (
-            <button type="button" className="ghost-btn" id="btn-back-setup" onClick={resetToSetup}>
-              Back to setup
+            <button
+              type="button"
+              className="back-personas-btn"
+              id="btn-back-setup"
+              onClick={resetToSetup}
+            >
+              <ArrowLeftIcon />
+              <span>All personas</span>
             </button>
           )}
         </div>

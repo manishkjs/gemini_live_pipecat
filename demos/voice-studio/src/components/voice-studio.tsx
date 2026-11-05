@@ -75,6 +75,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
     chooseEngine,
     endSession,
     startBackend,
+    resetToSetup,
   } = studio;
 
   const triggerFlash = useCallback((text: string, tone: "info" | "warn" = "warn", ms = 2000) => {
@@ -95,17 +96,18 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   // Sync dynamic --persona CSS custom property and body.is-live class.
   const personaAccent = getPersonaUiAccent(persona.id);
   const showLiveStage = active || messages.length > 0;
+  const isPostCall = !active && messages.length > 0;
 
   useEffect(() => {
     document.documentElement.style.setProperty("--persona", personaAccent);
   }, [personaAccent]);
 
   useEffect(() => {
-    document.body.classList.toggle("is-live", showLiveStage);
+    document.body.classList.toggle("is-live", active);
     return () => {
       document.body.classList.remove("is-live");
     };
-  }, [showLiveStage]);
+  }, [active]);
 
   // Track responsive <=900px breakpoint for Session console sheet behavior.
   useEffect(() => {
@@ -264,13 +266,23 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
   return (
     <>
       <div
-        className={`app ${consoleOpen ? "has-console" : ""} ${showLiveStage ? "is-in-call" : ""}`}
+        className={`app ${consoleOpen ? "has-console" : ""} ${active ? "is-in-call" : ""} ${isPostCall ? "is-post-call" : ""}`}
         id="app"
         style={{ "--persona": personaAccent } as CSSProperties}
       >
         <div ref={mainColRef} className="main-col" id="main-col">
           <header className="topbar">
-            <a href="/" className="brand" aria-label="Voice Studio home">
+            <a
+              href="/"
+              className="brand"
+              aria-label="Voice Studio home"
+              onClick={(e) => {
+                if (!active && messages.length > 0) {
+                  e.preventDefault();
+                  resetToSetup();
+                }
+              }}
+            >
               <span className="brand-mark" aria-hidden="true">
                 <BrandWaveIcon />
               </span>
@@ -329,6 +341,8 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                 type="button"
                 className="ghost-btn"
                 id="btn-console"
+                aria-label="Observability"
+                title="Observability"
                 aria-expanded={consoleOpen}
                 aria-controls="console-rail"
                 onClick={() => {
@@ -342,7 +356,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
                 }}
               >
                 <ConsoleActivityIcon />
-                <span className="btn-text">Console</span>
+                <span className="btn-text">Observability</span>
               </button>
 
               <button

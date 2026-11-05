@@ -9,6 +9,7 @@ import {
 import { formatTokens } from "@/lib/pricing";
 import { isAvatarActive } from "@/lib/voice-session";
 import {
+  ArrowLeftIcon,
   MicOffIcon,
   MicOnIcon,
   PhoneEndIcon,
@@ -106,6 +107,7 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
     playingSample,
     subscribeAudioLevel,
     getAudioLevel,
+    messages,
     persona,
     settings,
     tokenCount,
@@ -119,9 +121,11 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
     updateBool,
     startBackend,
     endSession,
+    resetToSetup,
   } = studio;
 
   const isCascade = settings.engine === "cascade";
+  const isPostCall = !active && messages.length > 0;
   const avatarEnabled = Boolean(settings.avatarEnabled);
   const avatarCompatPaused = avatarEnabled && isCascade;
   const avatarLiveActive = isAvatarActive(settings);
@@ -224,13 +228,27 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
       </div>
 
       <div className="dock-center">
-        <VoiceBubble
-          active={active}
-          sound={sound}
-          bubble={bubble}
-          subscribeAudioLevel={subscribeAudioLevel}
-          getAudioLevel={getAudioLevel}
-        />
+        {(!isPostCall || muted || playingSample) && (
+          <VoiceBubble
+            active={active}
+            sound={sound}
+            bubble={bubble}
+            subscribeAudioLevel={subscribeAudioLevel}
+            getAudioLevel={getAudioLevel}
+          />
+        )}
+
+        {isPostCall && (
+          <button
+            type="button"
+            className="dock-secondary-cta"
+            id="btn-dock-personas"
+            onClick={resetToSetup}
+          >
+            <ArrowLeftIcon />
+            <span>All personas</span>
+          </button>
+        )}
 
         {active ? (
           <button

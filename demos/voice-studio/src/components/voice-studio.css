@@ -440,7 +440,8 @@ button, input, select, textarea {
   pointer-events: none;
 }
 
-.app.is-in-call .stage::before {
+.app.is-in-call .stage::before,
+.app.is-post-call .stage::before {
   display: none;
 }
 
@@ -1698,6 +1699,49 @@ button, input, select, textarea {
   background: var(--danger-hover);
 }
 
+.back-personas-btn {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.back-personas-btn:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--ink);
+}
+
+.dock-secondary-cta {
+  height: 44px;
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  color: var(--ink);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dock-secondary-cta:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* Console rail */
 .console-scrim {
   display: none;
@@ -2915,7 +2959,8 @@ button, input, select, textarea {
     height: 42px;
     padding: 0 var(--sp-3);
   }
-  .dock-right {
+  .dock-right,
+  .dock-secondary-cta {
     display: none;
   }
   .console-scrim {
