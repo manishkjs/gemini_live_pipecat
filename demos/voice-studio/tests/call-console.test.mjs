@@ -330,8 +330,22 @@ test('computeTurnTtfbSeconds sums STT + LLM + TTS in Cascade and formats TTFB in
   assert.equal(cc.isFastTtfbSeconds(cascadeScreenshot, 'cascade'), false);
   assert.equal(cc.isFastTtfbSeconds(1.32, 'cascade'), true);
 
-  // STT-only before LLM/TTS starts does not fake a bot TTFB
+  // STT-only or partial STT+LLM before TTS emits first audio byte does not flash early TTFB
   assert.equal(cc.computeTurnTtfbSeconds({ sttLatency: 0.102 }, 'cascade'), null);
+  assert.equal(
+    cc.computeTurnTtfbSeconds({ sttLatency: 0.102, llmLatency: 0.758 }, 'cascade'),
+    null,
+  );
+  // Interrupted Cascade turn before TTS still records partial TTFB
+  assert.equal(
+    cc.formatLatencySeconds(
+      cc.computeTurnTtfbSeconds(
+        { sttLatency: 0.102, llmLatency: 0.758, interruptedMs: 920 },
+        'cascade',
+      ),
+    ),
+    '0.9s',
+  );
 
   // Cascade Turn-0 greeting or skipStt sums LLM + TTS cleanly
   const skipSttSec = cc.computeTurnTtfbSeconds({ llmLatency: 0.75, ttsLatency: 1.05 }, 'cascade');
@@ -345,9 +359,12 @@ test('computeTurnTtfbSeconds sums STT + LLM + TTS in Cascade and formats TTFB in
   assert.equal(liveSec, 0.268);
   assert.equal(cc.formatLatencySeconds(liveSec), '0.3s');
   assert.equal(cc.isFastTtfbSeconds(liveSec, 'live'), true);
+  assert.equal(cc.isFastTtfbSeconds(0.46, 'live'), false);
+  assert.equal(cc.formatLatencySeconds(0.46), '0.5s');
   assert.equal(cc.isFastTtfbSeconds(0.62, 'live'), false);
 
-  // Sub-100ms and invalid edge cases
+  // Sub-100ms boundary and invalid edge cases
+  assert.equal(cc.formatLatencySeconds(0.096), '0.1s');
   assert.equal(cc.formatLatencySeconds(0.045), '0.05s');
   assert.equal(cc.formatLatencySeconds(0.002), '0.002s');
   assert.equal(cc.formatLatencySeconds(0), '0.0s');

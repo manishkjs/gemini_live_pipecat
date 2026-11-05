@@ -1139,3 +1139,14 @@ test('cascade turn TTFB sums stt_latency + llm_latency + tts_latency across late
   await state.endSession();
 });
 
+test('pre-call mic mute is applied immediately when startBackend creates the live session', async () => {
+  const h = await harness();
+  h.render().setMuted(true);
+  await h.render().startBackend('live');
+  const activeSession = h.render().session.current;
+  assert.ok(activeSession, 'expected active live session');
+  assert.equal(h.render().muted, true);
+  assert.equal(activeSession.isMicEnabled?.(), false);
+  await h.render().endSession();
+});
+

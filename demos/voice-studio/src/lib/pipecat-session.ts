@@ -40,6 +40,7 @@ export type LiveSession = {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   setMic: (enabled: boolean) => void;
+  isMicEnabled?: () => boolean;
   setSound: (enabled: boolean) => void;
 };
 
@@ -343,7 +344,9 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       nextAudioAt += buffer.duration;
       scheduledEnvelopes.push({ start: startAt, end: nextAudioAt, rms: chunkRms });
       events.onPhase("speaking");
-      events.onLevel(soundEnabled ? Math.min(1, chunkRms * 6) : 0);
+      if (startAt <= context.currentTime + 0.05) {
+        events.onLevel(soundEnabled ? Math.min(1, chunkRms * 6) : 0);
+      }
       if (lastUserAt !== null) {
         events.onLatency(performance.now() - lastUserAt);
         lastUserAt = null;
@@ -676,6 +679,10 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       initialized = true;
       try { await transport.initDevices(); }
       catch { throw new Error("Microphone access failed. Allow microphone access in your browser, then try again."); }
+      if (!media.isMicEnabled) {
+        media.enableMic(false);
+        transport.enableMic?.(false);
+      }
       if (stopped) {
         transport.tracks().local?.audio?.stop();
         await transport.disconnect();
@@ -731,11 +738,15 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     disconnect,
     setMic(enabled) {
       if (!stopped) {
-        transport.enableMic(enabled);
+        media.enableMic(enabled);
+        transport.enableMic?.(enabled);
         if (!enabled && sources.size === 0) {
           events.onLevel(0);
         }
       }
+    },
+    isMicEnabled() {
+      return media.isMicEnabled;
     },
     setSound(enabled) {
       soundEnabled = enabled;

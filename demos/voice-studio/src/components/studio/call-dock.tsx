@@ -25,6 +25,7 @@ interface CallDockProps {
   readonly studio: VoiceStudio;
   readonly consoleOpen: boolean;
   readonly onAvatarCompatNotice: () => void;
+  readonly onAvatarLockedNotice: () => void;
 }
 
 const BAR_FACTORS = [0.55, 0.8, 1.0, 0.72, 1.15, 0.82, 1.0, 0.68, 0.5] as const;
@@ -100,7 +101,12 @@ function VoiceBubble({
 }
 
 /** Bottom call dock with Mic/Speaker/Avatar controls, organic audio-stretch bubble, primary CTA, and live stats. */
-export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: CallDockProps) {
+export default function CallDock({
+  studio,
+  consoleOpen,
+  onAvatarCompatNotice,
+  onAvatarLockedNotice,
+}: CallDockProps) {
   const {
     active,
     phase,
@@ -148,6 +154,10 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
   };
 
   const handleToggleAvatar = () => {
+    if (active) {
+      onAvatarLockedNotice();
+      return;
+    }
     const next = !avatarEnabled;
     updateBool("avatarEnabled", next);
     if (next && isCascade) {
@@ -219,6 +229,8 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
           id="btn-avatar"
           role="switch"
           aria-checked={avatarEnabled}
+          aria-disabled={active ? true : undefined}
+          title={active ? "End session or use Settings to toggle 3.8 Live Avatar" : undefined}
           aria-label={avatarAriaLabel}
           onClick={handleToggleAvatar}
         >

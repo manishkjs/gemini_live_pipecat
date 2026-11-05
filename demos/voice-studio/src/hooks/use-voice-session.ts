@@ -136,6 +136,7 @@ export function useVoiceSession() {
   const [cascadeCost, setCascadeCost] = useState<CascadeCost | null>(null);
   const cascadeCostRevision = useRef(-1);
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
+  const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
   const seenEvents = useRef(new Set<string>());
   const starting = useRef(false);
   const [interruptCount, setInterruptCount] = useState(0);
@@ -205,6 +206,10 @@ export function useVoiceSession() {
   const customInstructions = useRef("");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const session = useRef<LiveSession | null>(null);
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+  const soundRef = useRef(sound);
+  soundRef.current = sound;
   const run = useRef(0);
   const audio = useRef<HTMLAudioElement | null>(null);
   const transcript = useRef<HTMLDivElement | null>(null);
@@ -306,6 +311,10 @@ export function useVoiceSession() {
     session.current?.setSound?.(sound);
   }, [sound]);
 
+  useEffect(() => {
+    session.current?.setMic(!muted);
+  }, [muted]);
+
   const addMessage = useCallback((role: Message["role"], text: string, metrics?: MessageMetrics) => {
     setMessages((items) => [...items, transcriptMessage(role, text, metrics, callStartedAt.current)]);
   }, []);
@@ -356,6 +365,7 @@ export function useVoiceSession() {
     setConfirmedBooking(null);
     ledger.current = new UsageLedger();
     responseMetrics.current.clear();
+    lastAssistantMetrics.current = null;
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
@@ -459,6 +469,12 @@ export function useVoiceSession() {
         responseId,
       };
       responseMetrics.current.set(responseId, metrics);
+      if (
+        !lastAssistantMetrics.current?.responseId ||
+        lastAssistantMetrics.current.responseId === responseId
+      ) {
+        lastAssistantMetrics.current = metrics;
+      }
       syncLastTtfb(metrics);
       setMessages(items => items.map(item => item.role === "assistant" && item.metrics?.responseId === responseId
         ? { ...item, metrics: { ...item.metrics, ...metrics } } : item));
@@ -493,12 +509,22 @@ export function useVoiceSession() {
             metrics = merged;
           }
           if (role === "user") {
+            lastAssistantMetrics.current = null;
             setPartialUser("");
             if (metrics?.sttLatency !== undefined) {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
           } else {
-            syncLastTtfb(metrics);
+            const nextAssistantMetrics: MessageMetrics = {
+              ...(lastAssistantMetrics.current?.responseId &&
+              metrics?.responseId &&
+              lastAssistantMetrics.current.responseId !== metrics.responseId
+                ? undefined
+                : lastAssistantMetrics.current),
+              ...metrics,
+            };
+            lastAssistantMetrics.current = nextAssistantMetrics;
+            syncLastTtfb(nextAssistantMetrics);
             if (metrics?.ttsLatency !== undefined) {
               setLastTTS(Math.round(metrics.ttsLatency * 1000));
             }
@@ -598,18 +624,21 @@ export function useVoiceSession() {
                 if (val.response_id) {
                   updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
                 } else {
+                  if (lastAssistantMetrics.current) {
+                    const updated: MessageMetrics = {
+                      ...lastAssistantMetrics.current,
+                      interruptedMs: val.elapsed_ms,
+                    };
+                    lastAssistantMetrics.current = updated;
+                    if (updated.responseId) {
+                      responseMetrics.current.set(updated.responseId, updated);
+                    }
+                    syncLastTtfb(updated);
+                  }
                   setMessages((items) => {
                     const idx = items.findLastIndex((m) => m.role === "assistant");
                     if (idx === -1) return items;
                     const target = items[idx];
-                    const respId = target.metrics?.responseId;
-                    if (respId) {
-                      responseMetrics.current.set(respId, {
-                        ...responseMetrics.current.get(respId),
-                        interruptedMs: val.elapsed_ms,
-                        responseId: respId,
-                      });
-                    }
                     const next = [...items];
                     next[idx] = {
                       ...target,
@@ -637,6 +666,17 @@ export function useVoiceSession() {
               if (type === "llm_latency" && targetEngine === "live") {
                 setLastTTFB(Math.round(value * 1000));
               }
+              if (lastAssistantMetrics.current) {
+                const mergedFallback: MessageMetrics = {
+                  ...lastAssistantMetrics.current,
+                  [field]: value,
+                };
+                lastAssistantMetrics.current = mergedFallback;
+                if (mergedFallback.responseId) {
+                  responseMetrics.current.set(mergedFallback.responseId, mergedFallback);
+                }
+                syncLastTtfb(mergedFallback);
+              }
               setMessages((items) => {
                 const last = items[items.length - 1];
                 if (!last || last.role !== "assistant") return items;
@@ -644,10 +684,6 @@ export function useVoiceSession() {
                   ...last.metrics,
                   [field]: value,
                 };
-                if (last.metrics?.responseId) {
-                  responseMetrics.current.set(last.metrics.responseId, mergedMetrics);
-                }
-                syncLastTtfb(mergedMetrics);
                 const next = [...items];
                 next[items.length - 1] = { ...last, metrics: mergedMetrics };
                 return next;
@@ -729,8 +765,13 @@ export function useVoiceSession() {
         return;
       }
       session.current = live;
-      live.setSound?.(sound);
+      live.setMic(!mutedRef.current);
+      live.setSound?.(soundRef.current);
       await live.connect();
+      if (run.current === current) {
+        live.setMic(!mutedRef.current);
+        live.setSound?.(soundRef.current);
+      }
       if (run.current === current && callStartedAt.current === null) {
         callStartedAt.current = Date.now();
       }

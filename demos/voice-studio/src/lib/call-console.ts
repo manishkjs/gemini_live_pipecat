@@ -425,6 +425,7 @@ export interface TurnLatencyMetrics {
   readonly sttLatency?: number;
   readonly llmLatency?: number;
   readonly ttsLatency?: number;
+  readonly interruptedMs?: number;
 }
 
 function finiteNonNegative(value: number | undefined): number | null {
@@ -434,9 +435,10 @@ function finiteNonNegative(value: number | undefined): number | null {
 /**
  * Computes end-to-end turn Time-To-First-Byte (TTFB) in seconds.
  *
- * In `cascade` mode, total TTFB sums all active pipeline stage latencies (`STT + LLM + TTS`),
- * requiring at least one assistant generation stage (`LLM` or `TTS`) so an STT-only user metric
- * never masquerades as bot TTFB. In `live` mode, `llmLatency` (`ttft`) is single-hop Live TTFB.
+ * In `cascade` mode, total TTFB sums all active pipeline stage latencies (`STT + LLM + TTS`) once
+ * TTS emits its first audio byte (or if a turn was interrupted after LLM started), preventing
+ * partial `STT + LLM` subtotals from flashing prematurely. In `live` mode, `llmLatency` (`ttft`)
+ * is single-hop Live TTFB.
  */
 export function computeTurnTtfbSeconds(
   metrics: TurnLatencyMetrics | undefined,
@@ -451,7 +453,8 @@ export function computeTurnTtfbSeconds(
   }
   const stt = finiteNonNegative(metrics.sttLatency);
   const tts = finiteNonNegative(metrics.ttsLatency);
-  if (llm === null && tts === null) {
+  const wasInterrupted = finiteNonNegative(metrics.interruptedMs) !== null;
+  if (tts === null && !(wasInterrupted && llm !== null)) {
     return null;
   }
   return (stt ?? 0) + (llm ?? 0) + (tts ?? 0);
@@ -468,17 +471,18 @@ export function formatLatencySeconds(seconds: number | null | undefined): string
   if (seconds === 0) {
     return "0.0s";
   }
-  if (seconds >= 0.1) {
+  const roundedHundredths = Math.round(seconds * 100) / 100;
+  if (roundedHundredths >= 0.1) {
     return `${(Math.round(seconds * 10) / 10).toFixed(1)}s`;
   }
   if (seconds >= 0.01) {
-    return `${(Math.round(seconds * 100) / 100).toFixed(2)}s`;
+    return `${roundedHundredths.toFixed(2)}s`;
   }
   return `${(Math.round(seconds * 1000) / 1000).toFixed(3)}s`;
 }
 
 /**
- * Returns `true` when end-to-end turn TTFB is within the fast target budget for `engine`
+ * Returns `true` when the displayed 1-decimal TTFB in seconds is within the fast target budget
  * (`< 0.5s` for single-hop Gemini Live native audio; `< 1.5s` for 3-stage Cascade STT + LLM + TTS).
  */
 export function isFastTtfbSeconds(
@@ -488,5 +492,6 @@ export function isFastTtfbSeconds(
   if (seconds == null || !Number.isFinite(seconds) || seconds < 0) {
     return false;
   }
-  return seconds < (engine === "cascade" ? 1.5 : 0.5);
+  const displayedTenths = Math.round(seconds * 10) / 10;
+  return displayedTenths < (engine === "cascade" ? 1.5 : 0.5);
 }

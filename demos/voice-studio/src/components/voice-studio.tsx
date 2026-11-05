@@ -277,7 +277,10 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
               className="brand"
               aria-label="Voice Studio home"
               onClick={(e) => {
-                if (!active && messages.length > 0) {
+                if (active) {
+                  e.preventDefault();
+                  triggerFlash("End call first", "warn", 2200);
+                } else if (messages.length > 0) {
                   e.preventDefault();
                   resetToSetup();
                 }
@@ -441,6 +444,9 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
             consoleOpen={consoleOpen}
             onAvatarCompatNotice={() =>
               triggerFlash("3.8 Avatar runs on Gemini Live", "warn", 2200)
+            }
+            onAvatarLockedNotice={() =>
+              triggerFlash("End call or use Settings to toggle Avatar", "warn", 2200)
             }
           />
         </div>

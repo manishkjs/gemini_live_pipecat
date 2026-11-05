@@ -554,7 +554,11 @@ export default function ObservabilityDrawer({
                 <h3>
                   <span>Audio-to-audio TTFB</span>
                   <span className="mono-pill">
-                    {engine === "cascade" ? "<1.5s fast" : "<0.5s fast"}
+                    {selectedStage === "total" || selectedStage === "live_ttfb"
+                      ? engine === "cascade"
+                        ? "<1.5s fast"
+                        : "<0.5s fast"
+                      : "<500ms fast"}
                   </span>
                 </h3>
                 <div className="cs-stage-pills" role="group" aria-label="Latency stage">
