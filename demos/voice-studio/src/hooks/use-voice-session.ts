@@ -20,6 +20,7 @@ import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
+import { computeTurnTtfbSeconds } from "@/lib/call-console";
 import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
@@ -438,9 +439,27 @@ export function useVoiceSession() {
     setPhase("connecting");
 
     const current = ++run.current;
+    const syncLastTtfb = (metrics: MessageMetrics | undefined): void => {
+      const totalSec = computeTurnTtfbSeconds(metrics, targetEngine);
+      if (totalSec !== null) {
+        setLastTTFB(Math.round(totalSec * 1000));
+      }
+    };
     const updateResponse = (responseId: string, patch: MessageMetrics) => {
-      const metrics = { ...responseMetrics.current.get(responseId), ...patch, responseId };
+      const prev = responseMetrics.current.get(responseId);
+      const metrics: MessageMetrics = {
+        ...prev,
+        ...patch,
+        llmLatency: patch.llmLatency ?? prev?.llmLatency,
+        ttsLatency: patch.ttsLatency ?? prev?.ttsLatency,
+        sttLatency: patch.sttLatency ?? prev?.sttLatency,
+        turnCostUSD: patch.turnCostUSD ?? prev?.turnCostUSD,
+        costIncomplete: patch.costIncomplete ?? prev?.costIncomplete,
+        usage: patch.usage ?? prev?.usage,
+        responseId,
+      };
       responseMetrics.current.set(responseId, metrics);
+      syncLastTtfb(metrics);
       setMessages(items => items.map(item => item.role === "assistant" && item.metrics?.responseId === responseId
         ? { ...item, metrics: { ...item.metrics, ...metrics } } : item));
     };
@@ -456,7 +475,22 @@ export function useVoiceSession() {
         onMessage: (role, text, append, metrics) => {
           if (run.current !== current) return;
           if (metrics?.responseId) {
-            metrics = { ...metrics, ...responseMetrics.current.get(metrics.responseId) };
+            const prev = responseMetrics.current.get(metrics.responseId);
+            const merged: MessageMetrics = {
+              ...prev,
+              ...metrics,
+              llmLatency: metrics.llmLatency ?? prev?.llmLatency,
+              ttsLatency: metrics.ttsLatency ?? prev?.ttsLatency,
+              sttLatency: metrics.sttLatency ?? prev?.sttLatency,
+              turnCostUSD: metrics.turnCostUSD ?? prev?.turnCostUSD,
+              costIncomplete: metrics.costIncomplete ?? prev?.costIncomplete,
+              usage: metrics.usage ?? prev?.usage,
+              responseId: metrics.responseId,
+            };
+            if (role === "assistant") {
+              responseMetrics.current.set(metrics.responseId, merged);
+            }
+            metrics = merged;
           }
           if (role === "user") {
             setPartialUser("");
@@ -464,9 +498,7 @@ export function useVoiceSession() {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
           } else {
-            if (metrics?.llmLatency !== undefined) {
-              setLastTTFB(Math.round(metrics.llmLatency * 1000));
-            }
+            syncLastTtfb(metrics);
             if (metrics?.ttsLatency !== undefined) {
               setLastTTS(Math.round(metrics.ttsLatency * 1000));
             }
@@ -591,10 +623,35 @@ export function useVoiceSession() {
           } else if (["stt_latency", "llm_latency", "tts_latency"].includes(type)) {
             const value = typeof val === "number" ? val : val?.value;
             if (!Number.isFinite(value) || value < 0) return;
-            const setter = type === "stt_latency" ? setLastSTT : type === "llm_latency" ? setLastTTFB : setLastTTS;
-            setter(Math.round(value * 1000));
-            if (val?.response_id && type !== "stt_latency") {
-              updateResponse(val.response_id, { [type === "llm_latency" ? "llmLatency" : "ttsLatency"]: value });
+            if (type === "stt_latency") {
+              setLastSTT(Math.round(value * 1000));
+              return;
+            }
+            if (type === "tts_latency") {
+              setLastTTS(Math.round(value * 1000));
+            }
+            const field = type === "llm_latency" ? "llmLatency" : "ttsLatency";
+            if (val?.response_id) {
+              updateResponse(val.response_id, { [field]: value });
+            } else {
+              if (type === "llm_latency" && targetEngine === "live") {
+                setLastTTFB(Math.round(value * 1000));
+              }
+              setMessages((items) => {
+                const last = items[items.length - 1];
+                if (!last || last.role !== "assistant") return items;
+                const mergedMetrics: MessageMetrics = {
+                  ...last.metrics,
+                  [field]: value,
+                };
+                if (last.metrics?.responseId) {
+                  responseMetrics.current.set(last.metrics.responseId, mergedMetrics);
+                }
+                syncLastTtfb(mergedMetrics);
+                const next = [...items];
+                next[items.length - 1] = { ...last, metrics: mergedMetrics };
+                return next;
+              });
             }
           } else if (type === "usage") {
             if (val?.session_id && val.session_id !== activeSettings.sessionId) return;

@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { VoiceStudio } from "@/hooks/use-voice-session";
 import {
+  computeTurnTtfbSeconds,
   formatCents,
+  formatLatencySeconds,
   formatVoiceShortLabel,
   getPersonaCastRole,
+  isFastTtfbSeconds,
   resolveStreamingAssistantState,
 } from "@/lib/call-console";
 import { accumulateSplit, EMPTY_TOKEN_SPLIT, totalIn, totalOut } from "@/lib/pricing";
@@ -36,7 +39,9 @@ function TurnMetricChips({
     );
   }
 
-  const ttfbMs = metrics?.llmLatency !== undefined ? Math.round(metrics.llmLatency * 1000) : null;
+  const engineMode = isCascade ? "cascade" : "live";
+  const totalTtfbSec = computeTurnTtfbSeconds(metrics, engineMode);
+  const llmMs = metrics?.llmLatency !== undefined ? Math.round(metrics.llmLatency * 1000) : null;
   const sttMs = metrics?.sttLatency !== undefined ? Math.round(metrics.sttLatency * 1000) : null;
   const ttsMs = metrics?.ttsLatency !== undefined ? Math.round(metrics.ttsLatency * 1000) : null;
   const split = metrics?.usage ? accumulateSplit(EMPTY_TOKEN_SPLIT, metrics.usage) : null;
@@ -44,20 +49,30 @@ function TurnMetricChips({
   const outTok = split ? totalOut(split) : 0;
   const cacheTok = split ? split.cachedIn : 0;
   const hasCost = typeof metrics?.turnCostUSD === "number" && metrics.turnCostUSD > 0;
+  const hasCascadeStage = isCascade && (sttMs !== null || llmMs !== null || ttsMs !== null);
 
-  if (!isStreamingAssistant && ttfbMs === null && !split && !hasCost && metrics?.interruptedMs === undefined) {
+  if (
+    !isStreamingAssistant &&
+    totalTtfbSec === null &&
+    !hasCascadeStage &&
+    !split &&
+    !hasCost &&
+    metrics?.interruptedMs === undefined
+  ) {
     return null;
   }
 
   return (
     <div className="chips">
       {isStreamingAssistant && <span className="chip status">Speaking now</span>}
-      {ttfbMs !== null && (
-        <span className={`chip ${ttfbMs < 500 ? "fast" : "warn"}`}>TTFB {ttfbMs}ms</span>
+      {totalTtfbSec !== null && (
+        <span className={`chip ${isFastTtfbSeconds(totalTtfbSec, engineMode) ? "fast" : "warn"}`}>
+          TTFB {formatLatencySeconds(totalTtfbSec)}
+        </span>
       )}
-      {isCascade && (sttMs !== null || ttfbMs !== null || ttsMs !== null) && (
+      {hasCascadeStage && (
         <span className="chip">
-          STT {sttMs ?? "--"}ms · LLM {ttfbMs ?? "--"}ms · TTS {ttsMs ?? "--"}ms
+          STT {sttMs ?? "--"}ms · LLM {llmMs ?? "--"}ms · TTS {ttsMs ?? "--"}ms
         </span>
       )}
       {split && (inTok > 0 || outTok > 0) && (

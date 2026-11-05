@@ -308,3 +308,50 @@ test('formatBackendUrlError and reconcileCustomDetailsOpen keep disclosure open 
   const afterBackspace = cc.reconcileCustomDetailsOpen(afterTypo, null);
   assert.equal(afterBackspace, true);
 });
+
+test('computeTurnTtfbSeconds sums STT + LLM + TTS in Cascade and formats TTFB in seconds (e.g. 1.8s)', () => {
+  const cc = loadLib('lib/call-console.ts');
+
+  // Cascade sums all active stages (STT + LLM + TTS) and formats in seconds
+  const cascadeExact = cc.computeTurnTtfbSeconds(
+    { sttLatency: 0.1, llmLatency: 0.7, ttsLatency: 1.0 },
+    'cascade',
+  );
+  assert.ok(Math.abs(cascadeExact - 1.8) < 1e-9);
+  assert.equal(cc.formatLatencySeconds(cascadeExact), '1.8s');
+
+  // Screenshot scenario: STT 102ms + LLM 758ms + TTS 1028ms = 1.888s -> 1.9s
+  const cascadeScreenshot = cc.computeTurnTtfbSeconds(
+    { sttLatency: 0.102, llmLatency: 0.758, ttsLatency: 1.028 },
+    'cascade',
+  );
+  assert.ok(Math.abs(cascadeScreenshot - 1.888) < 1e-9);
+  assert.equal(cc.formatLatencySeconds(cascadeScreenshot), '1.9s');
+  assert.equal(cc.isFastTtfbSeconds(cascadeScreenshot, 'cascade'), false);
+  assert.equal(cc.isFastTtfbSeconds(1.32, 'cascade'), true);
+
+  // STT-only before LLM/TTS starts does not fake a bot TTFB
+  assert.equal(cc.computeTurnTtfbSeconds({ sttLatency: 0.102 }, 'cascade'), null);
+
+  // Cascade Turn-0 greeting or skipStt sums LLM + TTS cleanly
+  const skipSttSec = cc.computeTurnTtfbSeconds({ llmLatency: 0.75, ttsLatency: 1.05 }, 'cascade');
+  assert.equal(cc.formatLatencySeconds(skipSttSec), '1.8s');
+
+  // Gemini Live single-hop TTFB uses llmLatency in seconds
+  const liveSec = cc.computeTurnTtfbSeconds(
+    { sttLatency: 0.5, llmLatency: 0.268, ttsLatency: 0.9 },
+    'live',
+  );
+  assert.equal(liveSec, 0.268);
+  assert.equal(cc.formatLatencySeconds(liveSec), '0.3s');
+  assert.equal(cc.isFastTtfbSeconds(liveSec, 'live'), true);
+  assert.equal(cc.isFastTtfbSeconds(0.62, 'live'), false);
+
+  // Sub-100ms and invalid edge cases
+  assert.equal(cc.formatLatencySeconds(0.045), '0.05s');
+  assert.equal(cc.formatLatencySeconds(0.002), '0.002s');
+  assert.equal(cc.formatLatencySeconds(0), '0.0s');
+  assert.equal(cc.formatLatencySeconds(null), '--');
+  assert.equal(cc.formatLatencySeconds(undefined), '--');
+  assert.equal(cc.formatLatencySeconds(-1), '--');
+});

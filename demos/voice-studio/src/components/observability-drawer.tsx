@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { stageLabel, formatCacheHit, type CascadeCost } from "@/lib/cascade-cost";
-import { formatCents, formatSessionCents, formatVoiceShortLabel } from "@/lib/call-console";
+import {
+  computeTurnTtfbSeconds,
+  formatCents,
+  formatLatencySeconds,
+  formatSessionCents,
+  formatVoiceShortLabel,
+  isFastTtfbSeconds,
+} from "@/lib/call-console";
 import {
   LOG_HEIGHT,
   clampLogHeight,
@@ -97,13 +104,28 @@ function computeClientPercentiles(values: readonly number[]): LatencyStat {
   };
 }
 
-function ttfbToneClass(ms?: number, count = 0): string {
+function ttfbToneClass(
+  ms: number | undefined,
+  count: number,
+  engine: "live" | "cascade",
+  isTtfbStage: boolean,
+): string {
   if (count <= 0 || ms === undefined) return "";
+  if (isTtfbStage) {
+    return isFastTtfbSeconds(ms / 1000, engine) ? "fast" : "warn";
+  }
   return ms < 500 ? "fast" : "warn";
 }
 
-function formatMs(ms?: number, count = 0): string {
+function formatLatencyStat(
+  ms: number | undefined,
+  count: number,
+  isTtfbStage: boolean,
+): string {
   if (count <= 0 || ms === undefined) return "—";
+  if (isTtfbStage) {
+    return formatLatencySeconds(ms / 1000);
+  }
   return `${Math.round(ms)}ms`;
 }
 
@@ -292,14 +314,12 @@ export default function ObservabilityDrawer({
     const vals: number[] = [];
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
-      const ms =
-        msg.metrics?.llmLatency !== undefined
-          ? Math.round(msg.metrics.llmLatency * 1000)
-          : undefined;
+      const sec = computeTurnTtfbSeconds(msg.metrics, engine);
+      const ms = sec !== null ? Math.round(sec * 1000) : undefined;
       if (ms !== undefined && ms > 0) vals.push(ms);
     }
     return computeClientPercentiles(vals);
-  }, [messages]);
+  }, [engine, messages]);
 
   const activeStat = useMemo((): LatencyStat => {
     const fallback = clientTurnTtfbs;
@@ -533,7 +553,9 @@ export default function ObservabilityDrawer({
               <section className="cs-sec">
                 <h3>
                   <span>Audio-to-audio TTFB</span>
-                  <span className="mono-pill">&lt;500ms fast</span>
+                  <span className="mono-pill">
+                    {engine === "cascade" ? "<1.5s fast" : "<0.5s fast"}
+                  </span>
                 </h3>
                 <div className="cs-stage-pills" role="group" aria-label="Latency stage">
                   {engine === "live" ? (
@@ -581,20 +603,53 @@ export default function ObservabilityDrawer({
                 <div className="pct-row">
                   <div className="pct">
                     <div className="k">P50</div>
-                    <div className={`v ${ttfbToneClass(activeStat.p50, activeStat.count)}`}>
-                      {formatMs(activeStat.p50, activeStat.count)}
+                    <div
+                      className={`v ${ttfbToneClass(
+                        activeStat.p50,
+                        activeStat.count,
+                        engine,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}`}
+                    >
+                      {formatLatencyStat(
+                        activeStat.p50,
+                        activeStat.count,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}
                     </div>
                   </div>
                   <div className="pct">
                     <div className="k">P90</div>
-                    <div className={`v ${ttfbToneClass(activeStat.p90, activeStat.count)}`}>
-                      {formatMs(activeStat.p90, activeStat.count)}
+                    <div
+                      className={`v ${ttfbToneClass(
+                        activeStat.p90,
+                        activeStat.count,
+                        engine,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}`}
+                    >
+                      {formatLatencyStat(
+                        activeStat.p90,
+                        activeStat.count,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}
                     </div>
                   </div>
                   <div className="pct">
                     <div className="k">Max</div>
-                    <div className={`v ${ttfbToneClass(activeStat.max, activeStat.count)}`}>
-                      {formatMs(activeStat.max, activeStat.count)}
+                    <div
+                      className={`v ${ttfbToneClass(
+                        activeStat.max,
+                        activeStat.count,
+                        engine,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}`}
+                    >
+                      {formatLatencyStat(
+                        activeStat.max,
+                        activeStat.count,
+                        selectedStage === "total" || selectedStage === "live_ttfb",
+                      )}
                     </div>
                   </div>
                 </div>

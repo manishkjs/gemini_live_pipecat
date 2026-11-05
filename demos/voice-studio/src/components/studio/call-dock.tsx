@@ -3,7 +3,9 @@ import type { VoiceStudio } from "@/hooks/use-voice-session";
 import {
   computeBubbleBarScale,
   computeBubblePillStretch,
+  formatLatencySeconds,
   formatSessionCents,
+  isFastTtfbSeconds,
   resolveVoiceBubbleState,
 } from "@/lib/call-console";
 import { formatTokens } from "@/lib/pricing";
@@ -286,8 +288,16 @@ export default function CallDock({ studio, consoleOpen, onAvatarCompatNotice }: 
             </div>
             <div className="dock-stat">
               <span className="k">Last TTFB</span>
-              <span className={`v${lastTTFB !== null ? (lastTTFB < 500 ? " fast" : " warn") : ""}`}>
-                {lastTTFB !== null ? `${lastTTFB}ms` : "--"}
+              <span
+                className={`v${
+                  lastTTFB !== null
+                    ? isFastTtfbSeconds(lastTTFB / 1000, settings.engine)
+                      ? " fast"
+                      : " warn"
+                    : ""
+                }`}
+              >
+                {lastTTFB !== null ? formatLatencySeconds(lastTTFB / 1000) : "--"}
               </span>
             </div>
           </>

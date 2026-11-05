@@ -419,3 +419,74 @@ export function reconcileCustomDetailsOpen(
 ): boolean {
   return backendUrlError ? true : currentlyOpen;
 }
+
+/** Stage latencies reported on a turn in seconds. */
+export interface TurnLatencyMetrics {
+  readonly sttLatency?: number;
+  readonly llmLatency?: number;
+  readonly ttsLatency?: number;
+}
+
+function finiteNonNegative(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Computes end-to-end turn Time-To-First-Byte (TTFB) in seconds.
+ *
+ * In `cascade` mode, total TTFB sums all active pipeline stage latencies (`STT + LLM + TTS`),
+ * requiring at least one assistant generation stage (`LLM` or `TTS`) so an STT-only user metric
+ * never masquerades as bot TTFB. In `live` mode, `llmLatency` (`ttft`) is single-hop Live TTFB.
+ */
+export function computeTurnTtfbSeconds(
+  metrics: TurnLatencyMetrics | undefined,
+  engine: "live" | "cascade",
+): number | null {
+  if (!metrics) {
+    return null;
+  }
+  const llm = finiteNonNegative(metrics.llmLatency);
+  if (engine === "live") {
+    return llm;
+  }
+  const stt = finiteNonNegative(metrics.sttLatency);
+  const tts = finiteNonNegative(metrics.ttsLatency);
+  if (llm === null && tts === null) {
+    return null;
+  }
+  return (stt ?? 0) + (llm ?? 0) + (tts ?? 0);
+}
+
+/**
+ * Formats a latency duration in seconds for transcript chips, dock stats, and observability
+ * (for example, `1.8s`, `0.3s`, `0.05s`), returning `"--"` when unavailable.
+ */
+export function formatLatencySeconds(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) {
+    return "--";
+  }
+  if (seconds === 0) {
+    return "0.0s";
+  }
+  if (seconds >= 0.1) {
+    return `${(Math.round(seconds * 10) / 10).toFixed(1)}s`;
+  }
+  if (seconds >= 0.01) {
+    return `${(Math.round(seconds * 100) / 100).toFixed(2)}s`;
+  }
+  return `${(Math.round(seconds * 1000) / 1000).toFixed(3)}s`;
+}
+
+/**
+ * Returns `true` when end-to-end turn TTFB is within the fast target budget for `engine`
+ * (`< 0.5s` for single-hop Gemini Live native audio; `< 1.5s` for 3-stage Cascade STT + LLM + TTS).
+ */
+export function isFastTtfbSeconds(
+  seconds: number | null | undefined,
+  engine: "live" | "cascade",
+): boolean {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) {
+    return false;
+  }
+  return seconds < (engine === "cascade" ? 1.5 : 0.5);
+}
