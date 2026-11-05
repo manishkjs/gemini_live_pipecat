@@ -8,6 +8,7 @@ export type Message = {
   /** Assistant only: the raw script streamed so far; `text` is what the reader sees of it. */
   rawText?: string;
   time: string;
+  offsetLabel?: string;
   createdAt?: number;
   metrics?: MessageMetrics;
 };

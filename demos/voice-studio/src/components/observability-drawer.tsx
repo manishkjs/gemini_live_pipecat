@@ -1,41 +1,36 @@
-"use client";
-
-import { useEffect, useState, useRef, useMemo, useCallback } from "react";
-import { diagnosticHeaders } from "@/lib/session-diagnostics";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { stageLabel, formatCacheHit, type CascadeCost } from "@/lib/cascade-cost";
+import { formatCents, formatSessionCents, formatVoiceShortLabel } from "@/lib/call-console";
 import {
   LOG_HEIGHT,
   clampLogHeight,
   dragLogHeight,
   keyLogHeight,
-  maxLogHeight,
   readStoredLogHeight,
   toggleLogHeight,
   writeStoredLogHeight,
 } from "@/lib/log-resize";
-import { totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
-import {
-  X,
-  Trash2,
-  Copy,
-  ExternalLink,
-  Search,
-  Check,
-  Activity,
-  Zap,
-  Radio,
-  Terminal,
-  Clock,
-  Cpu,
-  Mic,
-  Volume2,
-  Maximize2,
-  Minimize2,
-} from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogPortal, DialogOverlay, DialogTitle } from "@/components/ui/dialog";
-import { Dialog as DialogPrimitive } from "radix-ui";
+import type { Persona } from "@/lib/personas";
+import { getLiveRateCard, totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
+import { diagnosticHeaders } from "@/lib/session-diagnostics";
+import type { Message } from "@/lib/studio-types";
+import type { SessionSettings } from "@/lib/voice-session";
 
-type LatencyStat = {
+interface SessionCostBoundsView {
+  readonly minUSD: number | null;
+  readonly maxUSD: number | null;
+  readonly estimated: boolean;
+  readonly complete: boolean;
+  readonly incomplete: boolean;
+}
+
+const CASCADE_STAGE_TITLES = {
+  stt: "STT",
+  llm: "LLM",
+  tts: "TTS",
+} as const;
+
+interface LatencyStat {
   count: number;
   p50?: number;
   p90?: number;
@@ -43,114 +38,183 @@ type LatencyStat = {
   mean?: number;
   min?: number;
   max?: number;
-};
+}
 
-type LatencySummary = {
+interface LatencySummary {
   live_ttfb?: LatencyStat;
   llm?: LatencyStat;
   stt?: LatencyStat;
   tts?: LatencyStat;
   vad_stop_to_first_server_audio?: LatencyStat;
-  turns?: any[];
-};
+  turns?: Array<{ stage?: string; turn_id?: number; status?: string }>;
+}
 
-type DiagnosticLog = {
+interface DiagnosticLog {
   timestamp: string;
   level: string;
   message: string;
   event_type?: string;
-};
+}
 
-type ObservabilityDrawerProps = {
-  open: boolean;
-  onClose: () => void;
-  backendUrl: string;
-  /**
-   * Scopes the drawer to one demo session. The backend diagnostics buffer is
-   * process-global, so without this the drawer shows every concurrent
-   * demoer's logs and blends their latency percentiles together.
-   */
-  sessionId?: string;
-  engine?: "live" | "cascade";
-  sessionTurnCount?: number;
-  sessionTokens?: number;
-  sessionTokenSplit?: TokenSplit;
-  sessionCost?: number;
-  sessionInterrupts?: number;
-};
+type StageKey = "total" | "llm" | "stt" | "tts" | "live_ttfb";
+type LogFilter = "ALL" | "INFO" | "WARNING" | "ERROR";
 
+export interface ObservabilityDrawerProps {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly backendUrl: string;
+  readonly sessionId?: string;
+  readonly engine?: "live" | "cascade";
+  readonly active?: boolean;
+  readonly isMobileModal?: boolean;
+  readonly inert?: boolean;
+  readonly persona?: Persona;
+  readonly settings?: SessionSettings;
+  readonly messages?: readonly Message[];
+  readonly sessionTurnCount?: number;
+  readonly sessionTokens?: number;
+  readonly sessionTokenSplit?: TokenSplit;
+  readonly sessionCost?: number;
+  readonly sessionCostBounds?: SessionCostBoundsView;
+  readonly cascadeCost?: CascadeCost | null;
+  readonly sessionInterrupts?: number;
+  readonly visitCount?: number | null;
+}
+
+function computeClientPercentiles(values: readonly number[]): LatencyStat {
+  if (values.length === 0) return { count: 0 };
+  const sorted = [...values].sort((a, b) => a - b);
+  const pick = (q: number): number => {
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1));
+    return Math.round(sorted[idx]);
+  };
+  return {
+    count: sorted.length,
+    p50: pick(0.5),
+    p90: pick(0.9),
+    min: Math.round(sorted[0]),
+    max: Math.round(sorted[sorted.length - 1]),
+  };
+}
+
+function ttfbToneClass(ms?: number, count = 0): string {
+  if (count <= 0 || ms === undefined) return "";
+  return ms < 500 ? "fast" : "warn";
+}
+
+function formatMs(ms?: number, count = 0): string {
+  if (count <= 0 || ms === undefined) return "—";
+  return `${Math.round(ms)}ms`;
+}
+
+function faderStyle(ratio: number): CSSProperties {
+  const clamped = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  return { width: `${clamped}%` };
+}
+
+/** Docked right-hand Session console (and responsive mobile sheet) for live voice telemetry. */
 export default function ObservabilityDrawer({
   open,
   onClose,
   backendUrl,
   sessionId,
   engine = "live",
-  sessionTurnCount,
-  sessionTokens,
+  active = false,
+  isMobileModal = false,
+  inert = false,
+  persona,
+  settings,
+  messages = [],
+  sessionTurnCount = 0,
+  sessionTokens = 0,
   sessionTokenSplit,
-  sessionCost,
-  sessionInterrupts,
+  sessionCost = 0,
+  sessionCostBounds,
+  cascadeCost = null,
+  sessionInterrupts = 0,
+  visitCount = null,
 }: ObservabilityDrawerProps) {
   const scope = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "";
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [latencySummary, setLatencySummary] = useState<LatencySummary | null>(null);
   const [traceUrl, setTraceUrl] = useState<string>(
-    "https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat"
+    "https://smith.langchain.com/o/default/projects/p/gemini-live-pipecat",
   );
-  const [selectedStage, setSelectedStage] = useState<"total" | "llm" | "stt" | "tts" | "live_ttfb">(
-    engine === "live" ? "live_ttfb" : "total"
+  const [selectedStage, setSelectedStage] = useState<StageKey>(
+    engine === "live" ? "live_ttfb" : "total",
   );
-  const [activeFilter, setActiveFilter] = useState<"ALL" | "INFO" | "WARNING" | "ERROR">("ALL");
+  const [activeFilter, setActiveFilter] = useState<LogFilter>("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [copiedTrace, setCopiedTrace] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [telemetryError, setTelemetryError] = useState(false);
   const logScrollRef = useRef<HTMLDivElement | null>(null);
-  const autoScrollRef = useRef(true);
-  // Resizable log: drag the handle under it, arrow keys/Home/End on the handle, double-click to expand.
+  const railRef = useRef<HTMLElement | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [logHeight, setLogHeight] = useState<number>(() =>
-    typeof window === "undefined" ? LOG_HEIGHT.initial : readStoredLogHeight(() => window.localStorage, window.innerHeight),
-  );
-  const [viewportHeight, setViewportHeight] = useState<number>(() =>
-    typeof window === "undefined" ? 1000 : window.innerHeight,
+    typeof window === "undefined"
+      ? LOG_HEIGHT.initial
+      : readStoredLogHeight(() => window.localStorage, window.innerHeight),
   );
   const logDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
   useEffect(() => {
     writeStoredLogHeight(() => window.localStorage, logHeight);
   }, [logHeight]);
-  // A smaller window must not leave the log taller than the drawer can show.
+
   useEffect(() => {
     const onResize = () => {
-      setViewportHeight(window.innerHeight);
       setLogHeight((h) => clampLogHeight(h, window.innerHeight));
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  const onLogHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    logDragRef.current = { startY: e.clientY, startHeight: logHeight };
-  }, [logHeight]);
+
+  useEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    (el as HTMLElement & { inert?: boolean }).inert = inert;
+  }, [inert]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const onLogHandlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      logDragRef.current = { startY: e.clientY, startHeight: logHeight };
+    },
+    [logHeight],
+  );
+
   const onLogHandlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const drag = logDragRef.current;
     if (!drag) return;
     setLogHeight(dragLogHeight(drag.startHeight, drag.startY, e.clientY, window.innerHeight));
   }, []);
+
   const onLogHandlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     logDragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
   }, []);
+
   const onLogHandleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
     if (keyLogHeight(LOG_HEIGHT.initial, e.key, window.innerHeight) === null) return;
     e.preventDefault();
     setLogHeight((h) => keyLogHeight(h, e.key, window.innerHeight) ?? h);
   }, []);
 
-  // Poll diagnostic logs and trace info
   useEffect(() => {
     if (!open || !sessionId) {
-      setLogs([]); setLatencySummary(null);
+      setLogs([]);
+      setLatencySummary(null);
       return;
     }
 
@@ -161,11 +225,16 @@ export default function ObservabilityDrawer({
       try {
         const [logsRes, traceRes] = await Promise.allSettled([
           fetch(`${base}/api/logs?limit=500${scope}`, { headers: diagnosticHeaders(sessionId) }),
-          fetch(`${base}/api/trace/current?${scope.replace(/^&/, "")}`, { headers: diagnosticHeaders(sessionId) }),
+          fetch(`${base}/api/trace/current?${scope.replace(/^&/, "")}`, {
+            headers: diagnosticHeaders(sessionId),
+          }),
         ]);
 
         if (mounted && logsRes.status === "fulfilled" && logsRes.value.ok) {
-          const data = await logsRes.value.json();
+          const data = (await logsRes.value.json()) as {
+            logs?: DiagnosticLog[];
+            latency_summary?: LatencySummary;
+          };
           if (Array.isArray(data.logs)) {
             setLogs(data.logs);
           }
@@ -178,13 +247,12 @@ export default function ObservabilityDrawer({
         }
 
         if (mounted && traceRes.status === "fulfilled" && traceRes.value.ok) {
-          const tData = await traceRes.value.json();
+          const tData = (await traceRes.value.json()) as { trace_url?: string };
           if (tData.trace_url) {
             setTraceUrl(tData.trace_url);
           }
         }
-      } catch (e) {
-        console.debug("Telemetry fetch error:", e);
+      } catch {
         if (mounted) setTelemetryError(true);
       }
     };
@@ -193,7 +261,9 @@ export default function ObservabilityDrawer({
     const poll = async () => {
       await fetchTelemetry();
       if (mounted) {
-        timer = setTimeout(poll, 1500);
+        timer = setTimeout(() => {
+          void poll();
+        }, 1500);
       }
     };
     void poll();
@@ -202,113 +272,13 @@ export default function ObservabilityDrawer({
       mounted = false;
       if (timer) clearTimeout(timer);
     };
-  }, [open, backendUrl, scope]);
+  }, [open, backendUrl, scope, sessionId]);
 
-  // Auto-scroll logs
   useEffect(() => {
-    if (autoScrollRef.current && logScrollRef.current) {
+    if (logScrollRef.current) {
       logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
     }
   }, [logs]);
-
-  // Aggregate metrics from logs if summary is not yet available
-  const aggregatedMetrics = useMemo(() => {
-    const turns = latencySummary?.turns?.filter(r => r.stage === "turn" && r.turn_id > 0).length ?? 0;
-    const interrupts = latencySummary?.turns?.filter(r => r.stage === "turn" && r.status === "interrupted").length ?? 0;
-    const tools = logs.filter(log => log.event_type === "Tool Output").length;
-    const totalTokens = 0, inTokens = 0, outTokens = 0;
-
-    const totalStat = latencySummary?.vad_stop_to_first_server_audio || { count: 0 };
-    const llmStat = latencySummary?.llm || { count: 0 };
-    const sttStat = latencySummary?.stt || { count: 0 };
-    const ttsStat = latencySummary?.tts || { count: 0 };
-    const liveStat = latencySummary?.live_ttfb || { count: 0 };
-
-    // Prefer exact session values tracked directly in client session state
-    const displayTurns =
-      sessionTurnCount !== undefined
-        ? sessionTurnCount
-        : turns > 0
-          ? turns
-          : engine === "live"
-            ? liveStat.count || 0
-            : totalStat.count || 0;
-
-    const displayInterrupts =
-      sessionInterrupts !== undefined ? sessionInterrupts : interrupts;
-
-    const displayTokens =
-      sessionTokens !== undefined ? sessionTokens : totalTokens;
-
-    // Token totals come from provider usage, never formatted log text.
-    const displayIn = sessionTokenSplit ? totalIn(sessionTokenSplit) : inTokens;
-    const displayOut = sessionTokenSplit ? totalOut(sessionTokenSplit) : outTokens;
-
-    return {
-      turns: displayTurns,
-      interrupts: displayInterrupts,
-      tools,
-      totalTokens: displayTokens,
-      inTokens: displayIn,
-      outTokens: displayOut,
-      totalStat,
-      llmStat,
-      sttStat,
-      ttsStat,
-      liveStat,
-    };
-  }, [logs, latencySummary, sessionTurnCount, sessionInterrupts, sessionTokens, sessionTokenSplit, engine]);
-
-  // Derived status tag: "Waiting for session" / "Updating" / "Telemetry unavailable"
-  const statusState = useMemo(() => {
-    if (telemetryError) {
-      return { label: "Telemetry unavailable", pulse: false, dotClass: "is-offline" };
-    }
-    if (aggregatedMetrics.turns === 0 && logs.length === 0) {
-      return { label: "Waiting for session", pulse: false, dotClass: "is-waiting" };
-    }
-    return { label: "Updating", pulse: true, dotClass: "is-live" };
-  }, [telemetryError, aggregatedMetrics.turns, logs.length]);
-
-  const clearLogs = async () => {
-    if (!sessionId) return;
-    setIsClearing(true);
-    try {
-      const base = backendUrl.replace(/\/$/, "");
-      const response = await fetch(`${base}/api/logs/clear?${scope.replace(/^&/, "")}`, { method: "POST", headers: diagnosticHeaders(sessionId) });
-      if (!response.ok) throw new Error("Clear failed");
-      setLogs([]);
-      setLatencySummary(null);
-    } catch (e) {
-      console.error("Failed to clear logs", e);
-    } finally {
-      setIsClearing(false);
-    }
-  };
-
-  const copyTrace = async () => {
-    try {
-      await navigator.clipboard.writeText(traceUrl);
-      setCopiedTrace(true);
-      setTimeout(() => setCopiedTrace(false), 2000);
-    } catch (e) {
-      console.error("Failed to copy trace", e);
-    }
-  };
-
-  const filteredLogs = useMemo(() => {
-    return logs.filter((log) => {
-      const levelMatches =
-        activeFilter === "ALL" ||
-        log.level.toUpperCase() === activeFilter ||
-        (activeFilter === "WARNING" && log.level.toUpperCase().includes("WARN"));
-      const queryMatches =
-        !searchQuery || (log.message && log.message.toLowerCase().includes(searchQuery.toLowerCase()));
-      return levelMatches && queryMatches;
-    });
-  }, [logs, activeFilter, searchQuery]);
-
-  const effectiveLiveStat = aggregatedMetrics.liveStat;
 
   useEffect(() => {
     if (engine === "live" && selectedStage !== "total" && selectedStage !== "live_ttfb") {
@@ -318,465 +288,496 @@ export default function ObservabilityDrawer({
     }
   }, [engine, selectedStage]);
 
-  const activeStat = useMemo(() => {
-    if (engine === "live") {
-      if (selectedStage === "total") {
-        return { label: "VAD stop → first server audio", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
-      }
-      return { label: "Gemini Live first output", stat: effectiveLiveStat, color: "#38bdf8" };
+  const clientTurnTtfbs = useMemo(() => {
+    const vals: number[] = [];
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      const ms =
+        msg.metrics?.llmLatency !== undefined
+          ? Math.round(msg.metrics.llmLatency * 1000)
+          : undefined;
+      if (ms !== undefined && ms > 0) vals.push(ms);
     }
+    return computeClientPercentiles(vals);
+  }, [messages]);
 
+  const activeStat = useMemo((): LatencyStat => {
+    const fallback = clientTurnTtfbs;
+    if (engine === "live") {
+      const primary =
+        selectedStage === "total"
+          ? latencySummary?.vad_stop_to_first_server_audio
+          : latencySummary?.live_ttfb;
+      return primary && primary.count > 0 ? primary : fallback;
+    }
     switch (selectedStage) {
-      case "llm":
-        return { label: "LLM TTFB (Reasoning Stream)", stat: aggregatedMetrics.llmStat, color: "#c084fc" };
       case "stt":
-        return { label: "STT response latency", stat: aggregatedMetrics.sttStat, color: "#fbbf24" };
+        return latencySummary?.stt ?? { count: 0 };
+      case "llm":
+        return latencySummary?.llm ?? { count: 0 };
       case "tts":
-        return { label: "TTS Audio Synthesis", stat: aggregatedMetrics.ttsStat, color: "#4ade80" };
+        return latencySummary?.tts ?? { count: 0 };
       case "total":
       default:
-        return { label: "VAD stop → first server audio", stat: aggregatedMetrics.totalStat, color: "#f472b6" };
+        return latencySummary?.vad_stop_to_first_server_audio?.count
+          ? latencySummary.vad_stop_to_first_server_audio
+          : fallback;
     }
-  }, [engine, selectedStage, aggregatedMetrics, effectiveLiveStat]);
+  }, [clientTurnTtfbs, engine, latencySummary, selectedStage]);
 
-  const formatMs = (val?: number, count = 0) => {
-    if (count <= 0 || val === undefined) return "—";
-    return `${val} ms`;
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const upper = log.level.toUpperCase();
+      const levelMatches =
+        activeFilter === "ALL" ||
+        upper === activeFilter ||
+        (activeFilter === "WARNING" && upper.includes("WARN"));
+      const queryMatches =
+        !searchQuery || log.message.toLowerCase().includes(searchQuery.toLowerCase());
+      return levelMatches && queryMatches;
+    });
+  }, [logs, activeFilter, searchQuery]);
+
+  const clearLogs = async () => {
+    if (!sessionId) return;
+    setIsClearing(true);
+    try {
+      const base = backendUrl.replace(/\/$/, "");
+      const response = await fetch(`${base}/api/logs/clear?${scope.replace(/^&/, "")}`, {
+        method: "POST",
+        headers: diagnosticHeaders(sessionId),
+      });
+      if (response.ok) {
+        setLogs([]);
+        setLatencySummary(null);
+      }
+    } catch {
+      // Ignore transient network errors when clearing diagnostics.
+    } finally {
+      setIsClearing(false);
+    }
   };
 
-  const formatRange = (stat?: LatencyStat) => {
-    if (!stat || !stat.count || stat.count <= 0 || stat.min === undefined || stat.max === undefined) {
-      return "—";
+  const copyTrace = async () => {
+    try {
+      await navigator.clipboard.writeText(traceUrl);
+      setCopiedTrace(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedTrace(false), 1600);
+    } catch {
+      // Clipboard may be blocked in restricted contexts.
     }
-    return `${stat.min} - ${stat.max} ms`;
   };
 
-  // Resizable drawer width (drag left border of Observability bar or click expand button)
-  const [drawerWidth, setDrawerWidth] = useState<number>(680);
-  const [isDrawerExpanded, setIsDrawerExpanded] = useState<boolean>(false);
-  const drawerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const hasSessionTelemetry = active || sessionTurnCount > 0 || messages.length > 0 || logs.length > 0;
 
-  const startDrawerResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    drawerDragRef.current = { startX: e.clientX, startWidth: drawerWidth };
-
-    const onMove = (ev: MouseEvent) => {
-      if (!drawerDragRef.current) return;
-      // Drawer is anchored on the right (right: 0), so dragging left (smaller clientX) increases width
-      const delta = drawerDragRef.current.startX - ev.clientX;
-      const maxW = Math.min(1560, Math.floor(window.innerWidth * 0.94));
-      const next = Math.max(420, Math.min(maxW, drawerDragRef.current.startWidth + delta));
-      setDrawerWidth(next);
-      setIsDrawerExpanded(next >= 960);
-    };
-
-    const onUp = () => {
-      drawerDragRef.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [drawerWidth]);
-
-  const toggleDrawerExpand = useCallback(() => {
-    if (isDrawerExpanded) {
-      setDrawerWidth(680);
-      setIsDrawerExpanded(false);
-    } else {
-      setDrawerWidth(Math.min(1160, Math.floor(window.innerWidth * 0.9)));
-      setIsDrawerExpanded(true);
+  const tokenRows = useMemo(() => {
+    if (!sessionTokenSplit) return [];
+    const inTotal = totalIn(sessionTokenSplit);
+    const outTotal = totalOut(sessionTokenSplit);
+    const denom = Math.max(1, sessionTokens || inTotal + outTotal);
+    if (engine === "live") {
+      return [
+        { label: "Audio in", value: sessionTokenSplit.audioIn, ratio: sessionTokenSplit.audioIn / denom },
+        { label: "Text in", value: sessionTokenSplit.textIn, ratio: sessionTokenSplit.textIn / denom },
+        { label: "Cached", value: sessionTokenSplit.cachedIn, ratio: sessionTokenSplit.cachedIn / denom },
+        { label: "Audio out", value: sessionTokenSplit.audioOut, ratio: sessionTokenSplit.audioOut / denom },
+        { label: "Text out", value: sessionTokenSplit.textOut, ratio: sessionTokenSplit.textOut / denom },
+      ].filter((r) => r.value > 0 || r.label === "Audio in" || r.label === "Audio out");
     }
-  }, [isDrawerExpanded]);
+    return [
+      { label: "Input", value: inTotal, ratio: inTotal / denom },
+      { label: "Cached", value: sessionTokenSplit.cachedIn, ratio: sessionTokenSplit.cachedIn / denom },
+      { label: "Output", value: outTotal, ratio: outTotal / denom },
+    ];
+  }, [engine, sessionTokenSplit, sessionTokens]);
+
+  const costRows = useMemo(() => {
+    if (engine === "cascade" && cascadeCost) {
+      const totalUsd = Math.max(0.000001, Number(cascadeCost.known_usd || 0));
+      return cascadeCost.stages.map((st) => {
+        const usd = Number(st.known_usd || 0);
+        const cacheTag = formatCacheHit(st);
+        const sub = st.disabled ? "off" : cacheTag ?? (st.complete ? "" : stageLabel(st));
+        return {
+          key: st.stage,
+          label: `${CASCADE_STAGE_TITLES[st.stage]}${sub ? ` · ${sub}` : ""}`,
+          value: st.disabled ? "off" : formatCents(usd),
+          ratio: st.disabled ? 0 : usd / totalUsd,
+        };
+      });
+    }
+
+    if (engine === "live" && sessionTokenSplit && settings) {
+      const rate = getLiveRateCard(settings.model);
+      if (rate) {
+        const uncachedAudioIn = Math.max(0, sessionTokenSplit.audioIn - sessionTokenSplit.cachedIn);
+        const audioInUsd = (uncachedAudioIn / 1_000_000) * rate.audioInPerMillion;
+        const cachedUsd = (sessionTokenSplit.cachedIn / 1_000_000) * (rate.textInPerMillion * 0.1);
+        const textInUsd = (sessionTokenSplit.textIn / 1_000_000) * rate.textInPerMillion;
+        const audioOutUsd = (sessionTokenSplit.audioOut / 1_000_000) * rate.audioOutPerMillion;
+        const textOutUsd = (sessionTokenSplit.textOut / 1_000_000) * rate.textOutPerMillion;
+        const denom = Math.max(0.000001, audioInUsd + cachedUsd + textInUsd + audioOutUsd + textOutUsd);
+        return [
+          { key: "audio-in", label: "Audio in", value: formatCents(audioInUsd), ratio: audioInUsd / denom },
+          { key: "cached-in", label: "Context cache", value: formatCents(cachedUsd), ratio: cachedUsd / denom },
+          { key: "text-in", label: "Text / tools in", value: formatCents(textInUsd), ratio: textInUsd / denom },
+          { key: "audio-out", label: "Audio out", value: formatCents(audioOutUsd), ratio: audioOutUsd / denom },
+          { key: "text-out", label: "Text / thoughts", value: formatCents(textOutUsd), ratio: textOutUsd / denom },
+        ].filter((r) => r.ratio > 0 || r.key === "audio-in" || r.key === "audio-out");
+      }
+    }
+
+    const assistantTurns = messages.filter(
+      (m) => m.role === "assistant" && m.metrics?.turnCostUSD !== undefined,
+    );
+    const totalTurnUsd = Math.max(
+      0.000001,
+      assistantTurns.reduce((sum, m) => sum + (m.metrics?.turnCostUSD ?? 0), 0),
+    );
+    return assistantTurns.slice(-5).map((m, idx) => ({
+      key: m.id,
+      label: `Turn ${idx + 1}`,
+      value: formatCents(m.metrics?.turnCostUSD ?? 0),
+      ratio: (m.metrics?.turnCostUSD ?? 0) / totalTurnUsd,
+    }));
+  }, [cascadeCost, engine, messages, sessionTokenSplit, settings]);
+
+  const vadLabel =
+    settings?.vadMode === "gemini"
+      ? "Server VAD only"
+      : settings?.vadMode === "silero"
+        ? "Silero local VAD"
+        : "Silero + Server VAD";
 
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogPortal>
-        <DialogOverlay className="obs-backdrop" />
-        <DialogPrimitive.Content
-          className="obs-drawer"
-          aria-describedby={undefined}
-          style={{
-            width: `min(${drawerWidth}px, 100vw)`,
-            maxWidth: `min(${drawerWidth}px, 100vw)`,
-          }}
-        >
-          {/* Left Slider / Border Drag Handle to Expand/Shrink Observability Drawer */}
-          <div
-            className="obs-drawer-resize-handle"
-            onMouseDown={startDrawerResize}
-            title="Drag left border to expand or shrink Observability bar"
-          />
+    <>
+      <div
+        className="console-scrim"
+        id="console-scrim"
+        hidden={!open}
+        onClick={onClose}
+      />
 
-          <DialogTitle className="sr-only">Live Observability & Diagnostics</DialogTitle>
+      <aside
+        ref={railRef}
+        className="console-rail"
+        id="console-rail"
+        aria-label="Session console"
+        role={isMobileModal ? "dialog" : undefined}
+        aria-modal={isMobileModal ? true : undefined}
+        hidden={!open}
+      >
+        <div className="console-head">
+          <h2 className="console-title">Session console</h2>
+          <button
+            type="button"
+            className="ghost-btn"
+            id="btn-close-console"
+            aria-label="Close console"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
 
-          {/* Header */}
-          <div className="obs-header">
-            <div className="obs-title-group">
-              <span className="obs-brand-icon">
-                <Zap size={18} />
-              </span>
-              <div>
-                <h2>Live Observability & Diagnostics</h2>
-                <span className="obs-status-tag">
-                  <span className={`obs-pulse-dot ${statusState.dotClass}`} />
-                  {statusState.label}
-                </span>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                onClick={toggleDrawerExpand}
-                title={isDrawerExpanded ? "Restore standard drawer width" : "Expand observability drawer"}
-                aria-label={isDrawerExpanded ? "Restore standard drawer width" : "Expand observability drawer"}
-              >
-                {isDrawerExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-              </Button>
-              <DialogPrimitive.Close asChild>
-                <Button variant="ghost" size="icon" aria-label="Close observability">
-                  <X size={18} />
-                </Button>
-              </DialogPrimitive.Close>
-            </div>
-          </div>
-
-          <div className="obs-body">
-            {/* KPI Dashboard Cards */}
-            <div className="obs-kpis">
-              <div className="obs-kpi-card">
-                <span className="kpi-label">Turns</span>
-                <span className="kpi-value">{aggregatedMetrics.turns}</span>
-                <span className="kpi-sub">Total user & bot turns</span>
-              </div>
-              <div className="obs-kpi-card">
-                <span className="kpi-label">Interrupts</span>
-                <span
-                  className="kpi-value"
-                  style={{ color: aggregatedMetrics.interrupts > 0 ? "#f59e0b" : "inherit" }}
-                >
-                  {aggregatedMetrics.interrupts}
-                </span>
-                <span className="kpi-sub">User speech barge-ins</span>
-              </div>
-              <div className="obs-kpi-card">
-                <span className="kpi-label">Tool Calls</span>
-                <span className="kpi-value">{aggregatedMetrics.tools}</span>
-                <span className="kpi-sub">Functions executed</span>
-              </div>
-              <div className="obs-kpi-card">
-                <span className="kpi-label">Tokens</span>
-                <span className="kpi-value">{aggregatedMetrics.totalTokens.toLocaleString()}</span>
-                <span className="kpi-sub">
-                  In: {aggregatedMetrics.inTokens.toLocaleString()} | Out: {aggregatedMetrics.outTokens.toLocaleString()}
-                </span>
-              </div>
-            </div>
-
-            {/* Active Latency Spotlight Card */}
-            <div className="obs-spotlight-card">
-              <div className="spotlight-header">
-                <div className="spotlight-title">
-                  <Activity size={16} />
-                  <span>
-                    Session Latency: <strong>{activeStat.label}</strong>
+        <div className="console-body scroll-area" id="console-body">
+          {!hasSessionTelemetry && persona && settings ? (
+            <>
+              <section className="cs-sec">
+                <h3>Session plan</h3>
+                <div className="kv">
+                  <span className="k">Engine</span>
+                  <span className="v">
+                    {engine === "cascade" ? "Cascade (STT · LLM · TTS)" : "Gemini Live (Native Audio)"}
                   </span>
                 </div>
-                <span className="spotlight-count">
-                  {activeStat.stat.count || 0} Sample{activeStat.stat.count === 1 ? "" : "s"}
-                </span>
-              </div>
-
-              <p className="field-hint">Server measurements exclude network delivery and browser playback. Caller-perceived latency is unavailable. Unattributed provider timings have no turn interval. Continuous STT correlation is unavailable. Missing samples stay unavailable; retention is shared across sessions.</p>
-
-              {/* Stage filter pills with Lucide icons */}
-              <div className="obs-stage-pills">
-                {(engine === "live"
-                  ? [
-                      { id: "total", label: "Server response", icon: Clock, count: aggregatedMetrics.totalStat.count },
-                      { id: "live_ttfb", label: "Live TTFB", icon: Zap, count: effectiveLiveStat.count },
-                    ]
-                  : [
-                      { id: "total", label: "Server response", icon: Clock, count: aggregatedMetrics.totalStat.count },
-                      { id: "llm", label: "LLM TTFB", icon: Cpu, count: aggregatedMetrics.llmStat.count },
-                      { id: "stt", label: "STT", icon: Mic, count: aggregatedMetrics.sttStat.count },
-                      { id: "tts", label: "TTS", icon: Volume2, count: aggregatedMetrics.ttsStat.count },
-                    ]
-                ).map((stage) => {
-                  const Icon = stage.icon;
-                  return (
-                    <button
-                      key={stage.id}
-                      className={`stage-pill ${selectedStage === stage.id ? "selected" : ""}`}
-                      onClick={() => setSelectedStage(stage.id as any)}
-                    >
-                      <Icon size={12} />
-                      <span>{stage.label}</span>
-                      <span className="pill-count">{stage.count || 0}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="spotlight-metrics">
-                <div className="metric-box">
-                  <span className="m-label">p50</span>
-                  <strong className="m-val" style={{ color: "#38bdf8" }}>
-                    {formatMs(activeStat.stat.p50, activeStat.stat.count)}
-                  </strong>
+                <div className="kv">
+                  <span className="k">Model</span>
+                  <span className="v">
+                    {engine === "cascade"
+                      ? `${settings.llmModel} · ${settings.ttsModel}`
+                      : settings.model}
+                  </span>
                 </div>
-                <div className="metric-box">
-                  <span className="m-label">p90</span>
-                  <strong className="m-val" style={{ color: "#c084fc" }}>
-                    {formatMs(activeStat.stat.p90, activeStat.stat.count)}
-                  </strong>
+                <div className="kv">
+                  <span className="k">Voice</span>
+                  <span className="v">{formatVoiceShortLabel(settings.voice)}</span>
                 </div>
-                <div className="metric-box">
-                  <span className="m-label">p95</span>
-                  <strong className="m-val" style={{ color: "#fbbf24" }}>
-                    {formatMs(activeStat.stat.p95, activeStat.stat.count)}
-                  </strong>
+                <div className="kv">
+                  <span className="k">Language</span>
+                  <span className="v">{settings.language} · 24 kHz</span>
                 </div>
-                <div className="metric-box">
-                  <span className="m-label">Mean</span>
-                  <strong className="m-val" style={{ color: "#4ade80" }}>
-                    {formatMs(activeStat.stat.mean, activeStat.stat.count)}
-                  </strong>
+                <div className="kv">
+                  <span className="k">VAD</span>
+                  <span className="v">{vadLabel}</span>
                 </div>
-                <div className="metric-box">
-                  <span className="m-label">Min - Max</span>
-                  <strong className="m-val" style={{ color: "#94a3b8" }}>
-                    {formatRange(activeStat.stat)}
-                  </strong>
-                </div>
-              </div>
-            </div>
-
-            {/* Latency Benchmarks Detailed Table */}
-            <div className="obs-table-section">
-              <h3>Latency Breakdown by Pipeline Stage</h3>
-              <div className="table-responsive">
-                <table className="obs-table">
-                  <thead>
-                    <tr>
-                      <th>Pipeline Stage</th>
-                      <th>p50</th>
-                      <th>p90</th>
-                      <th>p95</th>
-                      <th>Mean</th>
-                      <th>Range</th>
-                      <th>Turns</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(engine === "live"
-                      ? [
-                          {
-                            id: "live_ttfb",
-                            name: "Gemini Live first output",
-                            icon: Zap,
-                            stat: effectiveLiveStat,
-                            color: "#38bdf8",
-                          },
-                          ...(aggregatedMetrics.totalStat?.count && aggregatedMetrics.totalStat.count > 0
-                            ? [
-                                {
-                                  id: "total",
-                                  name: "VAD stop → first server audio",
-                                  icon: Clock,
-                                  stat: aggregatedMetrics.totalStat,
-                                  color: "#f472b6",
-                                },
-                              ]
-                            : []),
-                        ]
-                      : [
-                          {
-                            id: "total",
-                            name: "VAD stop → first server audio",
-                            icon: Clock,
-                            stat: aggregatedMetrics.totalStat,
-                            color: "#f472b6",
-                          },
-                          {
-                            id: "llm",
-                            name: "LLM TTFB (Reasoning Stream)",
-                            icon: Cpu,
-                            stat: aggregatedMetrics.llmStat,
-                            color: "#c084fc",
-                          },
-                          {
-                            id: "stt",
-                            name: "STT Latency (Cloud Speech v2 / AI Studio)",
-                            icon: Mic,
-                            stat: aggregatedMetrics.sttStat,
-                            color: "#fbbf24",
-                          },
-                          {
-                            id: "tts",
-                            name: "TTS Latency (Audio Synthesis)",
-                            icon: Volume2,
-                            stat: aggregatedMetrics.ttsStat,
-                            color: "#4ade80",
-                          },
-                        ]
-                    ).map((row) => {
-                      const Icon = row.icon;
-                      return (
-                        <tr
-                          key={row.id}
-                          className={selectedStage === row.id ? "active-row" : ""}
-                          onClick={() => setSelectedStage(row.id as any)}
-                        >
-                          <td style={{ color: row.color, fontWeight: 600 }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
-                              <Icon size={14} />
-                              {row.name}
-                            </span>
-                          </td>
-                          <td>{formatMs(row.stat.p50, row.stat.count)}</td>
-                          <td>{formatMs(row.stat.p90, row.stat.count)}</td>
-                          <td>{formatMs(row.stat.p95, row.stat.count)}</td>
-                          <td>{formatMs(row.stat.mean, row.stat.count)}</td>
-                          <td>{formatRange(row.stat)}</td>
-                          <td>
-                            <strong>{row.stat.count || 0}</strong>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* LangSmith Active Tracing Card */}
-            <div className="obs-trace-card">
-              <div className="trace-info">
-                <Radio size={16} className="trace-icon" />
-                <div>
-                  <strong>LangSmith Session Trace</strong>
-                  <p className="trace-url-text">{traceUrl}</p>
-                </div>
-              </div>
-              <div className="trace-actions">
-                <Button variant="outline" size="sm" onClick={copyTrace} className="trace-btn">
-                  {copiedTrace ? <Check size={14} /> : <Copy size={14} />}
-                  <span>{copiedTrace ? "Copied" : "Copy URL"}</span>
-                </Button>
-                <Button asChild size="sm" className="trace-btn primary">
-                  <a href={traceUrl} target="_blank" rel="noreferrer">
-                    <span>View Trace</span>
-                    <ExternalLink size={14} />
-                  </a>
-                </Button>
-              </div>
-            </div>
-
-            {/* Diagnostic Log Viewer */}
-            <div className="obs-logs-section">
-              <div className="logs-header">
-                <div className="logs-title">
-                  <Terminal size={16} />
-                  <h3>Live Diagnostics Log</h3>
-                  <span className="log-count">({filteredLogs.length} events)</span>
-                </div>
-                <div className="logs-controls">
-                  {/* Search Box */}
-                  <div className="logs-search">
-                    <Search size={14} />
-                    <input
-                      type="text"
-                      placeholder="Filter logs..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
+                {visitCount !== null && (
+                  <div className="kv">
+                    <span className="k">Studio visits</span>
+                    <span className="v">{visitCount.toLocaleString("en-IN")}</span>
                   </div>
-
-                  {/* Level Filter Pills */}
-                  <div className="level-pills">
-                    {(["ALL", "INFO", "WARNING", "ERROR"] as const).map((lvl) => (
-                      <button
-                        key={lvl}
-                        className={`lvl-pill ${activeFilter === lvl ? "active" : ""}`}
-                        onClick={() => setActiveFilter(lvl)}
-                      >
-                        {lvl}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Clear Logs Button */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={clearLogs}
-                    disabled={isClearing}
-                    className="clear-btn"
-                    title="Clear in-memory logs"
-                  >
-                    <Trash2 size={14} />
-                    <span>Clear</span>
-                  </Button>
-                </div>
-              </div>
-
-              <div
-                className="log-terminal"
-                style={{ height: logHeight, maxHeight: "none" }}
-                ref={logScrollRef}
-                onScroll={(e) => {
-                  const el = e.currentTarget;
-                  autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-                }}
-              >
-                {filteredLogs.length === 0 ? (
-                  <div className="log-empty">No diagnostic logs found matching current filter.</div>
-                ) : (
-                  filteredLogs.map((log, idx) => {
-                    const lvl = log.level.toUpperCase();
-                    const lvlClass = lvl.includes("ERR")
-                      ? "lvl-error"
-                      : lvl.includes("WARN")
-                        ? "lvl-warn"
-                        : "lvl-info";
-                    return (
-                      <div key={idx} className={`log-entry ${lvlClass}`}>
-                        <span className="log-time">{log.timestamp}</span>
-                        <span className={`log-tag ${lvlClass}`}>{lvl}</span>
-                        <span className="log-msg">{log.message}</span>
-                      </div>
-                    );
-                  })
                 )}
-              </div>
-              <div
-                className="log-resize-handle"
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label="Resize diagnostics log"
-                aria-valuemin={LOG_HEIGHT.min}
-                aria-valuemax={maxLogHeight(viewportHeight)}
-                aria-valuenow={logHeight}
-                tabIndex={0}
-                title="Drag to resize · double-click to expand or restore"
-                onPointerDown={onLogHandlePointerDown}
-                onPointerMove={onLogHandlePointerMove}
-                onPointerUp={onLogHandlePointerUp}
-                onPointerCancel={onLogHandlePointerUp}
-                onKeyDown={onLogHandleKeyDown}
-                onDoubleClick={() => setLogHeight((h) => toggleLogHeight(h, window.innerHeight))}
-              >
-                <span className="log-resize-grip" aria-hidden="true" />
-              </div>
-            </div>
-          </div>
-        </DialogPrimitive.Content>
-      </DialogPortal>
-    </Dialog>
+              </section>
+
+              <section className="cs-sec">
+                <h3>Live meters</h3>
+                <p className="cs-empty">
+                  Audio-to-audio TTFB (P50 / P90 / Max), per-turn input/output/cached token counts,
+                  session cost in ¢, and barge-in cuts stream here once the call starts.
+                </p>
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="cs-sec">
+                <h3>
+                  <span>Audio-to-audio TTFB</span>
+                  <span className="mono-pill">&lt;500ms fast</span>
+                </h3>
+                <div className="cs-stage-pills" role="group" aria-label="Latency stage">
+                  {engine === "live" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="cs-stage-pill"
+                        aria-pressed={selectedStage === "live_ttfb"}
+                        onClick={() => setSelectedStage("live_ttfb")}
+                      >
+                        Live TTFB
+                      </button>
+                      <button
+                        type="button"
+                        className="cs-stage-pill"
+                        aria-pressed={selectedStage === "total"}
+                        onClick={() => setSelectedStage("total")}
+                      >
+                        VAD → Audio
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      {(
+                        [
+                          ["total", "Total"],
+                          ["stt", "STT"],
+                          ["llm", "LLM"],
+                          ["tts", "TTS"],
+                        ] as const
+                      ).map(([stageKey, label]) => (
+                        <button
+                          key={stageKey}
+                          type="button"
+                          className="cs-stage-pill"
+                          aria-pressed={selectedStage === stageKey}
+                          onClick={() => setSelectedStage(stageKey)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+                <div className="pct-row">
+                  <div className="pct">
+                    <div className="k">P50</div>
+                    <div className={`v ${ttfbToneClass(activeStat.p50, activeStat.count)}`}>
+                      {formatMs(activeStat.p50, activeStat.count)}
+                    </div>
+                  </div>
+                  <div className="pct">
+                    <div className="k">P90</div>
+                    <div className={`v ${ttfbToneClass(activeStat.p90, activeStat.count)}`}>
+                      {formatMs(activeStat.p90, activeStat.count)}
+                    </div>
+                  </div>
+                  <div className="pct">
+                    <div className="k">Max</div>
+                    <div className={`v ${ttfbToneClass(activeStat.max, activeStat.count)}`}>
+                      {formatMs(activeStat.max, activeStat.count)}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="cs-sec">
+                <h3>
+                  <span>Tokens</span>
+                  <span className="mono-pill">{sessionTokens.toLocaleString()} tok</span>
+                </h3>
+                {tokenRows.length > 0 ? (
+                  tokenRows.map((row) => (
+                    <div key={row.label} className="fader">
+                      <span className="k">{row.label}</span>
+                      <span className="bar">
+                        <i style={faderStyle(row.ratio)} />
+                      </span>
+                      <span className="v">{row.value.toLocaleString()}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="cs-empty">Waiting for first turn token usage.</p>
+                )}
+              </section>
+
+              <section className="cs-sec">
+                <h3>
+                  <span>Cost</span>
+                  <span className="mono-pill">
+                    {formatSessionCents({
+                      engine,
+                      model: settings?.model ?? "gemini-3.8-live",
+                      sessionCostUSD: sessionCost,
+                      cascadeCost,
+                      incomplete: Boolean(sessionCostBounds?.incomplete),
+                      estimated: Boolean(sessionCostBounds?.estimated),
+                    })}{" "}
+                    session
+                  </span>
+                </h3>
+                {costRows.length > 0 ? (
+                  costRows.map((row) => (
+                    <div key={row.key} className="fader">
+                      <span className="k">{row.label}</span>
+                      <span className="bar">
+                        <i style={faderStyle(row.ratio)} />
+                      </span>
+                      <span className="v">{row.value}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="cs-empty">Per-turn cost in ¢ updates after each reply.</p>
+                )}
+                {sessionCostBounds &&
+                  sessionCostBounds.minUSD !== null &&
+                  sessionCostBounds.maxUSD !== null &&
+                  sessionCostBounds.maxUSD - sessionCostBounds.minUSD >= 0.0001 && (
+                    <div className="kv">
+                      <span className="k">Bounds</span>
+                      <span className="v">
+                        {formatCents(sessionCostBounds.minUSD)}–{formatCents(sessionCostBounds.maxUSD)}
+                      </span>
+                    </div>
+                  )}
+                {sessionInterrupts > 0 && (
+                  <div className="kv">
+                    <span className="k">Barge-ins</span>
+                    <span className="v">{sessionInterrupts}</span>
+                  </div>
+                )}
+              </section>
+
+              <section className="cs-sec">
+                <h3>
+                  <span>Trace</span>
+                  <span className="mono-pill">
+                    {telemetryError
+                      ? "offline"
+                      : `${sessionTurnCount} ${sessionTurnCount === 1 ? "turn" : "turns"}`}
+                  </span>
+                </h3>
+                <div className="kv">
+                  <span className="k">LangSmith</span>
+                  <span className="v">
+                    <button type="button" className="ghost-btn" onClick={() => void copyTrace()}>
+                      {copiedTrace ? "Copied" : "Copy"}
+                    </button>{" "}
+                    <a
+                      href={traceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ghost-btn"
+                    >
+                      Open
+                    </a>
+                  </span>
+                </div>
+              </section>
+
+              <section className="cs-sec">
+                <h3>
+                  <span>Events</span>
+                  <span className="mono-pill">
+                    {sessionId ? sessionId.slice(0, 10) : "local"}
+                  </span>
+                </h3>
+
+                <div className="cs-log-controls">
+                  <input
+                    type="search"
+                    className="cs-log-search"
+                    placeholder="Filter events"
+                    aria-label="Filter diagnostic events"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="ghost-btn"
+                    disabled={isClearing || logs.length === 0}
+                    onClick={() => void clearLogs()}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="cs-stage-pills" role="group" aria-label="Event level filter">
+                  {(["ALL", "INFO", "WARNING", "ERROR"] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      className="cs-stage-pill"
+                      aria-pressed={activeFilter === lvl}
+                      onClick={() => setActiveFilter(lvl)}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
+                </div>
+
+                <div
+                  ref={logScrollRef}
+                  className="log scroll-area"
+                  style={{ height: `${logHeight}px`, maxHeight: `${logHeight}px` }}
+                >
+                  {filteredLogs.length === 0 ? (
+                    <div className="log-line">
+                      {logs.length === 0 ? "Waiting for session events..." : "No matching events."}
+                    </div>
+                  ) : (
+                    filteredLogs.map((log, index) => {
+                      const upper = log.level.toUpperCase();
+                      const tone = upper.includes("ERR")
+                        ? "e"
+                        : upper.includes("WARN")
+                          ? "w"
+                          : "";
+                      return (
+                        <div key={`${log.timestamp}-${index}`} className={`log-line ${tone}`}>
+                          {log.timestamp} {upper.padEnd(5, " ")} {log.message}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div
+                  role="separator"
+                  tabIndex={0}
+                  aria-orientation="horizontal"
+                  aria-label="Resize event log height"
+                  className="log-resize-handle"
+                  onPointerDown={onLogHandlePointerDown}
+                  onPointerMove={onLogHandlePointerMove}
+                  onPointerUp={onLogHandlePointerUp}
+                  onKeyDown={onLogHandleKeyDown}
+                  onDoubleClick={() => setLogHeight((h) => toggleLogHeight(h, window.innerHeight))}
+                />
+              </section>
+            </>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }

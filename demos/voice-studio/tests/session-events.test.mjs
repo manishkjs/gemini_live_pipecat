@@ -977,15 +977,15 @@ test('post_turn_decay avatar segments are forwarded to MSE without flipping phas
   await h.render().endSession();
 });
 
-test('settings-dialog and transcript-panel re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
+test('settings-dialog and pre-call-card re-fetch persona prompt when settings.model changes, and pipecat-session has no internal hostnames', () => {
   const root = fileURLToPath(new URL('../src/', import.meta.url));
   const settingsDialogSrc = fs.readFileSync(path.resolve(root, 'components/studio/settings-dialog.tsx'), 'utf8');
-  const transcriptPanelSrc = fs.readFileSync(path.resolve(root, 'components/studio/transcript-panel.tsx'), 'utf8');
+  const preCallCardSrc = fs.readFileSync(path.resolve(root, 'components/studio/pre-call-card.tsx'), 'utf8');
   const pipecatSessionSrc = fs.readFileSync(path.resolve(root, 'lib/pipecat-session.ts'), 'utf8');
   const obsDrawerSrc = fs.readFileSync(path.resolve(root, 'components/observability-drawer.tsx'), 'utf8');
 
   assert.match(settingsDialogSrc, /\[settingsOpen,[^\]]*settings\.model[^\]]*\]/);
-  assert.match(transcriptPanelSrc, /\[serverPreset,[^\]]*settings\.model[^\]]*\]/);
+  assert.match(preCallCardSrc, /\[[^\]]*custom,[^\]]*settings\.model[^\]]*\]/s);
   assert.doesNotMatch(pipecatSessionSrc, /googlers\.com|rangarok|UberProxy/i);
   assert.doesNotMatch(obsDrawerSrc, /readStoredLogHeight\(window\.localStorage|writeStoredLogHeight\(window\.localStorage/);
 });

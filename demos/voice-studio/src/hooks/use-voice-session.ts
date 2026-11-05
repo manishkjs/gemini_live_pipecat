@@ -24,13 +24,22 @@ import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
 /** A transcript entry. Assistant text arrives as a raw script; the reader sees `transcriptText` of it. */
-function transcriptMessage(role: Message["role"], text: string, metrics?: MessageMetrics): Message {
+function transcriptMessage(
+  role: Message["role"],
+  text: string,
+  metrics?: MessageMetrics,
+  startedAtMs?: number | null,
+): Message {
+  const now = Date.now();
+  const relSec = startedAtMs != null ? Math.max(0, Math.floor((now - startedAtMs) / 1000)) : 0;
+  const offsetLabel = `+${String(Math.floor(relSec / 60)).padStart(2, "0")}:${String(relSec % 60).padStart(2, "0")}`;
   return {
     id: crypto.randomUUID(),
     role,
     ...(role === "assistant" ? { rawText: text, text: transcriptText(text) } : { text }),
-    time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    createdAt: Date.now(),
+    time: new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    offsetLabel,
+    createdAt: now,
     metrics,
   };
 }
@@ -80,6 +89,30 @@ export function useVoiceSession() {
   const [partialUser, setPartialUser] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showInlineEditor, setShowInlineEditor] = useState(false);
+  const audioLevelRef = useRef(0);
+  const audioLevelListeners = useRef(new Set<() => void>());
+  const publishAudioLevel = useCallback((nextLevel: number) => {
+    const clamped = Math.max(0, Math.min(1, nextLevel));
+    if (Math.abs(audioLevelRef.current - clamped) < 0.0005 && (clamped !== 0 || audioLevelRef.current === 0)) {
+      return;
+    }
+    audioLevelRef.current = clamped;
+    for (const listener of audioLevelListeners.current) {
+      listener();
+    }
+  }, []);
+  const subscribeAudioLevel = useCallback((listener: () => void) => {
+    audioLevelListeners.current.add(listener);
+    return () => {
+      audioLevelListeners.current.delete(listener);
+    };
+  }, []);
+  const getAudioLevel = useCallback((): number => audioLevelRef.current, []);
+  const [playingSample, setPlayingSample] = useState(false);
+  const sampleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sampleToken = useRef(0);
+  const lastLevelUpdateAt = useRef(0);
+  const callStartedAt = useRef<number | null>(null);
   // Live session metric counters
   const [turnCount, setTurnCount] = useState(0);
   const [lastSTT, setLastSTT] = useState<number | null>(null);
@@ -181,12 +214,77 @@ export function useVoiceSession() {
   const custom = persona.id === "custom";
   const engineName = settings.engine === "live" ? "Gemini Live" : "Cascade";
 
+  const stopVoiceSample = useCallback(() => {
+    sampleToken.current++;
+    if (sampleTimer.current) {
+      clearTimeout(sampleTimer.current);
+      sampleTimer.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setPlayingSample(false);
+  }, []);
+
+  const toggleVoiceSample = useCallback(() => {
+    if (active) return;
+    if (playingSample) {
+      stopVoiceSample();
+      return;
+    }
+    if (!sound) return;
+    const token = ++sampleToken.current;
+    setPlayingSample(true);
+    if (sampleTimer.current) clearTimeout(sampleTimer.current);
+    sampleTimer.current = setTimeout(() => {
+      if (sampleToken.current !== token) return;
+      sampleTimer.current = null;
+      setPlayingSample(false);
+    }, 3200);
+
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+        const sampleLine = persona.opening || `Hello, I am ${persona.agentName}. Ready when you are.`;
+        const utterance = new SpeechSynthesisUtterance(sampleLine);
+        utterance.lang = settings.language;
+        utterance.rate = settings.ttsPace ?? 1.0;
+        utterance.onstart = () => {
+          if (sampleToken.current !== token) return;
+          if (sampleTimer.current) clearTimeout(sampleTimer.current);
+          sampleTimer.current = setTimeout(() => {
+            if (sampleToken.current !== token) return;
+            sampleTimer.current = null;
+            setPlayingSample(false);
+          }, 20000);
+        };
+        utterance.onend = () => {
+          if (sampleToken.current !== token) return;
+          stopVoiceSample();
+        };
+        utterance.onerror = (ev) => {
+          if (sampleToken.current !== token) return;
+          if (ev.error === "canceled" || ev.error === "interrupted") {
+            stopVoiceSample();
+          }
+        };
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        // Fallback to visual timer preview when SpeechSynthesis is unavailable.
+      }
+    }
+  }, [active, persona.agentName, persona.opening, playingSample, settings.language, settings.ttsPace, sound, stopVoiceSample]);
+
   useEffect(() => {
     // Tear the session down if the tab navigates away mid-call; a dangling
     // websocket keeps the backend billing audio nobody is listening to.
     return () => {
       run.current++;
       timers.current.forEach(clearTimeout);
+      if (sampleTimer.current) clearTimeout(sampleTimer.current);
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
       void session.current?.disconnect();
     };
   }, []);
@@ -208,11 +306,11 @@ export function useVoiceSession() {
   }, [sound]);
 
   const addMessage = useCallback((role: Message["role"], text: string, metrics?: MessageMetrics) => {
-    setMessages((items) => [...items, transcriptMessage(role, text, metrics)]);
+    setMessages((items) => [...items, transcriptMessage(role, text, metrics, callStartedAt.current)]);
   }, []);
 
-
   const endSession = useCallback(async () => {
+    stopVoiceSample();
     run.current++;
     timers.current.forEach(clearTimeout);
     timers.current = [];
@@ -220,14 +318,18 @@ export function useVoiceSession() {
     session.current = null;
     setPhase("idle");
     setTrack(null);
+    publishAudioLevel(0);
     setMuted(false);
     setPartialUser("");
     starting.current = false;
     avatarStream.reset();
     if (current) await current.disconnect();
-  }, [avatarStream]);
+  }, [avatarStream, publishAudioLevel, stopVoiceSample]);
 
   const resetConversation = (personaId = settings.personaId) => {
+    stopVoiceSample();
+    callStartedAt.current = null;
+    publishAudioLevel(0);
     setError("");
     setMessages([]);
     setElapsed(0);
@@ -330,6 +432,7 @@ export function useVoiceSession() {
     }));
     setSettingsOpen(false);
     resetConversation();
+    callStartedAt.current = null;
     starting.current = true;
     setSource("backend");
     setPhase("connecting");
@@ -344,7 +447,11 @@ export function useVoiceSession() {
     try {
       const live = await createLiveSession(activeSettings, {
         onPhase: (value) => {
-          if (run.current === current) setPhase(value);
+          if (run.current !== current) return;
+          if (value !== "connecting" && value !== "idle" && callStartedAt.current === null) {
+            callStartedAt.current = Date.now();
+          }
+          setPhase(value);
         },
         onMessage: (role, text, append, metrics) => {
           if (run.current !== current) return;
@@ -388,7 +495,7 @@ export function useVoiceSession() {
                 return items.map((item, i) => i === index
                   ? { ...last, rawText, text: transcriptText(rawText), metrics: mergedMetrics } : item);
               }
-              return [...items, transcriptMessage(role, text, metrics)];
+              return [...items, transcriptMessage(role, text, metrics, callStartedAt.current)];
             });
           } else {
             addMessage(role, text, metrics);
@@ -451,10 +558,35 @@ export function useVoiceSession() {
               if (seenEvents.current.has(val.event_id)) return;
               seenEvents.current.add(val.event_id);
             }
-            if (type === "turn_complete") setTurnCount(c => c + 1);
-            else setInterruptCount(c => c + 1);
-            if (val?.response_id && val.elapsed_ms !== undefined) {
-              updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
+            if (type === "turn_complete") {
+              setTurnCount(c => c + 1);
+            } else {
+              setInterruptCount(c => c + 1);
+              if (typeof val?.elapsed_ms === "number") {
+                if (val.response_id) {
+                  updateResponse(val.response_id, { interruptedMs: val.elapsed_ms });
+                } else {
+                  setMessages((items) => {
+                    const idx = items.findLastIndex((m) => m.role === "assistant");
+                    if (idx === -1) return items;
+                    const target = items[idx];
+                    const respId = target.metrics?.responseId;
+                    if (respId) {
+                      responseMetrics.current.set(respId, {
+                        ...responseMetrics.current.get(respId),
+                        interruptedMs: val.elapsed_ms,
+                        responseId: respId,
+                      });
+                    }
+                    const next = [...items];
+                    next[idx] = {
+                      ...target,
+                      metrics: { ...target.metrics, interruptedMs: val.elapsed_ms },
+                    };
+                    return next;
+                  });
+                }
+              }
             }
           } else if (["stt_latency", "llm_latency", "tts_latency"].includes(type)) {
             const value = typeof val === "number" ? val : val?.value;
@@ -497,7 +629,14 @@ export function useVoiceSession() {
         onTrack: (value) => {
           if (run.current === current) setTrack(value);
         },
-        onLevel: () => {},
+        onLevel: (value) => {
+          if (run.current !== current) return;
+          const now = performance.now();
+          if (now - lastLevelUpdateAt.current >= 70 || value === 0) {
+            lastLevelUpdateAt.current = now;
+            publishAudioLevel(value);
+          }
+        },
         onLatency: (value) => {
           if (run.current === current) setLatency(value);
         },
@@ -520,6 +659,7 @@ export function useVoiceSession() {
           if (run.current !== current) return;
           setPhase("idle");
           setTrack(null);
+          publishAudioLevel(0);
           setMuted(false);
           setPartialUser("");
           session.current = null;
@@ -534,6 +674,9 @@ export function useVoiceSession() {
       session.current = live;
       live.setSound?.(sound);
       await live.connect();
+      if (run.current === current && callStartedAt.current === null) {
+        callStartedAt.current = Date.now();
+      }
     } catch (e) {
       if (run.current !== current) return;
       const message = e instanceof Error ? e.message : "Unable to connect to your backend.";
@@ -542,16 +685,19 @@ export function useVoiceSession() {
     }
   };
 
-  const toggleSound = () => {
-    setSound((value) => {
-      const next = !value;
-      session.current?.setSound?.(next);
-      return next;
-    });
-    if (sound) window.speechSynthesis?.cancel();
+  const toggleSound = useCallback(() => {
+    if (sound) {
+      stopVoiceSample();
+    }
+    setSound((value) => !value);
+  }, [sound, stopVoiceSample]);
+
+  const resetToSetup = () => {
+    if (active) return;
+    resetConversation();
   };
 
-  const update = (key: keyof SessionSettings, value: string) =>
+  const update = useCallback((key: keyof SessionSettings, value: string) => {
     setSettings((current) => {
       const next = { ...current, [key]: value };
       return {
@@ -561,12 +707,15 @@ export function useVoiceSession() {
         ...(key === "customVoiceAudio" && value ? { model: "gemini-3.8-live" } : {}),
       };
     });
+  }, []);
 
-  const updateBool = (key: keyof SessionSettings, value: boolean) =>
+  const updateBool = useCallback((key: keyof SessionSettings, value: boolean) => {
     setSettings((current) => ({ ...current, [key]: value }));
+  }, []);
 
-  const updateNumber = (key: keyof SessionSettings, value: number) =>
+  const updateNumber = useCallback((key: keyof SessionSettings, value: number) => {
     setSettings((current) => ({ ...current, [key]: value }));
+  }, []);
 
   const copyTranscript = async () => {
     try {
@@ -608,6 +757,7 @@ export function useVoiceSession() {
     // state
     settings, phase, source, messages, elapsed, muted, sound, error, copied,
     latency, track, partialUser, settingsOpen, showInlineEditor,
+    playingSample, subscribeAudioLevel, getAudioLevel,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     toolInjection, dismissToolInjection,
@@ -622,6 +772,7 @@ export function useVoiceSession() {
     active, persona, custom, engineName, phaseLabel, duration, reduced,
     // actions
     endSession, choosePersona, chooseEngine, startBackend, applyCustomAvatarAndStart, toggleSound,
+    toggleVoiceSample, stopVoiceSample, resetToSetup,
     update, updateBool, updateNumber, copyTranscript,
   };
 }

@@ -1,5 +1,14 @@
 import { createRoot } from "react-dom/client";
-import VoiceStudio from "./components/voice-studio";
 import "./globals.css";
+import { StudioErrorBoundary } from "./components/studio/error-boundary";
+import VoiceStudio from "./components/voice-studio";
 
-createRoot(document.getElementById("root")!).render(<VoiceStudio />);
+const rootElement = document.getElementById("root");
+if (!rootElement) {
+  throw new Error("Missing #root mount element");
+}
+createRoot(rootElement).render(
+  <StudioErrorBoundary>
+    <VoiceStudio />
+  </StudioErrorBoundary>,
+);
