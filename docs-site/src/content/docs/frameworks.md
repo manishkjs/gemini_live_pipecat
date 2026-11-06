@@ -24,8 +24,8 @@ When building a Gemini Live application, your first architectural decision is ho
 
 | Framework | Primary Strength | Transport Layer | Best Use Case |
 | :--- | :--- | :--- | :--- |
-| **Raw `google-genai` SDK** | Zero framework overhead, direct access to every Bidi API field | Custom WebSocket / WebRTC | Custom backend microservices, lightweight integrations, or full control over `sessionResumption` and `contextWindowCompression`. |
-| **Google Agent Development Kit (ADK)** | Native multi-agent routing, built-in evaluation & Vertex AI Agent Engine integration | FastAPI WebSocket / WebRTC | Enterprise multi-agent systems deployed on Google Cloud with structured sub-agent handoffs. |
+| **Raw `google-genai` SDK** | Zero framework overhead, direct access to every Bidi API field (`send_context_update`, `sessionResumption`, `contextWindowCompression`) | Custom WebSocket / WebRTC | Latency-critical custom gateways, mid-call dynamic prompt cards, and high-concurrency backend services. |
+| **Google Agent Development Kit (ADK)** | Built-in `SessionService`, Cloud Trace, evaluation, and multi-agent tool delegation (`mode="single_turn"` / `AgentTool`) | FastAPI WebSocket / `LiveKitRunner` WebRTC | Multi-agent Google Cloud systems where one Live voice root agent delegates inline tasks to specialist text or reasoning agents. |
 | **Pipecat (`pipecat-ai`)** | Frame-based audio pipeline, 40+ telephony & SIP connectors (Twilio, Daily, Plivo, Telnyx) | WebRTC (Daily / LiveKit) & SIP WebSockets | Contact center telephony, SIP trunking, custom DSP filters, and hybrid voice/video pipelines. |
 | **LiveKit Agents** | Production-grade WebRTC SFU, global edge routing, native browser/mobile SDKs | LiveKit WebRTC | Consumer mobile/web apps requiring low-latency WebRTC, room management, and multi-participant audio/video. |
 
@@ -66,7 +66,28 @@ See [Agent Skill §2.C](/gemini-live/gemini-live-skill/) for the full rules and 
 
 ---
 
-## 3. When a hybrid pipeline still makes sense
+## 3. Google ADK (`Runner.run_live`) & LiveKit guardrails
+
+ADK's `Runner.run_live()` wraps `google-genai` `AsyncSession` with session persistence, tracing, and multi-agent orchestration. Before choosing an ADK topology for live voice, account for four architectural constraints:
+
+1. **Prefer inline tool delegation (`mode="single_turn"` or `AgentTool`) over conversational `transfer_to_agent`**:
+   - Attaching default conversational `LlmAgent` instances (`mode="chat"`) to `sub_agents=[...]` registers `transfer_to_agent`. In `run_live()`, `transfer_to_agent` cancels any running background or streaming tools, sleeps `1.0 s` (`DEFAULT_TRANSFER_AGENT_DELAY`), closes the active Gemini Live WebSocket, clears `sessionResumption`, opens a fresh WebSocket for the target agent, strips raw audio from history, replays transcripts via `send_client_content`, and may send a `"."` realtime text trigger on Gemini 3.x Live when the last replayed turn is from the user.
+   - That socket teardown carries four side effects: (a) `1.5 to 2.0 s` of voice silence (`~4.6 s` of frozen video on avatar streams); (b) server stream-queue overflow (`1011`) when caller mic frames buffered during the `1.0 s` sleep flush in a burst; (c) lost voice context if `input_audio_transcription` or `output_audio_transcription` is set to `None`; and (d) `1011` setup failure if any `mode="chat"` sub-agent uses a non-Live text model (`gemini-3.8-flash`, `gemini-2.5-pro`).
+   - Instead, keep one Live root `LlmAgent` holding the WebSocket open and delegate to specialist text or reasoning `LlmAgent` instances via `mode="single_turn"` in `sub_agents=[...]` (which runs inline in the parent session via non-live `run_async` / `generateContent`) or via `AgentTool(sub_agent)` (which runs in an isolated nested runner/session in unary `StreamingMode.NONE`). Neither closes the Live socket. Use `mode="single_turn"`, not `mode="task"`, for text specialists: a `mode="task"` sub-agent under a Live parent still executes in live mode (`run_live`) and requires a Live model.
+   - `SequentialAgent` also reconnects per stage (`1.0 s` delay), while `ParallelAgent` and `LoopAgent` raise `NotImplementedError` in `run_live()` and do not accept `mode=`; wrap them in `AgentTool(parallel_agent)` instead.
+2. **Mid-call `send_context_update` is not yet wrapped in `run_live()`**:
+   - `Runner.run_live()` does not yet expose `AsyncSession.send_context_update(system_instruction=..., tools=...)` (see [Dynamic Prompt Cards](/gemini-live/optimization/prompt-cards/)). If your call flow swaps phase instructions and tool declarations mid-call with zero audio gap, drive `google-genai >= 2.32.0` `AsyncSession` directly or keep one ADK Live root agent with compact state-gated tools.
+3. **Use `LiveKitRunner` (or anti-aliased `16 kHz` WebRTC tracks) instead of naive PCM stride slicing**:
+   - Browser and mobile apps over raw WebSockets lack WebRTC jitter buffers and packet-loss concealment. ADK includes an experimental `LiveKitRunner` and `LiveKitToolset` (`pip install "google-adk[livekit]"`, `from google.adk.integrations.livekit import LiveKitRunner`), where LiveKit resamples inbound audio on subscribe (`rtc.AudioStream(track, sample_rate=16000, num_channels=1)`).
+   - Avoid older sample bridges that step through `48 kHz` WebRTC frames every 3rd sample (`6`-byte stride) without a `<8 kHz` low-pass filter (which folds `8 to 24 kHz` speech harmonics into metallic aliasing) or hardcode `thinking_budget=0` on Gemini 3.x Live. Keep `RunConfig(save_live_blob=False)` on long calls unless backed by Cloud Storage (enabling `save_live_blob=True` against `InMemoryArtifactService` retains every turn's audio in process memory, despite a stale note in ADK's LiveKit README suggesting `save_live_blob` drains inbound audio).
+4. **Vertex AI Agent Engine (`AdkApp`) requires the experimental preview wrapper for `bidi_stream_query`**:
+   - Standard `vertexai.agent_engines.templates.adk.AdkApp` registers unary/SSE methods only (`bidi_stream_query not found`). Bidirectional streaming on Agent Engine requires `vertexai.preview.reasoning_engines.AdkApp` with `AgentServerMode.EXPERIMENTAL`. For production WebRTC rooms or SIP trunks, host `LiveKitRunner`, Pipecat, or FastAPI + `Runner.run_live()` directly on Cloud Run (`--timeout=3600 --session-affinity`) or GKE.
+
+See [Troubleshooting -> Framework & multi-agent orchestration issues](/gemini-live/troubleshooting/#6-framework--multi-agent-orchestration-issues-adk--livekit) for quick symptom-to-fix lookups.
+
+---
+
+## 4. When a hybrid pipeline still makes sense
 
 While native Speech-to-Speech is the default for 90% of conversational voice agents, two specialized scenarios justify a hybrid or sidecar architecture:
 
