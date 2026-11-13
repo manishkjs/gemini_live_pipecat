@@ -20,57 +20,6 @@ _JARVIS_DIR = Path(__file__).resolve().parent
 _DEFAULT_DEST = Path("/Applications/Jarvis.app")
 _FALLBACK_DEST = Path.home() / "Applications" / "Jarvis.app"
 
-_LAUNCHER_C = r"""
-#include <errno.h>
-#include <fcntl.h>
-#include <limits.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-static void ensure_dir(const char *path) {
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, 0755);
-}
-
-int main(int argc, char *argv[]) {
-    const char *home = getenv("HOME");
-    if (home && home[0]) {
-        char log_dir[PATH_MAX];
-        char log_path[PATH_MAX];
-        snprintf(log_dir, sizeof(log_dir), "%s/Library/Logs/Jarvis", home);
-        ensure_dir(log_dir);
-        snprintf(log_path, sizeof(log_path), "%s/jarvis.log", log_dir);
-        int fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) {
-            dup2(fd, STDOUT_FILENO);
-            dup2(fd, STDERR_FILENO);
-            close(fd);
-        }
-    }
-
-    if (chdir(JARVIS_DIR) != 0) {
-        fprintf(stderr, "Failed to chdir to %s: %s\n", JARVIS_DIR, strerror(errno));
-        return 1;
-    }
-
-    char *const exec_args[] = {PYTHON_BIN, APP_SCRIPT, NULL};
-    execv(PYTHON_BIN, exec_args);
-    fprintf(stderr, "Failed to exec %s: %s\n", PYTHON_BIN, strerror(errno));
-    return 1;
-}
-"""
-
 
 def _render_icon_png(size: int) -> Image.Image:
     """Renders a macOS squircle icon with a glowing Jarvis orb."""
@@ -184,22 +133,17 @@ def build_app(dest: Path | None = None) -> Path:
     _build_icns(resources_dir / "AppIcon.icns")
 
     launcher_bin = macos_dir / "Jarvis"
-    with tempfile.TemporaryDirectory() as tmp:
-        c_file = Path(tmp) / "launcher.c"
-        c_file.write_text(_LAUNCHER_C)
-        subprocess.run(
-            [
-                "clang",
-                "-O2",
-                f'-DJARVIS_DIR="{_JARVIS_DIR}"',
-                f'-DPYTHON_BIN="{venv_python}"',
-                f'-DAPP_SCRIPT="{_JARVIS_DIR / "jarvis_app.py"}"',
-                str(c_file),
-                "-o",
-                str(launcher_bin),
-            ],
-            check=True,
-        )
+    launcher_bin.write_text(
+        f"""#!/bin/zsh
+set -euo pipefail
+LOG_DIR="$HOME/Library/Logs/Jarvis"
+mkdir -p "$LOG_DIR"
+exec >> "$LOG_DIR/jarvis.log" 2>&1
+cd {str(_JARVIS_DIR)!r}
+exec {str(venv_python)!r} {str(_JARVIS_DIR / "jarvis_app.py")!r}
+"""
+    )
+    launcher_bin.chmod(0o755)
 
     return target
 
