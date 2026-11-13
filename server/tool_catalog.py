@@ -146,7 +146,7 @@ def uses_per_card_live_tool_swap(
 
 
 def get_current_time_schema() -> Any:
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
     return FunctionSchema(
         name="get_current_time",
@@ -211,7 +211,7 @@ def build_default_tool_schemas(persona_architecture: Any, engine: str = "live") 
 
 def validate_and_parse_tool_overrides(tools_raw: Any) -> List[Any]:
     """Validate client-submitted tool definitions and convert them to deduplicated FunctionSchemas."""
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
     return [
         FunctionSchema(

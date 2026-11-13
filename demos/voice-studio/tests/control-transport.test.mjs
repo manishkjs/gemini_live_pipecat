@@ -72,6 +72,9 @@ const TRANSPORT = {
   avatarName:               { live: 'query:avatar_name',          cascade: null,                          probe: 'Ben', requires: { avatarEnabled: true } },
   avatarCustomImage:        { live: 'body:avatar_custom_image',   cascade: null,                          probe: 'data:image/png;base64,iVBORw0KGgo=', requires: { avatarEnabled: true, avatarName: 'custom' } },
 
+  // Pipecat 1.16 Google Decisions (`gemini-decision-1`) caller vocal emotion perception (default ON)
+  emotionPerception:        { live: 'query:emotion_enabled',      cascade: 'query:emotion_enabled',       probe: false },
+
   // Cloned-voice credentials must never ride in a URL. Once the server-side
   // voice registry lands this becomes `voiceProfileId`.
   customVoiceKey:           { live: 'body:custom_voice_key',      cascade: 'body:custom_voice_key',       probe: 'secret-voice-key-abc123', requires: { voice: 'Custom-Key', customVoiceKey: 'old-dummy-key', ttsModel: 'google-tts' } },

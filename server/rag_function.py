@@ -1,9 +1,10 @@
 import asyncio
 import os
 import re
+from typing import Any
 from loguru import logger
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 import warnings
 try:
     with warnings.catch_warnings():
@@ -14,6 +15,25 @@ except ImportError:
     vertexai = None
     rag = None
 import google.auth
+from google.auth.transport.requests import AuthorizedSession
+import threading
+
+_rag_session_lock = threading.Lock()
+_rag_http_session: AuthorizedSession | None = None
+
+
+def _get_rag_http_session() -> AuthorizedSession:
+    """Return a pooled, thread-safe AuthorizedSession for Vertex AI RAG REST queries."""
+    global _rag_http_session
+    if _rag_http_session is not None:
+        return _rag_http_session
+    with _rag_session_lock:
+        if _rag_http_session is None:
+            credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _rag_http_session = AuthorizedSession(credentials)
+        return _rag_http_session
 
 # RAG Configuration Helpers
 def get_rag_config():
@@ -37,9 +57,16 @@ def initialize_vertex_if_needed():
     global _vertex_initialized
     if _vertex_initialized:
         return True
-    
+
     corpus_id, project_id, location = get_rag_config()
-    
+
+    if vertexai is None:
+        if project_id and location:
+            _vertex_initialized = True
+            return True
+        logger.warning("[RAG] Missing config for init - Project: %s, Location: %s", project_id, location)
+        return False
+
     try:
         if project_id and location:
             vertexai.init(project=project_id, location=location)
@@ -52,6 +79,30 @@ def initialize_vertex_if_needed():
     except Exception as e:
         logger.error(f"[RAG] Failed to initialize Vertex AI: {e}")
         return False
+
+
+def _retrieve_contexts_rest(
+    corpus_id: str,
+    project_id: str,
+    location: str,
+    query: str,
+    total_records: int,
+) -> list[str]:
+    """Retrieve contexts via the Vertex AI RAG REST API when vertexai SDK is absent."""
+    session = _get_rag_http_session()
+    url = (
+        f"https://{location}-aiplatform.googleapis.com/v1beta1/"
+        f"projects/{project_id}/locations/{location}:retrieveContexts"
+    )
+    payload: dict[str, Any] = {
+        "vertexRagStore": {"ragResources": [{"ragCorpus": corpus_id}]},
+        "query": {"text": query, "similarityTopK": int(total_records)},
+    }
+    http_response = session.post(url, json=payload, timeout=15)
+    http_response.raise_for_status()
+    body = http_response.json()
+    contexts = body.get("contexts", {}).get("contexts", [])
+    return [ctx.get("text", "") for ctx in contexts if ctx.get("text")]
 
 # Schema definition
 search_knowledge_base_schema = FunctionSchema(
@@ -95,25 +146,36 @@ async def search_knowledge_base_handler(params: FunctionCallParams):
         # Query RAG corpus
         # Run in executor to avoid blocking event loop
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: rag.retrieval_query(
-                rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
-                text=query,
-                similarity_top_k=total_records,
+        if rag is not None:
+            response = await loop.run_in_executor(
+                None,
+                lambda: rag.retrieval_query(
+                    rag_resources=[rag.RagResource(rag_corpus=corpus_id)],
+                    text=query,
+                    similarity_top_k=total_records,
+                )
             )
-        )
+            raw_texts = [
+                ctx.text
+                for ctx in (response.contexts.contexts if response.contexts and response.contexts.contexts else [])
+                if getattr(ctx, "text", None)
+            ]
+        else:
+            raw_texts = await loop.run_in_executor(
+                None,
+                lambda: _retrieve_contexts_rest(
+                    corpus_id, project_id, location, query, total_records
+                ),
+            )
 
         # Extract results
         results = []
-        if response.contexts and response.contexts.contexts:
-            for ctx in response.contexts.contexts:
-                text = ctx.text
-                if "Answer:" in text:
-                    answer = text.split("Answer:")[-1].strip()
-                    results.append(answer)
-                else:
-                    results.append(text)
+        for text in raw_texts:
+            if "Answer:" in text:
+                answer = text.split("Answer:")[-1].strip()
+                results.append(answer)
+            else:
+                results.append(text)
 
         if not results:
             result = "No relevant information found in the knowledge base."

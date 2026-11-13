@@ -132,7 +132,7 @@ def is_persona_ui_editable(persona_id: Optional[str]) -> bool:
 
 def standard_function_schemas(declarations):
     """Keep the architecture contract provider-neutral for both Live and Cascade."""
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
     result = []
     for declaration in declarations:
         if isinstance(declaration, FunctionSchema):
@@ -249,7 +249,7 @@ class NegotiatorLadderArchitecture(BasePersonaArchitecture):
 
     def get_tool_schemas(self, engine: str = "live") -> List[Any]:
         import persona_tools.negotiation as negotiation
-        from pipecat.adapters.schemas.function_schema import FunctionSchema
+        from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
         return [
             FunctionSchema(
@@ -896,7 +896,7 @@ class TaraTravelConciergeArchitecture(BasePersonaArchitecture):
         """Provider tools for a (re)connect setup, or None to keep Pipecat's own."""
         if self.swapper is None:
             return None
-        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+        from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
         from persona_tools.travel_booking import function_schemas
         names = self.swapper.setup_tools()
         return adapter.from_standard_tools(ToolsSchema(standard_tools=function_schemas(list(names))))

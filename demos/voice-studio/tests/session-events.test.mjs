@@ -1150,3 +1150,179 @@ test('pre-call mic mute is applied immediately when startBackend creates the liv
   await h.render().endSession();
 });
 
+test('user_emotion updates liveEmotion while speaking and attaches to user turns across both arrival orders', async () => {
+  const h = await harness();
+  await h.render().startBackend('live');
+  const session_id = h.connections[0].sessionId;
+
+  // Foreign session emotion must be ignored.
+  h.send({
+    type: 'user_emotion',
+    session_id: 's_foreign',
+    emotion: 'angry',
+    emoji: '😠',
+    title: 'Angry',
+    confidence: 0.95,
+    interim: false,
+    latency_ms: 95,
+    input_tokens: 40,
+  });
+  assert.equal(h.render().liveEmotion, null);
+
+  // Order 1: interim while speaking -> final emotion arrives BEFORE user transcript.
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'hesitant',
+    emoji: '😟',
+    title: 'Hesitant',
+    confidence: 0.76,
+    interim: true,
+    latency_ms: 140,
+    input_tokens: 38,
+    seq: 1,
+  });
+  assert.equal(h.render().liveEmotion?.emotion, 'hesitant');
+  assert.equal(h.render().liveEmotion?.interim, true);
+
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'frustrated',
+    emoji: '😤',
+    title: 'Frustrated',
+    confidence: 0.91,
+    interim: false,
+    latency_ms: 162,
+    input_tokens: 52,
+    seq: 2,
+  });
+  h.send({
+    type: 'transcription',
+    participant: 'User',
+    text: 'Aaj poora payment karna mushkil hai.',
+  });
+  assert.equal(h.render().messages[0].role, 'user');
+  assert.equal(h.render().messages[0].metrics?.userEmotion?.emotion, 'frustrated');
+  assert.equal(h.render().messages[0].metrics?.userEmotion?.emoji, '😤');
+
+  // Order 2: user transcript arrives FIRST -> final emotion arrives AFTER and upgrades the turn.
+  h.send({
+    type: 'transcription',
+    participant: 'Assistant',
+    text: 'Koi baat nahi ji, kitna kar payenge?',
+    response_id: 'r1',
+  });
+  h.send({
+    type: 'transcription',
+    participant: 'User',
+    text: 'Theek hai, abhi 3,500 kar deta hoon.',
+  });
+  assert.equal(h.render().messages[2].metrics?.userEmotion, undefined);
+
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'calm',
+    emoji: '😌',
+    title: 'Calm',
+    confidence: 0.89,
+    interim: false,
+    latency_ms: 128,
+    input_tokens: 44,
+    seq: 3,
+  });
+  const afterState = h.render();
+  assert.equal(afterState.messages[2].metrics?.userEmotion?.emotion, 'calm');
+  assert.equal(afterState.messages[2].metrics?.userEmotion?.emoji, '😌');
+  assert.equal(afterState.emotionStats.count, 3);
+  assert.equal(afterState.emotionStats.totalInputTokens, 134);
+  assert.equal(afterState.emotionStats.lastLatencyMs, 128);
+  await afterState.endSession();
+});
+
+test('fast assistant TTFB never drops Turn 1 final emotion or leaks it onto Turn 2 (Probes A, B, C & out-of-order utterances)', async () => {
+  const emo = (session_id, emotion, interim, seq, extra = {}) => ({
+    type: 'user_emotion',
+    session_id,
+    emotion,
+    emoji: 'E_' + emotion,
+    title: emotion,
+    confidence: 0.9,
+    interim,
+    latency_ms: 145,
+    input_tokens: 40,
+    output_tokens: 4,
+    seq,
+    ...extra,
+  });
+
+  // Probe A: User 1 -> fast Bot reply (~300ms TTFB) -> U1 final (~550ms) -> short User 2
+  const hA = await harness();
+  await hA.render().startBackend('live');
+  const sidA = hA.connections[0].sessionId;
+  hA.send({ type: 'transcription', participant: 'User', text: 'Turn one: I am really annoyed.' });
+  hA.send({ type: 'transcription', participant: 'Bot', response_id: 'r1', text: 'Sorry to hear that.' });
+  hA.send(emo(sidA, 'frustrated', false, 1));
+  hA.send({ type: 'transcription', participant: 'User', text: 'Turn two: okay, thanks.' });
+  const usersA = hA.render().messages.filter((m) => m.role === 'user');
+  assert.equal(usersA[0].metrics?.userEmotion?.emotion, 'frustrated');
+  assert.equal(usersA[0].metrics?.userEmotion?.interim, false);
+  assert.equal(usersA[1].metrics?.userEmotion, undefined);
+  assert.equal(hA.render().emotionStats.totalOutputTokens, 4);
+  await hA.render().endSession();
+
+  // Probe B: U1 interim -> User 1 -> fast Bot reply -> U1 final upgrades Turn 1 -> User 2 stays clean
+  const hB = await harness();
+  await hB.render().startBackend('live');
+  const sidB = hB.connections[0].sessionId;
+  hB.send(emo(sidB, 'hesitant', true, 1));
+  hB.send({ type: 'transcription', participant: 'User', text: 'Turn one.' });
+  assert.equal(hB.render().dockEmotion?.interim, true);
+  hB.send({ type: 'transcription', participant: 'Bot', response_id: 'r1', text: 'Reply one.' });
+  hB.send(emo(sidB, 'angry', false, 2));
+  hB.send({ type: 'transcription', participant: 'User', text: 'Turn two.' });
+  const usersB = hB.render().messages.filter((m) => m.role === 'user');
+  assert.equal(usersB[0].metrics?.userEmotion?.emotion, 'angry');
+  assert.equal(usersB[0].metrics?.userEmotion?.interim, false);
+  assert.equal(usersB[1].metrics?.userEmotion, undefined);
+  await hB.render().endSession();
+
+  // Probe C: U1 final -> split caller sentences (Part A + Part B) -> U2 interim waits for User 2
+  const hC = await harness();
+  await hC.render().startBackend('live');
+  const sidC = hC.connections[0].sessionId;
+  hC.send(emo(sidC, 'calm', false, 1));
+  hC.send({ type: 'transcription', participant: 'User', text: 'Turn one part A.' });
+  hC.send({ type: 'transcription', participant: 'User', text: 'Turn one part B.' });
+  hC.send(emo(sidC, 'angry', true, 2));
+  let usersC = hC.render().messages.filter((m) => m.role === 'user');
+  assert.equal(usersC[0].metrics?.userEmotion?.emotion, 'calm');
+  assert.equal(usersC[0].metrics?.userEmotion?.interim, false);
+  assert.equal(usersC[1].metrics?.userEmotion, undefined);
+  hC.send({ type: 'transcription', participant: 'User', text: 'Turn two arrives.' });
+  usersC = hC.render().messages.filter((m) => m.role === 'user');
+  assert.equal(usersC[2].metrics?.userEmotion?.emotion, 'angry');
+  assert.equal(usersC[2].metrics?.userEmotion?.interim, true);
+  await hC.render().endSession();
+
+  // Probe D: Out-of-order utterance_id binding (U1 slow final arrives after U2 already transcribed)
+  const hD = await harness();
+  await hD.render().startBackend('live');
+  const sidD = hD.connections[0].sessionId;
+  hD.send({ type: 'transcription', participant: 'User', text: 'Utterance 1', utterance_id: 1 });
+  hD.send({ type: 'transcription', participant: 'Bot', response_id: 'r1', text: 'Bot 1' });
+  hD.send(emo(sidD, 'curious', true, 2, { utterance_id: 2, total_input_tokens: 40, total_output_tokens: 4 }));
+  hD.send({ type: 'transcription', participant: 'User', text: 'Utterance 2', utterance_id: 2 });
+  hD.send(emo(sidD, 'frustrated', false, 1, { utterance_id: 1, total_input_tokens: 95, total_output_tokens: 9 }));
+  const stateD = hD.render();
+  const usersD = stateD.messages.filter((m) => m.role === 'user');
+  assert.equal(usersD[0].metrics?.userEmotion?.emotion, 'frustrated');
+  assert.equal(usersD[0].metrics?.userEmotion?.interim, false);
+  assert.equal(usersD[1].metrics?.userEmotion?.emotion, 'curious');
+  assert.equal(stateD.emotionStats.totalInputTokens, 95);
+  assert.equal(stateD.emotionStats.totalOutputTokens, 9);
+  await stateD.endSession();
+});
+
+

@@ -251,7 +251,7 @@ def test_normal_cascade_tts_setup_works_with_and_without_stt():
                   gemini_voice_key=None, stt_language="hi-IN", project_id="dummy", location="us-central1",
                   tts_voice_prompt=None, tts_style=None, tts_accent=None, tts_pitch=None, tts_pace=1.0,
                   tts_pace_label=None, tts_script=tts_script, voice_profiles=voice_profiles,
-                  MarkdownTextFilter=lambda: None,
+                  MarkdownTextFilter=lambda: None, strip_markdown=tts_script.strip_markdown,
                   CustomVertexGeminiTTSService=lambda **kwargs: calls.append(kwargs))
         if not skip: ns["stt_languages"] = [Language.HI_IN]
         exec(code, ns)

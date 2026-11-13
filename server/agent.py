@@ -42,7 +42,7 @@ from pipecat.frames.frames import (Frame, TranscriptionFrame, InterimTranscripti
                                    UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
                                    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
+from pipecat.utils.text.transforms import strip_markdown
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -693,13 +693,13 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         return result
 
 
-    async def start_ttfb_metrics(self):
+    async def start_ttfb_metrics(self, **kwargs):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
-        await super().start_ttfb_metrics()
+        await super().start_ttfb_metrics(**kwargs)
         
-    async def stop_ttfb_metrics(self):
-        await super().stop_ttfb_metrics()
+    async def stop_ttfb_metrics(self, **kwargs):
+        await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):
             latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
@@ -1070,13 +1070,13 @@ class CustomGoogleTTSService(TurnOriginMixin, GoogleTTSService):
                              issue=None if completed else "Synthesis interrupted; billed characters unconfirmed")
                 await publish_cost(self)
 
-    async def start_ttfb_metrics(self):
+    async def start_ttfb_metrics(self, **kwargs):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
-        await super().start_ttfb_metrics()
+        await super().start_ttfb_metrics(**kwargs)
         
-    async def stop_ttfb_metrics(self):
-        await super().stop_ttfb_metrics()
+    async def stop_ttfb_metrics(self, **kwargs):
+        await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):
             latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
@@ -1434,13 +1434,13 @@ class _MeteredGeminiLLMMixin:
         except Exception as e:
             logger.error(f"Failed to unset thinking budget: {e}")
 
-    async def start_ttfb_metrics(self):
+    async def start_ttfb_metrics(self, **kwargs):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
-        await super().start_ttfb_metrics()
+        await super().start_ttfb_metrics(**kwargs)
         
-    async def stop_ttfb_metrics(self):
-        await super().stop_ttfb_metrics()
+    async def stop_ttfb_metrics(self, **kwargs):
+        await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):
             latency = time.monotonic() - self._my_ttfb_start
             self._my_ttfb_start = None
@@ -1521,9 +1521,10 @@ class CustomGoogleAIStudioLLMService(_MeteredGeminiLLMMixin, TurnOriginMixin, Go
 
 
 class TranscriptionBroadcaster(FrameProcessor):
-    def __init__(self, participant: str):
+    def __init__(self, participant: str, emotion_observer=None):
         super().__init__()
         self.participant = participant
+        self._emotion_observer = emotion_observer
         # The bot's words are raw LLM tokens, with Gemini 3.8 TTS markup cut across them.
         self._bot_transcript = tts_script.TranscriptStream() if participant == "Bot" else None
         self._bot_response_id = None
@@ -1533,15 +1534,27 @@ class TranscriptionBroadcaster(FrameProcessor):
         if not text:
             return
         logger.info(f"TranscriptionBroadcaster [{self.participant}]: {text}")
+        data = {
+            'type': 'transcription',
+            'participant': self.participant,
+            'response_id': response_id,
+            'text': text,
+        }
+        if self.participant == "User" and self._emotion_observer is not None:
+            utt_id = int(
+                getattr(
+                    self._emotion_observer,
+                    "transcript_utterance_id",
+                    getattr(self._emotion_observer, "current_utterance_id", 0),
+                )
+                or 0
+            )
+            if utt_id > 0:
+                data['utterance_id'] = utt_id
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
-            "data": {
-                'type': 'transcription',
-                'participant': self.participant,
-                'response_id': response_id,
-                'text': text
-            }
+            "data": data,
         }))
 
     async def _process_bot_frame(self, frame: Frame) -> bool:
@@ -1707,6 +1720,7 @@ async def run_agent(
     vad_mode: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     persona_id: Optional[str] = None,
+    emotion_enabled: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -1911,7 +1925,7 @@ async def run_agent(
                 language=Language(tts_language),
                 speaking_rate=tts_pace,
             ),
-            text_filters=[MarkdownTextFilter()],
+            text_transforms=[("*", strip_markdown)],
         )
     elif clean_tts_model.startswith("gemini"):
         tts_location = "global" if "gemini-3" in clean_tts_model else location
@@ -1948,7 +1962,14 @@ async def run_agent(
             tts_pace=tts_pace,
             tts_pace_label=tts_pace_label,
             voice_key=gemini_voice_key,
-            text_filters=[tts_script.Gemini38TextFilter() if tts_script.is_gemini_38_tts(clean_tts_model) else MarkdownTextFilter()]
+            text_transforms=[
+                (
+                    "*",
+                    tts_script.Gemini38TextFilter()
+                    if tts_script.is_gemini_38_tts(clean_tts_model)
+                    else strip_markdown,
+                )
+            ],
         )
     else:
         effective_voice = tts_voice
@@ -1965,7 +1986,7 @@ async def run_agent(
                 language=Language(tts_language),
                 speaking_rate=tts_pace
             ),
-            text_filters=[MarkdownTextFilter()],
+            text_transforms=[("*", strip_markdown)],
         )
 
     turn_tracker = TurnTracker(current_session_id(), "tts-llm-stt", vad_stop_padding_ms=400 if vad else None)
@@ -1979,6 +2000,13 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
+    from processors.emotion_perception import AudioEmotionObserver
+
+    emotion_observer = AudioEmotionObserver(
+        enabled=emotion_enabled,
+        session_id=current_session_id(),
+        project_id=project_id,
+    )
     initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
     if skip_stt:
@@ -2003,6 +2031,7 @@ async def run_agent(
             cost_meter=None,
             enable_parallel_stt=False,
         )
+        accumulator._emotion_observer = emotion_observer
         context_aggregator = LLMContextAggregatorPair(context)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
 
@@ -2011,6 +2040,7 @@ async def run_agent(
             start_trigger,
             *([vad_processor] if vad_processor else []),
             TurnBoundaryProcessor(turn_tracker),
+            emotion_observer,
             accumulator,
             llm,
             TranscriptionBroadcaster(participant="Bot"),
@@ -2036,8 +2066,9 @@ async def run_agent(
             start_trigger,
             *([vad_processor] if vad_processor else []),
             TurnBoundaryProcessor(turn_tracker),
+            emotion_observer,
             stt,
-            TranscriptionBroadcaster(participant="User"),
+            TranscriptionBroadcaster(participant="User", emotion_observer=emotion_observer),
             context_aggregator.user(),
             llm,
             TranscriptionBroadcaster(participant="Bot"),

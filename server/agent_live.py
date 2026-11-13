@@ -75,8 +75,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
@@ -649,7 +649,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         self._ttft_anchored_to_speech_end = True
         self._last_user_speech_activity_at = now
 
-    async def start_ttfb_metrics(self):
+    async def start_ttfb_metrics(self, **kwargs):
         # Pipecat calls this when the aggregator closes the user turn. Without
         # local VAD that is SpeechTimeoutUserTurnStopStrategy, ~600 ms after the
         # transcript, often after the bot already started talking. Never let it
@@ -659,10 +659,10 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if not anchored and not already_reported and not getattr(self, "_mixin_bot_responding", False):
             self._my_ttfb_start = time.monotonic()
             self._ttft_anchored_to_speech_end = False
-        await super().start_ttfb_metrics()
+        await super().start_ttfb_metrics(**kwargs)
 
-    async def stop_ttfb_metrics(self):
-        await super().stop_ttfb_metrics()
+    async def stop_ttfb_metrics(self, **kwargs):
+        await super().stop_ttfb_metrics(**kwargs)
         await self._report_ttft()
 
     async def _report_ttft(self):
@@ -924,14 +924,26 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                     "timestamp": time.time()
                 })
                 logger.info(f"💬 [Transcript User (Turn {len(self._dialogue_history)})]: {clean_sentence}")
+            tx_payload = {
+                'type': 'transcription',
+                'participant': 'User',
+                'text': clean_sentence,
+            }
+            emo_obs = getattr(self, "_emotion_observer", None)
+            utt_id = int(
+                getattr(
+                    emo_obs,
+                    "transcript_utterance_id",
+                    getattr(emo_obs, "current_utterance_id", 0),
+                )
+                or 0
+            )
+            if utt_id > 0:
+                tx_payload['utterance_id'] = utt_id
             await self.push_frame(OutputTransportMessageFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
-                "data": {
-                    'type': 'transcription',
-                    'participant': 'User',
-                    'text': clean_sentence
-                }
+                "data": tx_payload,
             }))
 
             # Optional transcript telemetry. Pragya inherits the no-op hook;
@@ -2335,6 +2347,7 @@ async def run_agent_live(
     avatar_name: str = "auto",
     avatar_custom_image: Optional[str] = None,
     custom_voice_audio: Optional[str] = None,
+    emotion_enabled: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -2658,7 +2671,15 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
+    from processors.emotion_perception import AudioEmotionObserver
+
     live_vad = build_live_vad_processor(vad, vad_mode)
+    emotion_observer = AudioEmotionObserver(
+        enabled=emotion_enabled,
+        session_id=current_session_id(),
+        project_id=project_id,
+    )
+    llm._emotion_observer = emotion_observer
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
     llm.user_idle_processor = user_idle
 
@@ -2667,6 +2688,7 @@ async def run_agent_live(
         start_trigger,
         *([live_vad] if live_vad else []),
         TurnBoundaryProcessor(turn_tracker),
+        emotion_observer,
         user_idle,
         context_aggregator.user(),
         llm,

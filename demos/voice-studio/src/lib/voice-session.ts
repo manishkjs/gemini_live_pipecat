@@ -156,6 +156,8 @@ export type SessionSettings = {
   avatarName?: string;
   /** Optional base64 data URI for Custom Portrait upload (`customized_avatar`). */
   avatarCustomImage?: string;
+  /** Whether non-blocking user vocal emotion perception (`gemini-decision-1`) is active. Defaults to true. */
+  emotionPerception?: boolean;
   /**
    * Identifies this browser's session to the backend diagnostics buffer.
    *
@@ -219,6 +221,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   avatarEnabled: false,
   avatarName: "auto",
   avatarCustomImage: "",
+  emotionPerception: true,
   sessionId: "",
 };
 
@@ -829,6 +832,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       vad: effectiveVadStr,
       vad_mode: effectiveVadMode,
       context_compression: settings.contextCompression ? "true" : "false",
+      emotion_enabled: settings.emotionPerception === false ? "false" : "true",
       // Selects the persona's execution architecture server-side. The backend
       // routes on this id alone and never inspects prompt text, so editing a
       // prompt can no longer silently disable a persona's engine.
@@ -861,6 +865,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       tts_pace: String(settings.ttsPace ?? 1.0),
       vad: effectiveVadStr,
       vad_mode: effectiveVadMode,
+      emotion_enabled: settings.emotionPerception === false ? "false" : "true",
       skip_stt: settings.skipStt && supportsCascadeAudioInput(settings.llmModel) ? "true" : "false",
       persona_id: settings.personaId,
     };

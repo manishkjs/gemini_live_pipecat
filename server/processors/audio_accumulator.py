@@ -169,14 +169,26 @@ class AudioAccumulator(FrameProcessor):
                 # multi-turn LLM memory stays intact and Gemini implicit prefix caching caches prior audio turns.
                 dur_s = len(audio_data) / 32000.0
                 bubble_label = "🎤 Audio Message" if self._enable_parallel_stt else f"🎤 Audio Message ({dur_s:.1f}s)"
+                tx_payload = {
+                    'type': 'transcription',
+                    'participant': 'User',
+                    'text': bubble_label,
+                }
+                emo_obs = getattr(self, "_emotion_observer", None)
+                utt_id = int(
+                    getattr(
+                        emo_obs,
+                        "transcript_utterance_id",
+                        getattr(emo_obs, "current_utterance_id", 0),
+                    )
+                    or 0
+                )
+                if utt_id > 0:
+                    tx_payload['utterance_id'] = utt_id
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
                     "type": "server-message",
-                    "data": {
-                        'type': 'transcription',
-                        'participant': 'User',
-                        'text': bubble_label
-                    }
+                    "data": tx_payload,
                 }))
 
                 await self.push_frame(LLMContextFrame(self._context))
