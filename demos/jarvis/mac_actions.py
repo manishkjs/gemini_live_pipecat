@@ -1,29 +1,31 @@
-"""Native macOS "hands and eyes" for Jarvis.
+"""Native macOS and optional Android/ADB "hands and eyes" for Jarvis.
 
-Screenshots use the built-in `screencapture` tool, mouse clicks post real
-CoreGraphics events, and typing goes through System Events. All of these work
-in any app, not only the browser. They need Screen Recording and Accessibility
-permission for the process that runs Jarvis.
+Screenshots use `screencapture`, mouse clicks post CoreGraphics events, and
+typing goes through System Events. All of these work in any macOS app, not
+only the browser. When an Android device or emulator is connected via `adb`,
+mobile_* helpers can also drive apps like Swiggy directly.
 
-The safety checks at the top of this module are pure Python so they can be
-unit-tested on any OS.
+The safety checks and command builders in the top half of this module are pure
+Python so they can be unit-tested on any OS.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import io
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 # ---------------------------------------------------------------------------
 # Safety gate (pure Python, testable anywhere)
 # ---------------------------------------------------------------------------
 
-# Commands or text that must never run without a human saying yes.
 _RISKY_TEXT_PATTERNS = (
     r"\brm\s+-(?=[a-z]*r)(?=[a-z]*f)[a-z]+",  # rm -rf, rm -fr
     r"\bdrop\s+(table|database|schema)\b",
@@ -37,17 +39,16 @@ _RISKY_TEXT_PATTERNS = (
     r"\bshutdown\b|\breboot\b",
 )
 
-# Words in a click target that mean "this button changes something real".
 _RISKY_TARGET_WORDS = (
     "delete", "remove", "destroy", "drop", "pay", "purchase", "buy",
-    "transfer", "wire", "refund", "send", "submit", "deploy", "publish",
-    "merge", "approve", "production", "prod",
+    "order", "checkout", "transfer", "wire", "refund", "send", "submit",
+    "deploy", "publish", "merge", "approve", "production", "prod",
 )
 
 
 @dataclasses.dataclass(frozen=True)
 class RiskVerdict:
-    """Result of a safety check on a proposed desktop action."""
+    """Result of a safety check on a proposed desktop or mobile action."""
 
     risky: bool
     reason: str = ""
@@ -63,7 +64,7 @@ def assess_text(text: str) -> RiskVerdict:
 
 
 def assess_click(target_description: str) -> RiskVerdict:
-    """Checks the description the model gave for the thing it wants to click."""
+    """Checks the description the model gave for the UI element to click."""
     words = set(re.findall(r"[a-z]+", target_description.lower()))
     hits = sorted(words.intersection(_RISKY_TARGET_WORDS))
     if hits:
@@ -72,7 +73,7 @@ def assess_click(target_description: str) -> RiskVerdict:
 
 
 # ---------------------------------------------------------------------------
-# Key combos -> AppleScript (pure Python, testable anywhere)
+# Pure helpers: key combos, Meet/draw.io URLs, Chrome profile, audio, ADB
 # ---------------------------------------------------------------------------
 
 _MODIFIERS = {
@@ -82,11 +83,26 @@ _MODIFIERS = {
     "shift": "shift down",
 }
 
-# macOS virtual key codes for keys that have no printable character.
 _KEY_CODES = {
     "enter": 36, "return": 36, "tab": 48, "space": 49, "delete": 51,
     "backspace": 51, "escape": 53, "esc": 53, "left": 123, "right": 124,
     "down": 125, "up": 126,
+}
+
+# Verified macOS Google Meet shortcuts.
+MEET_SHORTCUTS = {
+    "toggle_mic": "cmd+d",
+    "toggle_camera": "cmd+e",
+    "raise_hand": "ctrl+cmd+h",
+    "open_chat": "ctrl+cmd+c",
+    "leave": "cmd+w",
+}
+
+_COMMON_ANDROID_PACKAGES = {
+    "swiggy": "in.swiggy.android",
+    "zomato": "com.application.zomato",
+    "chrome": "com.android.chrome",
+    "settings": "com.android.settings",
 }
 
 
@@ -96,16 +112,16 @@ def _applescript_string(text: str) -> str:
 
 def key_combo_to_applescript(combo: str) -> str:
     """Turns 'cmd+shift+t' or 'enter' into a System Events AppleScript line."""
-    parts = [p.strip().lower() for p in combo.split("+") if p.strip()]
+    parts = [part.strip().lower() for part in combo.split("+") if part.strip()]
     if not parts:
         raise ValueError("empty key combo")
     *mods, key = parts
-    unknown = [m for m in mods if m not in _MODIFIERS]
+    unknown = [mod for mod in mods if mod not in _MODIFIERS]
     if unknown:
         raise ValueError(f"unknown modifier(s): {unknown}")
     using = ""
     if mods:
-        using = " using {" + ", ".join(_MODIFIERS[m] for m in mods) + "}"
+        using = " using {" + ", ".join(_MODIFIERS[mod] for mod in mods) + "}"
     if key in _KEY_CODES:
         action = f"key code {_KEY_CODES[key]}"
     elif len(key) == 1:
@@ -115,13 +131,91 @@ def key_combo_to_applescript(combo: str) -> str:
     return f'tell application "System Events" to {action}{using}'
 
 
+def normalize_meet_url(meeting: str) -> str:
+    """Normalizes a Meet code ('abc-defg-hij') or URL into a meet.google.com URL."""
+    cleaned = meeting.strip()
+    if not cleaned:
+        raise ValueError("empty meeting code or URL")
+    if re.match(r"^https?://", cleaned):
+        return cleaned
+    if cleaned.startswith("meet.google.com/"):
+        return "https://" + cleaned
+    return f"https://meet.google.com/{cleaned.lstrip('/')}"
+
+
+def drawio_url() -> str:
+    """Returns the draw.io URL that skips the startup storage dialog."""
+    return "https://app.diagrams.net/?splash=0"
+
+
+def chrome_profile_command(url: str, profile_dir: str) -> list[str]:
+    """Builds the macOS `open -na` command for a dedicated Chrome profile."""
+    return [
+        "open",
+        "-na",
+        "Google Chrome",
+        "--args",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        url,
+    ]
+
+
+def resolve_audio_device_index(
+    spec: str | None,
+    devices: Sequence[Mapping[str, Any]],
+    direction: str,
+) -> int | None:
+    """Resolves a device index or substring (e.g. 'BlackHole 2ch') from PyAudio info."""
+    if not spec or not spec.strip():
+        return None
+    cleaned = spec.strip()
+    channel_key = "maxInputChannels" if direction == "input" else "maxOutputChannels"
+    if cleaned.isdigit():
+        idx = int(cleaned)
+        if 0 <= idx < len(devices) and devices[idx].get(channel_key, 0) > 0:
+            return idx
+        raise ValueError(f"Audio {direction} device index {idx} is unavailable")
+    needle = cleaned.lower()
+    for idx, dev in enumerate(devices):
+        if dev.get(channel_key, 0) > 0 and needle in str(dev.get("name", "")).lower():
+            return idx
+    raise ValueError(f"No {direction} audio device matching {cleaned!r}")
+
+
+def adb_device_serial(adb_output: str) -> str | None:
+    """Parses `adb devices` stdout and returns the first online serial."""
+    for line in adb_output.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[1] == "device":
+            return parts[0]
+    return None
+
+
+def resolve_android_package(app: str) -> str:
+    """Maps a friendly mobile app name like 'swiggy' to its Android package."""
+    cleaned = app.strip()
+    return _COMMON_ANDROID_PACKAGES.get(cleaned.lower(), cleaned)
+
+
 # ---------------------------------------------------------------------------
-# Real macOS actions
+# Real macOS + optional ADB actions
 # ---------------------------------------------------------------------------
 
 
 def _osascript(script: str) -> None:
     subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+
+
+def list_audio_devices() -> list[dict[str, Any]]:
+    """Lists PyAudio devices on this machine."""
+    import pyaudio
+
+    pa = pyaudio.PyAudio()
+    try:
+        return [pa.get_device_info_by_index(idx) for idx in range(pa.get_device_count())]
+    finally:
+        pa.terminate()
 
 
 @dataclasses.dataclass
@@ -134,7 +228,7 @@ class Screenshot:
 
 
 class MacDesktop:
-    """Eyes and hands on the local macOS desktop."""
+    """Eyes and hands on the local macOS desktop (plus optional ADB mobile device)."""
 
     def __init__(self, max_width: int = 1280):
         self._max_width = max_width
@@ -187,10 +281,14 @@ class MacDesktop:
                 time.sleep(0.03)
         return px, py
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Copies text to the macOS clipboard via pbcopy."""
+        subprocess.run(["pbcopy"], input=text, text=True, check=True)
+
     def type_text(self, text: str, press_enter: bool = False) -> None:
         """Types text. Long text is pasted, which is faster and more reliable."""
-        if len(text) > 40:
-            subprocess.run(["pbcopy"], input=text, text=True, check=True)
+        if len(text) > 40 or "\n" in text:
+            self.copy_to_clipboard(text)
             _osascript(key_combo_to_applescript("cmd+v"))
         else:
             _osascript(f'tell application "System Events" to keystroke {_applescript_string(text)}')
@@ -211,6 +309,23 @@ class MacDesktop:
             url = "https://" + url
         subprocess.run(["open", url], check=True)
 
+    def open_chrome_profile(self, url: str, profile_dir: str | None = None) -> str:
+        """Opens a URL in an isolated Chrome profile for a separate persona."""
+        resolved_dir = profile_dir or os.getenv(
+            "JARVIS_CHROME_PROFILE",
+            str(Path.home() / ".jarvis-chrome-profile"),
+        )
+        Path(resolved_dir).mkdir(parents=True, exist_ok=True)
+        subprocess.run(chrome_profile_command(url, resolved_dir), check=True)
+        return resolved_dir
+
+    def open_drawio(self, mermaid_code: str = "") -> bool:
+        """Opens draw.io without the splash modal and copies optional Mermaid code."""
+        if mermaid_code.strip():
+            self.copy_to_clipboard(mermaid_code.strip())
+        self.open_url(drawio_url())
+        return bool(mermaid_code.strip())
+
     def scroll(self, amount: int) -> None:
         """Scrolls the window under the pointer; negative scrolls down."""
         import Quartz
@@ -219,6 +334,56 @@ class MacDesktop:
             None, Quartz.kCGScrollEventUnitLine, 1, int(amount)
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+    # -- optional Android / ADB mobile device -------------------------------
+
+    def _require_adb_serial(self) -> str:
+        if not shutil.which("adb"):
+            raise RuntimeError(
+                "adb is not installed. Use open_app('iPhone Mirroring') or open Chrome instead."
+            )
+        res = subprocess.run(["adb", "devices"], check=True, capture_output=True, text=True)
+        serial = adb_device_serial(res.stdout)
+        if not serial:
+            raise RuntimeError(
+                "No Android device/emulator connected via adb. Use Mac desktop tools instead."
+            )
+        return serial
+
+    def mobile_open_app(self, app: str) -> str:
+        """Launches an Android app (e.g. 'swiggy' -> in.swiggy.android) via adb."""
+        serial = self._require_adb_serial()
+        package = resolve_android_package(app)
+        subprocess.run(
+            ["adb", "-s", serial, "shell", "monkey", "-p", package,
+             "-c", "android.intent.category.LAUNCHER", "1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return package
+
+    def mobile_tap(self, x: int, y: int) -> None:
+        """Taps pixel coordinates on the connected Android device/emulator."""
+        serial = self._require_adb_serial()
+        subprocess.run(["adb", "-s", serial, "shell", "input", "tap", str(x), str(y)], check=True)
+
+    def mobile_type(self, text: str, press_enter: bool = False) -> None:
+        """Types text on the connected Android device/emulator."""
+        serial = self._require_adb_serial()
+        escaped = re.sub(r"([\\s\"'()<>|;&*~$`])", r"\\\1", text).replace(" ", "%s")
+        subprocess.run(["adb", "-s", serial, "shell", "input", "text", escaped], check=True)
+        if press_enter:
+            subprocess.run(["adb", "-s", serial, "shell", "input", "keyevent", "66"], check=True)
+
+    def mobile_swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None:
+        """Swipes between two points on the connected Android device/emulator."""
+        serial = self._require_adb_serial()
+        subprocess.run(
+            ["adb", "-s", serial, "shell", "input", "swipe",
+             str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
+            check=True,
+        )
 
 
 def screenshot_to_jpeg(shot: Screenshot) -> bytes:

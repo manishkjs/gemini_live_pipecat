@@ -1,10 +1,11 @@
 # Jarvis
 
 A floating voice agent for the Mac. You talk, it looks at your screen and
-works your apps: opens them, clicks, types, runs terminal commands. A glass
-pill at the top of the screen shows what it hears, says and does. Risky
-actions (deleting things, force pushes, "Deploy to production") stop and wait
-for you to approve them.
+works your apps: Chrome, Google Meet, `draw.io`, Terminal, or mobile apps
+(Android emulator/device via `adb` or iPhone Mirroring). A glass pill at the
+top of the screen shows what it hears, says and does. Risky actions (deleting
+things, force pushes, "Deploy to production", "Pay" / "Place order") stop
+and wait for you to approve them.
 
 Built on Pipecat 1.2.1 and the Gemini Live API (AI Studio key only, no
 Vertex).
@@ -12,22 +13,21 @@ Vertex).
 ## How it works
 
 ```
-Mac mic ──▶ Pipecat LocalAudioTransport ──▶ Gemini Live ──▶ Mac speakers
-                                              │   ▲
-                         tool calls (click,   │   │ screenshots pushed
-                         type, open_app...)   ▼   │ as video frames
-                                         mac_actions.py
-                                  (screencapture, CoreGraphics clicks,
-                                   System Events keystrokes)
-                                              │
-                               risky? ──▶ Approve / Deny in the Jarvis pill
+Mac mic / BlackHole ──▶ Pipecat LocalAudioTransport ──▶ Gemini Live ──▶ Speakers / BlackHole
+                                                          │   ▲
+                              click, type, meet_join,     │   │ screenshots pushed
+                              open_drawio, mobile_*       ▼   │ as video frames
+                                                     mac_actions.py
+                                       (screencapture, Quartz CGEvent, System Events, adb)
+                                                          │
+                                          risky? ──▶ Approve / Deny in the Jarvis pill
 ```
 
 | File | What it does |
 |---|---|
-| `jarvis_app.py` | Starts the floating window (pywebview) and the voice pipeline thread |
-| `bot.py` | Pipecat pipeline, Gemini Live setup, tools, approval gate |
-| `mac_actions.py` | Screenshots, clicks, typing, plus the safety rules |
+| `jarvis_app.py` | Starts the floating window (`pywebview`) and the voice pipeline thread |
+| `bot.py` | Pipecat pipeline, Gemini Live setup, desktop/Meet/draw.io/mobile tools, approval gate |
+| `mac_actions.py` | Screenshots, clicks, typing, isolated Chrome profile, ADB mobile helpers, safety rules |
 | `ui/index.html` | The Dynamic-Island style UI |
 
 ## Run it on your Mac
@@ -53,15 +53,38 @@ Optional `.env` settings:
 |---|---|---|
 | `JARVIS_MODEL` | `gemini-3.8-live` | Any Gemini Live model your key can use |
 | `JARVIS_VOICE` | `Charon` | Gemini voice name |
+| `JARVIS_INPUT_DEVICE` | System default | Audio input index or name substring (e.g. `BlackHole 2ch`) |
+| `JARVIS_OUTPUT_DEVICE` | System default | Audio output index or name substring (e.g. `BlackHole 16ch`) |
+| `JARVIS_CHROME_PROFILE` | `~/.jarvis-chrome-profile` | Isolated Chrome profile for Jarvis as a separate Meet user |
 
-## Try it
+List audio device indexes on your Mac:
 
-- "Open Terminal and show me what's running on port 3000."
-- "Look at my screen. What's this error?"
-- "Open the Cloud Run console for checkout." (then interrupt: "No wait, the payments service.")
-- "Clean up disk space by deleting the database volume." → the pill turns red and asks you.
+```bash
+python jarvis_app.py --list-audio
+```
 
-Press ⏎ in the pill to approve, Esc to deny.
+## Demo Workflows
+
+### 1. Join Google Meet as a separate "Jarvis" user
+1. To route audio cleanly into a separate Chrome Meet window without echoing,
+   install two virtual audio buses (e.g., `brew install blackhole-2ch blackhole-16ch`)
+   and set `JARVIS_INPUT_DEVICE` / `JARVIS_OUTPUT_DEVICE` in `.env` (or use
+   room audio for a quick local test).
+2. Say: *"Jarvis, join Meet `abc-defg-hij` in your own Chrome profile."*
+3. Jarvis launches an isolated Chrome profile (`~/.jarvis-chrome-profile`), where
+   it can join as a guest (`"Jarvis"`) or a dedicated demo Google account.
+
+### 2. Build an architecture diagram in `draw.io`
+Say: *"Jarvis, open draw.io and draw a Cloud Run + Spanner + Gemini Live architecture."*
+Jarvis opens `https://app.diagrams.net/?splash=0` with Mermaid syntax on your
+clipboard and inserts it via **Arrange → Insert → Advanced → Mermaid**.
+
+### 3. Drive Swiggy mobile app
+- **Android Emulator / Phone (`adb`)**: Connect your emulator/phone (`adb devices`)
+  and say *"Jarvis, open Swiggy and search for biryani."* Tapping **Pay** or
+  **Place order** triggers the red Approval Pill.
+- **iPhone Mirroring / Mobile Web**: Open iPhone Mirroring (or `swiggy.com` in
+  Chrome) and Jarvis drives it with desktop `click`, `type_text`, and `scroll`.
 
 ## Tests
 
@@ -69,12 +92,13 @@ Press ⏎ in the pill to approve, Esc to deny.
 python -m unittest discover -s demos/jarvis/tests
 ```
 
-The tests cover the safety rules and key handling and run on any OS.
+The tests cover the safety rules, key handling, Meet/draw.io/audio/ADB helpers
+and run on any OS.
 
 ## Known limits
 
 - Clicks use screenshot coordinates, so small targets can be missed. Prefer
-  `open_app`, `open_url` and shortcuts.
+  `open_app`, `open_url`, `meet_join`, `meet_action`, `open_drawio` and shortcuts.
 - Gemini Live caps audio+video sessions (about 2 minutes without context
   compression, about 10 minutes per connection). Long sessions need
   compression and session resumption, which are not wired in yet.

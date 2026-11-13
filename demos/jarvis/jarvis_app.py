@@ -1,24 +1,26 @@
 """Jarvis: a floating voice agent for the Mac desktop.
 
-Run with `python jarvis_app.py`. A glass "Dynamic Island" window sits at the
-top of the screen and shows what Jarvis hears, says and does. The voice
-pipeline runs in a background thread; the window must own the main thread on
-macOS.
+Run with `python jarvis_app.py` (or `python jarvis_app.py --list-audio` to
+inspect input/output devices such as BlackHole). A glass "Dynamic Island"
+window sits at the top of the screen and shows what Jarvis hears, says and
+does. The voice pipeline runs in a background thread; the window must own the
+main thread on macOS.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import threading
 from pathlib import Path
 from typing import Any
 
-import webview
 from dotenv import load_dotenv
 from loguru import logger
 
 import bot
+import mac_actions
 
 _UI_FILE = Path(__file__).parent / "ui" / "index.html"
 _WIDTH, _HEIGHT = 600, 190
@@ -28,7 +30,7 @@ class WebviewBridge:
     """Connects the pipeline (asyncio thread) to the window (main thread)."""
 
     def __init__(self) -> None:
-        self.window: webview.Window | None = None
+        self.window: Any = None
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: asyncio.Future[bool] | None = None
@@ -65,8 +67,7 @@ class WebviewBridge:
 
 
 class _JsApi:
-    """The only methods JavaScript can call. Kept separate from the bridge so
-    pywebview does not try to expose the window object itself."""
+    """Exposes only `decide` to JavaScript so pywebview skips the window ref."""
 
     def __init__(self, bridge: WebviewBridge) -> None:
         self._bridge = bridge
@@ -79,12 +80,33 @@ def _run_pipeline(bridge: WebviewBridge) -> None:
     bridge._ready.wait(timeout=10)
     try:
         asyncio.run(bot.run_jarvis(bridge))
-    except Exception as e:
+    except Exception as exc:
         logger.exception("Jarvis pipeline stopped")
-        bridge.emit({"type": "error", "text": f"Stopped: {e}"})
+        bridge.emit({"type": "error", "text": f"Stopped: {exc}"})
+
+
+def _print_audio_devices() -> None:
+    for idx, dev in enumerate(mac_actions.list_audio_devices()):
+        ins = dev.get("maxInputChannels", 0)
+        outs = dev.get("maxOutputChannels", 0)
+        print(f"[{idx}] {dev.get('name')} (in={ins}, out={outs})")
 
 
 def main() -> None:
+    """Parses CLI flags and starts either audio listing or the floating UI."""
+    parser = argparse.ArgumentParser(description="Jarvis Mac desktop voice agent")
+    parser.add_argument(
+        "--list-audio",
+        action="store_true",
+        help="Print available PyAudio input/output device indexes and exit.",
+    )
+    args = parser.parse_args()
+    if args.list_audio:
+        _print_audio_devices()
+        return
+
+    import webview
+
     load_dotenv(Path(__file__).parent / ".env")
     bridge = WebviewBridge()
 

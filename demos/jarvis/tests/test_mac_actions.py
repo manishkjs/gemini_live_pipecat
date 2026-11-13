@@ -45,6 +45,7 @@ class AssessClickTest(unittest.TestCase):
         self.assertTrue(mac_actions.assess_click("Deploy to production button").risky)
         self.assertTrue(mac_actions.assess_click("Delete database").risky)
         self.assertTrue(mac_actions.assess_click("Pay now").risky)
+        self.assertTrue(mac_actions.assess_click("Place order on Swiggy").risky)
 
     def test_allows_navigation(self):
         self.assertFalse(mac_actions.assess_click("Logs tab").risky)
@@ -78,6 +79,56 @@ class KeyComboTest(unittest.TestCase):
 
     def test_escapes_quotes(self):
         self.assertIn('keystroke "\\""', mac_actions.key_combo_to_applescript('"'))
+
+
+class MeetAndMobileHelpersTest(unittest.TestCase):
+
+    def test_normalize_meet_url(self):
+        self.assertEqual(
+            mac_actions.normalize_meet_url("abc-defg-hij"),
+            "https://meet.google.com/abc-defg-hij",
+        )
+        self.assertEqual(
+            mac_actions.normalize_meet_url("meet.google.com/abc-defg-hij"),
+            "https://meet.google.com/abc-defg-hij",
+        )
+        self.assertEqual(
+            mac_actions.normalize_meet_url("https://meet.google.com/abc-defg-hij"),
+            "https://meet.google.com/abc-defg-hij",
+        )
+        with self.assertRaises(ValueError):
+            mac_actions.normalize_meet_url("   ")
+
+    def test_chrome_profile_command_and_drawio_url(self):
+        cmd = mac_actions.chrome_profile_command("https://meet.google.com/x", "/tmp/p")
+        self.assertIn("--user-data-dir=/tmp/p", cmd)
+        self.assertEqual(cmd[-1], "https://meet.google.com/x")
+        self.assertEqual(mac_actions.drawio_url(), "https://app.diagrams.net/?splash=0")
+
+    def test_resolve_audio_device_index(self):
+        devices = [
+            {"name": "MacBook Pro Microphone", "maxInputChannels": 1, "maxOutputChannels": 0},
+            {"name": "BlackHole 2ch", "maxInputChannels": 2, "maxOutputChannels": 2},
+            {"name": "BlackHole 16ch", "maxInputChannels": 16, "maxOutputChannels": 16},
+        ]
+        self.assertIsNone(mac_actions.resolve_audio_device_index(None, devices, "input"))
+        self.assertEqual(mac_actions.resolve_audio_device_index("1", devices, "input"), 1)
+        self.assertEqual(
+            mac_actions.resolve_audio_device_index("blackhole 16ch", devices, "output"), 2
+        )
+        with self.assertRaises(ValueError):
+            mac_actions.resolve_audio_device_index("0", devices, "output")
+        with self.assertRaises(ValueError):
+            mac_actions.resolve_audio_device_index("missing", devices, "input")
+
+    def test_adb_helpers(self):
+        out = "List of devices attached\nemulator-5554\tdevice\n"
+        self.assertEqual(mac_actions.adb_device_serial(out), "emulator-5554")
+        self.assertIsNone(mac_actions.adb_device_serial("List of devices attached\n"))
+        self.assertEqual(mac_actions.resolve_android_package("Swiggy"), "in.swiggy.android")
+        self.assertEqual(
+            mac_actions.resolve_android_package("com.example.app"), "com.example.app"
+        )
 
 
 if __name__ == "__main__":
