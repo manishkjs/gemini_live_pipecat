@@ -198,6 +198,23 @@ def resolve_android_package(app: str) -> str:
     return _COMMON_ANDROID_PACKAGES.get(cleaned.lower(), cleaned)
 
 
+# Characters the Android shell would interpret inside `input text`.
+_ADB_SHELL_SPECIAL = re.compile(r"([\\\"'()<>|;&*~$`!?#\[\]{}])")
+
+
+def adb_input_text(text: str) -> str:
+    """Escapes text for `adb shell input text` (spaces become %s)."""
+    return _ADB_SHELL_SPECIAL.sub(r"\\\1", text).replace(" ", "%s")
+
+
+def frontmost_pid_script(pid: int) -> str:
+    """Returns AppleScript that brings the process with this pid to the front."""
+    return (
+        'tell application "System Events" to set frontmost of '
+        f"(first process whose unix id is {int(pid)}) to true"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Real macOS + optional ADB actions
 # ---------------------------------------------------------------------------
@@ -262,6 +279,8 @@ class MacDesktop:
         self._active_display = 1
         self._origin_x = 0.0
         self._origin_y = 0.0
+        # display index -> (origin_x, origin_y, points_per_pixel) of its last screenshot.
+        self._geometry: dict[int, tuple[float, float, float]] = {}
 
     # -- eyes ---------------------------------------------------------------
 
@@ -332,6 +351,7 @@ class MacDesktop:
         self._origin_x = info.origin_x
         self._origin_y = info.origin_y
         self._points_per_pixel = info.width / image.width
+        self._geometry[info.index] = (info.origin_x, info.origin_y, self._points_per_pixel)
         return Screenshot(
             image.tobytes(),
             image.size,
@@ -342,6 +362,38 @@ class MacDesktop:
 
     # -- hands --------------------------------------------------------------
 
+    def to_global_point(
+        self, x: float, y: float, display: int | None = None
+    ) -> tuple[float, float]:
+        """Maps screenshot pixels on `display` (default: active) to global screen points.
+
+        Uses the geometry of that display's own last screenshot, so coordinates
+        are never scaled with another monitor's origin or resolution. Switches
+        the active display so the follow-up screenshot shows the same screen.
+        """
+        index = self._active_display if display is None else int(display)
+        geometry = self._geometry.get(index)
+        if geometry is None:
+            raise ValueError(
+                f"No screenshot of display {index} yet; call look_at_screen(display={index}) first"
+            )
+        self._active_display = index
+        self._origin_x, self._origin_y, self._points_per_pixel = geometry
+        return map_screenshot_point(x, y, *geometry)
+
+    def _move_pointer(self, px: float, py: float) -> None:
+        import Quartz
+
+        Quartz.CGEventPost(
+            Quartz.kCGHIDEventTap,
+            Quartz.CGEventCreateMouseEvent(
+                None,
+                Quartz.kCGEventMouseMoved,
+                Quartz.CGPointMake(px, py),
+                Quartz.kCGMouseButtonLeft,
+            ),
+        )
+
     def click(
         self,
         x: float,
@@ -349,23 +401,13 @@ class MacDesktop:
         double: bool = False,
         display: int | None = None,
     ) -> tuple[float, float]:
-        """Clicks at (x, y) given in the last screenshot's pixel coordinates."""
+        """Clicks at (x, y) given in pixel coordinates of that display's last screenshot."""
         import Quartz
 
-        if display is not None and int(display) != self._active_display:
-            self.screenshot(int(display))
-
-        px, py = map_screenshot_point(
-            x, y, self._origin_x, self._origin_y, self._points_per_pixel
-        )
+        px, py = self.to_global_point(x, y, display)
         point = Quartz.CGPointMake(px, py)
         clicks = 2 if double else 1
-        Quartz.CGEventPost(
-            Quartz.kCGHIDEventTap,
-            Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventMouseMoved, point, Quartz.kCGMouseButtonLeft
-            ),
-        )
+        self._move_pointer(px, py)
         time.sleep(0.05)
         for click_index in range(1, clicks + 1):
             for event_type in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
@@ -385,11 +427,22 @@ class MacDesktop:
         """Copies text to the macOS clipboard via pbcopy."""
         subprocess.run(["pbcopy"], input=text, text=True, check=True)
 
+    def _read_clipboard(self) -> str | None:
+        try:
+            res = subprocess.run(["pbpaste"], check=True, capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return res.stdout
+
     def type_text(self, text: str, press_enter: bool = False) -> None:
-        """Types text. Long text is pasted, which is faster and more reliable."""
+        """Types text. Long text is pasted, then the previous clipboard is restored."""
         if len(text) > 40 or "\n" in text:
+            saved = self._read_clipboard()
             self.copy_to_clipboard(text)
             _osascript(key_combo_to_applescript("cmd+v"))
+            if saved is not None:
+                time.sleep(0.3)  # Let the target app read the clipboard first.
+                self.copy_to_clipboard(saved)
         else:
             _osascript(f'tell application "System Events" to keystroke {_applescript_string(text)}')
         if press_enter:
@@ -398,6 +451,33 @@ class MacDesktop:
     def press_keys(self, combo: str) -> None:
         """Presses a key or shortcut via System Events."""
         _osascript(key_combo_to_applescript(combo))
+
+    def focus_meet_window(self, profile_dir: str | None = None) -> None:
+        """Brings Jarvis's Chrome (isolated profile if running) to the front.
+
+        Meet shortcuts go to whichever app is frontmost, so `cmd+w` ("leave")
+        would otherwise close a Terminal tab or the draw.io window.
+        """
+        resolved_dir = profile_dir or os.getenv(
+            "JARVIS_CHROME_PROFILE", str(Path.home() / ".jarvis-chrome-profile")
+        )
+        res = subprocess.run(
+            ["pgrep", "-f", "--", f"--user-data-dir={resolved_dir}"],
+            capture_output=True,
+            text=True,
+        )
+        pids = sorted(int(p) for p in res.stdout.split() if p.isdigit())
+        # Helper processes share the flag; the browser process is usually the
+        # oldest (lowest pid) and is the only one System Events can raise.
+        for pid in pids:
+            try:
+                _osascript(frontmost_pid_script(pid))
+                break
+            except subprocess.CalledProcessError:
+                continue
+        else:
+            _osascript('tell application "Google Chrome" to activate')
+        time.sleep(0.2)
 
     def open_app(self, name: str) -> None:
         """Opens or focuses a macOS app by name."""
@@ -426,10 +506,23 @@ class MacDesktop:
         self.open_url(drawio_url())
         return bool(mermaid_code.strip())
 
-    def scroll(self, amount: int) -> None:
-        """Scrolls the window under the pointer; negative scrolls down."""
+    def scroll(
+        self,
+        amount: int,
+        x: float | None = None,
+        y: float | None = None,
+        display: int | None = None,
+    ) -> None:
+        """Scrolls; negative scrolls down.
+
+        With x/y (screenshot pixels), the pointer moves there first so the
+        right pane scrolls instead of whatever the cursor last rested on.
+        """
         import Quartz
 
+        if x is not None and y is not None:
+            self._move_pointer(*self.to_global_point(x, y, display))
+            time.sleep(0.05)
         event = Quartz.CGEventCreateScrollWheelEvent(
             None, Quartz.kCGScrollEventUnitLine, 1, int(amount)
         )
@@ -471,7 +564,7 @@ class MacDesktop:
     def mobile_type(self, text: str, press_enter: bool = False) -> None:
         """Types text on the connected Android device/emulator."""
         serial = self._require_adb_serial()
-        escaped = re.sub(r"([\\s\"'()<>|;&*~$`])", r"\\\1", text).replace(" ", "%s")
+        escaped = adb_input_text(text)
         subprocess.run(["adb", "-s", serial, "shell", "input", "text", escaped], check=True)
         if press_enter:
             subprocess.run(["adb", "-s", serial, "shell", "input", "keyevent", "66"], check=True)

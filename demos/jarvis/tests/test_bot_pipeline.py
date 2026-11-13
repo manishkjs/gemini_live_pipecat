@@ -107,12 +107,11 @@ class EchoGuardTest(unittest.IsolatedAsyncioTestCase):
 
 class NonBlockingGeminiLiveTest(unittest.IsolatedAsyncioTestCase):
 
-    async def test_enables_non_blocking_tools_and_when_idle_scheduling(self):
-        llm = bot._NonBlockingGeminiLiveLLMService(
+    async def test_pipecat_sends_when_idle_for_async_tools_on_3_8(self):
+        llm = bot.GeminiLiveLLMService(
             api_key="test-key",
             settings=bot.GeminiLiveLLMService.Settings(model="models/gemini-3.8-live"),
         )
-        self.assertTrue(llm._is_gemini_3)
         self.assertTrue(llm._supports_non_blocking_tools)
 
         async def dummy_tool(params):
@@ -127,8 +126,26 @@ class NonBlockingGeminiLiveTest(unittest.IsolatedAsyncioTestCase):
         resp = fake_session.responses[0]
         self.assertEqual(resp.id, "call_1")
         self.assertEqual(resp.name, "open_app")
-        self.assertEqual(resp.response, {"status": "done"})
+        self.assertEqual(resp.response["status"], "done")
         self.assertEqual(resp.scheduling, FunctionResponseScheduling.WHEN_IDLE)
+        self.assertFalse(resp.will_continue)
+
+
+class JarvisControlTest(unittest.IsolatedAsyncioTestCase):
+
+    async def test_stop_actually_cancels_the_pipeline_task(self):
+        class _Task:
+            cancelled = False
+
+            async def cancel(self, **kwargs):
+                _Task.cancelled = True
+
+        control = bot.JarvisControl()
+        control.bind(asyncio.get_running_loop(), _Task())  # type: ignore[arg-type]
+        control.stop()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        self.assertTrue(_Task.cancelled)
 
 
 class OutputUiTapTest(unittest.IsolatedAsyncioTestCase):
@@ -140,7 +157,7 @@ class OutputUiTapTest(unittest.IsolatedAsyncioTestCase):
 
         await tap.process_frame(LLMTextFrame("Opening "), FrameDirection.DOWNSTREAM)
         await tap.process_frame(
-            TTSTextFrame("Opening ", aggregated_by="sentence"), FrameDirection.DOWNSTREAM
+            TTSTextFrame("Opening ", text_type="sentence"), FrameDirection.DOWNSTREAM
         )
         await tap.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
         await tap.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
@@ -186,6 +203,17 @@ class OutputUiTapTest(unittest.IsolatedAsyncioTestCase):
         await tap.process_frame(spk_frame, FrameDirection.DOWNSTREAM)
         self.assertEqual(in_pushed[-1].audio, mic_frame.audio)
         self.assertEqual(len(out_pushed), 1)
+
+    async def test_pause_keeps_ui_quiet(self):
+        ui = _FakeUi()
+        control = bot.JarvisControl()
+        tap = bot._OutputUiTap(ui, None, control)
+        tap.push_frame = lambda frame, direction: asyncio.sleep(0)  # type: ignore[method-assign]
+
+        control.set_paused(True)
+        await tap.process_frame(TTSTextFrame("hi", text_type="sentence"), FrameDirection.DOWNSTREAM)
+        await tap.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        self.assertEqual(ui.events, [])
 
 
 if __name__ == "__main__":

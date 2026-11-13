@@ -7,8 +7,8 @@ top of the screen shows what it hears, says and does. Risky actions (deleting
 things, force pushes, "Deploy to production", "Pay" / "Place order") stop
 and wait for you to approve them.
 
-Built on Pipecat 1.2.1 and the Gemini Live API (AI Studio key only, no
-Vertex).
+Built on Pipecat 1.16+ and the Gemini Live API (AI Studio key only, no
+Vertex). If you installed an older venv, run `pip install -U -r requirements.txt`.
 
 ## How it works
 
@@ -110,6 +110,7 @@ and run on any OS.
 
 - Clicks use screenshot coordinates, so small targets can be missed. Prefer
   `open_app`, `open_url`, `meet_join`, `meet_action`, `open_drawio` and shortcuts.
-- Gemini Live caps audio+video sessions (about 2 minutes without context
-  compression, about 10 minutes per connection). Long sessions need
-  compression and session resumption, which are not wired in yet.
+- Context window compression is on, and Pipecat reconnects with session
+  resumption handles, so long screen-sharing sessions keep going.
+- Multiple displays work: `look_at_screen(display=2)` first, then click or
+  scroll with `display=2`. Clicks always use that display's own screenshot.

@@ -1,5 +1,6 @@
-# Jarvis runs on the Mac. Same Pipecat version as server/requirements.txt.
-pipecat-ai[google,local]==1.2.1
+# Jarvis runs on the Mac. Needs Pipecat >= 1.16 for native Gemini 3.8
+# NON_BLOCKING tools, WHEN_IDLE scheduling and the llm.schemas import paths.
+pipecat-ai[google,local]>=1.16.0
 pywebview>=5.0
 pyobjc-framework-Quartz>=10.0
 pillow>=10.0

@@ -27,6 +27,9 @@ import mac_actions
 
 _UI_FILE = Path(__file__).parent / "ui" / "index.html"
 _WIDTH, _HEIGHT = 600, 190
+# Collapsed pill (344x44 plus 6px top padding) with a little slack, so the
+# transparent window doesn't swallow clicks on browser tabs around it.
+_COMPACT_WIDTH, _COMPACT_HEIGHT = 360, 56
 
 
 class WebviewBridge:
@@ -34,6 +37,7 @@ class WebviewBridge:
 
     def __init__(self) -> None:
         self.window: Any = None
+        self.screen_width = 0
         self.control = bot.JarvisControl()
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -60,9 +64,24 @@ class WebviewBridge:
         logger.info("Jarvis {}", "paused" if paused else "resumed")
         return paused
 
+    def set_compact(self, compact: bool) -> None:
+        """Shrinks the window to the collapsed pill, or grows it to fit the panel."""
+        window = self.window
+        if not window:
+            return
+        width, height = (_COMPACT_WIDTH, _COMPACT_HEIGHT) if compact else (_WIDTH, _HEIGHT)
+        try:
+            window.resize(width, height)
+            if self.screen_width:
+                window.move(int((self.screen_width - width) / 2), 0)
+        except Exception:
+            logger.opt(exception=True).debug("Failed to resize Jarvis window")
+
     def stop(self) -> None:
         """Stops the pipeline and closes the floating Jarvis window."""
         logger.info("Stopping Jarvis from UI")
+        # Deny any open approval so the waiting tool call returns before cancel.
+        self.decide(False)
         self.control.stop()
         # Fallback in case Cocoa runloop doesn't unwind promptly after window.destroy().
         timer = threading.Timer(1.5, lambda: os._exit(0))
@@ -117,6 +136,9 @@ class _JsApi:
     def toggle_pause(self) -> bool:
         return self._bridge.toggle_pause()
 
+    def set_compact(self, compact: bool) -> None:
+        self._bridge.set_compact(compact)
+
     def stop(self) -> None:
         self._bridge.stop()
 
@@ -156,13 +178,14 @@ def main() -> None:
     bridge = WebviewBridge()
 
     screen = webview.screens[0]
+    bridge.screen_width = int(screen.width)
     window = webview.create_window(
         "Jarvis",
         url=_UI_FILE.as_uri(),
         js_api=_JsApi(bridge),
-        width=_WIDTH,
-        height=_HEIGHT,
-        x=int((screen.width - _WIDTH) / 2),
+        width=_COMPACT_WIDTH,
+        height=_COMPACT_HEIGHT,
+        x=int((screen.width - _COMPACT_WIDTH) / 2),
         y=0,
         frameless=True,
         easy_drag=False,

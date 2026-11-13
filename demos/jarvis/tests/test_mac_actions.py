@@ -130,6 +130,29 @@ class MeetAndMobileHelpersTest(unittest.TestCase):
             mac_actions.resolve_android_package("com.example.app"), "com.example.app"
         )
 
+    def test_adb_input_text_keeps_letters_and_escapes_shell_chars(self):
+        self.assertEqual(mac_actions.adb_input_text("swiggy"), "swiggy")
+        self.assertEqual(mac_actions.adb_input_text("masala dosa"), "masala%sdosa")
+        self.assertEqual(mac_actions.adb_input_text("rock & roll"), "rock%s\\&%sroll")
+        self.assertEqual(mac_actions.adb_input_text("it's"), "it\\'s")
+
+    def test_frontmost_pid_script(self):
+        self.assertEqual(
+            mac_actions.frontmost_pid_script(4242),
+            'tell application "System Events" to set frontmost of '
+            "(first process whose unix id is 4242) to true",
+        )
+
+    def test_click_uses_each_displays_own_geometry(self):
+        desk = mac_actions.MacDesktop()
+        desk._geometry = {1: (0.0, 0.0, 1.0), 2: (1710.0, 0.0, 1.25)}
+        self.assertEqual(desk.to_global_point(100, 200, 2), (1835.0, 250.0))
+        # Follow-up calls without a display stay on display 2.
+        self.assertEqual(desk.to_global_point(0, 0), (1710.0, 0.0))
+        self.assertEqual(desk.to_global_point(100, 200, 1), (100.0, 200.0))
+        with self.assertRaises(ValueError):
+            desk.to_global_point(1, 1, 3)
+
     def test_map_screenshot_point_multi_display(self):
         # Main display at (0, 0)
         self.assertEqual(

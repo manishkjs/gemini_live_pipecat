@@ -16,11 +16,11 @@ import os
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from google.genai.types import FunctionResponse, FunctionResponseScheduling, HttpOptions
+from google.genai.types import HttpOptions
 from loguru import logger
 
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -42,9 +42,11 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+from pipecat.services.google.gemini_live.llm import (
+    ContextWindowCompressionParams,
+    GeminiLiveLLMService,
+)
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
 import mac_actions
 
@@ -223,16 +225,17 @@ class JarvisControl:
     def set_paused(self, paused: bool) -> bool:
         self.paused = bool(paused)
         if self.paused and self._loop and self._task:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._task.queue_frames([InterruptionFrame()]))
+            # Thread-safe and keeps a reference, unlike a bare create_task.
+            asyncio.run_coroutine_threadsafe(
+                self._task.queue_frames([InterruptionFrame()]), self._loop
             )
         return self.paused
 
     def stop(self) -> None:
+        # PipelineTask.cancel is a coroutine: scheduling it with
+        # call_soon_threadsafe would create it without ever awaiting it.
         if self._loop and self._task and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._task.cancel())
-            )
+            asyncio.run_coroutine_threadsafe(self._task.cancel(), self._loop)
 
 
 class _SpeakerEchoGuard(FrameProcessor):
@@ -315,9 +318,9 @@ class _OutputUiTap(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if self._control is not None and self._control.paused:
-            if isinstance(frame, OutputAudioRawFrame):
-                return
+        paused = self._control is not None and self._control.paused
+        if paused and isinstance(frame, OutputAudioRawFrame):
+            return
 
         if self._echo_state is not None:
             if isinstance(frame, (TTSStartedFrame, OutputAudioRawFrame)):
@@ -329,8 +332,14 @@ class _OutputUiTap(FrameProcessor):
             elif isinstance(frame, InterruptionFrame):
                 self._echo_state.on_interrupted()
 
+        if not paused:
+            self._mirror_to_ui(frame, direction)
+        await self.push_frame(frame, direction)
+
+    def _mirror_to_ui(self, frame: Frame, direction: FrameDirection) -> None:
         # GeminiLiveLLMService emits both LLMTextFrame and TTSTextFrame for every
-        # spoken chunk; tap only TTSTextFrame so words aren't duplicated.
+        # spoken chunk; tap only TTSTextFrame so words aren't duplicated. Not
+        # called while paused, so the pill keeps showing "Paused".
         if isinstance(frame, TTSTextFrame):
             self._ui.emit({"type": "bot_text", "text": frame.text})
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -339,7 +348,6 @@ class _OutputUiTap(FrameProcessor):
             self._ui.emit({"type": "state", "state": "idle"})
         elif isinstance(frame, FunctionCallInProgressFrame) and direction == FrameDirection.DOWNSTREAM:
             self._ui.emit({"type": "state", "state": "acting"})
-        await self.push_frame(frame, direction)
 
 
 class JarvisTools:
@@ -479,12 +487,17 @@ class JarvisTools:
         )
 
     async def scroll(self, params: FunctionCallParams) -> None:
-        """Scrolls under the pointer."""
-        amount = int(params.arguments.get("amount", -5))
+        """Scrolls at (x, y) if given, otherwise under the pointer."""
+        args = params.arguments or {}
+        amount = int(args.get("amount", -5))
+        x_coord = float(args["x"]) if args.get("x") is not None else None
+        y_coord = float(args["y"]) if args.get("y") is not None else None
+        raw_display = args.get("display")
+        display = int(raw_display) if raw_display is not None else None
         await self._act(
             params,
             "Scroll",
-            lambda: self._desktop.scroll(amount),
+            lambda: self._desktop.scroll(amount, x_coord, y_coord, display),
             mac_actions.RiskVerdict(False),
         )
 
@@ -522,6 +535,7 @@ class JarvisTools:
                 return
 
             def _send_chat() -> None:
+                self._desktop.focus_meet_window()
                 self._desktop.press_keys(mac_actions.MEET_SHORTCUTS["open_chat"])
                 time.sleep(0.4)
                 self._desktop.type_text(message, press_enter=True)
@@ -547,10 +561,14 @@ class JarvisTools:
             if action_name == "leave"
             else mac_actions.RiskVerdict(False)
         )
+        def _press_in_meet() -> None:
+            self._desktop.focus_meet_window()
+            self._desktop.press_keys(shortcut)
+
         await self._act(
             params,
             f"Meet: {action_name}",
-            lambda: self._desktop.press_keys(shortcut),
+            _press_in_meet,
             verdict,
         )
 
@@ -694,9 +712,17 @@ class JarvisTools:
             ),
             make_tool(
                 "scroll",
-                "Scroll under the pointer. Negative scrolls down.",
+                "Scroll. Negative scrolls down. Pass x,y (screenshot pixels) to scroll a specific pane.",
                 self.scroll,
-                {"amount": {"type": "integer"}},
+                {
+                    "amount": {"type": "integer"},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "display": {
+                        "type": "integer",
+                        "description": "Optional 1-based display index for x,y.",
+                    },
+                },
             ),
             make_tool(
                 "meet_join",
@@ -785,50 +811,16 @@ def _resolve_transport_audio_indices() -> tuple[int | None, int | None]:
     return input_idx, output_idx
 
 
-class _NonBlockingGeminiLiveLLMService(GeminiLiveLLMService):
-    """Enables NON_BLOCKING tool declarations and WHEN_IDLE scheduling on Gemini 3.8+.
-
-    Pipecat 1.2.1 disables `_supports_non_blocking_tools` whenever `"gemini-3"`
-    is in the model name (`llm.py` L378-L384) and places `"scheduling"` inside
-    `response` instead of the top-level `FunctionResponse.scheduling` field.
-    `gemini-3.8-live` natively supports both `behavior="NON_BLOCKING"` and
-    `FunctionResponseScheduling.WHEN_IDLE`, allowing Jarvis to keep speaking
-    smoothly while tools execute in the background.
-    """
-
-    @property
-    def _supports_non_blocking_tools(self) -> bool:
-        return True
-
-    async def _tool_result(
-        self, tool_call_id: str, tool_name: str, tool_result_message: dict[str, Any]
-    ):
-        if self._disconnecting or not self._session:
-            return
-        logger.debug(
-            "Sending non-blocking tool result for tool_call_id={}, payload={}",
-            tool_call_id,
-            tool_result_message,
-        )
-        scheduling = (
-            FunctionResponseScheduling.WHEN_IDLE
-            if self._function_is_async(tool_name)
-            else None
-        )
-        response = FunctionResponse(
-            name=tool_name,
-            id=tool_call_id,
-            response=tool_result_message,
-            scheduling=scheduling,
-        )
-        try:
-            await self._session.send_tool_response(function_responses=response)
-        except Exception as exc:
-            await self._handle_send_error(exc)
-
-
 async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None:
-    """Builds and runs the pipeline until cancelled."""
+    """Builds and runs the pipeline until cancelled.
+
+    Pipecat >= 1.16 declares tools registered with cancel_on_interruption=False
+    as NON_BLOCKING on Gemini 3.8+ and sends WHEN_IDLE scheduling with their
+    results, so no GeminiLiveLLMService subclass is needed.
+    """
+    # Imported here so the unit tests can import this module without PyAudio.
+    from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+
     control = control or JarvisControl()
     model = os.getenv("JARVIS_MODEL", DEFAULT_MODEL)
     logger.info("Starting Jarvis on {} (AI Studio, non-blocking tools)", model)
@@ -856,12 +848,15 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     tools = JarvisTools(mac_actions.MacDesktop(), feeder, ui)
     definitions = tools.definitions()
 
-    llm = _NonBlockingGeminiLiveLLMService(
+    llm = GeminiLiveLLMService(
         api_key=_resolve_api_key(),
         settings=GeminiLiveLLMService.Settings(
             model=f"models/{model}",
             system_instruction=SYSTEM_INSTRUCTION,
             voice=os.getenv("JARVIS_VOICE", DEFAULT_VOICE),
+            # Screenshots + audio hit the ~2 min audio/video session cap without
+            # a sliding window; Pipecat already reconnects with resumption handles.
+            context_window_compression=ContextWindowCompressionParams(enabled=True),
         ),
         tools=ToolsSchema(standard_tools=[schema for schema, _ in definitions]),
         http_options=HttpOptions(api_version="v1alpha"),

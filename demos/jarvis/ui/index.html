@@ -155,10 +155,18 @@
     pauseBtn.title = isPaused ? "Resume Jarvis" : "Pause Jarvis";
     setState(isPaused ? "paused" : "idle");
   }
+  function setCompact(compact) {
+    window.pywebview && window.pywebview.api.set_compact && window.pywebview.api.set_compact(compact);
+  }
   function expand() {
+    if (!island.classList.contains("expanded")) setCompact(false);
     island.classList.add("expanded");
     clearTimeout(collapseTimer);
-    collapseTimer = setTimeout(() => { if (!gateOpen) island.classList.remove("expanded"); }, 7000);
+    collapseTimer = setTimeout(() => {
+      if (gateOpen) return;
+      island.classList.remove("expanded");
+      setTimeout(() => { if (!gateOpen && !island.classList.contains("expanded")) setCompact(true); }, 460);
+    }, 7000);
   }
   function say(speaker, chunk) {
     if (speaker !== who) { who = speaker; text = ""; }
@@ -181,6 +189,7 @@
           statusEl.textContent = ev.label; expand(); break;
         case "gate":
           gateOpen = true;
+          setCompact(false);
           document.getElementById("gateLabel").textContent = ev.label;
           document.getElementById("gateReason").textContent = ev.reason;
           island.classList.add("gate"); statusEl.textContent = "Waiting for approval";
