@@ -267,3 +267,14 @@ class ClickTextScoringTest(unittest.TestCase):
         self.assertEqual(s("Docs home", "Running test find_ui_elements on docs", "AXButton"), 0.0)
         self.assertGreater(s("rust infrastructure", "Why AI Infrastructure Is Moving to Rust", "AXLink"), 0)
         self.assertEqual(s("", "anything", "AXButton"), 0.0)
+
+
+class ScrollStepsTest(unittest.TestCase):
+
+    def test_notches_and_pixels(self):
+        self.assertEqual(sum(mac_actions.scroll_steps(-5)), -500)
+        self.assertEqual(sum(mac_actions.scroll_steps(-500)), -500)
+        self.assertEqual(sum(mac_actions.scroll_steps(3)), 300)
+        self.assertTrue(all(abs(s) <= 60 for s in mac_actions.scroll_steps(-800)))
+        self.assertEqual(sum(mac_actions.scroll_steps(-100000)), -6000)
+        self.assertEqual(mac_actions.scroll_steps(0), [])

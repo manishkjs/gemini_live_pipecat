@@ -913,7 +913,7 @@ class JarvisTools:
             ),
             make_tool(
                 "scroll",
-                "Scroll. Negative scrolls down. Pass x,y (screenshot pixels) to scroll a specific pane.",
+                "Scroll the page. amount: negative = down; -5 is about half a screen (wheel notches), values above 50 are pixels. Defaults to the front window; pass x,y to scroll a specific pane.",
                 self.scroll,
                 {
                     "amount": {"type": "integer"},

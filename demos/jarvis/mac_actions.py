@@ -282,6 +282,25 @@ def chrome_open_command(url: str) -> list[str]:
     return ["open", "-a", "Google Chrome", url]
 
 
+def scroll_steps(amount: int, step_px: int = 60) -> list[int]:
+    """Splits a scroll request into small pixel deltas (negative = down).
+
+    |amount| <= 50 is wheel notches (~100 px each); larger is pixels. Capped
+    at 6000 px per call.
+    """
+    amount = int(amount)
+    if amount == 0:
+        return []
+    pixels = amount * 100 if abs(amount) <= 50 else amount
+    pixels = max(-6000, min(6000, pixels))
+    sign = 1 if pixels > 0 else -1
+    full, rest = divmod(abs(pixels), step_px)
+    steps = [sign * step_px] * full
+    if rest:
+        steps.append(sign * rest)
+    return steps
+
+
 def drawio_url() -> str:
     """Returns the draw.io URL that skips the startup storage dialog."""
     return "https://app.diagrams.net/?splash=0"
@@ -1220,18 +1239,48 @@ class MacDesktop:
     ) -> None:
         """Scrolls; negative scrolls down.
 
-        With x/y (screenshot pixels), the pointer moves there first so the
-        right pane scrolls instead of whatever the cursor last rested on.
+        `amount` up to 50 is mouse-wheel notches; larger values are pixels
+        (models often pass -500). The scroll goes to the window under the
+        pointer, so the pointer is moved to (x, y) if given, otherwise to the
+        centre of the frontmost window. The distance is sent as a stream of
+        small pixel events, like a trackpad, because one huge wheel event is
+        clamped or ignored by Chrome.
         """
         import Quartz
 
         if x is not None and y is not None:
             self._move_pointer(*self.to_global_point(x, y, display))
-            time.sleep(0.05)
-        event = Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine, 1, int(amount)
-        )
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        else:
+            centre = self.front_window_centre()
+            if centre is not None:
+                self._move_pointer(*centre)
+        time.sleep(0.08)
+        for step in scroll_steps(amount):
+            event = Quartz.CGEventCreateScrollWheelEvent(
+                None, Quartz.kCGScrollEventUnitPixel, 1, step
+            )
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+            time.sleep(0.012)
+
+    def front_window_centre(self) -> tuple[float, float] | None:
+        """Centre (global points) of the frontmost app's top window, if any."""
+        import AppKit
+        import Quartz
+
+        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return None
+        pid = app.processIdentifier()
+        for w in Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        ) or []:
+            if w.get("kCGWindowOwnerPID") != pid or w.get("kCGWindowLayer", 0) != 0:
+                continue
+            b = w.get("kCGWindowBounds") or {}
+            if b.get("Width", 0) >= 200 and b.get("Height", 0) >= 200:
+                return b["X"] + b["Width"] / 2, b["Y"] + b["Height"] * 0.55
+        return None
 
     # -- optional Android / ADB mobile device -------------------------------
 
