@@ -218,6 +218,30 @@ def list_audio_devices() -> list[dict[str, Any]]:
         pa.terminate()
 
 
+@dataclasses.dataclass(frozen=True)
+class DisplayInfo:
+    """Geometry for a macOS display (Quartz points and 1-based screencapture index)."""
+
+    index: int
+    display_id: int
+    is_main: bool
+    origin_x: float
+    origin_y: float
+    width: float
+    height: float
+
+
+def map_screenshot_point(
+    x: float,
+    y: float,
+    origin_x: float,
+    origin_y: float,
+    points_per_pixel: float,
+) -> tuple[float, float]:
+    """Maps screenshot pixel coordinates back to global Quartz screen points."""
+    return origin_x + x * points_per_pixel, origin_y + y * points_per_pixel
+
+
 @dataclasses.dataclass
 class Screenshot:
     """A downscaled screenshot plus what is needed to map clicks back."""
@@ -225,42 +249,115 @@ class Screenshot:
     rgb_bytes: bytes
     size: tuple[int, int]
     points_per_pixel: float  # screen points per screenshot pixel
+    display: int = 1
+    display_count: int = 1
 
 
 class MacDesktop:
     """Eyes and hands on the local macOS desktop (plus optional ADB mobile device)."""
 
-    def __init__(self, max_width: int = 1280):
+    def __init__(self, max_width: int = 1536):
         self._max_width = max_width
         self._points_per_pixel = 1.0
+        self._active_display = 1
+        self._origin_x = 0.0
+        self._origin_y = 0.0
 
     # -- eyes ---------------------------------------------------------------
 
-    def screenshot(self) -> Screenshot:
-        """Captures and downscales the main display."""
-        from PIL import Image  # Imported lazily so tests don't need Pillow.
+    def list_displays(self) -> list[DisplayInfo]:
+        """Returns active macOS displays ordered by 1-based `screencapture -D` index."""
         import Quartz
 
+        err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
+        if err != 0 or not count:
+            main_id = Quartz.CGMainDisplayID()
+            bounds = Quartz.CGDisplayBounds(main_id)
+            return [
+                DisplayInfo(
+                    index=1,
+                    display_id=int(main_id),
+                    is_main=True,
+                    origin_x=float(bounds.origin.x),
+                    origin_y=float(bounds.origin.y),
+                    width=float(bounds.size.width),
+                    height=float(bounds.size.height),
+                )
+            ]
+
+        main_id = Quartz.CGMainDisplayID()
+        displays: list[DisplayInfo] = []
+        for idx, display_id in enumerate(ids[:count], start=1):
+            bounds = Quartz.CGDisplayBounds(display_id)
+            displays.append(
+                DisplayInfo(
+                    index=idx,
+                    display_id=int(display_id),
+                    is_main=(display_id == main_id),
+                    origin_x=float(bounds.origin.x),
+                    origin_y=float(bounds.origin.y),
+                    width=float(bounds.size.width),
+                    height=float(bounds.size.height),
+                )
+            )
+        return displays
+
+    def _resolve_display(self, display: int | None) -> tuple[DisplayInfo, int]:
+        displays = self.list_displays()
+        target_index = self._active_display if display is None else int(display)
+        if target_index < 1 or target_index > len(displays):
+            raise ValueError(
+                f"Display {target_index} not found (connected displays: 1..{len(displays)})"
+            )
+        return displays[target_index - 1], len(displays)
+
+    def screenshot(self, display: int | None = None) -> Screenshot:
+        """Captures and downscales the requested (or currently active) display."""
+        from PIL import Image  # Imported lazily so tests don't need Pillow.
+
+        info, display_count = self._resolve_display(display)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "screen.png"
-            subprocess.run(["screencapture", "-x", "-C", str(path)], check=True)
+            subprocess.run(
+                ["screencapture", "-x", "-C", "-D", str(info.index), str(path)],
+                check=True,
+            )
             image = Image.open(path).convert("RGB")
             image.load()
 
-        screen_points_w = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID()).size.width
         if image.width > self._max_width:
             ratio = self._max_width / image.width
             image = image.resize((self._max_width, int(image.height * ratio)))
-        self._points_per_pixel = screen_points_w / image.width
-        return Screenshot(image.tobytes(), image.size, self._points_per_pixel)
+        self._active_display = info.index
+        self._origin_x = info.origin_x
+        self._origin_y = info.origin_y
+        self._points_per_pixel = info.width / image.width
+        return Screenshot(
+            image.tobytes(),
+            image.size,
+            self._points_per_pixel,
+            display=info.index,
+            display_count=display_count,
+        )
 
     # -- hands --------------------------------------------------------------
 
-    def click(self, x: float, y: float, double: bool = False) -> tuple[float, float]:
+    def click(
+        self,
+        x: float,
+        y: float,
+        double: bool = False,
+        display: int | None = None,
+    ) -> tuple[float, float]:
         """Clicks at (x, y) given in the last screenshot's pixel coordinates."""
         import Quartz
 
-        px, py = x * self._points_per_pixel, y * self._points_per_pixel
+        if display is not None and int(display) != self._active_display:
+            self.screenshot(int(display))
+
+        px, py = map_screenshot_point(
+            x, y, self._origin_x, self._origin_y, self._points_per_pixel
+        )
         point = Quartz.CGPointMake(px, py)
         clicks = 2 if double else 1
         Quartz.CGEventPost(
@@ -269,6 +366,7 @@ class MacDesktop:
                 None, Quartz.kCGEventMouseMoved, point, Quartz.kCGMouseButtonLeft
             ),
         )
+        time.sleep(0.05)
         for click_index in range(1, clicks + 1):
             for event_type in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
                 event = Quartz.CGEventCreateMouseEvent(
@@ -278,7 +376,9 @@ class MacDesktop:
                     event, Quartz.kCGMouseEventClickState, click_index
                 )
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
-                time.sleep(0.03)
+                time.sleep(0.04)
+            if double and click_index == 1:
+                time.sleep(0.05)
         return px, py
 
     def copy_to_clipboard(self, text: str) -> None:

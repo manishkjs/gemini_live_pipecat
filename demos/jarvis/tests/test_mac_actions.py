@@ -130,6 +130,23 @@ class MeetAndMobileHelpersTest(unittest.TestCase):
             mac_actions.resolve_android_package("com.example.app"), "com.example.app"
         )
 
+    def test_map_screenshot_point_multi_display(self):
+        # Main display at (0, 0)
+        self.assertEqual(
+            mac_actions.map_screenshot_point(100, 200, 0.0, 0.0, 1.5),
+            (150.0, 300.0),
+        )
+        # Secondary display positioned to the right at (1710, 0)
+        self.assertEqual(
+            mac_actions.map_screenshot_point(100, 200, 1710.0, 0.0, 1.25),
+            (1835.0, 250.0),
+        )
+        # Secondary display positioned to the left at (-1920, 0)
+        self.assertEqual(
+            mac_actions.map_screenshot_point(100, 200, -1920.0, 0.0, 1.0),
+            (-1820.0, 200.0),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

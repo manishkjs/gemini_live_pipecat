@@ -20,7 +20,7 @@
 
   /* The island ------------------------------------------------------------ */
   .island {
-    position: relative; width: 300px; height: 44px; border-radius: 22px;
+    position: relative; width: 344px; height: 44px; border-radius: 22px;
     background: var(--bg); backdrop-filter: blur(24px) saturate(160%);
     -webkit-backdrop-filter: blur(24px) saturate(160%);
     border: 1px solid var(--line);
@@ -68,6 +68,20 @@
   .wave i:nth-child(2){animation-delay:.1s}.wave i:nth-child(3){animation-delay:.2s}
   .wave i:nth-child(4){animation-delay:.3s}.wave i:nth-child(5){animation-delay:.15s}
   @keyframes bar { 0%,100%{height:4px} 50%{height:16px} }
+  .paused .wave i { animation: none; height: 3px; opacity: .35; }
+  .paused .orb .core { filter: grayscale(.6) brightness(.8); box-shadow: 0 0 6px var(--muted); }
+
+  .ctrls { display: flex; align-items: center; gap: 5px; margin-left: 2px; }
+  .ctrl {
+    width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.08); color: var(--text);
+    border: 1px solid var(--line); font-size: 11px; line-height: 1;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .ctrl:hover { background: rgba(255,255,255,.16); }
+  .paused .ctrl.pause { background: rgba(52,168,83,.22); border-color: rgba(52,168,83,.45); color: #81c995; }
+  .ctrl.stop:hover { background: rgba(234,67,53,.28); border-color: rgba(234,67,53,.55); color: #f28b82; }
 
   /* Body ------------------------------------------------------------------ */
   .body { padding: 2px 18px 12px 46px; opacity: 0; transition: opacity .25s .1s; }
@@ -99,6 +113,10 @@
       <span class="title">Jarvis</span>
       <span id="status" class="status">Starting…</span>
       <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="ctrls" onmousedown="event.stopPropagation()">
+        <button id="pauseBtn" class="ctrl pause" title="Pause / Resume Jarvis" onclick="togglePause()">⏸</button>
+        <button id="stopBtn" class="ctrl stop" title="Stop Jarvis" onclick="stopJarvis()">■</button>
+      </div>
     </div>
     <div class="body">
       <div id="line" class="line"></div>
@@ -118,16 +136,24 @@
   const statusEl = document.getElementById("status");
   const lineEl = document.getElementById("line");
   const chipEl = document.getElementById("chip");
-  const STATE_TEXT = { idle: "At your service", listening: "Listening…", speaking: "Speaking", acting: "Working on it…" };
-  const ACCENT = { idle: "#4285f4", listening: "#34a853", speaking: "#4285f4", acting: "#fbbc04" };
-  let state = "idle", who = "", text = "", collapseTimer = null, gateOpen = false;
+  const STATE_TEXT = { idle: "At your service", listening: "Listening…", speaking: "Speaking", acting: "Working on it…", paused: "Paused" };
+  const ACCENT = { idle: "#4285f4", listening: "#34a853", speaking: "#4285f4", acting: "#fbbc04", paused: "#8e8e98" };
+  const pauseBtn = document.getElementById("pauseBtn");
+  let state = "idle", who = "", text = "", collapseTimer = null, gateOpen = false, isPaused = false;
 
   function setState(s) {
     state = s;
-    island.classList.remove("idle", "listening", "speaking", "acting");
+    if (isPaused) s = "paused";
+    island.classList.remove("idle", "listening", "speaking", "acting", "paused");
     island.classList.add(s);
     document.documentElement.style.setProperty("--accent", gateOpen ? "#ea4335" : ACCENT[s]);
     if (!gateOpen) statusEl.textContent = STATE_TEXT[s] || s;
+  }
+  function setPaused(paused) {
+    isPaused = !!paused;
+    pauseBtn.textContent = isPaused ? "▶" : "⏸";
+    pauseBtn.title = isPaused ? "Resume Jarvis" : "Pause Jarvis";
+    setState(isPaused ? "paused" : "idle");
   }
   function expand() {
     island.classList.add("expanded");
@@ -147,6 +173,7 @@
     update(ev) {
       switch (ev.type) {
         case "state": setState(ev.state); break;
+        case "paused": setPaused(ev.paused); break;
         case "user_text": say("you", ev.text); break;
         case "bot_text": say("jarvis", ev.text); break;
         case "action":
@@ -169,6 +196,12 @@
   function decide(ok) {
     if (!gateOpen) return;
     window.pywebview && window.pywebview.api.decide(ok);
+  }
+  function togglePause() {
+    window.pywebview && window.pywebview.api.toggle_pause();
+  }
+  function stopJarvis() {
+    window.pywebview && window.pywebview.api.stop();
   }
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter") decide(true);

@@ -32,6 +32,7 @@ class WebviewBridge:
 
     def __init__(self) -> None:
         self.window: Any = None
+        self.control = bot.JarvisControl()
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: asyncio.Future[bool] | None = None
@@ -49,6 +50,24 @@ class WebviewBridge:
         loop, pending = self._loop, self._pending
         if loop and pending and not pending.done():
             loop.call_soon_threadsafe(pending.set_result, bool(approved))
+
+    def toggle_pause(self) -> bool:
+        """Toggles Jarvis mic/speech pause state, exposed to JavaScript."""
+        paused = self.control.set_paused(not self.control.paused)
+        self.emit({"type": "paused", "paused": paused})
+        logger.info("Jarvis {}", "paused" if paused else "resumed")
+        return paused
+
+    def stop(self) -> None:
+        """Stops the pipeline and closes the floating Jarvis window."""
+        logger.info("Stopping Jarvis from UI")
+        self.control.stop()
+        window = self.window
+        if window:
+            try:
+                window.destroy()
+            except Exception:
+                logger.opt(exception=True).debug("Failed to destroy Jarvis window")
 
     # -- called by the pipeline (UiBridge protocol) -------------------------
 
@@ -81,7 +100,7 @@ class WebviewBridge:
 
 
 class _JsApi:
-    """Exposes only `decide` to JavaScript so pywebview skips the window ref."""
+    """Exposes UI control methods to JavaScript so pywebview skips the window ref."""
 
     def __init__(self, bridge: WebviewBridge) -> None:
         self._bridge = bridge
@@ -89,11 +108,17 @@ class _JsApi:
     def decide(self, approved: bool) -> None:
         self._bridge.decide(approved)
 
+    def toggle_pause(self) -> bool:
+        return self._bridge.toggle_pause()
+
+    def stop(self) -> None:
+        self._bridge.stop()
+
 
 def _run_pipeline(bridge: WebviewBridge) -> None:
     bridge._ready.wait(timeout=10)
     try:
-        asyncio.run(bot.run_jarvis(bridge))
+        asyncio.run(bot.run_jarvis(bridge, bridge.control))
     except Exception as exc:
         logger.exception("Jarvis pipeline stopped")
         bridge.emit({"type": "error", "text": f"Stopped: {exc}"})

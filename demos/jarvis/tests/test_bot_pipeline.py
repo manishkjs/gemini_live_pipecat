@@ -16,6 +16,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStoppedSpeakingFrame,
     InputAudioRawFrame,
     LLMTextFrame,
+    OutputAudioRawFrame,
     TTSTextFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
@@ -152,6 +153,39 @@ class OutputUiTapTest(unittest.IsolatedAsyncioTestCase):
                 {"type": "state", "state": "idle"},
             ],
         )
+
+    async def test_pause_mutes_mic_and_suppresses_output_audio(self):
+        control = bot.JarvisControl()
+        state = bot._EchoGuardState(enabled=False)
+        guard = bot._SpeakerEchoGuard(state, control)
+        tap = bot._OutputUiTap(_FakeUi(), state, control)
+
+        in_pushed: list[Any] = []
+        out_pushed: list[Any] = []
+
+        async def capture_in(frame, direction):
+            in_pushed.append(frame)
+
+        async def capture_out(frame, direction):
+            out_pushed.append(frame)
+
+        guard.push_frame = capture_in  # type: ignore[method-assign]
+        tap.push_frame = capture_out  # type: ignore[method-assign]
+
+        mic_frame = InputAudioRawFrame(audio=b"\x11\x22" * 80, sample_rate=16000, num_channels=1)
+        spk_frame = OutputAudioRawFrame(audio=b"\x33\x44" * 80, sample_rate=24000, num_channels=1)
+
+        control.set_paused(True)
+        await guard.process_frame(mic_frame, FrameDirection.DOWNSTREAM)
+        await tap.process_frame(spk_frame, FrameDirection.DOWNSTREAM)
+        self.assertEqual(in_pushed[-1].audio, b"\x00" * len(mic_frame.audio))
+        self.assertEqual(out_pushed, [])
+
+        control.set_paused(False)
+        await guard.process_frame(mic_frame, FrameDirection.DOWNSTREAM)
+        await tap.process_frame(spk_frame, FrameDirection.DOWNSTREAM)
+        self.assertEqual(in_pushed[-1].audio, mic_frame.audio)
+        self.assertEqual(len(out_pushed), 1)
 
 
 if __name__ == "__main__":

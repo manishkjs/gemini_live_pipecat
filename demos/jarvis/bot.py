@@ -76,6 +76,11 @@ How you work:
   result arrives.
 - Prefer open_app, open_url, meet_join, meet_action, open_drawio and press_keys
   over raw coordinate clicking whenever they do the job.
+- Multi-monitor: You can see all connected displays. Call look_at_screen(display=2)
+  to inspect a second screen (or display=1 for the main screen). Once you switch
+  displays, follow-up screenshots and clicks stay on that display until switched.
+- Clicking: Aim for the center of the target text or button. If a click misses
+  or selects the wrong row, inspect the follow-up screenshot and adjust x/y.
 - Before clicking for the first time in a turn, call look_at_screen only if you
   have not received a screenshot yet. Coordinates are pixels in the latest screenshot.
 - Every action tool (click, type_text, press_keys, open_app, open_url, scroll,
@@ -203,12 +208,43 @@ class _EchoGuardState:
         return self._bot_speaking or (self._clock() < self._mute_until)
 
 
-class _SpeakerEchoGuard(FrameProcessor):
-    """Replaces mic frames with silence while Jarvis is speaking out of open speakers."""
+class JarvisControl:
+    """Thread-safe pause/resume and stop controls shared with the floating UI."""
 
-    def __init__(self, state: _EchoGuardState, **kwargs):
+    def __init__(self) -> None:
+        self.paused = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: PipelineTask | None = None
+
+    def bind(self, loop: asyncio.AbstractEventLoop, task: PipelineTask) -> None:
+        self._loop = loop
+        self._task = task
+
+    def set_paused(self, paused: bool) -> bool:
+        self.paused = bool(paused)
+        if self.paused and self._loop and self._task:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._task.queue_frames([InterruptionFrame()]))
+            )
+        return self.paused
+
+    def stop(self) -> None:
+        if self._loop and self._task:
+            self._loop.call_soon_threadsafe(self._task.cancel)
+
+
+class _SpeakerEchoGuard(FrameProcessor):
+    """Replaces mic frames with silence while Jarvis is speaking or paused."""
+
+    def __init__(
+        self,
+        state: _EchoGuardState,
+        control: JarvisControl | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._state = state
+        self._control = control
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -218,7 +254,10 @@ class _SpeakerEchoGuard(FrameProcessor):
             self._state.on_bot_stopped()
         elif isinstance(frame, InterruptionFrame):
             self._state.on_interrupted()
-        elif isinstance(frame, InputAudioRawFrame) and self._state.should_mute_mic():
+        elif isinstance(frame, InputAudioRawFrame) and (
+            (self._control is not None and self._control.paused)
+            or self._state.should_mute_mic()
+        ):
             frame = InputAudioRawFrame(
                 audio=b"\x00" * len(frame.audio),
                 sample_rate=frame.sample_rate,
@@ -260,13 +299,24 @@ class _InputUiTap(FrameProcessor):
 class _OutputUiTap(FrameProcessor):
     """Mirrors assistant speech/tool events (after the LLM) to the UI and echo guard."""
 
-    def __init__(self, ui: UiBridge, echo_state: _EchoGuardState | None = None, **kwargs):
+    def __init__(
+        self,
+        ui: UiBridge,
+        echo_state: _EchoGuardState | None = None,
+        control: JarvisControl | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._ui = ui
         self._echo_state = echo_state
+        self._control = control
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if self._control is not None and self._control.paused:
+            if isinstance(frame, OutputAudioRawFrame):
+                return
+
         if self._echo_state is not None:
             if isinstance(frame, (TTSStartedFrame, OutputAudioRawFrame)):
                 self._echo_state.on_pre_speech()
@@ -302,10 +352,14 @@ class JarvisTools:
         self._feeder = feeder
         self._ui = ui
 
-    async def _look(self) -> dict[str, Any]:
-        shot = await asyncio.to_thread(self._desktop.screenshot)
+    async def _look(self, display: int | None = None) -> dict[str, Any]:
+        shot = await asyncio.to_thread(self._desktop.screenshot, display)
         await self._feeder.send_screenshot(shot)
-        return {"screenshot_size": list(shot.size)}
+        return {
+            "screenshot_size": list(shot.size),
+            "display": shot.display,
+            "display_count": shot.display_count,
+        }
 
     async def _act(
         self,
@@ -341,10 +395,28 @@ class JarvisTools:
     # -- desktop handlers ---------------------------------------------------
 
     async def look_at_screen(self, params: FunctionCallParams) -> None:
-        """Captures a fresh screenshot and returns its dimensions."""
-        self._ui.emit({"type": "action", "label": "Looking at the screen"})
+        """Captures a fresh screenshot and returns its dimensions and connected displays."""
+        args = params.arguments or {}
+        raw_display = args.get("display")
+        display = int(raw_display) if raw_display is not None else None
+        label = f"Looking at screen {display}" if display is not None else "Looking at the screen"
+        self._ui.emit({"type": "action", "label": label})
+        try:
+            screen_info = await self._look(display)
+        except Exception as exc:
+            await params.result_callback({"status": "error", "error": str(exc)})
+            return
+        displays = await asyncio.to_thread(self._desktop.list_displays)
+        screen_info["displays"] = [
+            {
+                "display": d.index,
+                "main": d.is_main,
+                "points": [int(d.width), int(d.height)],
+            }
+            for d in displays
+        ]
         await params.result_callback(
-            {"status": "done", "fresh_screenshot_attached": True, **(await self._look())}
+            {"status": "done", "fresh_screenshot_attached": True, **screen_info}
         )
 
     async def click(self, params: FunctionCallParams) -> None:
@@ -353,10 +425,12 @@ class JarvisTools:
         target = args.get("target_description", "")
         x_coord, y_coord = float(args["x"]), float(args["y"])
         is_double = bool(args.get("double", False))
+        raw_display = args.get("display")
+        display = int(raw_display) if raw_display is not None else None
         await self._act(
             params,
             f"Click {target}".strip(),
-            lambda: self._desktop.click(x_coord, y_coord, is_double),
+            lambda: self._desktop.click(x_coord, y_coord, is_double, display=display),
             mac_actions.assess_click(target),
         )
 
@@ -560,8 +634,14 @@ class JarvisTools:
         return [
             make_tool(
                 "look_at_screen",
-                "Take a fresh screenshot of the Mac screen. Only call when no action tool was just used (all action tools already attach a fresh screenshot).",
+                "Take a fresh screenshot of a Mac screen (1 = main display, 2 = second display). Only call when switching displays or when no action tool was just used.",
                 self.look_at_screen,
+                {
+                    "display": {
+                        "type": "integer",
+                        "description": "Optional 1-based display index (1 = main, 2 = second screen). Omit to capture the active display.",
+                    }
+                },
             ),
             make_tool(
                 "click",
@@ -575,6 +655,10 @@ class JarvisTools:
                         "description": "Short label of what is clicked, e.g. 'Deploy button'.",
                     },
                     "double": {"type": "boolean"},
+                    "display": {
+                        "type": "integer",
+                        "description": "Optional 1-based display index if clicking on a specific screen.",
+                    },
                 },
                 ["x", "y", "target_description"],
             ),
@@ -741,8 +825,9 @@ class _NonBlockingGeminiLiveLLMService(GeminiLiveLLMService):
             await self._handle_send_error(exc)
 
 
-async def run_jarvis(ui: UiBridge) -> None:
+async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None:
     """Builds and runs the pipeline until cancelled."""
+    control = control or JarvisControl()
     model = os.getenv("JARVIS_MODEL", DEFAULT_MODEL)
     logger.info("Starting Jarvis on {} (AI Studio, non-blocking tools)", model)
 
@@ -793,17 +878,18 @@ async def run_jarvis(ui: UiBridge) -> None:
     pipeline = Pipeline(
         [
             transport.input(),
-            _SpeakerEchoGuard(echo_state),
+            _SpeakerEchoGuard(echo_state, control),
             user_agg,
             _InputUiTap(ui),
             feeder,
             llm,
-            _OutputUiTap(ui, echo_state),
+            _OutputUiTap(ui, echo_state, control),
             transport.output(),
             assistant_agg,
         ]
     )
     task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True))
+    control.bind(asyncio.get_running_loop(), task)
     ui.emit({"type": "state", "state": "idle"})
     ui.emit({"type": "bot_text", "text": "Jarvis online. At your service."})
     await task.queue_frames([LLMRunFrame()])
