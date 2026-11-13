@@ -50,6 +50,13 @@ def _saved_pill_position() -> tuple[float, float] | None:
     return None
 
 
+def _saved_pinned() -> bool:
+    try:
+        return bool(json.loads(_PILL_STATE.read_text()).get("pinned", False))
+    except Exception:
+        return False
+
+
 def _jarvis_nswindow():
     import AppKit
 
@@ -93,6 +100,8 @@ class WebviewBridge:
         self.window: Any = None
         self.screen_width = 0
         self.placed = False
+        self.pinned = _saved_pinned()
+        self._dragging = False
         self.control = bot.JarvisControl()
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -132,6 +141,55 @@ class WebviewBridge:
         except Exception:
             logger.opt(exception=True).debug("Failed to resize Jarvis window")
 
+    def begin_drag(self, grab_x: float = 0.0, grab_y: float = 0.0) -> None:
+        """Moves the pill with the mouse until the button is released.
+
+        grab_x/grab_y is where inside the pill the user pressed (CSS px =
+        points), so the pill stays under the pointer exactly at that spot.
+        """
+        if self.pinned or self._dragging:
+            return
+        self._dragging = True
+        threading.Thread(
+            target=self._drag_loop, args=(float(grab_x), float(grab_y)),
+            name="jarvis-pill-drag", daemon=True,
+        ).start()
+
+    def _drag_loop(self, grab_x: float, grab_y: float) -> None:
+        import AppKit
+        import Quartz
+        from PyObjCTools import AppHelper
+
+        try:
+            w = _jarvis_nswindow()
+            if w is None:
+                return
+            state = Quartz.kCGEventSourceStateCombinedSessionState
+            last = None
+            while Quartz.CGEventSourceButtonState(state, Quartz.kCGMouseButtonLeft):
+                m = AppKit.NSEvent.mouseLocation()  # Cocoa: y grows upwards
+                height = w.frame().size.height
+                origin = (m.x - grab_x, m.y + grab_y - height)
+                if origin != last:
+                    AppHelper.callAfter(w.setFrameOrigin_, AppKit.NSMakePoint(*origin))
+                    last = origin
+                time.sleep(0.008)
+            time.sleep(0.15)  # Let the last move land before saving.
+            self.placed = True
+            self.remember_position()
+        except Exception:
+            logger.opt(exception=True).debug("Pill drag failed")
+        finally:
+            self._dragging = False
+
+    def toggle_pin(self) -> bool:
+        """Locks/unlocks the pill's position; saved across launches."""
+        self.pinned = not self.pinned
+        self.remember_position()
+        self.emit({"type": "pinned", "pinned": self.pinned})
+        logger.info("Jarvis pill {}", "pinned" if self.pinned else "unpinned")
+        return self.pinned
+
     def remember_position(self, *_args) -> None:
         """Saves the pill's position so Jarvis reopens where the user left it."""
         window = self.window
@@ -148,7 +206,7 @@ class WebviewBridge:
                 if w.get("kCGWindowOwnerPID") == own and b.get("Width", 0) >= 50:
                     _PILL_STATE.parent.mkdir(parents=True, exist_ok=True)
                     _PILL_STATE.write_text(json.dumps(
-                        {"gcx": b["X"] + b["Width"] / 2, "gtop": b["Y"]}
+                        {"gcx": b["X"] + b["Width"] / 2, "gtop": b["Y"], "pinned": self.pinned}
                     ))
                     return
         except Exception:
@@ -215,6 +273,12 @@ class _JsApi:
 
     def set_compact(self, compact: bool) -> None:
         self._bridge.set_compact(compact)
+
+    def begin_drag(self, grab_x: float = 0.0, grab_y: float = 0.0) -> None:
+        self._bridge.begin_drag(grab_x, grab_y)
+
+    def toggle_pin(self) -> bool:
+        return self._bridge.toggle_pin()
 
     def stop(self) -> None:
         self._bridge.stop()
@@ -289,6 +353,7 @@ def main() -> None:
         _set_pill_frame(_COMPACT_WIDTH, _COMPACT_HEIGHT, saved[0], saved[1])
         time.sleep(0.3)
         bridge.placed = True  # From now on, moves are the user dragging the pill.
+        bridge.emit({"type": "pinned", "pinned": bridge.pinned})
 
     window.events.shown += lambda: threading.Thread(target=_place, daemon=True).start()
 

@@ -119,8 +119,10 @@ How you work:
   open_drawio(mermaid_code) once with a Mermaid flowchart ("graph TD" or
   "graph LR"; use [box], [(database)], {decision}, A -->|label| B). It opens
   draw.io in Chrome with the diagram ALREADY DRAWN, boxes and arrows included.
-  Do not open draw.io again or click toolbar shapes to redraw it; just tell
-  the user it is ready. For edits, call open_drawio again with updated code.
+  Do not use open_url for draw.io/excalidraw or click toolbar shapes; just
+  tell the user it is ready. For ANY change ("rename box 1 to Client", "add a
+  database"), call open_drawio again with the FULL updated Mermaid code: it
+  redraws in the same draw.io tab, never a new one. Keep node ids stable.
 - Mobile apps (e.g. Swiggy): If an Android device/emulator is connected, use
   mobile_open_app / mobile_tap / mobile_type / mobile_swipe. If not, open
   iPhone Mirroring or the emulator/browser window and use Mac desktop tools.

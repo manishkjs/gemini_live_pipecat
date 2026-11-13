@@ -1278,24 +1278,31 @@ class MacDesktop:
         return resolved_dir
 
     def open_drawio(self, mermaid_code: str = "", title: str = "Jarvis diagram") -> str:
-        """Opens draw.io in Chrome, with a Mermaid flowchart already drawn.
+        """Shows a Mermaid flowchart as a drawn draw.io diagram in Chrome.
 
-        Returns "drawn" when the flowchart was converted to a native draw.io
-        diagram and opened, "clipboard" when the Mermaid is some other kind
-        (sequence, class, ...) and was only copied, or "empty".
+        Reuses the user's open draw.io tab (redrawing it with the new version)
+        instead of opening a new tab for every change. Returns "drawn",
+        "clipboard" (non-flowchart Mermaid, copied for manual insert) or "empty".
         """
         code = mermaid_code.strip()
+        mode = "empty"
+        url = drawio_url()
         if code:
             try:
                 url = mermaid_to_drawio_url(code, title)
+                mode = "drawn"
             except ValueError:
                 self.copy_to_clipboard(code)
-                self.open_in_chrome(drawio_url())
-                return "clipboard"
+                mode = "clipboard"
+        # A unique query param makes Chrome load the new diagram even when only
+        # the #R hash differs (a hash-only change does not reload draw.io).
+        url = url.replace("?splash=0", f"?splash=0&jv={int(time.time() * 1000)}", 1)
+        tab = self.focus_chrome_tab("app.diagrams.net")
+        if tab:
+            self.set_front_tab_url(url)
+        else:
             self.open_in_chrome(url)
-            return "drawn"
-        self.open_in_chrome(drawio_url())
-        return "empty"
+        return mode
 
     def scroll(
         self,

@@ -80,6 +80,11 @@
     transition: background .15s, border-color .15s, color .15s;
   }
   .ctrl:hover { background: rgba(255,255,255,.16); }
+  .island { cursor: grab; }
+  .island.dragging { cursor: grabbing; }
+  .island.pinned { cursor: default; }
+  .ctrl.pin { opacity: .45; filter: grayscale(1); }
+  .pinned .ctrl.pin { opacity: 1; filter: none; background: rgba(66,133,244,.25); border-color: rgba(66,133,244,.55); }
   .paused .ctrl.pause { background: rgba(52,168,83,.22); border-color: rgba(52,168,83,.45); color: #81c995; }
   .ctrl.stop:hover { background: rgba(234,67,53,.28); border-color: rgba(234,67,53,.55); color: #f28b82; }
 
@@ -107,13 +112,14 @@
 </style>
 </head>
 <body>
-  <div id="island" class="island idle pywebview-drag-region">
+  <div id="island" class="island idle">
     <div class="row">
       <div class="orb"><div class="ring"></div><div class="ring"></div><div class="core"></div></div>
       <span class="title">Jarvis</span>
       <span id="status" class="status">Starting…</span>
       <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="ctrls" onmousedown="event.stopPropagation()">
+        <button id="pinBtn" class="ctrl pin" title="Pin here (lock position) / unpin to drag" onclick="togglePin()">📌</button>
         <button id="pauseBtn" class="ctrl pause" title="Pause / Resume Jarvis" onclick="togglePause()">⏸</button>
         <button id="stopBtn" class="ctrl stop" title="Stop Jarvis" onclick="stopJarvis()">■</button>
       </div>
@@ -182,6 +188,7 @@
       switch (ev.type) {
         case "state": setState(ev.state); break;
         case "paused": setPaused(ev.paused); break;
+        case "pinned": setPinned(ev.pinned); break;
         case "user_text": say("you", ev.text); break;
         case "bot_text": say("jarvis", ev.text); break;
         case "action":
@@ -205,6 +212,18 @@
   function decide(ok) {
     if (!gateOpen) return;
     window.pywebview && window.pywebview.api.decide(ok);
+  }
+  // Drag the pill with the mouse: Python follows the pointer natively while
+  // the button is held, so fast drags and other monitors work.
+  island.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target.closest("button") || island.classList.contains("pinned")) return;
+    island.classList.add("dragging");
+    window.pywebview && window.pywebview.api.begin_drag(e.clientX, e.clientY);
+  });
+  window.addEventListener("mouseup", () => island.classList.remove("dragging"));
+  function setPinned(on) { island.classList.toggle("pinned", !!on); }
+  function togglePin() {
+    window.pywebview && window.pywebview.api.toggle_pin().then(setPinned);
   }
   function togglePause() {
     window.pywebview && window.pywebview.api.toggle_pause();
