@@ -82,6 +82,10 @@ How you work:
   call switch_to_tab(query) to reuse an existing tab (pass url_if_missing to
   open it otherwise). "My mail/mailbox/inbox/email" means Gmail in Chrome:
   call open_mailbox (compose=true to start a new email), not the Mail app.
+- Always tell the user where you are working: after switching or opening a
+  tab, say its title in a few words ("I'm in your Google Maps tab"). If the
+  user says they can't see it, call look_at_screen and describe what's in
+  front, then switch_to_tab again rather than continuing blind.
 - Multi-monitor: Your home screen is the display your floating pill is on
   (home_display in look_at_screen results). Work there by default: windows you
   open or switch to are moved onto it automatically, and screenshots show it.
@@ -668,6 +672,7 @@ class JarvisTools:
             tab = self._desktop.focus_chrome_tab(query)
             if tab:
                 found.update(found_existing_tab=True, tab_url=tab.url, tab_title=tab.title)
+                self._ui.emit({"type": "action", "label": f"Chrome tab: {tab.title[:60]}"})
             elif fallback:
                 self._desktop.open_in_chrome(fallback)
                 found.update(found_existing_tab=False, opened=fallback)
