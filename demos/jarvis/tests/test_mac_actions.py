@@ -197,3 +197,57 @@ class MeetAndMobileHelpersTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DrawioMailChromeTest(unittest.TestCase):
+
+    CODE = """graph TD
+        User[Clients] --> Web[Presentation Layer]
+        Web --> App[Application Layer]
+        App -->|SQL| DB[(Database Layer)]
+        App --> C & D
+    """
+
+    def test_parse_mermaid_flowchart(self):
+        chart = mac_actions.parse_mermaid_flowchart(self.CODE)
+        self.assertEqual(chart.direction, "TD")
+        self.assertEqual(chart.nodes["DB"].label, "Database Layer")
+        self.assertIn("cylinder", chart.nodes["DB"].style)
+        self.assertIn(("App", "DB", "SQL"), chart.edges)
+        self.assertIn(("App", "C", ""), chart.edges)
+        self.assertIn(("App", "D", ""), chart.edges)
+        with self.assertRaises(ValueError):
+            mac_actions.parse_mermaid_flowchart("sequenceDiagram\n A->>B: hi")
+
+    def test_drawio_url_round_trips(self):
+        import base64
+        import urllib.parse
+        import zlib
+
+        url = mac_actions.mermaid_to_drawio_url(self.CODE, "3-tier")
+        self.assertTrue(url.startswith("https://app.diagrams.net/?splash=0#R"))
+        b64 = urllib.parse.unquote(url.split("#R", 1)[1])
+        xml = urllib.parse.unquote(zlib.decompress(base64.b64decode(b64), -15).decode())
+        self.assertIn('value="Presentation Layer"', xml)
+        self.assertEqual(xml.count('edge="1"'), 5)
+
+    def test_gmail_compose_url_keeps_account(self):
+        self.assertEqual(
+            mac_actions.gmail_compose_url("https://mail.google.com/mail/u/2/#inbox"),
+            "https://mail.google.com/mail/u/2/#inbox?compose=new",
+        )
+        url = mac_actions.gmail_compose_url("", to="a@b.com", subject="Hi there")
+        self.assertTrue(url.startswith("https://mail.google.com/mail/u/0/?view=cm"))
+        self.assertIn("su=Hi%20there", url)
+
+    def test_pick_user_chrome_pid_skips_jarvis_and_helpers(self):
+        bin_ = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        lines = [
+            f"97606 {bin_} --user-data-dir=/Users/x/.jarvis-chrome-profile --no-first-run",
+            f"97637 {bin_} Helper --type=renderer",
+            f"2367 {bin_}",
+        ]
+        self.assertEqual(
+            mac_actions.pick_user_chrome_pid(lines, "/Users/x/.jarvis-chrome-profile"), 2367
+        )
+        self.assertIsNone(mac_actions.pick_user_chrome_pid(lines[:2], "/Users/x/.jarvis-chrome-profile"))

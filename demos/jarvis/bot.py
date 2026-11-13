@@ -78,6 +78,10 @@ How you work:
   result arrives.
 - Prefer open_app, open_url, meet_join, meet_action, open_drawio and press_keys
   over raw coordinate clicking whenever they do the job.
+- Browser tabs: the user keeps many tabs open in Chrome. Before opening a site,
+  call switch_to_tab(query) to reuse an existing tab (pass url_if_missing to
+  open it otherwise). "My mail/mailbox/inbox/email" means Gmail in Chrome:
+  call open_mailbox (compose=true to start a new email), not the Mail app.
 - Multi-monitor: You can see all connected displays. Call look_at_screen(display=2)
   to inspect a second screen (or display=1 for the main screen). Once you switch
   displays, follow-up screenshots and clicks stay on that display until switched.
@@ -96,10 +100,12 @@ How you work:
   attached screenshot. Only pass use_jarvis_profile=True when the user asks
   you to join as a separate participant ("Jarvis"); then enter "Jarvis" if
   asked for a name. In a group call, stay quiet unless addressed as "Jarvis".
-- Architecture diagrams: Use open_drawio(mermaid_code) with clean Mermaid
-  syntax. It opens draw.io and copies your Mermaid code to the clipboard.
-  Then click Arrange -> Insert -> Advanced -> Mermaid (or '+' -> Mermaid),
-  press cmd+v, and click Insert.
+- Diagrams: To draw anything in draw.io (architecture, flow, tiers), call
+  open_drawio(mermaid_code) once with a Mermaid flowchart ("graph TD" or
+  "graph LR"; use [box], [(database)], {decision}, A -->|label| B). It opens
+  draw.io in Chrome with the diagram ALREADY DRAWN, boxes and arrows included.
+  Do not open draw.io again or click toolbar shapes to redraw it; just tell
+  the user it is ready. For edits, call open_drawio again with updated code.
 - Mobile apps (e.g. Swiggy): If an Android device/emulator is connected, use
   mobile_open_app / mobile_tap / mobile_type / mobile_swipe. If not, open
   iPhone Mirroring or the emulator/browser window and use Mac desktop tools.
@@ -382,7 +388,7 @@ class JarvisTools:
         label: str,
         action: Callable[[], Any],
         verdict: mac_actions.RiskVerdict,
-        extra: dict[str, Any] | None = None,
+        extra: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._ui.emit({"type": "action", "label": label})
         if verdict.risky:
@@ -403,6 +409,8 @@ class JarvisTools:
         await asyncio.sleep(self._SETTLE_SECONDS)
         screen = await self._look()
         payload = {"status": "done", "action": label, "fresh_screenshot_attached": True, **screen}
+        if callable(extra):
+            extra = extra()
         if extra:
             payload.update(extra)
         await params.result_callback(payload)
@@ -590,21 +598,96 @@ class JarvisTools:
             verdict,
         )
 
-    async def open_drawio(self, params: FunctionCallParams) -> None:
-        """Opens draw.io and optionally copies Mermaid diagram code to clipboard."""
-        mermaid_code = params.arguments.get("mermaid_code", "")
-        copied = bool(mermaid_code.strip())
-        next_step = (
-            "Click Arrange -> Insert -> Advanced -> Mermaid, paste (cmd+v), then Insert."
-            if copied
-            else "Draw.io is open."
+    async def switch_to_tab(self, params: FunctionCallParams) -> None:
+        """Finds an open Chrome tab by URL/title text and brings it to the front."""
+        args = params.arguments
+        query = (args.get("query") or "").strip()
+        fallback = (args.get("url_if_missing") or "").strip()
+        if not query:
+            await params.result_callback({"status": "error", "error": "query is required"})
+            return
+        found: dict[str, Any] = {}
+
+        def _switch() -> None:
+            tab = self._desktop.focus_chrome_tab(query)
+            if tab:
+                found.update(found_existing_tab=True, tab_url=tab.url, tab_title=tab.title)
+            elif fallback:
+                self._desktop.open_in_chrome(fallback)
+                found.update(found_existing_tab=False, opened=fallback)
+            else:
+                raise LookupError(f"No open Chrome tab matches {query!r}")
+
+        await self._act(
+            params, f"Switch to tab: {query}", _switch, mac_actions.RiskVerdict(False),
+            extra=lambda: found,
         )
+
+    async def open_mailbox(self, params: FunctionCallParams) -> None:
+        """Switches to the user's open Gmail tab (or opens Gmail) and optionally composes."""
+        args = params.arguments or {}
+        compose = bool(args.get("compose", False))
+        to = args.get("to", "")
+        subject = args.get("subject", "")
+        body = args.get("body", "")
+        if to or subject or body:
+            compose = True
+        found: dict[str, Any] = {}
+
+        def _open() -> None:
+            tab = self._desktop.focus_chrome_tab("mail.google.com")
+            base = tab.url if tab else mac_actions.GMAIL_URL
+            found["found_existing_tab"] = bool(tab)
+            if not tab:
+                self._desktop.open_in_chrome(mac_actions.GMAIL_URL)
+            if compose:
+                url = mac_actions.gmail_compose_url(base, to, subject, body)
+                if tab:
+                    self._desktop.set_front_tab_url(url)
+                else:
+                    time.sleep(2.0)
+                    self._desktop.set_front_tab_url(url)
+                found["compose_url"] = url
+            time.sleep(1.5)
+
+        label = "Gmail: new email" if compose else "Open Gmail"
+        await self._act(
+            params, label, _open, mac_actions.RiskVerdict(False),
+            extra=lambda: {
+                **found,
+                "next_step": "A compose window is open; fill in anything missing. Never press"
+                " Send without the user's explicit OK." if compose else "",
+            },
+        )
+
+    async def open_drawio(self, params: FunctionCallParams) -> None:
+        """Opens draw.io with a Mermaid flowchart already drawn as a native diagram."""
+        mermaid_code = params.arguments.get("mermaid_code", "")
+        title = params.arguments.get("title") or "Jarvis diagram"
+        outcome: dict[str, str] = {}
+
+        def _open() -> None:
+            outcome["mode"] = self._desktop.open_drawio(mermaid_code, title)
+            # draw.io takes a moment to load and render the diagram.
+            time.sleep(2.5)
+
+        next_steps = {
+            "drawn": "The diagram is already drawn on the canvas with boxes and arrows. "
+            "Tell the user it is ready; only touch it if they ask for edits.",
+            "clipboard": "Not a flowchart, so the Mermaid was copied to the clipboard. Click "
+            "Arrange -> Insert -> Advanced -> Mermaid, press cmd+v, then click Insert.",
+            "empty": "Blank draw.io is open.",
+        }
+
         await self._act(
             params,
-            "Open draw.io",
-            lambda: self._desktop.open_drawio(mermaid_code),
+            "Draw in draw.io" if mermaid_code.strip() else "Open draw.io",
+            _open,
             mac_actions.RiskVerdict(False),
-            extra={"mermaid_copied_to_clipboard": copied, "next_step": next_step},
+            extra=lambda: {
+                "diagram": outcome.get("mode", ""),
+                "next_step": next_steps.get(outcome.get("mode", ""), ""),
+            },
         )
 
     # -- optional Android/ADB mobile handlers -------------------------------
@@ -722,6 +805,34 @@ class JarvisTools:
                 ["name"],
             ),
             make_tool(
+                "switch_to_tab",
+                "Find an already-open Chrome tab whose URL or title contains `query` (e.g."
+                " 'docs.google.com', 'Jira', 'calendar') and bring it to the front. Use before"
+                " opening a site the user probably already has open.",
+                self.switch_to_tab,
+                {
+                    "query": {"type": "string"},
+                    "url_if_missing": {
+                        "type": "string",
+                        "description": "Optional URL to open in Chrome if no tab matches.",
+                    },
+                },
+                ["query"],
+            ),
+            make_tool(
+                "open_mailbox",
+                "Open the user's mailbox: switches to their existing Gmail tab in Chrome (keeping"
+                " the right account) or opens Gmail. compose=true (or any of to/subject/body)"
+                " starts a new email there. Never sends.",
+                self.open_mailbox,
+                {
+                    "compose": {"type": "boolean"},
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+            ),
+            make_tool(
                 "open_url",
                 "Open a URL in the default browser.",
                 self.open_url,
@@ -771,9 +882,16 @@ class JarvisTools:
             ),
             make_tool(
                 "open_drawio",
-                "Open draw.io (app.diagrams.net) and copy optional Mermaid code to the clipboard.",
+                "Draw a diagram in draw.io: pass a Mermaid flowchart ('graph TD' / 'graph LR')"
+                " and it opens app.diagrams.net in Chrome with the boxes and arrows already drawn.",
                 self.open_drawio,
-                {"mermaid_code": {"type": "string"}},
+                {
+                    "mermaid_code": {
+                        "type": "string",
+                        "description": "Mermaid flowchart, e.g. 'graph TD\\n A[Web] --> B[App]\\n B --> C[(DB)]'.",
+                    },
+                    "title": {"type": "string", "description": "Optional diagram name."},
+                },
             ),
             make_tool(
                 "mobile_open_app",

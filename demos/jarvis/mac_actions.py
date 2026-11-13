@@ -186,6 +186,97 @@ def _format_meet_code(path: str) -> str:
     return f"{letters[:3]}-{letters[3:7]}-{letters[7:]}"
 
 
+GMAIL_URL = "https://mail.google.com/mail/u/0/#inbox"
+
+
+def gmail_compose_url(base_url: str, to: str = "", subject: str = "", body: str = "") -> str:
+    """Builds a compose URL for the same Gmail account as `base_url`.
+
+    Keeps the /mail/u/<n>/ account index from an existing tab so a work or
+    personal mailbox stays in its own account. Without fields it opens the
+    compose pop-up over the inbox; with fields it opens a pre-filled draft.
+    """
+    import urllib.parse
+
+    m = re.search(r"https://mail\.google\.com/mail/u/(\d+)", base_url or "")
+    prefix = f"https://mail.google.com/mail/u/{m.group(1) if m else 0}/"
+    if not (to or subject or body):
+        return prefix + "#inbox?compose=new"
+    query = {"view": "cm", "fs": "1"}
+    if to:
+        query["to"] = to
+    if subject:
+        query["su"] = subject
+    if body:
+        query["body"] = body
+    return prefix + "?" + urllib.parse.urlencode(query, quote_via=urllib.parse.quote)
+
+
+@dataclasses.dataclass
+class ChromeTab:
+    url: str
+    title: str
+
+
+_CHROME_BIN = "Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def pick_user_chrome_pid(ps_lines: Sequence[str], jarvis_profile: str) -> int | None:
+    """From `ps -axo pid=,args=` lines, picks the user's own Chrome browser pid.
+
+    Skips helper processes and Jarvis's isolated instance (its
+    --user-data-dir), which would otherwise swallow `open -a` and AppleScript.
+    """
+    for line in ps_lines:
+        pid_text, _, args = line.strip().partition(" ")
+        if not pid_text.isdigit() or not args.strip().endswith(_CHROME_BIN) and (
+            _CHROME_BIN + " " not in args
+        ):
+            continue
+        if "--type=" in args or f"--user-data-dir={jarvis_profile}" in args:
+            continue
+        return int(pid_text)
+    return None
+
+
+def chrome_jxa(pid: int, op: str, arg: str) -> str:
+    """JXA for the Chrome process `pid`.
+
+    op="find": focus the first tab whose URL/title contains arg (case-
+    insensitive); prints "<url>\\t<title>" or "". op="open": new tab with URL arg
+    in the front window. op="set": navigate the front window's active tab.
+    """
+    import json
+
+    return f"""
+var c = Application({int(pid)}); var op = {json.dumps(op)}; var arg = {json.dumps(arg)};
+function front() {{ c.activate(); delay(0.2); }}
+(function() {{
+  if (op === "find") {{
+    var q = arg.toLowerCase(); var ws = c.windows();
+    for (var i = 0; i < ws.length; i++) {{
+      var ts = ws[i].tabs();
+      for (var j = 0; j < ts.length; j++) {{
+        var u = ts[j].url() || "", t = ts[j].title() || "";
+        if (u.toLowerCase().indexOf(q) >= 0 || t.toLowerCase().indexOf(q) >= 0) {{
+          ws[i].activeTabIndex = j + 1; ws[i].index = 1; front();
+          return u + "\\t" + t;
+        }}
+      }}
+    }}
+    return "";
+  }}
+  if (op === "open") {{
+    if (c.windows().length === 0) {{ c.Window().make(); delay(0.3); }}
+    var w = c.windows[0]; var tab = c.Tab({{url: arg}}); w.tabs.push(tab);
+    w.activeTabIndex = w.tabs().length; front(); return arg;
+  }}
+  if (op === "set") {{ c.windows[0].activeTab.url = arg; front(); return arg; }}
+  return "";
+}})();
+"""
+
+
 def chrome_open_command(url: str) -> list[str]:
     """Builds the command that opens a URL in the user's normal Google Chrome."""
     return ["open", "-a", "Google Chrome", url]
@@ -194,6 +285,217 @@ def chrome_open_command(url: str) -> list[str]:
 def drawio_url() -> str:
     """Returns the draw.io URL that skips the startup storage dialog."""
     return "https://app.diagrams.net/?splash=0"
+
+
+# -- Mermaid flowchart -> native draw.io diagram -------------------------------
+
+_MERMAID_HEADER_RE = re.compile(r"^\s*(?:graph|flowchart)\s+(TD|TB|BT|LR|RL)\b", re.I)
+_MERMAID_NODE_RE = re.compile(
+    r"""^\s*([A-Za-z0-9_]+)\s*
+        (?:\[\((?P<l1>[^\]]*)\)\]      # [(db)]
+          |\(\((?P<l2>[^)]*)\)\)       # ((circle))
+          |\[\[(?P<l3>[^\]]*)\]\]      # [[subroutine]]
+          |\[(?P<l4>[^\]]*)\]          # [box]
+          |\((?P<l5>[^)]*)\)           # (rounded)
+          |\{(?P<l6>[^}]*)\}           # {decision}
+          |>(?P<l7>[^\]]*)\]           # >flag]
+        )?""",
+    re.X,
+)
+_MERMAID_ARROW_RE = re.compile(
+    r"""\s*(?:
+        --\s*(?P<t1>[^-|>][^>]*?)\s*-->     # A -- text --> B
+      | -\.\s*(?P<t2>[^.]+?)\s*\.->         # A -. text .-> B
+      | ==\s*(?P<t3>[^=>]+?)\s*==>          # A == text ==> B
+      | (?:-->|==>|-\.->|---|-.-|--o|--x|<-->)
+        (?:\s*\|(?P<t4>[^|]*)\|)?           # A -->|text| B
+    )\s*""",
+    re.X,
+)
+_SHAPE_STYLES = {
+    "l1": "shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=12;fillColor=#fff2cc;strokeColor=#d6b656;",
+    "l2": "ellipse;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;",
+    "l3": "shape=process;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;",
+    "l4": "rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;",
+    "l5": "rounded=1;arcSize=40;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;",
+    "l6": "rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;",
+    "l7": "shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;",
+}
+_DB_WORDS = re.compile(r"\b(db|database|sql|postgres|mysql|storage|spanner|bigquery|cache|redis)\b", re.I)
+
+
+@dataclasses.dataclass
+class FlowNode:
+    id: str
+    label: str
+    style: str
+
+
+@dataclasses.dataclass
+class Flowchart:
+    direction: str
+    nodes: dict[str, FlowNode]
+    edges: list[tuple[str, str, str]]
+
+
+def _parse_mermaid_node(text: str, chart: Flowchart) -> tuple[str | None, str]:
+    """Parses one node reference at the start of text; returns (id, rest)."""
+    m = _MERMAID_NODE_RE.match(text)
+    if not m or not m.group(1):
+        return None, text
+    node_id = m.group(1)
+    label, style = None, None
+    for key in _SHAPE_STYLES:
+        if m.group(key) is not None:
+            label = m.group(key).strip().strip('"')
+            style = _SHAPE_STYLES[key]
+            break
+    node = chart.nodes.get(node_id)
+    if node is None:
+        text_label = label if label else node_id
+        if style is None:
+            style = _SHAPE_STYLES["l1"] if _DB_WORDS.search(text_label) else _SHAPE_STYLES["l4"]
+        chart.nodes[node_id] = FlowNode(node_id, text_label, style)
+    elif label:
+        node.label = label
+        node.style = style or node.style
+    return node_id, text[m.end():]
+
+
+def parse_mermaid_flowchart(code: str) -> Flowchart:
+    """Parses a simple Mermaid `graph`/`flowchart` into nodes and edges.
+
+    Supports node shapes [], (), {}, [()], (()), [[ ]], chained arrows
+    (A --> B --> C), `&` fan-out (A --> B & C) and edge labels (-->|x|,
+    -- x -->). Raises ValueError for other diagram types or empty charts.
+    """
+    lines = [ln.strip() for ln in code.replace(";", "\n").splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("%%")]
+    if not lines:
+        raise ValueError("empty Mermaid code")
+    header = _MERMAID_HEADER_RE.match(lines[0])
+    if not header:
+        raise ValueError("only Mermaid 'graph'/'flowchart' diagrams can be drawn natively")
+    direction = header.group(1).upper().replace("TB", "TD")
+    chart = Flowchart(direction, {}, [])
+    pending_label = ""
+    for line in lines[1:]:
+        if re.match(r"^(subgraph|end|classDef|class|style|linkStyle|click|direction)\b", line):
+            continue
+        rest = line
+        sources: list[str] = []
+        while rest:
+            group: list[str] = []
+            while True:
+                node_id, rest = _parse_mermaid_node(rest, chart)
+                if node_id is None:
+                    break
+                group.append(node_id)
+                amp = re.match(r"\s*&\s*", rest)
+                if not amp:
+                    break
+                rest = rest[amp.end():]
+            if not group:
+                break
+            for src in sources:
+                for dst in group:
+                    chart.edges.append((src, dst, pending_label))
+            arrow = _MERMAID_ARROW_RE.match(rest)
+            if not arrow or arrow.end() == 0:
+                break
+            pending_label = next(
+                (arrow.group(k).strip() for k in ("t1", "t2", "t3", "t4") if arrow.group(k)), ""
+            )
+            rest = rest[arrow.end():]
+            sources = group
+    if not chart.nodes:
+        raise ValueError("no nodes found in Mermaid code")
+    return chart
+
+
+def _layer_nodes(chart: Flowchart) -> dict[str, int]:
+    """Assigns each node a layer: longest path from a root (cycle-safe)."""
+    layer = {nid: 0 for nid in chart.nodes}
+    for _ in range(len(chart.nodes)):
+        changed = False
+        for src, dst, _label in chart.edges:
+            if src != dst and layer[dst] < layer[src] + 1 and layer[src] + 1 < len(chart.nodes):
+                layer[dst] = layer[src] + 1
+                changed = True
+        if not changed:
+            break
+    return layer
+
+
+def _xml_attr(value: str) -> str:
+    return (
+        value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace("\n", "&#xa;")
+    )
+
+
+def flowchart_to_drawio_xml(chart: Flowchart, title: str = "Jarvis diagram") -> str:
+    """Lays out a Flowchart and returns a draw.io `mxfile` XML document."""
+    layers = _layer_nodes(chart)
+    by_layer: dict[int, list[str]] = {}
+    for nid in chart.nodes:  # keep declaration order inside a layer
+        by_layer.setdefault(layers[nid], []).append(nid)
+    width, height, gap_main, gap_cross = 160, 70, 90, 50
+    horizontal = chart.direction in ("LR", "RL")
+    widest = max(len(v) for v in by_layer.values())
+    pos: dict[str, tuple[int, int]] = {}
+    for depth, ids in by_layer.items():
+        if chart.direction in ("BT", "RL"):
+            depth = max(by_layer) - depth
+        offset = (widest - len(ids)) * (width + gap_cross if not horizontal else height + gap_cross) // 2
+        for i, nid in enumerate(ids):
+            if horizontal:
+                pos[nid] = (40 + depth * (width + gap_main), 40 + offset + i * (height + gap_cross))
+            else:
+                pos[nid] = (40 + offset + i * (width + gap_cross), 40 + depth * (height + gap_main))
+    cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>']
+    ids = {nid: f"n{i}" for i, nid in enumerate(chart.nodes)}
+    for nid, node in chart.nodes.items():
+        x, y = pos[nid]
+        cells.append(
+            f'<mxCell id="{ids[nid]}" value="{_xml_attr(node.label)}" style="{node.style}" '
+            f'vertex="1" parent="1"><mxGeometry x="{x}" y="{y}" width="{width}" '
+            f'height="{height}" as="geometry"/></mxCell>'
+        )
+    edge_style = "edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeWidth=2;"
+    for i, (src, dst, label) in enumerate(chart.edges):
+        cells.append(
+            f'<mxCell id="e{i}" value="{_xml_attr(label)}" style="{edge_style}" edge="1" '
+            f'parent="1" source="{ids[src]}" target="{ids[dst]}">'
+            '<mxGeometry relative="1" as="geometry"/></mxCell>'
+        )
+    return (
+        f'<mxfile><diagram name="{_xml_attr(title)}" id="jarvis">'
+        '<mxGraphModel grid="1" gridSize="10" guides="1" connect="1" arrows="1" page="1">'
+        f'<root>{"".join(cells)}</root></mxGraphModel></diagram></mxfile>'
+    )
+
+
+def drawio_url_for_xml(xml: str) -> str:
+    """Encodes draw.io XML into an app.diagrams.net `#R` URL that opens it.
+
+    Same scheme as draw.io's File > Export as > URL: raw-deflate of the
+    URI-encoded XML, base64, then URI-encoded into the hash.
+    """
+    import base64
+    import urllib.parse
+    import zlib
+
+    encoded = urllib.parse.quote(xml, safe="-_.!~*'()")
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    raw = compressor.compress(encoded.encode("utf-8")) + compressor.flush()
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"https://app.diagrams.net/?splash=0#R{urllib.parse.quote(b64, safe='')}"
+
+
+def mermaid_to_drawio_url(code: str, title: str = "Jarvis diagram") -> str:
+    """Mermaid flowchart -> URL that opens app.diagrams.net with it drawn."""
+    return drawio_url_for_xml(flowchart_to_drawio_xml(parse_mermaid_flowchart(code), title))
 
 
 def chrome_profile_command(url: str, profile_dir: str) -> list[str]:
@@ -509,7 +811,11 @@ class MacDesktop:
         would otherwise close a Terminal tab or the draw.io window.
         """
         if not isolated:
-            _osascript('tell application "Google Chrome" to activate')
+            pid = self.user_chrome_pid()
+            if pid is not None:
+                _osascript(frontmost_pid_script(pid))
+            else:
+                _osascript('tell application "Google Chrome" to activate')
             time.sleep(0.2)
             return
         resolved_dir = profile_dir or os.getenv(
@@ -543,9 +849,58 @@ class MacDesktop:
             url = "https://" + url
         subprocess.run(["open", url], check=True)
 
+    def _jarvis_profile_dir(self) -> str:
+        return os.getenv("JARVIS_CHROME_PROFILE", str(Path.home() / ".jarvis-chrome-profile"))
+
+    def user_chrome_pid(self) -> int | None:
+        """Pid of the user's own Chrome (not Jarvis's isolated instance), if running."""
+        res = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True)
+        return pick_user_chrome_pid(res.stdout.splitlines(), self._jarvis_profile_dir())
+
+    def _chrome_jxa(self, op: str, arg: str) -> str | None:
+        pid = self.user_chrome_pid()
+        if pid is None:
+            return None
+        res = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", chrome_jxa(pid, op, arg)],
+            check=True, capture_output=True, text=True,
+        )
+        return res.stdout.strip()
+
+    def focus_chrome_tab(self, query: str) -> ChromeTab | None:
+        """Brings the first tab in the user's Chrome matching query to the front."""
+        out = self._chrome_jxa("find", query)
+        if not out:
+            return None
+        url, _, title = out.partition("\t")
+        time.sleep(0.3)
+        return ChromeTab(url=url, title=title)
+
+    def set_front_tab_url(self, url: str) -> None:
+        """Navigates the active tab of the user's Chrome front window to url."""
+        if self._chrome_jxa("set", url) is None:
+            self.open_in_chrome(url)
+
     def open_in_chrome(self, url: str) -> None:
-        """Opens a URL in the user's normal Google Chrome (signed-in profile)."""
-        subprocess.run(chrome_open_command(url), check=True, capture_output=True, text=True)
+        """Opens a URL in a new tab of the user's normal Google Chrome.
+
+        Talks to that Chrome process by pid: plain `open -a "Google Chrome"`
+        would hand the URL to Jarvis's isolated Chrome when that one is running.
+        """
+        if self._chrome_jxa("open", url) is not None:
+            return
+        cmd = chrome_open_command(url)
+        if self._jarvis_chrome_running():
+            # Force a fresh default-profile instance instead of Jarvis's.
+            cmd = ["open", "-na", "Google Chrome", "--args", url]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    def _jarvis_chrome_running(self) -> bool:
+        res = subprocess.run(
+            ["pgrep", "-f", "--", f"--user-data-dir={self._jarvis_profile_dir()}"],
+            capture_output=True, text=True,
+        )
+        return bool(res.stdout.strip())
 
     def open_chrome_profile(self, url: str, profile_dir: str | None = None) -> str:
         """Opens a URL in an isolated Chrome profile for a separate persona."""
@@ -557,12 +912,25 @@ class MacDesktop:
         subprocess.run(chrome_profile_command(url, resolved_dir), check=True)
         return resolved_dir
 
-    def open_drawio(self, mermaid_code: str = "") -> bool:
-        """Opens draw.io without the splash modal and copies optional Mermaid code."""
-        if mermaid_code.strip():
-            self.copy_to_clipboard(mermaid_code.strip())
-        self.open_url(drawio_url())
-        return bool(mermaid_code.strip())
+    def open_drawio(self, mermaid_code: str = "", title: str = "Jarvis diagram") -> str:
+        """Opens draw.io in Chrome, with a Mermaid flowchart already drawn.
+
+        Returns "drawn" when the flowchart was converted to a native draw.io
+        diagram and opened, "clipboard" when the Mermaid is some other kind
+        (sequence, class, ...) and was only copied, or "empty".
+        """
+        code = mermaid_code.strip()
+        if code:
+            try:
+                url = mermaid_to_drawio_url(code, title)
+            except ValueError:
+                self.copy_to_clipboard(code)
+                self.open_in_chrome(drawio_url())
+                return "clipboard"
+            self.open_in_chrome(url)
+            return "drawn"
+        self.open_in_chrome(drawio_url())
+        return "empty"
 
     def scroll(
         self,
