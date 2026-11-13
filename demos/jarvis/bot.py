@@ -85,8 +85,11 @@ How you work:
 - Multi-monitor: You can see all connected displays. Call look_at_screen(display=2)
   to inspect a second screen (or display=1 for the main screen). Once you switch
   displays, follow-up screenshots and clicks stay on that display until switched.
-- Clicking: Aim for the center of the target text or button. If a click misses
-  or selects the wrong row, inspect the follow-up screenshot and adjust x/y.
+- Clicking: Prefer click_text(text) for anything with a visible label: buttons,
+  links, tabs, menu items, video/thumbnail titles (click the video's title
+  text, e.g. click_text("Why AI Infrastructure Is Moving to Rust")). Use x/y
+  click only for unlabeled targets; aim at the centre and, if it misses, check
+  the follow-up screenshot and adjust. Never repeat the same x/y after a miss.
 - Before clicking for the first time in a turn, call look_at_screen only if you
   have not received a screenshot yet. Coordinates are pixels in the latest screenshot.
 - Every action tool (click, type_text, press_keys, open_app, open_url, scroll,
@@ -373,6 +376,13 @@ class JarvisTools:
         # Which Chrome the last meet_join used, so meet_action focuses that one.
         self._meet_isolated = False
 
+    def _safe_front_display(self) -> int | None:
+        try:
+            return self._desktop.front_window_display()
+        except Exception:  # Screenshot of the active display is a fine fallback.
+            logger.opt(exception=True).debug("front_window_display failed")
+            return None
+
     async def _look(self, display: int | None = None) -> dict[str, Any]:
         shot = await asyncio.to_thread(self._desktop.screenshot, display)
         await self._feeder.send_screenshot(shot)
@@ -389,6 +399,7 @@ class JarvisTools:
         action: Callable[[], Any],
         verdict: mac_actions.RiskVerdict,
         extra: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
+        follow_front: bool = False,
     ) -> None:
         self._ui.emit({"type": "action", "label": label})
         if verdict.risky:
@@ -407,7 +418,10 @@ class JarvisTools:
             await params.result_callback({"status": "error", "error": str(exc)})
             return
         await asyncio.sleep(self._SETTLE_SECONDS)
-        screen = await self._look()
+        display = None
+        if follow_front:
+            display = await asyncio.to_thread(self._safe_front_display)
+        screen = await self._look(display)
         payload = {"status": "done", "action": label, "fresh_screenshot_attached": True, **screen}
         if callable(extra):
             extra = extra()
@@ -457,6 +471,27 @@ class JarvisTools:
             mac_actions.assess_click(target),
         )
 
+    async def click_text(self, params: FunctionCallParams) -> None:
+        """Clicks a UI element by its visible text via macOS Accessibility."""
+        args = params.arguments
+        text = (args.get("text") or "").strip()
+        nth = max(1, int(args.get("nth", 1) or 1))
+        is_double = bool(args.get("double", False))
+        if not text:
+            await params.result_callback({"status": "error", "error": "text is required"})
+            return
+        hit: dict[str, Any] = {}
+
+        def _click() -> None:
+            m = self._desktop.click_text(text, nth, is_double)
+            hit.update(clicked_role=m.role, clicked_text=m.text)
+
+        await self._act(
+            params, f"Click “{text[:50]}”", _click, mac_actions.assess_click(text),
+            extra=lambda: hit,
+            follow_front=True,
+        )
+
     async def type_text(self, params: FunctionCallParams) -> None:
         """Types text after checking for destructive commands."""
         args = params.arguments
@@ -487,6 +522,7 @@ class JarvisTools:
             f"Open {name}",
             lambda: self._desktop.open_app(name),
             mac_actions.RiskVerdict(False),
+            follow_front=True,
         )
 
     async def open_url(self, params: FunctionCallParams) -> None:
@@ -497,6 +533,7 @@ class JarvisTools:
             f"Open {url}",
             lambda: self._desktop.open_url(url),
             mac_actions.RiskVerdict(False),
+            follow_front=True,
         )
 
     async def scroll(self, params: FunctionCallParams) -> None:
@@ -547,6 +584,7 @@ class JarvisTools:
                 "next_step": "On the pre-join screen in the screenshot, click 'Join now'"
                 " (or 'Switch here'); if not visible yet, call look_at_screen.",
             },
+            follow_front=True,
         )
 
     async def meet_action(self, params: FunctionCallParams) -> None:
@@ -621,6 +659,7 @@ class JarvisTools:
         await self._act(
             params, f"Switch to tab: {query}", _switch, mac_actions.RiskVerdict(False),
             extra=lambda: found,
+            follow_front=True,
         )
 
     async def open_mailbox(self, params: FunctionCallParams) -> None:
@@ -658,6 +697,7 @@ class JarvisTools:
                 "next_step": "A compose window is open; fill in anything missing. Never press"
                 " Send without the user's explicit OK." if compose else "",
             },
+            follow_front=True,
         )
 
     async def open_drawio(self, params: FunctionCallParams) -> None:
@@ -688,6 +728,7 @@ class JarvisTools:
                 "diagram": outcome.get("mode", ""),
                 "next_step": next_steps.get(outcome.get("mode", ""), ""),
             },
+            follow_front=True,
         )
 
     # -- optional Android/ADB mobile handlers -------------------------------
@@ -803,6 +844,19 @@ class JarvisTools:
                 self.open_app,
                 {"name": {"type": "string"}},
                 ["name"],
+            ),
+            make_tool(
+                "click_text",
+                "Click a button, link, tab, menu item or video by its visible text (e.g. a"
+                " YouTube video title, 'Join now', 'Compose'). Finds the element through macOS"
+                " Accessibility and clicks its exact centre. More reliable than x/y clicks.",
+                self.click_text,
+                {
+                    "text": {"type": "string", "description": "Visible label or title to click."},
+                    "nth": {"type": "integer", "description": "Pick the nth match (default 1)."},
+                    "double": {"type": "boolean"},
+                },
+                ["text"],
             ),
             make_tool(
                 "switch_to_tab",

@@ -585,6 +585,51 @@ def list_audio_devices() -> list[dict[str, Any]]:
         pa.terminate()
 
 
+@dataclasses.dataclass
+class UiMatch:
+    """An on-screen UI element found by its accessible text."""
+
+    role: str
+    text: str
+    x: float  # global Quartz points, element centre
+    y: float
+    width: float
+    height: float
+    score: float = 0.0
+
+
+_CLICKABLE_ROLES = {
+    "AXLink": 1.5, "AXButton": 1.5, "AXMenuItem": 1.2, "AXMenuButton": 1.2,
+    "AXPopUpButton": 1.0, "AXCheckBox": 1.0, "AXRadioButton": 1.0, "AXTab": 1.0,
+    "AXCell": 0.6, "AXRow": 0.4, "AXImage": 0.5, "AXHeading": 0.6,
+    "AXStaticText": 0.3, "AXTextField": 0.8, "AXComboBox": 0.8,
+}
+
+
+def score_ui_match(query: str, text: str, role: str) -> float:
+    """How well an element's accessible text matches the query (0 = no match)."""
+    q = " ".join(query.lower().split())
+    t = " ".join((text or "").lower().split())
+    if not q or not t:
+        return 0.0
+    if t == q:
+        base = 10.0
+    elif t.startswith(q):
+        base = 7.0
+    elif q in t:
+        base = 5.0
+    else:
+        words = [w for w in q.split() if len(w) > 1]
+        hits = sum(1 for w in words if re.search(rf"\b{re.escape(w)}", t))
+        needed = len(words) if len(words) <= 2 else -(-2 * len(words) // 3)
+        if not words or hits < needed:
+            return 0.0
+        base = 3.0 * hits / len(words)
+    # Prefer tight labels over long blobs that merely contain the words.
+    base -= min(len(t) / max(len(q), 1), 20) * 0.05
+    return base + _CLICKABLE_ROLES.get(role, 0.0)
+
+
 @dataclasses.dataclass(frozen=True)
 class DisplayInfo:
     """Geometry for a macOS display (Quartz points and 1-based screencapture index)."""
@@ -752,9 +797,145 @@ class MacDesktop:
         display: int | None = None,
     ) -> tuple[float, float]:
         """Clicks at (x, y) given in pixel coordinates of that display's last screenshot."""
+        px, py = self.to_global_point(x, y, display)
+        return self.click_global(px, py, double)
+
+    # -- accessibility (click by text) ---------------------------------------
+
+    def find_ui_elements(
+        self, query: str, limit: int = 5, max_nodes: int = 8000, budget_s: float = 3.0
+    ) -> list[UiMatch]:
+        """Finds on-screen elements of the frontmost app whose accessible text matches.
+
+        Uses the macOS Accessibility tree, so it reads real labels (link and
+        button names, YouTube video titles, menu items) instead of guessing
+        pixels. Chrome/Electron expose web content once AXManualAccessibility
+        is set on the app.
+        """
+        import AppKit
+        import ApplicationServices as AS
+
+        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return []
+        root = AS.AXUIElementCreateApplication(app.processIdentifier())
+        AS.AXUIElementSetAttributeValue(root, "AXManualAccessibility", True)
+        AS.AXUIElementSetAttributeValue(root, "AXEnhancedUserInterface", True)
+
+        def attr(el, name):
+            err, value = AS.AXUIElementCopyAttributeValue(el, name, None)
+            return value if err == 0 else None
+
+        window = attr(root, "AXFocusedWindow") or attr(root, "AXMainWindow") or root
+        displays = self.list_displays()
+
+        def on_screen(x: float, y: float) -> bool:
+            return any(
+                d.origin_x <= x < d.origin_x + d.width and d.origin_y <= y < d.origin_y + d.height
+                for d in displays
+            )
+
+        win_frame = None
+        wpos, wsize = attr(window, "AXPosition"), attr(window, "AXSize")
+        if wpos is not None and wsize is not None:
+            _, wp = AS.AXValueGetValue(wpos, AS.kAXValueCGPointType, None)
+            _, ws = AS.AXValueGetValue(wsize, AS.kAXValueCGSizeType, None)
+            win_frame = (wp.x, wp.y, wp.x + ws.width, wp.y + ws.height)
+
+        found: list[UiMatch] = []
+        queue = [window]
+        seen = 0
+        deadline = time.monotonic() + budget_s
+        while queue and seen < max_nodes and time.monotonic() < deadline:
+            el = queue.pop(0)
+            seen += 1
+            role = attr(el, "AXRole") or ""
+            texts = []
+            for name in ("AXTitle", "AXDescription", "AXValue", "AXHelp"):
+                value = attr(el, name)
+                if isinstance(value, str) and value.strip():
+                    texts.append(value.strip())
+            best_text, best = "", 0.0
+            for text in texts:
+                sc = score_ui_match(query, text, role)
+                if sc > best:
+                    best_text, best = text, sc
+            if best > 0:
+                pos, size = attr(el, "AXPosition"), attr(el, "AXSize")
+                if pos is not None and size is not None:
+                    _, pt = AS.AXValueGetValue(pos, AS.kAXValueCGPointType, None)
+                    _, sz = AS.AXValueGetValue(size, AS.kAXValueCGSizeType, None)
+                    cx, cy = pt.x + sz.width / 2, pt.y + sz.height / 2
+                    inside = win_frame is None or (
+                        win_frame[0] <= cx <= win_frame[2] and win_frame[1] <= cy <= win_frame[3]
+                    )
+                    if sz.width >= 4 and sz.height >= 4 and on_screen(cx, cy) and inside:
+                        found.append(
+                            UiMatch(role, best_text[:120], cx, cy, sz.width, sz.height, best)
+                        )
+            children = attr(el, "AXChildren")
+            if children:
+                queue.extend(children)
+        found.sort(key=lambda m: (-m.score, m.y, m.x))
+        # Drop near-duplicates (a link and its own text label at the same spot).
+        unique: list[UiMatch] = []
+        for m in found:
+            if all(abs(m.x - u.x) > 6 or abs(m.y - u.y) > 6 for u in unique):
+                unique.append(m)
+        return unique[:limit]
+
+    def click_text(self, query: str, nth: int = 1, double: bool = False) -> UiMatch:
+        """Clicks the nth best on-screen element whose accessible text matches query."""
+        matches = self.find_ui_elements(query, limit=max(5, nth))
+        if len(matches) < nth:
+            time.sleep(0.8)  # Chrome builds its web AX tree lazily on first query.
+            matches = self.find_ui_elements(query, limit=max(5, nth))
+        if len(matches) < nth:
+            raise LookupError(
+                f"No on-screen element in the front app matches {query!r}"
+                + (f" (only {len(matches)} found)" if matches else "")
+            )
+        target = matches[nth - 1]
+        self.click_global(target.x, target.y, double)
+        self.focus_display_at(target.x, target.y)
+        return target
+
+    def focus_display_at(self, gx: float, gy: float) -> None:
+        """Makes the display containing a global point the active one for screenshots."""
+        for d in self.list_displays():
+            if d.origin_x <= gx < d.origin_x + d.width and d.origin_y <= gy < d.origin_y + d.height:
+                self._active_display = d.index
+                return
+
+    def front_window_display(self) -> int | None:
+        """1-based display index showing the frontmost app's top window, if any."""
+        import AppKit
         import Quartz
 
-        px, py = self.to_global_point(x, y, display)
+        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return None
+        pid = app.processIdentifier()
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        ) or []
+        for w in windows:
+            if w.get("kCGWindowOwnerPID") != pid or w.get("kCGWindowLayer", 0) != 0:
+                continue
+            b = w.get("kCGWindowBounds") or {}
+            if b.get("Width", 0) < 100 or b.get("Height", 0) < 100:
+                continue
+            cx, cy = b["X"] + b["Width"] / 2, b["Y"] + b["Height"] / 2
+            for d in self.list_displays():
+                if d.origin_x <= cx < d.origin_x + d.width and d.origin_y <= cy < d.origin_y + d.height:
+                    return d.index
+        return None
+
+    def click_global(self, px: float, py: float, double: bool = False) -> tuple[float, float]:
+        """Clicks at global Quartz screen points."""
+        import Quartz
+
         point = Quartz.CGPointMake(px, py)
         clicks = 2 if double else 1
         self._move_pointer(px, py)
@@ -847,7 +1028,9 @@ class MacDesktop:
         """Opens a URL in the default browser."""
         if not re.match(r"^https?://", url):
             url = "https://" + url
-        subprocess.run(["open", url], check=True)
+        # The user's Chrome by pid: plain `open url` can land in Jarvis's
+        # isolated Chrome when that instance is running.
+        self.open_in_chrome(url)
 
     def _jarvis_profile_dir(self) -> str:
         return os.getenv("JARVIS_CHROME_PROFILE", str(Path.home() / ".jarvis-chrome-profile"))

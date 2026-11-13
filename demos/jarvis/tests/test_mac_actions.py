@@ -251,3 +251,19 @@ class DrawioMailChromeTest(unittest.TestCase):
             mac_actions.pick_user_chrome_pid(lines, "/Users/x/.jarvis-chrome-profile"), 2367
         )
         self.assertIsNone(mac_actions.pick_user_chrome_pid(lines[:2], "/Users/x/.jarvis-chrome-profile"))
+
+
+class ClickTextScoringTest(unittest.TestCase):
+
+    def test_exact_and_role_beat_partial(self):
+        s = mac_actions.score_ui_match
+        exact = s("Join now", "Join now", "AXButton")
+        contains = s("Join now", "Click here to join now please", "AXStaticText")
+        self.assertGreater(exact, contains)
+        self.assertGreater(s("theo", "Theo - t3.gg", "AXLink"), 0)
+
+    def test_requires_all_words_for_short_queries(self):
+        s = mac_actions.score_ui_match
+        self.assertEqual(s("Docs home", "Running test find_ui_elements on docs", "AXButton"), 0.0)
+        self.assertGreater(s("rust infrastructure", "Why AI Infrastructure Is Moving to Rust", "AXLink"), 0)
+        self.assertEqual(s("", "anything", "AXButton"), 0.0)

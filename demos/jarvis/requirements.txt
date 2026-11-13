@@ -3,6 +3,7 @@
 pipecat-ai[google,local]>=1.16.0
 pywebview>=5.0
 pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0
 pillow>=10.0
 python-dotenv>=1.0
 loguru>=0.7
