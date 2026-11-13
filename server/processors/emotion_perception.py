@@ -55,11 +55,14 @@ DEFAULT_TIMEOUT_SECS = 4.0
 MIN_INTERIM_SECS = 1.2
 INTERIM_INTERVAL_SECS = 1.6
 INTERIM_WINDOW_SECS = 2.5
-MIN_FINAL_SECS = 0.45
+MIN_FINAL_SECS = 0.25
+PREFERRED_FINAL_SECS = 2.2
 FINAL_WINDOW_SECS = 4.5
 MAX_BUFFER_SECS = 6.0
-PRE_ROLL_SECS = 0.30
-MIN_CONFIDENCE_FOR_NON_CALM = 0.35
+PRE_ROLL_SECS = 0.50
+MIN_CONFIDENCE_FOR_NON_CALM = 0.24
+NEG_SPLIT_CALM_CEILING = 0.40
+NEG_SPLIT_MIN_PRIMARY = 0.18
 MAX_CONCURRENT_CLASSIFICATIONS = 2
 MAX_CONSECUTIVE_FAILURES = 3
 
@@ -92,7 +95,7 @@ EMOTION_TAXONOMY: tuple[EmotionDescriptor, ...] = (
         key="calm",
         emoji="\U0001f60c",
         title="Calm",
-        description="Neutral, composed, steady, or matter-of-fact delivery.",
+        description="Genuinely relaxed, patient, comfortable, soft, and steady tone with zero tension.",
     ),
     EmotionDescriptor(
         key="happy",
@@ -110,7 +113,7 @@ EMOTION_TAXONOMY: tuple[EmotionDescriptor, ...] = (
         key="curious",
         emoji="\U0001f914",
         title="Curious",
-        description="Inquisitive, thoughtful, engaged, or questioning tone.",
+        description="Inquisitive, thoughtful, engaged, or questioning inflection.",
     ),
     EmotionDescriptor(
         key="hesitant",
@@ -122,13 +125,13 @@ EMOTION_TAXONOMY: tuple[EmotionDescriptor, ...] = (
         key="frustrated",
         emoji="\U0001f624",
         title="Frustrated",
-        description="Annoyed, impatient, exasperated, stressed, or irritated.",
+        description="Impatient, curt, annoyed, insistent, firm refusal, exasperated, stressed, or irritated.",
     ),
     EmotionDescriptor(
         key="angry",
         emoji="\U0001f620",
         title="Angry",
-        description="Hostile, sharp, raised voice, or confrontational.",
+        description="Sharp, stern, commanding, raised voice, hostile, or confrontational.",
     ),
     EmotionDescriptor(
         key="sad",
@@ -140,7 +143,7 @@ EMOTION_TAXONOMY: tuple[EmotionDescriptor, ...] = (
         key="sarcastic",
         emoji="\U0001f643",
         title="Sarcastic",
-        description="Dry, ironic, mocking, or skeptical prosody.",
+        description="Dry, ironic, mocking, deadpan, or skeptical prosody.",
     ),
 )
 
@@ -150,12 +153,54 @@ EMOTION_BY_KEY: dict[str, EmotionDescriptor] = {
 
 EMOTION_QUESTION = ChoiceQuestion(
     instructions=(
-        "Listen to the speaker's vocal tone, pitch, pace, sighs, laughter, "
-        "and prosody in the audio clip (not just the literal words) and "
-        "choose the single best label for how they sound right now."
+        "Classify the caller's vocal emotion strictly from how they sound right now: "
+        "pitch contour, loudness, vocal strain, clipped articulation, pace, sighs, or laughter. "
+        "Choose 'calm' only when the delivery sounds genuinely relaxed, gentle, patient, or comfortable; "
+        "never use 'calm' for curt, terse, insistent, impatient, tense, ironic, or annoyed speech "
+        "in any language including Hindi or Hinglish."
     ),
     options={item.key: item.description for item in EMOTION_TAXONOMY},
 )
+
+
+def _resolve_emotion_choice(
+    emotion_answer: ChoiceResult,
+) -> tuple[str, str, float, list[tuple[str, float]]]:
+    """Resolve the winning label from a 9-way ChoiceResult.
+
+    Applies a realistic 9-class confidence floor (`MIN_CONFIDENCE_FOR_NON_CALM`)
+    and rescues borderline `calm` pluralities when high-arousal negative
+    neighbors (`frustrated` + `angry`) carry more combined mass than `calm`.
+    """
+    raw_choice = str(emotion_answer.choice or "calm").strip().lower()
+    confidence = float(emotion_answer.confidence or 0.0)
+    probs = {
+        str(k).strip().lower(): float(v)
+        for k, v in (getattr(emotion_answer, "probabilities", None) or {}).items()
+    }
+    top3 = sorted(probs.items(), key=lambda kv: -kv[1])[:3]
+
+    final_choice = raw_choice
+    if final_choice not in EMOTION_BY_KEY or (
+        final_choice != "calm" and confidence < MIN_CONFIDENCE_FOR_NON_CALM
+    ):
+        final_choice = "calm"
+
+    resolved_confidence = confidence
+    if final_choice == "calm" and probs:
+        calm_prob = probs.get("calm", confidence)
+        frustrated_prob = probs.get("frustrated", 0.0)
+        angry_prob = probs.get("angry", 0.0)
+        combined_neg = frustrated_prob + angry_prob
+        if (
+            calm_prob < NEG_SPLIT_CALM_CEILING
+            and combined_neg > calm_prob
+            and max(frustrated_prob, angry_prob) >= NEG_SPLIT_MIN_PRIMARY
+        ):
+            final_choice = "angry" if angry_prob > frustrated_prob else "frustrated"
+            resolved_confidence = combined_neg
+
+    return final_choice, raw_choice, resolved_confidence, top3
 
 
 def _get_cached_secret_key(target_project: str) -> str | None:
@@ -404,6 +449,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._silence_secs = 0.0
         self._pre_roll = _BoundedPcmRing()
         self._speech_buffer = _BoundedPcmRing()
+        self._turn_recent_audio = _BoundedPcmRing()
         self._last_interim_at = 0.0
         self._interim_in_flight = False
         self._utterance_id = 0
@@ -574,6 +620,8 @@ class AudioEmotionObserver(FrameProcessor):
             self._bot_speaking = True
         elif isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
             self._bot_speaking = False
+            if not self._speaking:
+                self._turn_recent_audio.clear()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             if not self._muted:
                 self._has_external_vad = True
@@ -597,6 +645,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._silence_secs = 0.0
         self._speech_buffer.clear()
         self._pre_roll.clear()
+        self._turn_recent_audio.clear()
 
     def _begin_utterance(self) -> None:
         now = time.monotonic()
@@ -622,16 +671,28 @@ class AudioEmotionObserver(FrameProcessor):
         self._speech_buffer.clear()
 
         trim_bytes = self._bytes_for_secs(max(0.0, trim_tail_secs))
-        if 0 < trim_bytes < len(raw):
-            raw = raw[:-trim_bytes]
-
         min_bytes = self._bytes_for_secs(MIN_FINAL_SECS)
+        if trim_bytes > 0:
+            if len(raw) - trim_bytes >= min_bytes:
+                raw = raw[:-trim_bytes]
+            elif len(raw) >= self._bytes_for_secs(0.35):
+                # Short phrase whose trailing silence trim would erase the utterance itself.
+                keep = max(min_bytes, len(raw) - min(trim_bytes, len(raw) // 2))
+                raw = raw[:keep]
+            else:
+                raw = b""
+
         if len(raw) < min_bytes:
             return
 
         self._last_completed_utterance_id = self._utterance_id
+        preferred_bytes = self._bytes_for_secs(PREFERRED_FINAL_SECS)
         window_bytes = self._bytes_for_secs(FINAL_WINDOW_SECS)
         clip = raw[-window_bytes:] if len(raw) > window_bytes else raw
+        if len(clip) < preferred_bytes and len(self._turn_recent_audio) > 0:
+            needed = preferred_bytes - len(clip)
+            clip = self._turn_recent_audio.tail_bytes(needed) + clip
+        self._turn_recent_audio.append(raw, self._bytes_for_secs(MAX_BUFFER_SECS))
         self._spawn_classification(
             clip,
             sample_rate=self._sample_rate,
@@ -805,23 +866,24 @@ class AudioEmotionObserver(FrameProcessor):
             ):
                 return
 
-            raw_choice = str(emotion_answer.choice or "calm").strip().lower()
-            confidence = float(emotion_answer.confidence or 0.0)
-            if raw_choice not in EMOTION_BY_KEY or (
-                raw_choice != "calm" and confidence < MIN_CONFIDENCE_FOR_NON_CALM
-            ):
-                raw_choice = "calm"
-
-            descriptor = EMOTION_BY_KEY[raw_choice]
+            final_choice, raw_choice, confidence, top3 = _resolve_emotion_choice(
+                emotion_answer
+            )
+            descriptor = EMOTION_BY_KEY[final_choice]
             latency_ms = int(round((time.perf_counter() - started) * 1000))
             self._latest_emitted_seq = max(self._latest_emitted_seq, seq)
+            clip_secs = len(pcm_bytes) / max(1, sample_rate * 2)
+            top3_str = ",".join(f"{k}:{v:.2f}" for k, v in top3)
 
             logger.debug(
-                "[EmotionPerception] session={} utt={} emotion={} ({:.0%}) interim={} latency={}ms tok={}/{}",
+                "[EmotionPerception] session={} utt={} emotion={} raw={} ({:.0%}) top3=[{}] clip={:.2f}s interim={} latency={}ms tok={}/{}",
                 self._session_id or "-",
                 utterance_id,
                 descriptor.key,
+                raw_choice,
                 confidence,
+                top3_str,
+                clip_secs,
                 interim,
                 latency_ms,
                 input_tokens,

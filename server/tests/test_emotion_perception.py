@@ -39,6 +39,7 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 import processors.emotion_perception as emo_mod
 from processors.emotion_perception import (
     AudioEmotionObserver,
+    _resolve_emotion_choice,
     compute_pcm16_rms,
     resolve_decision_api_key_async,
 )
@@ -753,6 +754,104 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
 
         emo_mod._SECRET_MANAGER_CACHE.clear()
         emo_mod._IN_FLIGHT_KEY_LOOKUPS.clear()
+
+    async def test_resolve_choice_preserves_realistic_non_calm_and_uncollapses_negative_split(
+        self,
+    ) -> None:
+        # Realistic 9-way softmax win at 33% must NOT be coerced back to calm.
+        choice_33 = ChoiceResult(
+            choice="frustrated",
+            probabilities={"frustrated": 0.33, "calm": 0.29, "angry": 0.19},
+            confidence=0.33,
+        )
+        final_33, raw_33, conf_33, top3_33 = _resolve_emotion_choice(choice_33)
+        self.assertEqual(final_33, "frustrated")
+        self.assertEqual(raw_33, "frustrated")
+        self.assertAlmostEqual(conf_33, 0.33)
+        self.assertEqual(top3_33[0][0], "frustrated")
+
+        # When calm edges ahead (< 0.40) solely because angry + frustrated split negative mass,
+        # un-collapse to the leading negative label.
+        split_neg = ChoiceResult(
+            choice="calm",
+            probabilities={"calm": 0.36, "angry": 0.27, "frustrated": 0.24},
+            confidence=0.36,
+        )
+        final_neg, raw_neg, conf_neg, _ = _resolve_emotion_choice(split_neg)
+        self.assertEqual(raw_neg, "calm")
+        self.assertEqual(final_neg, "angry")
+        self.assertAlmostEqual(conf_neg, 0.51)
+
+        # Genuine calm >= 0.40 must never be flipped.
+        real_calm = ChoiceResult(
+            choice="calm",
+            probabilities={"calm": 0.50, "curious": 0.20, "frustrated": 0.13},
+            confidence=0.50,
+        )
+        final_calm, _, _, _ = _resolve_emotion_choice(real_calm)
+        self.assertEqual(final_calm, "calm")
+
+    async def test_short_utterance_not_dropped_by_stop_trim_and_within_turn_topup(self) -> None:
+        fake = _FakeDecisionsClassifier(
+            [
+                ("frustrated", 0.34, 0.0, 40, 0),
+                ("frustrated", 0.48, 0.0, 50, 0),
+                ("calm", 0.62, 0.0, 42, 0),
+            ]
+        )
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
+        captured = await self._attach_capture(observer)
+
+        # Utterance 1: 0.54s brief phrase with Silero stop_secs=0.40 must NOT be dropped.
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await observer.process_frame(
+            InputAudioRawFrame(audio=_make_pcm_chunk(0.54, 9000), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await observer.process_frame(
+            VADUserStoppedSpeakingFrame(stop_secs=0.40),
+            FrameDirection.DOWNSTREAM,
+        )
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertGreaterEqual(fake.calls[0]["audio_secs"], 0.25)
+
+        # Utterance 2 in same turn before BotStoppedSpeakingFrame tops up with Utterance 1's tail.
+        u1_secs = fake.calls[0]["audio_secs"]
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await observer.process_frame(
+            InputAudioRawFrame(audio=_make_pcm_chunk(0.60, 9000), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await observer.process_frame(
+            VADUserStoppedSpeakingFrame(stop_secs=0.20),
+            FrameDirection.DOWNSTREAM,
+        )
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertAlmostEqual(fake.calls[1]["audio_secs"], u1_secs + 0.40, delta=0.05)
+
+        # BotStoppedSpeakingFrame clears recent turn top-up so the next turn is evaluated cleanly alone.
+        await observer.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await observer.process_frame(
+            InputAudioRawFrame(audio=_make_pcm_chunk(0.54, 9000), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await observer.process_frame(
+            VADUserStoppedSpeakingFrame(stop_secs=0.40),
+            FrameDirection.DOWNSTREAM,
+        )
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(fake.calls), 3)
+        self.assertAlmostEqual(fake.calls[2]["audio_secs"], 0.27, delta=0.04)
+
+        msgs = [
+            f.message["data"]
+            for f, _ in captured
+            if isinstance(f, OutputTransportMessageUrgentFrame)
+        ]
+        self.assertEqual([m["emotion"] for m in msgs], ["frustrated", "frustrated", "calm"])
 
 
 if __name__ == "__main__":
