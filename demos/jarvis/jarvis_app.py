@@ -16,6 +16,7 @@ import os
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +34,56 @@ _COMPACT_WIDTH, _COMPACT_HEIGHT = 360, 56
 _PILL_STATE = Path.home() / ".jarvis" / "pill.json"
 
 
-def _saved_pill_position(default_x: int, default_y: int) -> tuple[int, int]:
+def _saved_pill_position() -> tuple[float, float] | None:
+    """Saved (centre x, top y) of the pill in global screen points, if on a display."""
     try:
         data = json.loads(_PILL_STATE.read_text())
-        return int(data["cx"] - _COMPACT_WIDTH / 2), int(data["y"])
+        cx, top = float(data["gcx"]), float(data["gtop"])
     except Exception:
-        return default_x, default_y
+        return None
+    try:
+        for d in mac_actions.MacDesktop().list_displays():
+            if d.origin_x <= cx < d.origin_x + d.width and d.origin_y <= top < d.origin_y + d.height:
+                return cx, top
+    except Exception:
+        return None
+    return None
+
+
+def _jarvis_nswindow():
+    import AppKit
+
+    for w in AppKit.NSApp.windows():
+        if str(w.title()) == "Jarvis":
+            return w
+    return None
+
+
+def _set_pill_frame(width: float, height: float, gcx: float | None = None,
+                    gtop: float | None = None) -> None:
+    """Resizes/moves the pill on the main thread using global screen points.
+
+    Global points have their origin at the top-left of the main display (like
+    Quartz); Cocoa's origin is the bottom-left, so y is flipped here. Without
+    gcx/gtop the pill keeps its current centre and top edge, so a pill the user
+    dragged (even to another monitor) stays put.
+    """
+    import AppKit
+    from PyObjCTools import AppHelper
+
+    def _apply() -> None:
+        w = _jarvis_nswindow()
+        if w is None:
+            return
+        main_h = AppKit.NSScreen.screens()[0].frame().size.height
+        f = w.frame()
+        cx = gcx if gcx is not None else f.origin.x + f.size.width / 2
+        top = gtop if gtop is not None else main_h - (f.origin.y + f.size.height)
+        x = cx - width / 2
+        y_cocoa = main_h - top - height
+        w.setFrame_display_(AppKit.NSMakeRect(x, y_cocoa, width, height), True)
+
+    AppHelper.callAfter(_apply)
 
 
 class WebviewBridge:
@@ -47,6 +92,7 @@ class WebviewBridge:
     def __init__(self) -> None:
         self.window: Any = None
         self.screen_width = 0
+        self.placed = False
         self.control = bot.JarvisControl()
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -80,24 +126,31 @@ class WebviewBridge:
             return
         width, height = (_COMPACT_WIDTH, _COMPACT_HEIGHT) if compact else (_WIDTH, _HEIGHT)
         try:
-            # Grow/shrink around the pill's current centre so a pill the user
-            # dragged elsewhere (even to another screen) stays where they put it.
-            old_w = window.width or width
-            cx = (window.x or 0) + old_w / 2
-            window.resize(width, height)
-            window.move(int(cx - width / 2), int(window.y or 0))
+            # Grow/shrink around the pill's current centre and top edge, so a
+            # pill the user dragged (even to another screen) stays where it is.
+            _set_pill_frame(width, height)
         except Exception:
             logger.opt(exception=True).debug("Failed to resize Jarvis window")
 
     def remember_position(self, *_args) -> None:
         """Saves the pill's position so Jarvis reopens where the user left it."""
         window = self.window
-        if not window:
-            return
+        if not window or not self.placed:
+            return  # Ignore pywebview's own startup placement.
         try:
-            _PILL_STATE.parent.mkdir(parents=True, exist_ok=True)
-            cx = (window.x or 0) + (window.width or _COMPACT_WIDTH) / 2
-            _PILL_STATE.write_text(json.dumps({"cx": cx, "y": window.y or 0}))
+            import Quartz
+
+            own = os.getpid()
+            for w in Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+            ) or []:
+                b = w.get("kCGWindowBounds") or {}
+                if w.get("kCGWindowOwnerPID") == own and b.get("Width", 0) >= 50:
+                    _PILL_STATE.parent.mkdir(parents=True, exist_ok=True)
+                    _PILL_STATE.write_text(json.dumps(
+                        {"gcx": b["X"] + b["Width"] / 2, "gtop": b["Y"]}
+                    ))
+                    return
         except Exception:
             logger.opt(exception=True).debug("Failed to save Jarvis pill position")
 
@@ -203,15 +256,14 @@ def main() -> None:
 
     screen = webview.screens[0]
     bridge.screen_width = int(screen.width)
-    start_x, start_y = _saved_pill_position(int((screen.width - _COMPACT_WIDTH) / 2), 0)
     window = webview.create_window(
         "Jarvis",
         url=_UI_FILE.as_uri(),
         js_api=_JsApi(bridge),
         width=_COMPACT_WIDTH,
         height=_COMPACT_HEIGHT,
-        x=start_x,
-        y=start_y,
+        x=int((screen.width - _COMPACT_WIDTH) / 2),
+        y=0,
         frameless=True,
         easy_drag=False,
         transparent=True,
@@ -224,9 +276,29 @@ def main() -> None:
     window.events.loaded += bridge.mark_ready
     window.events.moved += bridge.remember_position
 
+    # Place the pill ourselves once the window exists (pywebview's own x/y is
+    # relative to whichever screen it picks and can't target other monitors):
+    # the saved spot, else the top centre of the main display.
+    saved = _saved_pill_position()
+    if saved is None:
+        main = mac_actions.MacDesktop().list_displays()[0]
+        saved = (main.origin_x + main.width / 2, main.origin_y + 34)
+
+    def _place() -> None:
+        time.sleep(0.4)  # Let pywebview finish its own initial placement first.
+        _set_pill_frame(_COMPACT_WIDTH, _COMPACT_HEIGHT, saved[0], saved[1])
+        time.sleep(0.3)
+        bridge.placed = True  # From now on, moves are the user dragging the pill.
+
+    window.events.shown += lambda: threading.Thread(target=_place, daemon=True).start()
+
     threading.Thread(target=_run_pipeline, args=(bridge,), daemon=True).start()
     try:
         webview.start()
+    except BaseException:
+        # os._exit below skips normal traceback printing, so log it first.
+        logger.exception("Jarvis window crashed")
+        raise
     finally:
         bridge.control.stop()
         sys.stdout.flush()
