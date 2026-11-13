@@ -102,6 +102,10 @@ How you work:
   text, e.g. click_text("Why AI Infrastructure Is Moving to Rust")). Use x/y
   click only for unlabeled targets; aim at the centre and, if it misses, check
   the follow-up screenshot and adjust. Never repeat the same x/y after a miss.
+- Each screenshot result names what it shows (screen N, front app, window
+  title, top windows on that screen). When describing the screen, say which
+  screen and app you're looking at; if that isn't what the user means, ask
+  or switch (switch_to_tab / look_at_screen(display=N)) instead of guessing.
 - Before clicking for the first time in a turn, call look_at_screen only if you
   have not received a screenshot yet. Coordinates are pixels in the latest screenshot.
 - Every action tool (click, type_text, press_keys, open_app, open_url, scroll,
@@ -389,6 +393,7 @@ class JarvisTools:
         self._ui = ui
         # Which Chrome the last meet_join used, so meet_action focuses that one.
         self._meet_isolated = False
+        self._last_frame_at = 0.0
 
     def _bring_to_home_display(self) -> int | None:
         """Moves the window an action just opened onto Jarvis's screen.
@@ -410,14 +415,34 @@ class JarvisTools:
             except Exception:
                 return None
 
+    # Pipecat's GeminiLiveLLMService silently drops video frames sent less than
+    # 1 s after the previous one, so a screenshot taken too soon never reached
+    # the model while the tool result still claimed it was "fresh". Space them.
+    _MIN_FRAME_GAP = 1.15
+
     async def _look(self, display: int | None = None, pin: bool = False) -> dict[str, Any]:
         shot = await asyncio.to_thread(self._desktop.screenshot, display, pin)
+        wait = self._MIN_FRAME_GAP - (time.monotonic() - self._last_frame_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
         await self._feeder.send_screenshot(shot)
-        return {
+        self._last_frame_at = time.monotonic()
+        info: dict[str, Any] = {
             "screenshot_size": list(shot.size),
             "display": shot.display,
             "display_count": shot.display_count,
         }
+        front = await asyncio.to_thread(self._safe_front_info, shot.display)
+        if front:
+            info.update(front)
+        return info
+
+    def _safe_front_info(self, display: int) -> dict[str, str]:
+        try:
+            return self._desktop.front_window_info(display)
+        except Exception:
+            logger.opt(exception=True).debug("front_window_info failed")
+            return {}
 
     async def _act(
         self,

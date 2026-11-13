@@ -1089,6 +1089,51 @@ class MacDesktop:
                 self._active_display = d.index
                 return
 
+    def front_window_info(self, display: int) -> dict[str, Any]:
+        """What a screenshot of `display` shows: front app and top windows there."""
+        import AppKit
+        import Quartz
+
+        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        front_pid = app.processIdentifier() if app else None
+        displays = self.list_displays()
+        if not 1 <= display <= len(displays):
+            return {}
+        d = displays[display - 1]
+        own = os.getpid()
+        top: list[str] = []
+        front_title = ""
+        for w in Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        ) or []:
+            if w.get("kCGWindowLayer", 0) != 0 or w.get("kCGWindowOwnerPID") == own:
+                continue
+            b = w.get("kCGWindowBounds") or {}
+            if b.get("Width", 0) < 200 or b.get("Height", 0) < 150:
+                continue
+            cx, cy = b["X"] + b["Width"] / 2, b["Y"] + b["Height"] / 2
+            if not (d.origin_x <= cx < d.origin_x + d.width and d.origin_y <= cy < d.origin_y + d.height):
+                continue
+            label = str(w.get("kCGWindowOwnerName", ""))
+            title = str(w.get("kCGWindowName", "") or "")
+            if title:
+                label += f" — {title[:70]}"
+            if not front_title and w.get("kCGWindowOwnerPID") == front_pid:
+                front_title = label
+            if len(top) < 3:
+                top.append(label)
+        info: dict[str, Any] = {"shows": f"screen {display}"}
+        if top:
+            info["top_windows_on_screen"] = top
+        if app is not None:
+            info["front_app"] = str(app.localizedName())
+            if front_title:
+                info["front_window"] = front_title
+            else:
+                info["front_app_note"] = "front app's window is on another screen"
+        return info
+
     def front_window_display(self) -> int | None:
         """1-based display index showing the frontmost app's top window, if any."""
         import AppKit
