@@ -13,6 +13,7 @@ export type UserEmotionReading = {
   readonly interim: boolean;
   readonly latencyMs: number;
   readonly inputTokens: number;
+  readonly outputTokens?: number;
   readonly model: string;
   readonly seq?: number;
   readonly utteranceId?: number;
@@ -20,6 +21,7 @@ export type UserEmotionReading = {
 
 export type MessageMetrics = {
   responseId?: string;
+  utteranceId?: number;
   costEstimated?: boolean;
   costIncomplete?: boolean;
   costMinUSD?: number | null;
@@ -570,7 +572,10 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
         pendingSTTLatency = null;
         lastTurnSTTLatency = effStt ?? null;
-        events.onMessage("user", data.text, false, { sttLatency: effStt });
+        events.onMessage("user", data.text, false, {
+          sttLatency: effStt,
+          utteranceId: typeof data.utterance_id === "number" ? data.utterance_id : undefined,
+        });
         events.onPhase("thinking");
       } else {
         const effLlm = data.ttft !== undefined ? data.ttft : (!data.response_id && pendingLLMLatency !== null ? pendingLLMLatency : undefined);

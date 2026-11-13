@@ -16,8 +16,9 @@ import re
 import unicodedata
 
 from pipecat.utils.text.base_text_aggregator import Aggregation, TextType
-from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
+from pipecat.utils.text.base_text_filter import BaseTextFilter
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
+from pipecat.utils.text.transforms import strip_markdown
 
 GEMINI_38_TTS_MODELS = frozenset({"gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"})
 
@@ -67,9 +68,9 @@ _DIRECTION = re.compile(r"\[\[\s*([^\[\]]{1,200}?)\s*\]\]")
 # Halves of a block the sentence aggregator cut apart ("[[calm, slow." | "pace]] Suno.").
 _OPEN_FRAGMENT = re.compile(r"\[\[[^\]]*$")
 _CLOSE_FRAGMENT = re.compile(r"^[^\[]*\]\]")
-# Private-use sentinels survive markdown filtering untouched.
-_SENTINEL = "\ue000{}\ue001"
-_SENTINEL_RE = re.compile("\ue000(\\d+)\ue001")
+# Private-use sentinels survive markdown filtering untouched (avoid \ue000-\ue00f used by Pipecat StripMarkdown).
+_SENTINEL = "\ue100{}\ue101"
+_SENTINEL_RE = re.compile("\ue100(\\d+)\ue101")
 
 
 def is_gemini_38_tts(model: str | None) -> bool:
@@ -344,8 +345,11 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
         self._released = 0
 
 
-class Gemini38TextFilter(MarkdownTextFilter):
-    """MarkdownTextFilter that preserves Gemini 3.8 vocal tags and [[direction]] blocks, and drops |backchannels|."""
+class Gemini38TextFilter(BaseTextFilter):
+    """Text filter/transform that preserves Gemini 3.8 vocal tags and [[direction]] blocks, and drops |backchannels|."""
+
+    async def __call__(self, text: str, text_type: str | TextType = TextType.SENTENCE) -> str:
+        return await self.filter(text)
 
     async def filter(self, text: str) -> str:
         kept: list[str] = []
@@ -362,7 +366,8 @@ class Gemini38TextFilter(MarkdownTextFilter):
         staged = _PIPE_BACKCHANNEL.sub(" ", text or "")
         staged = _DIRECTION.sub(lambda m: keep(f"[[{m.group(1).strip()}]]"), staged)
         staged = _ANGLE_TAG.sub(protect_tag, staged)
-        filtered = await super().filter(staged)
+        staged = re.sub(r"</?[a-zA-Z][^>]*>", " ", staged)
+        filtered = await strip_markdown(staged, TextType.SENTENCE)
         restored = _SENTINEL_RE.sub(lambda m: kept[int(m.group(1))], filtered)
         return _SPACES.sub(" ", restored).strip()
 

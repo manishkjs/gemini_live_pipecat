@@ -29,6 +29,23 @@ import { computeTurnTtfbSeconds } from "@/lib/call-console";
 import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
+const PENDING_EMOTION_TTL_MS = 6000;
+const OPEN_TURN_FINAL_WINDOW_MS = 5000;
+const DOCK_EMOTION_TTL_MS = 5200;
+const DOCK_SPEAKING_FINAL_TTL_MS = 4500;
+
+interface PendingCallerEmotion {
+  readonly reading: UserEmotionReading;
+  readonly recordedAt: number;
+}
+
+interface OpenCallerTurn {
+  readonly messageId: string;
+  readonly utteranceId?: number;
+  botReplied: boolean;
+  readonly openedAt: number;
+}
+
 /** A transcript entry. Assistant text arrives as a raw script; the reader sees `transcriptText` of it. */
 function transcriptMessage(
   role: Message["role"],
@@ -142,14 +159,45 @@ export function useVoiceSession() {
   const cascadeCostRevision = useRef(-1);
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
-  const pendingUserEmotion = useRef<UserEmotionReading | null>(null);
-  const userTurnAwaitingFinalEmotion = useRef(false);
+  const pendingCallerEmotion = useRef<PendingCallerEmotion | null>(null);
+  const openCallerTurn = useRef<OpenCallerTurn | null>(null);
+  const utteranceMessageIds = useRef(new Map<number, string>());
+  const utteranceReadings = useRef(new Map<number, UserEmotionReading>());
+  const turnSettledBeforeBotReply = useRef(false);
   const [liveEmotion, setLiveEmotion] = useState<UserEmotionReading | null>(null);
+  const [dockEmotion, setDockEmotion] = useState<UserEmotionReading | null>(null);
+  const dockEmotionRef = useRef<UserEmotionReading | null>(null);
+  const dockEmotionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [emotionStats, setEmotionStats] = useState<{
     readonly count: number;
     readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
     readonly lastLatencyMs: number | null;
-  }>({ count: 0, totalInputTokens: 0, lastLatencyMs: null });
+  }>({ count: 0, totalInputTokens: 0, totalOutputTokens: 0, lastLatencyMs: null });
+
+  const clearDockEmotion = useCallback(() => {
+    if (dockEmotionTimer.current) {
+      clearTimeout(dockEmotionTimer.current);
+      dockEmotionTimer.current = null;
+    }
+    dockEmotionRef.current = null;
+    setDockEmotion(null);
+  }, []);
+
+  const publishDockEmotion = useCallback((reading: UserEmotionReading, ttlMs = DOCK_EMOTION_TTL_MS) => {
+    if (dockEmotionTimer.current) {
+      clearTimeout(dockEmotionTimer.current);
+    }
+    dockEmotionRef.current = reading;
+    setDockEmotion(reading);
+    const timer = setTimeout(() => {
+      dockEmotionTimer.current = null;
+      dockEmotionRef.current = null;
+      setDockEmotion(null);
+    }, ttlMs);
+    (timer as { unref?: () => void }).unref?.();
+    dockEmotionTimer.current = timer;
+  }, []);
   const seenEvents = useRef(new Set<string>());
   const starting = useRef(false);
   const [interruptCount, setInterruptCount] = useState(0);
@@ -300,6 +348,7 @@ export function useVoiceSession() {
     return () => {
       run.current++;
       timers.current.forEach(clearTimeout);
+      if (dockEmotionTimer.current) clearTimeout(dockEmotionTimer.current);
       if (sampleTimer.current) clearTimeout(sampleTimer.current);
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         window.speechSynthesis.cancel();
@@ -344,12 +393,14 @@ export function useVoiceSession() {
     publishAudioLevel(0);
     setMuted(false);
     setPartialUser("");
-    pendingUserEmotion.current = null;
-    userTurnAwaitingFinalEmotion.current = false;
+    pendingCallerEmotion.current = null;
+    openCallerTurn.current = null;
+    turnSettledBeforeBotReply.current = false;
+    clearDockEmotion();
     starting.current = false;
     avatarStream.reset();
     if (current) await current.disconnect();
-  }, [avatarStream, publishAudioLevel, stopVoiceSample]);
+  }, [avatarStream, clearDockEmotion, publishAudioLevel, stopVoiceSample]);
 
   const resetConversation = (personaId = settings.personaId) => {
     stopVoiceSample();
@@ -381,10 +432,14 @@ export function useVoiceSession() {
     ledger.current = new UsageLedger();
     responseMetrics.current.clear();
     lastAssistantMetrics.current = null;
-    pendingUserEmotion.current = null;
-    userTurnAwaitingFinalEmotion.current = false;
+    pendingCallerEmotion.current = null;
+    openCallerTurn.current = null;
+    utteranceMessageIds.current.clear();
+    utteranceReadings.current.clear();
+    turnSettledBeforeBotReply.current = false;
+    clearDockEmotion();
     setLiveEmotion(null);
-    setEmotionStats({ count: 0, totalInputTokens: 0, lastLatencyMs: null });
+    setEmotionStats({ count: 0, totalInputTokens: 0, totalOutputTokens: 0, lastLatencyMs: null });
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
@@ -505,6 +560,9 @@ export function useVoiceSession() {
           if (value !== "connecting" && value !== "idle" && callStartedAt.current === null) {
             callStartedAt.current = Date.now();
           }
+          if (value === "speaking" && dockEmotionRef.current?.interim) {
+            clearDockEmotion();
+          }
           setPhase(value);
         },
         onMessage: (role, text, append, metrics) => {
@@ -528,21 +586,76 @@ export function useVoiceSession() {
             metrics = merged;
           }
           if (role === "user") {
+            const now = performance.now();
             lastAssistantMetrics.current = null;
             setPartialUser("");
-            const queuedEmotion = pendingUserEmotion.current;
-            pendingUserEmotion.current = null;
-            if (queuedEmotion) {
-              metrics = { ...metrics, userEmotion: queuedEmotion };
-              userTurnAwaitingFinalEmotion.current = queuedEmotion.interim;
-            } else {
-              userTurnAwaitingFinalEmotion.current = true;
-            }
             if (metrics?.sttLatency !== undefined) {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
+            const uttId = metrics?.utteranceId;
+            let attachedEmotion: UserEmotionReading | undefined;
+            const pending = pendingCallerEmotion.current;
+            if (pending && now - pending.recordedAt > PENDING_EMOTION_TTL_MS) {
+              pendingCallerEmotion.current = null;
+            }
+            const freshPending = pendingCallerEmotion.current;
+            const existingMsgForUtterance =
+              uttId !== undefined ? utteranceMessageIds.current.get(uttId) : undefined;
+            const cachedUtteranceReading =
+              uttId !== undefined ? utteranceReadings.current.get(uttId) : undefined;
+            if (existingMsgForUtterance !== undefined) {
+              // Continuation sentence of an already-badged utterance: leave emotion on primary bubble.
+            } else if (cachedUtteranceReading !== undefined) {
+              attachedEmotion = cachedUtteranceReading;
+              if (freshPending?.reading.utteranceId === uttId) {
+                pendingCallerEmotion.current = null;
+              }
+            } else if (
+              freshPending &&
+              (freshPending.reading.utteranceId === undefined ||
+                uttId === undefined ||
+                freshPending.reading.utteranceId === uttId)
+            ) {
+              attachedEmotion = freshPending.reading;
+              pendingCallerEmotion.current = null;
+            } else if (
+              freshPending &&
+              freshPending.reading.utteranceId !== undefined &&
+              uttId !== undefined &&
+              freshPending.reading.utteranceId < uttId
+            ) {
+              pendingCallerEmotion.current = null;
+            }
+
+            if (attachedEmotion) {
+              metrics = { ...metrics, userEmotion: attachedEmotion };
+            }
+            const entry = transcriptMessage("user", text, metrics, callStartedAt.current);
+            const effectiveUttId = uttId ?? attachedEmotion?.utteranceId;
+            const alreadyClaimedUtterance =
+              effectiveUttId !== undefined && utteranceMessageIds.current.has(effectiveUttId);
+            if (effectiveUttId !== undefined && !alreadyClaimedUtterance) {
+              utteranceMessageIds.current.set(effectiveUttId, entry.id);
+            }
+
+            if (attachedEmotion && !attachedEmotion.interim) {
+              openCallerTurn.current = null;
+              turnSettledBeforeBotReply.current = true;
+            } else if (!alreadyClaimedUtterance && !turnSettledBeforeBotReply.current) {
+              openCallerTurn.current = {
+                messageId: entry.id,
+                utteranceId: effectiveUttId,
+                botReplied: false,
+                openedAt: now,
+              };
+            }
+            setMessages((items) => [...items, entry]);
+            return;
           } else {
-            userTurnAwaitingFinalEmotion.current = false;
+            turnSettledBeforeBotReply.current = false;
+            if (openCallerTurn.current) {
+              openCallerTurn.current.botReplied = true;
+            }
             const nextAssistantMetrics: MessageMetrics = {
               ...(lastAssistantMetrics.current?.responseId &&
               metrics?.responseId &&
@@ -745,6 +858,7 @@ export function useVoiceSession() {
           } else if (type === "user_emotion") {
             if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
             if (typeof val?.emoji !== "string" || typeof val?.title !== "string") return;
+            const now = performance.now();
             const reading: UserEmotionReading = {
               emotion: typeof val.emotion === "string" ? val.emotion : "calm",
               emoji: val.emoji,
@@ -753,25 +867,80 @@ export function useVoiceSession() {
               interim: Boolean(val.interim),
               latencyMs: Number.isFinite(val.latency_ms) ? Math.max(0, Math.round(Number(val.latency_ms))) : 0,
               inputTokens: Number.isFinite(val.input_tokens) ? Math.max(0, Math.round(Number(val.input_tokens))) : 0,
+              outputTokens: Number.isFinite(val.output_tokens) ? Math.max(0, Math.round(Number(val.output_tokens))) : 0,
               model: typeof val.model === "string" ? val.model : "gemini-decision-1",
               seq: typeof val.seq === "number" ? val.seq : undefined,
               utteranceId: typeof val.utterance_id === "number" ? val.utterance_id : undefined,
             };
-            setLiveEmotion(reading);
-            setEmotionStats((prev) => ({
-              count: prev.count + 1,
-              totalInputTokens: prev.totalInputTokens + reading.inputTokens,
-              lastLatencyMs: reading.latencyMs,
-            }));
-            if (userTurnAwaitingFinalEmotion.current) {
-              if (!reading.interim) {
-                userTurnAwaitingFinalEmotion.current = false;
-                pendingUserEmotion.current = null;
+            setLiveEmotion((prev) => {
+              if (
+                prev &&
+                reading.interim &&
+                reading.seq !== undefined &&
+                prev.seq !== undefined &&
+                reading.seq < prev.seq
+              ) {
+                return prev;
               }
+              return reading;
+            });
+            const prevDock = dockEmotionRef.current;
+            const shouldUpdateDock =
+              !prevDock ||
+              !reading.interim ||
+              reading.seq === undefined ||
+              prevDock.seq === undefined ||
+              reading.seq >= prevDock.seq;
+            if (shouldUpdateDock) {
+              publishDockEmotion(
+                reading,
+                reading.interim ? DOCK_EMOTION_TTL_MS : DOCK_SPEAKING_FINAL_TTL_MS,
+              );
+            }
+            setEmotionStats((prev) => {
+              const nextIn = Number.isFinite(val.total_input_tokens)
+                ? Math.max(prev.totalInputTokens, Math.round(Number(val.total_input_tokens)))
+                : prev.totalInputTokens + reading.inputTokens;
+              const nextOut = Number.isFinite(val.total_output_tokens)
+                ? Math.max(prev.totalOutputTokens, Math.round(Number(val.total_output_tokens)))
+                : prev.totalOutputTokens + (reading.outputTokens ?? 0);
+              return {
+                count: prev.count + 1,
+                totalInputTokens: nextIn,
+                totalOutputTokens: nextOut,
+                lastLatencyMs: reading.latencyMs,
+              };
+            });
+
+            if (reading.utteranceId !== undefined) {
+              const prevUttReading = utteranceReadings.current.get(reading.utteranceId);
+              if (!prevUttReading || prevUttReading.interim || !reading.interim) {
+                utteranceReadings.current.set(reading.utteranceId, reading);
+              }
+            }
+            if (reading.interim) {
+              turnSettledBeforeBotReply.current = false;
+            }
+
+            const applyToMessageId = (targetId: string) => {
               setMessages((items) => {
-                const idx = items.findLastIndex((m) => m.role === "user");
+                const idx = items.findIndex((m) => m.id === targetId);
                 if (idx === -1) return items;
                 const target = items[idx];
+                const existing = target.metrics?.userEmotion;
+                // Never overwrite a settled final emotion with a late interim.
+                if (existing && !existing.interim && reading.interim) {
+                  return items;
+                }
+                if (
+                  existing &&
+                  reading.interim &&
+                  reading.seq !== undefined &&
+                  existing.seq !== undefined &&
+                  reading.seq < existing.seq
+                ) {
+                  return items;
+                }
                 const next = [...items];
                 next[idx] = {
                   ...target,
@@ -779,8 +948,62 @@ export function useVoiceSession() {
                 };
                 return next;
               });
+            };
+
+            const matchedMessageId =
+              reading.utteranceId !== undefined
+                ? utteranceMessageIds.current.get(reading.utteranceId)
+                : undefined;
+            if (matchedMessageId !== undefined) {
+              applyToMessageId(matchedMessageId);
+              if (!reading.interim && openCallerTurn.current?.messageId === matchedMessageId) {
+                openCallerTurn.current = null;
+              }
+              if (
+                pendingCallerEmotion.current?.reading.utteranceId === reading.utteranceId
+              ) {
+                pendingCallerEmotion.current = null;
+              }
+              return;
+            }
+
+            if (reading.interim) {
+              if (openCallerTurn.current?.botReplied) {
+                openCallerTurn.current = null;
+              }
+              const existingPending = pendingCallerEmotion.current;
+              if (
+                !existingPending ||
+                existingPending.reading.interim ||
+                (reading.utteranceId !== undefined &&
+                  existingPending.reading.utteranceId !== reading.utteranceId)
+              ) {
+                pendingCallerEmotion.current = { reading, recordedAt: now };
+              }
+              return;
+            }
+
+            const openTurn = openCallerTurn.current;
+            const openTurnFresh =
+              openTurn !== null && now - openTurn.openedAt <= OPEN_TURN_FINAL_WINDOW_MS;
+            const openTurnMatches =
+              openTurnFresh &&
+              openTurn !== null &&
+              (reading.utteranceId === undefined ||
+                openTurn.utteranceId === undefined ||
+                reading.utteranceId === openTurn.utteranceId);
+            if (openTurnMatches && openTurn !== null) {
+              if (reading.utteranceId !== undefined) {
+                utteranceMessageIds.current.set(reading.utteranceId, openTurn.messageId);
+              }
+              applyToMessageId(openTurn.messageId);
+              openCallerTurn.current = null;
+              pendingCallerEmotion.current = null;
             } else {
-              pendingUserEmotion.current = reading;
+              if (openTurn && !openTurnFresh) {
+                openCallerTurn.current = null;
+              }
+              pendingCallerEmotion.current = { reading, recordedAt: now };
             }
           }
         },
@@ -823,6 +1046,7 @@ export function useVoiceSession() {
           publishAudioLevel(0);
           setMuted(false);
           setPartialUser("");
+          clearDockEmotion();
           session.current = null;
           starting.current = false;
           avatarStream.reset();
@@ -925,7 +1149,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     playingSample, subscribeAudioLevel, getAudioLevel,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
-    liveEmotion, emotionStats,
+    liveEmotion, dockEmotion, emotionStats,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     toolInjection, dismissToolInjection,
     avatarStream, avatarFallbackNotice, setAvatarFallbackNotice, voiceFallbackNotice, setVoiceFallbackNotice,

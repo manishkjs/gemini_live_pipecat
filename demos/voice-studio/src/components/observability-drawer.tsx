@@ -91,6 +91,7 @@ export interface ObservabilityDrawerProps {
   readonly emotionStats?: {
     readonly count: number;
     readonly totalInputTokens: number;
+    readonly totalOutputTokens?: number;
     readonly lastLatencyMs: number | null;
   };
 }
@@ -700,7 +701,9 @@ export default function ObservabilityDrawer({
                 <section className="cs-sec" id="obs-emotion-sec">
                   <h3>
                     <span>Caller perception</span>
-                    <span className="mono-pill">gemini-decision-1</span>
+                    <span className="mono-pill">
+                      {liveEmotion?.model ?? "gemini-decision-1"}
+                    </span>
                   </h3>
                   {liveEmotion ? (
                     <>
@@ -716,7 +719,15 @@ export default function ObservabilityDrawer({
                         <span className="v">
                           {emotionStats?.lastLatencyMs ?? liveEmotion.latencyMs}ms ·{" "}
                           {(emotionStats?.totalInputTokens ?? liveEmotion.inputTokens).toLocaleString()}{" "}
-                          in · 0 out tok
+                          in ·{" "}
+                          {(emotionStats?.totalOutputTokens ?? liveEmotion.outputTokens ?? 0).toLocaleString()}{" "}
+                          out tok
+                        </span>
+                      </div>
+                      <div className="kv">
+                        <span className="k">Reads</span>
+                        <span className="v">
+                          {(emotionStats?.count ?? 1).toLocaleString()} out-of-band (billed separately)
                         </span>
                       </div>
                     </>

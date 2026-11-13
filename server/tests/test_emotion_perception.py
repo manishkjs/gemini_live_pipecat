@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -13,10 +14,12 @@ from pipecat.classifiers.base_classifier import (
     BaseClassifier,
     ChoiceResult,
     ClassifierAudio,
+    ClassifierError,
     ClassifierInput,
     ClassifierQuestion,
     ClassifierResult,
 )
+from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -25,19 +28,29 @@ from pipecat.frames.frames import (
     OutputTransportMessageUrgentFrame,
     StartFrame,
     UserMuteStartedFrame,
+    UserMuteStoppedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.clocks.system_clock import SystemClock
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from processors.emotion_perception import AudioEmotionObserver, compute_pcm16_rms
+import processors.emotion_perception as emo_mod
+from processors.emotion_perception import (
+    AudioEmotionObserver,
+    compute_pcm16_rms,
+    resolve_decision_api_key,
+)
 
 
-def _make_pcm_chunk(duration_secs: float, amplitude: int, sample_rate: int = 16000) -> bytes:
-    count = int(round(duration_secs * sample_rate))
+def _make_pcm_chunk(
+    duration_secs: float,
+    amplitude: int,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> bytes:
+    count = int(round(duration_secs * sample_rate)) * channels
     samples = np.full(count, amplitude, dtype=np.int16)
     return samples.tobytes()
 
@@ -45,10 +58,20 @@ def _make_pcm_chunk(duration_secs: float, amplitude: int, sample_rate: int = 160
 class _FakeDecisionsClassifier(BaseClassifier):
     """Deterministic in-memory BaseClassifier double for emotion unit tests."""
 
-    def __init__(self, scripted: list[tuple[str, float, float, int]] | None = None) -> None:
+    def __init__(
+        self,
+        scripted: list[tuple[str, float, float, int, int] | tuple[str, float, float, int]] | None = None,
+        *,
+        setup_delay_secs: float = 0.0,
+        raise_error: str | None = None,
+    ) -> None:
         super().__init__()
-        self._scripted = list(scripted or [("frustrated", 0.91, 0.0, 48)])
+        self._scripted = list(scripted or [("frustrated", 0.91, 0.0, 48, 4)])
+        self._setup_delay_secs = setup_delay_secs
+        self._raise_error = raise_error
         self.calls: list[dict] = []
+        self._call_counter = 0
+        self.setup_calls = 0
         self._usage = SimpleNamespace(input_tokens=0, output_tokens=0)
         self.client = SimpleNamespace(usage=self._usage)
 
@@ -60,34 +83,50 @@ class _FakeDecisionsClassifier(BaseClassifier):
     def supports_audio(self) -> bool:
         return True
 
+    async def setup(self, task_manager) -> None:
+        self.setup_calls += 1
+        await super().setup(task_manager)
+        if self._setup_delay_secs > 0:
+            await asyncio.sleep(self._setup_delay_secs)
+
     async def _ask(
         self,
         state: str | dict | list,
         questions: dict[str, ClassifierQuestion],
         inputs: tuple[ClassifierInput, ...] = (),
     ) -> tuple[dict[str, ClassifierResult], LLMTokenUsage]:
-        idx = min(len(self.calls), len(self._scripted) - 1)
-        choice, confidence, delay_secs, tok = self._scripted[idx]
+        idx = min(self._call_counter, len(self._scripted) - 1)
+        self._call_counter += 1
+        entry = self._scripted[idx]
+        if len(entry) == 5:
+            choice, confidence, delay_secs, in_tok, out_tok = entry
+        else:
+            choice, confidence, delay_secs, in_tok = entry
+            out_tok = 0
         audio_items = [item for item in inputs if isinstance(item, ClassifierAudio)]
         self.calls.append(
             {
                 "state": state,
                 "questions": list(questions.keys()),
                 "audio_secs": audio_items[0].duration_secs if audio_items else 0.0,
+                "sample_rate": audio_items[0].sample_rate if audio_items else 0,
             }
         )
         if delay_secs > 0:
             await asyncio.sleep(delay_secs)
-        self._usage.input_tokens += tok
+        if self._raise_error:
+            raise ClassifierError(self._raise_error)
+        self._usage.input_tokens += in_tok
+        self._usage.output_tokens += out_tok
         result = ChoiceResult(
             choice=choice,
             probabilities={choice: confidence},
             confidence=confidence,
         )
         return {"emotion": result}, LLMTokenUsage(
-            prompt_tokens=tok,
-            completion_tokens=0,
-            total_tokens=tok,
+            prompt_tokens=in_tok,
+            completion_tokens=out_tok,
+            total_tokens=in_tok + out_tok,
         )
 
 
@@ -110,26 +149,74 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
         observer.push_frame = capture  # type: ignore[method-assign]
         return captured
 
-    async def test_disabled_or_missing_api_key_is_pure_passthrough(self) -> None:
-        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}, clear=False):
-            observer = AudioEmotionObserver(enabled=True, api_key="")
+    async def test_disabled_with_injected_classifier_makes_zero_calls(self) -> None:
+        fake = _FakeDecisionsClassifier([("angry", 0.95, 0.0, 40, 3)])
+        observer = AudioEmotionObserver(enabled=False, classifier=fake)
         self.assertFalse(observer.is_usable)
         captured = await self._attach_capture(observer)
 
-        chunk = InputAudioRawFrame(
-            audio=_make_pcm_chunk(0.8, 12000),
-            sample_rate=16000,
-            num_channels=1,
-        )
-        await observer.process_frame(chunk, FrameDirection.DOWNSTREAM)
-        self.assertEqual(len(captured), 1)
-        self.assertIs(captured[0][0], chunk)
+        await observer.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(5):
+            await observer.process_frame(
+                InputAudioRawFrame(
+                    audio=_make_pcm_chunk(0.2, 10000),
+                    sample_rate=16000,
+                    num_channels=1,
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.03)
+        self.assertEqual(len(fake.calls), 0)
+        self.assertEqual(len(captured), 8)
 
-    async def test_vad_utterance_emits_interim_and_final_emotion_frames(self) -> None:
+    async def test_missing_api_key_logs_warning_and_secret_manager_caches(self) -> None:
+        with mock.patch.dict("os.environ", {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""}, clear=False):
+            with mock.patch.object(emo_mod.logger, "warning") as warn_mock:
+                observer = AudioEmotionObserver(enabled=True, api_key="", session_id="s-nokey")
+                self.assertFalse(observer.is_usable)
+                self.assertTrue(warn_mock.called)
+
+        emo_mod._SECRET_MANAGER_CACHE.clear()
+        fake_sm = mock.MagicMock()
+        fake_sm.access_secret_version.return_value = SimpleNamespace(
+            payload=SimpleNamespace(data=b"sm-test-key-123\n")
+        )
+        fake_sm_module = SimpleNamespace(SecretManagerServiceClient=mock.MagicMock(return_value=fake_sm))
+        with mock.patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""},
+            clear=False,
+        ), mock.patch.dict("sys.modules", {"google.cloud.secretmanager": fake_sm_module, "google.cloud": SimpleNamespace(secretmanager=fake_sm_module)}):
+            key1 = resolve_decision_api_key("proj-emo-test")
+            self.assertEqual(key1, "sm-test-key-123")
+            env_backup = emo_mod.os.environ.pop("GEMINI_API_KEY", None)
+            try:
+                key2 = resolve_decision_api_key("proj-emo-test")
+                self.assertEqual(key2, "sm-test-key-123")
+                self.assertEqual(fake_sm.access_secret_version.call_count, 1)
+            finally:
+                if env_backup is not None:
+                    emo_mod.os.environ["GEMINI_API_KEY"] = env_backup
+        emo_mod._SECRET_MANAGER_CACHE.clear()
+
+    async def test_setup_warms_in_background_without_holding_start_frame(self) -> None:
+        fake = _FakeDecisionsClassifier(setup_delay_secs=1.0)
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
+        t0 = time.perf_counter()
+        captured = await self._attach_capture(observer)
+        await observer.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
+        elapsed = time.perf_counter() - t0
+        self.assertLess(elapsed, 0.05, f"StartFrame blocked by setup warmup ({elapsed:.3f}s)")
+        self.assertEqual(len(captured), 1)
+        self.assertIsInstance(captured[0][0], StartFrame)
+
+    async def test_vad_utterance_emits_interim_and_final_with_output_tokens(self) -> None:
         fake = _FakeDecisionsClassifier(
             [
-                ("hesitant", 0.78, 0.0, 40),
-                ("frustrated", 0.92, 0.0, 64),
+                ("hesitant", 0.78, 0.0, 40, 3),
+                ("frustrated", 0.92, 0.0, 64, 5),
             ]
         )
         observer = AudioEmotionObserver(
@@ -139,12 +226,9 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
         )
         captured = await self._attach_capture(observer)
 
-        await observer.process_frame(
-            StartFrame(),
-            FrameDirection.DOWNSTREAM,
-        )
+        await observer.process_frame(StartFrame(), FrameDirection.DOWNSTREAM)
         await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        # Rewind _last_interim_at slightly so >=1.2s buffered speech triggers interim immediately.
+        self.assertEqual(observer.current_utterance_id, 1)
         observer._last_interim_at -= 2.0
         for _ in range(7):
             await observer.process_frame(
@@ -168,136 +252,270 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(emotion_msgs), 2)
         self.assertTrue(emotion_msgs[0]["interim"])
         self.assertEqual(emotion_msgs[0]["emotion"], "hesitant")
-        self.assertEqual(emotion_msgs[0]["emoji"], "\U0001f61f")
         self.assertEqual(emotion_msgs[0]["input_tokens"], 40)
+        self.assertEqual(emotion_msgs[0]["output_tokens"], 3)
 
         self.assertFalse(emotion_msgs[1]["interim"])
         self.assertEqual(emotion_msgs[1]["emotion"], "frustrated")
-        self.assertEqual(emotion_msgs[1]["emoji"], "\U0001f624")
-        self.assertEqual(emotion_msgs[1]["title"], "Frustrated")
         self.assertEqual(emotion_msgs[1]["input_tokens"], 64)
+        self.assertEqual(emotion_msgs[1]["output_tokens"], 5)
+        self.assertEqual(emotion_msgs[1]["total_input_tokens"], 104)
+        self.assertEqual(emotion_msgs[1]["total_output_tokens"], 8)
 
-    async def test_rms_fallback_detects_speech_without_local_vad_and_ignores_bot_echo(self) -> None:
-        fake = _FakeDecisionsClassifier([("happy", 0.88, 0.0, 52)])
-        observer = AudioEmotionObserver(
-            enabled=True,
-            session_id="sess-live-vad",
-            classifier=fake,
+    async def test_slow_u1_final_is_not_dropped_by_fast_u2_interim(self) -> None:
+        fake = _FakeDecisionsClassifier(
+            [
+                ("frustrated", 0.90, 0.16, 60, 4),  # U1 final (slow)
+                ("happy", 0.86, 0.01, 35, 3),       # U2 interim (fast)
+                ("calm", 0.89, 0.02, 50, 4),        # U2 final
+            ]
         )
+        observer = AudioEmotionObserver(enabled=True, session_id="sess-u1-u2", classifier=fake)
+        captured = await self._attach_capture(observer)
+
+        # Utterance 1 (short enough to skip interim, triggers final)
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(4):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+        # Utterance 2 starts immediately and emits a fast interim before U1 final returns
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        observer._last_interim_at -= 2.0
+        for _ in range(7):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await asyncio.sleep(0.22)
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.06)
+
+        emotion_msgs = [
+            f.message["data"]
+            for f, _ in captured
+            if isinstance(f, OutputTransportMessageUrgentFrame)
+        ]
+        u1_finals = [m for m in emotion_msgs if m["utterance_id"] == 1 and not m["interim"]]
+        u2_interims = [m for m in emotion_msgs if m["utterance_id"] == 2 and m["interim"]]
+        self.assertEqual(len(u1_finals), 1)
+        self.assertEqual(u1_finals[0]["emotion"], "frustrated")
+        self.assertEqual(len(u2_interims), 1)
+        self.assertEqual(u2_interims[0]["emotion"], "happy")
+
+    async def test_stale_interim_dropped_without_skewing_turn2_tokens(self) -> None:
+        fake = _FakeDecisionsClassifier(
+            [
+                ("sarcastic", 0.85, 0.12, 30, 4),  # Turn 1 slow interim (seq 1, dropped)
+                ("calm", 0.90, 0.01, 45, 5),       # Turn 1 fast final (seq 2)
+                ("happy", 0.88, 0.01, 50, 6),      # Turn 2 final (seq 3)
+            ]
+        )
+        observer = AudioEmotionObserver(enabled=True, session_id="sess-tok", classifier=fake)
+        captured = await self._attach_capture(observer)
+
+        # Turn 1
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        observer._last_interim_at -= 2.0
+        for _ in range(7):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.18)
+
+        # Turn 2
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(4):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.05)
+
+        emotion_msgs = [
+            f.message["data"]
+            for f, _ in captured
+            if isinstance(f, OutputTransportMessageUrgentFrame)
+        ]
+        self.assertEqual([m["emotion"] for m in emotion_msgs], ["calm", "happy"])
+        self.assertEqual(emotion_msgs[0]["input_tokens"], 45)
+        self.assertEqual(emotion_msgs[0]["output_tokens"], 5)
+        # Turn 2's per-call input_tokens must be 50 (NOT 50 + 30 = 80 from dropped interim!)
+        self.assertEqual(emotion_msgs[1]["input_tokens"], 50)
+        self.assertEqual(emotion_msgs[1]["output_tokens"], 6)
+        # Session cumulative totals include all 3 completed classifier calls (30 + 45 + 50 = 125).
+        self.assertEqual(emotion_msgs[1]["total_input_tokens"], 125)
+        self.assertEqual(emotion_msgs[1]["total_output_tokens"], 15)
+
+    async def test_mute_cancels_interim_preserves_prior_final_and_blocks_muted_audio(self) -> None:
+        fake = _FakeDecisionsClassifier(
+            [
+                ("hesitant", 0.80, 0.30, 30, 2),    # U1 slow interim -> cancelled on mute
+                ("frustrated", 0.91, 0.08, 48, 4),  # U1 final -> finishes even if muted right after speech
+                ("angry", 0.95, 0.01, 40, 3),       # Must NEVER be called while muted
+            ]
+        )
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
+        captured = await self._attach_capture(observer)
+
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        observer._last_interim_at -= 2.0
+        for _ in range(7):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        # Yield once so U1 interim starts and sleeps in _ask
+        await asyncio.sleep(0.01)
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        # Caller immediately clicks Mute right after finishing U1
+        await observer.process_frame(UserMuteStartedFrame(), FrameDirection.DOWNSTREAM)
+        self.assertEqual(len(observer._interim_tasks), 0)
+
+        # Feed loud speech + VAD while muted: zero new calls or tasks allowed (privacy invariant)
+        calls_at_mute = len(fake.calls)
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(8):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 12000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.14)
+        self.assertEqual(len(fake.calls), calls_at_mute)
+        self.assertEqual(len(observer._tasks), 0)
+
+        emotion_msgs = [
+            f.message["data"]
+            for f, _ in captured
+            if isinstance(f, OutputTransportMessageUrgentFrame)
+        ]
+        self.assertEqual(len(emotion_msgs), 1)
+        self.assertFalse(emotion_msgs[0]["interim"])
+        self.assertEqual(emotion_msgs[0]["emotion"], "frustrated")
+
+        # Unmuting restores normal operation
+        await observer.process_frame(UserMuteStoppedFrame(), FrameDirection.DOWNSTREAM)
+        self.assertFalse(observer._muted)
+
+        # Also verify RMS fallback mode (no external VAD frames) never classifies audio while muted.
+        rms_fake = _FakeDecisionsClassifier([("angry", 0.95, 0.0, 40, 3)])
+        rms_obs = AudioEmotionObserver(enabled=True, classifier=rms_fake)
+        await self._attach_capture(rms_obs)
+        await rms_obs.process_frame(UserMuteStartedFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(7):
+            await rms_obs.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 12000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        for _ in range(6):
+            await rms_obs.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.1, 20), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(rms_fake.calls), 0)
+
+    async def test_end_frame_cancels_slow_in_flight_tasks(self) -> None:
+        fake = _FakeDecisionsClassifier([("calm", 0.90, 2.0, 40, 3)])
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
+        await self._attach_capture(observer)
+
+        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for _ in range(4):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.2, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        self.assertGreaterEqual(len(observer._tasks), 1)
+
+        await observer.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+        self.assertEqual(len(observer._tasks), 0)
+
+    async def test_trim_tail_secs_and_rms_onset_no_double_append(self) -> None:
+        fake = _FakeDecisionsClassifier([("happy", 0.88, 0.0, 52, 4)])
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
+        await self._attach_capture(observer)
+
+        # Feed 2 x 0.08s = 0.16s (= ONSET_HOLD_SECS) at 16 kHz (2560 bytes each = 5120 bytes total).
+        for _ in range(2):
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.08, 8000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        self.assertTrue(observer._speaking)
+        self.assertEqual(len(observer._speech_buffer), 5120)
+
+        # Feed another 0.84s -> total 1.00s buffered speech, then VAD stop with stop_secs=0.40s -> ~0.60s clip.
+        await observer.process_frame(
+            InputAudioRawFrame(audio=_make_pcm_chunk(0.84, 8000), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await observer.process_frame(
+            VADUserStoppedSpeakingFrame(stop_secs=0.40),
+            FrameDirection.DOWNSTREAM,
+        )
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertAlmostEqual(fake.calls[0]["audio_secs"], 0.60, delta=0.03)
+
+    async def test_rms_barge_in_echo_gate_stereo_48khz_and_auth_circuit_breaker(self) -> None:
+        fake = _FakeDecisionsClassifier([("angry", 0.22, 0.0, 25, 2)])
+        observer = AudioEmotionObserver(enabled=True, classifier=fake)
         captured = await self._attach_capture(observer)
 
         # Low energy during bot speech (< RMS_BARGE_IN_ONSET) must NOT trigger speech onset.
         await observer.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        for _ in range(6):
+        for _ in range(5):
             await observer.process_frame(
-                InputAudioRawFrame(
-                    audio=_make_pcm_chunk(0.1, 700),  # RMS ~ 0.021 < 0.036 barge-in gate
-                    sample_rate=16000,
-                    num_channels=1,
-                ),
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.1, 700), sample_rate=16000, num_channels=1),
                 FrameDirection.DOWNSTREAM,
             )
         await observer.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         self.assertEqual(len(fake.calls), 0)
 
-        # Real caller utterance (0.7s active speech followed by 0.6s silence).
-        for _ in range(7):
-            await observer.process_frame(
-                InputAudioRawFrame(
-                    audio=_make_pcm_chunk(0.1, 8000),
-                    sample_rate=16000,
-                    num_channels=1,
-                ),
-                FrameDirection.DOWNSTREAM,
-            )
-        for _ in range(6):
-            await observer.process_frame(
-                InputAudioRawFrame(
-                    audio=_make_pcm_chunk(0.1, 50),
-                    sample_rate=16000,
-                    num_channels=1,
-                ),
-                FrameDirection.DOWNSTREAM,
-            )
-        await asyncio.sleep(0.05)
-
-        emotion_msgs = [
-            f.message["data"]
-            for f, _ in captured
-            if isinstance(f, OutputTransportMessageUrgentFrame)
-        ]
-        self.assertEqual(len(emotion_msgs), 1)
-        self.assertEqual(emotion_msgs[0]["emotion"], "happy")
-        self.assertEqual(emotion_msgs[0]["emoji"], "\U0001f60a")
-        self.assertFalse(emotion_msgs[0]["interim"])
-
-    async def test_stale_interim_response_cannot_overwrite_newer_final_emotion(self) -> None:
-        fake = _FakeDecisionsClassifier(
-            [
-                ("sarcastic", 0.85, 0.12, 30),  # Slow interim (seq 1)
-                ("calm", 0.90, 0.01, 45),       # Fast final (seq 2)
-            ]
-        )
-        observer = AudioEmotionObserver(
-            enabled=True,
-            session_id="sess-race",
-            classifier=fake,
-        )
-        captured = await self._attach_capture(observer)
+        # Stereo 48 kHz utterance (1.0s) downmixes cleanly to mono 1.0s clip and low-confidence falls back to calm.
         await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        observer._last_interim_at -= 2.0
-        for _ in range(7):
-            await observer.process_frame(
-                InputAudioRawFrame(
-                    audio=_make_pcm_chunk(0.2, 9000),
-                    sample_rate=16000,
-                    num_channels=1,
-                ),
-                FrameDirection.DOWNSTREAM,
-            )
+        await observer.process_frame(
+            InputAudioRawFrame(
+                audio=_make_pcm_chunk(1.0, 9000, sample_rate=48000, channels=2),
+                sample_rate=48000,
+                num_channels=2,
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
         await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await asyncio.sleep(0.20)
-
+        await asyncio.sleep(0.04)
+        self.assertEqual(len(fake.calls), 1)
+        self.assertAlmostEqual(fake.calls[0]["audio_secs"], 1.0, delta=0.02)
         emotion_msgs = [
             f.message["data"]
             for f, _ in captured
             if isinstance(f, OutputTransportMessageUrgentFrame)
         ]
-        self.assertEqual(len(emotion_msgs), 1)
         self.assertEqual(emotion_msgs[0]["emotion"], "calm")
-        self.assertFalse(emotion_msgs[0]["interim"])
-
-    async def test_low_confidence_non_calm_falls_back_to_calm_and_mute_cancels(self) -> None:
-        fake = _FakeDecisionsClassifier([("angry", 0.22, 0.0, 25)])
-        observer = AudioEmotionObserver(enabled=True, classifier=fake)
-        captured = await self._attach_capture(observer)
-
-        await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        for _ in range(3):
-            await observer.process_frame(
-                InputAudioRawFrame(
-                    audio=_make_pcm_chunk(0.25, 9000),
-                    sample_rate=16000,
-                    num_channels=1,
-                ),
-                FrameDirection.DOWNSTREAM,
-            )
-        await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await asyncio.sleep(0.05)
-
-        emotion_msgs = [
-            f.message["data"]
-            for f, _ in captured
-            if isinstance(f, OutputTransportMessageUrgentFrame)
-        ]
-        self.assertEqual(len(emotion_msgs), 1)
-        self.assertEqual(emotion_msgs[0]["emotion"], "calm")
-        self.assertEqual(emotion_msgs[0]["emoji"], "\U0001f60c")
-
-        await observer.process_frame(UserMuteStartedFrame(), FrameDirection.DOWNSTREAM)
-        await observer.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
         self.assertGreater(compute_pcm16_rms(_make_pcm_chunk(0.1, 16384)), 0.45)
         self.assertEqual(compute_pcm16_rms(b""), 0.0)
+
+        # Permanent auth error trips circuit breaker immediately so subsequent clips are skipped.
+        bad_auth_fake = _FakeDecisionsClassifier(raise_error="403 API_KEY_INVALID")
+        bad_obs = AudioEmotionObserver(enabled=True, classifier=bad_auth_fake)
+        await self._attach_capture(bad_obs)
+        await bad_obs.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await bad_obs.process_frame(
+            InputAudioRawFrame(audio=_make_pcm_chunk(0.6, 9000), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await bad_obs.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await asyncio.sleep(0.04)
+        self.assertFalse(bad_obs.is_usable)
 
 
 if __name__ == "__main__":

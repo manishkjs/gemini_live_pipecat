@@ -767,6 +767,37 @@ class TestCascadePromptAndToolParity(unittest.TestCase):
         self.assertIn("custom_tool_14", handoff["tools"])
         self.assertNotIn("additionalProperties", handoff["tools"])
 
+    def test_connect_and_ws_propagate_and_validate_emotion_enabled(self):
+        bad = self.client.post(
+            "/connect?session_id=emo_bad",
+            json={"emotion_enabled": "not-a-bool"},
+        )
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("Invalid emotion_enabled", bad.json()["detail"])
+
+        ok_off = self.client.post(
+            "/connect?session_id=emo_off&bot_type=gemini-live",
+            json={"emotion_enabled": False},
+        )
+        self.assertEqual(ok_off.status_code, 200)
+        ws_url = ok_off.json()["ws_url"]
+        self.assertIn("emotion_enabled=false", ws_url)
+        ws_path = "/ws?" + ws_url.split("/ws?", 1)[1]
+
+        captured_kwargs: dict = {}
+
+        async def fake_run_agent_live(websocket, **kwargs):
+            captured_kwargs.update(kwargs)
+            await websocket.close()
+
+        from unittest.mock import patch
+
+        with patch("server.load_pipeline", return_value=fake_run_agent_live):
+            with self.client.websocket_connect(ws_path) as ws:
+                msg = ws.receive()
+                self.assertEqual(msg["type"], "websocket.close")
+        self.assertIs(captured_kwargs.get("emotion_enabled"), False)
+
 
 if __name__ == "__main__":
     unittest.main()

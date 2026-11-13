@@ -2,18 +2,20 @@
 
 Streams short slices of caller microphone audio to Google's ``gemini-decision-1``
 classifier (`GoogleDecisionsClassifier`) out-of-band so neither Gemini Live nor
-Cascade incurs any Time-To-First-Byte (TTFB) penalty. Emits ``user_emotion``
-RTVI server messages both while the caller is speaking (interim prosody reads)
-and when an utterance finishes (final turn badge).
+Cascade incurs any Time-To-First-Byte (TTFB) or session-startup penalty. Emits
+``user_emotion`` RTVI server messages both while the caller is speaking (interim
+prosody reads) and when an utterance finishes (final turn badge).
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from contextvars import ContextVar
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Coroutine
 
 from loguru import logger
 import numpy as np
@@ -42,6 +44,7 @@ from pipecat.frames.frames import (
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
+from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.processors.frame_processor import (
     FrameDirection,
     FrameProcessor,
@@ -57,7 +60,10 @@ INTERIM_WINDOW_SECS = 2.5
 MIN_FINAL_SECS = 0.45
 FINAL_WINDOW_SECS = 4.5
 MAX_BUFFER_SECS = 6.0
+PRE_ROLL_SECS = 0.30
 MIN_CONFIDENCE_FOR_NON_CALM = 0.35
+MAX_CONCURRENT_CLASSIFICATIONS = 2
+MAX_CONSECUTIVE_FAILURES = 3
 
 # Fallback energy-gate thresholds when local Silero VAD is disabled (e.g. Gemini Live native VAD).
 RMS_SPEECH_ONSET = 0.016
@@ -65,6 +71,11 @@ RMS_BARGE_IN_ONSET = 0.036
 RMS_SILENCE_FLOOR = 0.010
 ONSET_HOLD_SECS = 0.16
 SILENCE_STOP_SECS = 0.48
+
+_CALL_USAGE_VAR: ContextVar[tuple[int, int] | None] = ContextVar(
+    "emotion_classifier_call_usage", default=None
+)
+_SECRET_MANAGER_CACHE: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -148,6 +159,47 @@ EMOTION_QUESTION = ChoiceQuestion(
 )
 
 
+def resolve_decision_api_key(project_id: str | None = None) -> str:
+    """Resolve GEMINI_API_KEY from env or process-cached Cloud Secret Manager."""
+    env_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+
+    target_project = (
+        project_id
+        or os.getenv("GCP_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
+    ).strip()
+    if not target_project:
+        return ""
+    if target_project in _SECRET_MANAGER_CACHE:
+        return _SECRET_MANAGER_CACHE[target_project]
+
+    resolved = ""
+    try:
+        from google.cloud import secretmanager
+
+        sm_client = secretmanager.SecretManagerServiceClient()
+        sm_name = f"projects/{target_project}/secrets/GEMINI_API_KEY/versions/latest"
+        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+        resolved = sm_res.payload.data.decode("UTF-8").strip()
+        if resolved:
+            os.environ["GEMINI_API_KEY"] = resolved
+            logger.info(
+                "[EmotionPerception] Retrieved GEMINI_API_KEY from Secret Manager for project {}.",
+                target_project,
+            )
+    except Exception as sm_err:
+        logger.debug(
+            "[EmotionPerception] Secret Manager GEMINI_API_KEY lookup skipped: {}",
+            sm_err,
+        )
+
+    _SECRET_MANAGER_CACHE[target_project] = resolved
+    return resolved
+
+
 def compute_pcm16_rms(pcm_bytes: bytes) -> float:
     """Return normalized [0.0, 1.0] RMS amplitude for 16-bit signed PCM bytes."""
     sample_count = len(pcm_bytes) // 2
@@ -160,11 +212,78 @@ def compute_pcm16_rms(pcm_bytes: bytes) -> float:
     return min(1.0, (mean_square**0.5) / 32768.0)
 
 
+class _BoundedPcmRing:
+    """Chunk-based O(1) bounded PCM byte ring avoiding O(N) bytearray front-deletes."""
+
+    def __init__(self) -> None:
+        self._chunks: deque[bytes] = deque()
+        self._byte_len = 0
+
+    def __len__(self) -> int:
+        return self._byte_len
+
+    def clear(self) -> None:
+        self._chunks.clear()
+        self._byte_len = 0
+
+    def append(self, pcm: bytes, max_bytes: int) -> None:
+        if not pcm or max_bytes <= 0:
+            if max_bytes <= 0:
+                self.clear()
+            return
+        if len(pcm) >= max_bytes:
+            self._chunks.clear()
+            tail = pcm[-max_bytes:]
+            self._chunks.append(tail)
+            self._byte_len = len(tail)
+            return
+        self._chunks.append(pcm)
+        self._byte_len += len(pcm)
+        while self._byte_len > max_bytes and self._chunks:
+            excess = self._byte_len - max_bytes
+            head = self._chunks[0]
+            if len(head) <= excess:
+                self._chunks.popleft()
+                self._byte_len -= len(head)
+            else:
+                self._chunks[0] = head[excess:]
+                self._byte_len -= excess
+                break
+
+    def copy_from(self, other: _BoundedPcmRing, max_bytes: int) -> None:
+        self.clear()
+        for chunk in other._chunks:
+            self.append(chunk, max_bytes)
+
+    def to_bytes(self) -> bytes:
+        return b"".join(self._chunks)
+
+    def tail_bytes(self, max_bytes: int) -> bytes:
+        if max_bytes <= 0 or self._byte_len == 0:
+            return b""
+        if max_bytes >= self._byte_len:
+            return self.to_bytes()
+        collected: list[bytes] = []
+        remaining = max_bytes
+        for chunk in reversed(self._chunks):
+            if len(chunk) <= remaining:
+                collected.append(chunk)
+                remaining -= len(chunk)
+                if remaining == 0:
+                    break
+            else:
+                collected.append(chunk[-remaining:])
+                break
+        collected.reverse()
+        return b"".join(collected)
+
+
 class AudioEmotionObserver(FrameProcessor):
     """Out-of-band pipeline tap that classifies caller vocal emotion from PCM audio.
 
-    Forwards every frame immediately with zero buffering delay, while sampling
-    active caller speech segments in background tasks via ``GoogleDecisionsClassifier``.
+    Forwards every frame immediately with zero buffering or startup delay, while
+    sampling active caller speech segments in background tasks via
+    ``GoogleDecisionsClassifier``.
     """
 
     def __init__(
@@ -173,6 +292,7 @@ class AudioEmotionObserver(FrameProcessor):
         enabled: bool = True,
         session_id: str | None = None,
         api_key: str | None = None,
+        project_id: str | None = None,
         model: str = DEFAULT_DECISION_MODEL,
         timeout: float = DEFAULT_TIMEOUT_SECS,
         classifier: BaseClassifier | None = None,
@@ -184,11 +304,12 @@ class AudioEmotionObserver(FrameProcessor):
         self._owns_classifier = False
         self._classifier: BaseClassifier | None = None
 
-        resolved_key = (
-            api_key
-            if api_key is not None
-            else (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")
-        ).strip()
+        if api_key is not None:
+            resolved_key = api_key.strip()
+        elif enabled and classifier is None:
+            resolved_key = resolve_decision_api_key(project_id)
+        else:
+            resolved_key = ""
 
         if enabled:
             if classifier is not None:
@@ -200,39 +321,97 @@ class AudioEmotionObserver(FrameProcessor):
                     timeout=timeout,
                 )
                 self._owns_classifier = True
+            else:
+                logger.warning(
+                    "[EmotionPerception] Caller emotion perception enabled (session={}), "
+                    "but no GEMINI_API_KEY / GOOGLE_API_KEY was available; disabling observer.",
+                    self._session_id or "-",
+                )
+
+        if self._classifier is not None and hasattr(self._classifier, "event_handler"):
+            @self._classifier.event_handler("on_metrics")
+            async def _on_classifier_metrics(_cls: Any, data: list[Any]) -> None:
+                for item in data:
+                    if isinstance(item, LLMUsageMetricsData) and item.value is not None:
+                        in_tok = int(getattr(item.value, "prompt_tokens", 0) or 0)
+                        out_tok = int(getattr(item.value, "completion_tokens", 0) or 0)
+                        _CALL_USAGE_VAR.set((in_tok, out_tok))
 
         self._usable = self._classifier is not None
+        self._is_setup = False
         self._muted = False
         self._bot_speaking = False
         self._has_external_vad = False
         self._speaking = False
         self._onset_secs = 0.0
         self._silence_secs = 0.0
-        self._pre_roll = bytearray()
-        self._speech_buffer = bytearray()
+        self._pre_roll = _BoundedPcmRing()
+        self._speech_buffer = _BoundedPcmRing()
         self._last_interim_at = 0.0
         self._interim_in_flight = False
         self._utterance_id = 0
         self._request_seq = 0
         self._latest_emitted_seq = 0
-        self._prev_input_tokens = 0
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._prev_client_in_tokens = 0
+        self._prev_client_out_tokens = 0
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._consecutive_failures = 0
+        self._concurrency_sem = asyncio.Semaphore(MAX_CONCURRENT_CLASSIFICATIONS)
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._interim_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def is_usable(self) -> bool:
         """Whether an active Decisions classifier is configured for this session."""
         return self._usable
 
+    @property
+    def current_utterance_id(self) -> int:
+        """Monotonic 1-based counter of caller utterances observed in this session."""
+        return self._utterance_id
+
+    def _spawn_background_task(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        name: str,
+        interim: bool = False,
+    ) -> asyncio.Task[Any]:
+        if self._is_setup and getattr(self, "_task_manager", None) is not None:
+            task = self.create_task(coro, name=name)
+        else:
+            task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        if interim:
+            self._interim_tasks.add(task)
+            task.add_done_callback(self._interim_tasks.discard)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def _warm_classifier(self) -> None:
+        """Warm the Decisions HTTP/2 connection in the background without holding StartFrame."""
+        if self._classifier is None:
+            return
+        try:
+            await self._classifier.setup(self.task_manager)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[EmotionPerception] Classifier background warmup warning: {}", exc)
+
     async def setup(self, setup: FrameProcessorSetup) -> None:
-        """Initialize sample rate and warm the Decisions HTTP/2 client."""
+        """Initialize sample rate and start non-blocking classifier warmup."""
         await super().setup(setup)
+        self._is_setup = True
         if getattr(setup, "audio_in_sample_rate", 0):
             self._sample_rate = int(setup.audio_in_sample_rate)
         if self._classifier is not None:
-            try:
-                await self._classifier.setup(self.task_manager)
-            except Exception as exc:
-                logger.warning("[EmotionPerception] Classifier setup warning: {}", exc)
+            self._spawn_background_task(
+                self._warm_classifier(),
+                name="emotion_warm",
+                interim=False,
+            )
 
     async def cleanup(self) -> None:
         """Cancel pending background reads and close owned classifier client."""
@@ -242,11 +421,24 @@ class AudioEmotionObserver(FrameProcessor):
                 await self._classifier.cleanup()
             except Exception as exc:
                 logger.debug("[EmotionPerception] Classifier cleanup note: {}", exc)
+        self._is_setup = False
         await super().cleanup()
+
+    async def _cancel_interim_tasks(self) -> None:
+        pending_interims = list(self._interim_tasks)
+        self._interim_tasks.clear()
+        self._interim_in_flight = False
+        for task in pending_interims:
+            self._tasks.discard(task)
+            if not task.done():
+                task.cancel()
+        if pending_interims:
+            await asyncio.gather(*pending_interims, return_exceptions=True)
 
     async def _cancel_pending_tasks(self) -> None:
         pending = list(self._tasks)
         self._tasks.clear()
+        self._interim_tasks.clear()
         self._interim_in_flight = False
         for task in pending:
             if not task.done():
@@ -274,7 +466,7 @@ class AudioEmotionObserver(FrameProcessor):
         if isinstance(frame, UserMuteStartedFrame):
             self._muted = True
             self._reset_speech_state()
-            await self._cancel_pending_tasks()
+            await self._cancel_interim_tasks()
         elif isinstance(frame, UserMuteStoppedFrame):
             self._muted = False
         elif isinstance(frame, (BotStartedSpeakingFrame, TTSStartedFrame)):
@@ -282,8 +474,9 @@ class AudioEmotionObserver(FrameProcessor):
         elif isinstance(frame, (BotStoppedSpeakingFrame, TTSStoppedFrame)):
             self._bot_speaking = False
         elif isinstance(frame, VADUserStartedSpeakingFrame):
-            self._has_external_vad = True
-            self._begin_utterance()
+            if not self._muted:
+                self._has_external_vad = True
+                self._begin_utterance()
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._has_external_vad = True
             self._finish_utterance(trim_tail_secs=getattr(frame, "stop_secs", 0.0))
@@ -309,7 +502,9 @@ class AudioEmotionObserver(FrameProcessor):
         self._speaking = True
         self._onset_secs = 0.0
         self._silence_secs = 0.0
-        self._speech_buffer = bytearray(self._pre_roll)
+        self._speech_buffer.copy_from(
+            self._pre_roll, self._bytes_for_secs(MAX_BUFFER_SECS)
+        )
         self._pre_roll.clear()
         self._last_interim_at = time.monotonic()
 
@@ -319,7 +514,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._speaking = False
         self._onset_secs = 0.0
         self._silence_secs = 0.0
-        raw = bytes(self._speech_buffer)
+        raw = self._speech_buffer.to_bytes()
         self._speech_buffer.clear()
 
         trim_bytes = self._bytes_for_secs(max(0.0, trim_tail_secs))
@@ -340,10 +535,7 @@ class AudioEmotionObserver(FrameProcessor):
         )
 
     def _append_bounded_speech(self, pcm: bytes) -> None:
-        self._speech_buffer.extend(pcm)
-        max_bytes = self._bytes_for_secs(MAX_BUFFER_SECS)
-        if len(self._speech_buffer) > max_bytes:
-            del self._speech_buffer[: len(self._speech_buffer) - max_bytes]
+        self._speech_buffer.append(pcm, self._bytes_for_secs(MAX_BUFFER_SECS))
 
     def _observe_audio_chunk(self, frame: InputAudioRawFrame) -> None:
         pcm = frame.audio
@@ -352,16 +544,15 @@ class AudioEmotionObserver(FrameProcessor):
         frame_rate = int(getattr(frame, "sample_rate", 0) or self._sample_rate or 16000)
         channels = int(getattr(frame, "num_channels", 1) or 1)
         if channels > 1:
-            samples = np.frombuffer(pcm[: len(pcm) - (len(pcm) % (2 * channels))], dtype=np.int16)
+            samples = np.frombuffer(
+                pcm[: len(pcm) - (len(pcm) % (2 * channels))], dtype=np.int16
+            )
             pcm = samples[::channels].tobytes()
+        if frame_rate != self._sample_rate:
+            self._pre_roll.clear()
+            self._speech_buffer.clear()
         self._sample_rate = frame_rate
         chunk_secs = len(pcm) / float(2 * frame_rate)
-
-        if not self._speaking:
-            self._pre_roll.extend(pcm)
-            pre_roll_max = self._bytes_for_secs(0.30, frame_rate)
-            if len(self._pre_roll) > pre_roll_max:
-                del self._pre_roll[: len(self._pre_roll) - pre_roll_max]
 
         if not self._has_external_vad:
             rms = compute_pcm16_rms(pcm)
@@ -369,11 +560,13 @@ class AudioEmotionObserver(FrameProcessor):
                 RMS_BARGE_IN_ONSET if self._bot_speaking else RMS_SPEECH_ONSET
             )
             if not self._speaking:
+                if not self._bot_speaking or rms >= onset_threshold:
+                    self._pre_roll.append(pcm, self._bytes_for_secs(PRE_ROLL_SECS, frame_rate))
                 if rms >= onset_threshold:
                     self._onset_secs += chunk_secs
                     if self._onset_secs >= ONSET_HOLD_SECS:
+                        # _pre_roll already contains `pcm` appended above; do not double-append.
                         self._begin_utterance()
-                        self._append_bounded_speech(pcm)
                 else:
                     self._onset_secs = 0.0
                 return
@@ -389,6 +582,7 @@ class AudioEmotionObserver(FrameProcessor):
         elif self._speaking:
             self._append_bounded_speech(pcm)
         else:
+            self._pre_roll.append(pcm, self._bytes_for_secs(PRE_ROLL_SECS, frame_rate))
             return
 
         now = time.monotonic()
@@ -400,7 +594,7 @@ class AudioEmotionObserver(FrameProcessor):
         ):
             self._last_interim_at = now
             window_bytes = self._bytes_for_secs(INTERIM_WINDOW_SECS, frame_rate)
-            clip = bytes(self._speech_buffer[-window_bytes:])
+            clip = self._speech_buffer.tail_bytes(window_bytes)
             self._interim_in_flight = True
             self._spawn_classification(
                 clip,
@@ -417,30 +611,61 @@ class AudioEmotionObserver(FrameProcessor):
         interim: bool,
         utterance_id: int,
     ) -> None:
-        if self._classifier is None:
+        if self._classifier is None or not self._usable:
             self._interim_in_flight = False
             return
         self._request_seq += 1
         seq = self._request_seq
-        task = asyncio.create_task(
+        self._spawn_background_task(
             self._run_classification(
                 pcm_bytes=pcm_bytes,
                 sample_rate=sample_rate,
                 interim=interim,
                 utterance_id=utterance_id,
                 seq=seq,
-            )
+            ),
+            name=f"emotion_{'interim' if interim else 'final'}_{seq}",
+            interim=interim,
         )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
-    def _read_delta_input_tokens(self) -> int:
-        client = getattr(self._classifier, "client", None)
-        usage = getattr(client, "usage", None)
-        total_in = int(getattr(usage, "input_tokens", 0) or 0)
-        delta = max(0, total_in - self._prev_input_tokens)
-        self._prev_input_tokens = total_in
-        return delta
+    def _consume_call_tokens(self) -> tuple[int, int]:
+        """Extract exact per-call (input_tokens, output_tokens) and update session totals."""
+        recorded = _CALL_USAGE_VAR.get()
+        _CALL_USAGE_VAR.set(None)
+        if recorded is not None:
+            in_tok, out_tok = recorded
+        else:
+            client = getattr(self._classifier, "client", None)
+            usage = getattr(client, "usage", None)
+            total_in = int(getattr(usage, "input_tokens", 0) or 0)
+            total_out = int(getattr(usage, "output_tokens", 0) or 0)
+            in_tok = max(0, total_in - self._prev_client_in_tokens)
+            out_tok = max(0, total_out - self._prev_client_out_tokens)
+            self._prev_client_in_tokens = total_in
+            self._prev_client_out_tokens = total_out
+
+        self._total_input_tokens += in_tok
+        self._total_output_tokens += out_tok
+        return in_tok, out_tok
+
+    def _record_classifier_failure(self, exc: Exception) -> None:
+        self._consecutive_failures += 1
+        msg = str(exc).lower()
+        permanent_auth = any(
+            marker in msg
+            for marker in ("api_key_invalid", "api key not valid", "401", "403", "permission_denied")
+        )
+        if permanent_auth or self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            self._usable = False
+            logger.warning(
+                "[EmotionPerception] Disabling caller emotion observer for session={} "
+                "after {} failure(s): {}",
+                self._session_id or "-",
+                self._consecutive_failures,
+                exc,
+            )
+        else:
+            logger.debug("[EmotionPerception] Classifier skipped clip: {}", exc)
 
     async def _run_classification(
         self,
@@ -453,21 +678,30 @@ class AudioEmotionObserver(FrameProcessor):
     ) -> None:
         started = time.perf_counter()
         try:
-            if self._classifier is None:
+            if self._classifier is None or not self._usable:
                 return
-            audio_input = ClassifierAudio(audio=pcm_bytes, sample_rate=sample_rate)
-            answers = await self._classifier.choice(
-                state={"speaker": "caller"},
-                questions={"emotion": EMOTION_QUESTION},
-                inputs=[audio_input],
-            )
+            async with self._concurrency_sem:
+                if self._classifier is None or not self._usable:
+                    return
+                _CALL_USAGE_VAR.set(None)
+                audio_input = ClassifierAudio(audio=pcm_bytes, sample_rate=sample_rate)
+                answers = await self._classifier.choice(
+                    state={"speaker": "caller"},
+                    questions={"emotion": EMOTION_QUESTION},
+                    inputs=[audio_input],
+                )
+                input_tokens, output_tokens = self._consume_call_tokens()
+
+            self._consecutive_failures = 0
             emotion_answer: ChoiceResult | None = answers.get("emotion")
             if emotion_answer is None:
                 return
 
-            if seq < self._latest_emitted_seq:
-                return
-            if interim and utterance_id != self._utterance_id:
+            # Only interim reads can become stale; final reads belong to their own
+            # completed utterance_id and must never be dropped by a newer turn's interim.
+            if interim and (
+                utterance_id != self._utterance_id or seq < self._latest_emitted_seq
+            ):
                 return
 
             raw_choice = str(emotion_answer.choice or "calm").strip().lower()
@@ -479,17 +713,18 @@ class AudioEmotionObserver(FrameProcessor):
 
             descriptor = EMOTION_BY_KEY[raw_choice]
             latency_ms = int(round((time.perf_counter() - started) * 1000))
-            input_tokens = self._read_delta_input_tokens()
-            self._latest_emitted_seq = seq
+            self._latest_emitted_seq = max(self._latest_emitted_seq, seq)
 
             logger.debug(
-                "[EmotionPerception] session={} emotion={} ({:.0%}) interim={} latency={}ms in_tok={}",
+                "[EmotionPerception] session={} utt={} emotion={} ({:.0%}) interim={} latency={}ms tok={}/{}",
                 self._session_id or "-",
+                utterance_id,
                 descriptor.key,
                 confidence,
                 interim,
                 latency_ms,
                 input_tokens,
+                output_tokens,
             )
             payload = {
                 "type": "user_emotion",
@@ -503,6 +738,9 @@ class AudioEmotionObserver(FrameProcessor):
                 "interim": interim,
                 "latency_ms": latency_ms,
                 "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_input_tokens": self._total_input_tokens,
+                "total_output_tokens": self._total_output_tokens,
                 "model": self._classifier.model or DEFAULT_DECISION_MODEL,
             }
             await self.push_frame(
@@ -517,7 +755,7 @@ class AudioEmotionObserver(FrameProcessor):
         except asyncio.CancelledError:
             raise
         except ClassifierError as exc:
-            logger.debug("[EmotionPerception] Classifier skipped clip: {}", exc)
+            self._record_classifier_failure(exc)
         except Exception as exc:
             logger.warning("[EmotionPerception] Unexpected error: {}", exc)
         finally:

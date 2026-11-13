@@ -1402,8 +1402,7 @@ export default function SettingsDialog({ studio }: SettingsDialogProps) {
                   Caller Emotion Perception (Gemini Decision 1)
                 </div>
                 <div className="cfg-help">
-                  Classify caller vocal tone and prosody out-of-band via Pipecat 1.16{" "}
-                  <code>gemini-decision-1</code> with zero TTFB impact.
+                  Shows the caller&apos;s vocal tone on each turn by classifying short audio clips out-of-band.
                 </div>
               </div>
               <button

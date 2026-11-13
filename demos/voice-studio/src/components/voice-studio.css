@@ -1629,11 +1629,11 @@ button, input, select, textarea {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 24px;
-  padding: 0 8px;
+  height: 26px;
+  padding: 0 9px;
   border-radius: var(--r-xl);
-  background: var(--bg-2);
-  border: 1px solid var(--line-2);
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-3));
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--line-2));
   color: var(--ink);
   font-size: var(--fs-xs);
   font-weight: 500;
@@ -1642,7 +1642,9 @@ button, input, select, textarea {
 }
 
 .vb-emotion.is-interim {
-  color: var(--ink-2);
+  background: var(--bg-3);
+  border-color: color-mix(in srgb, var(--ink-2) 45%, var(--line-2));
+  color: var(--ink);
   border-style: dashed;
 }
 

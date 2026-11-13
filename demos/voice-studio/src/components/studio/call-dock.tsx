@@ -102,7 +102,7 @@ function VoiceBubble({
       </span>
       {active && emotionEnabled && liveEmotion && !bubble.isMuted && (
         <span
-          key={`${liveEmotion.emotion}-${liveEmotion.seq ?? 0}`}
+          key={`${liveEmotion.emotion}-${liveEmotion.interim ? "interim" : "final"}`}
           className={`vb-emotion${liveEmotion.interim ? " is-interim" : ""}`}
           id="vb-emotion"
           title={`Caller tone: ${liveEmotion.title} (${Math.round(liveEmotion.confidence * 100)}%, ${liveEmotion.latencyMs}ms · ${liveEmotion.model})`}
@@ -143,6 +143,7 @@ export default function CallDock({
     sessionCostBounds,
     cascadeCost,
     lastTTFB,
+    dockEmotion,
     liveEmotion,
     session,
     setMuted,
@@ -270,7 +271,7 @@ export default function CallDock({
             bubble={bubble}
             subscribeAudioLevel={subscribeAudioLevel}
             getAudioLevel={getAudioLevel}
-            liveEmotion={liveEmotion}
+            liveEmotion={dockEmotion}
             emotionEnabled={settings.emotionPerception !== false}
           />
         )}

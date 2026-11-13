@@ -16,6 +16,24 @@ except ImportError:
     rag = None
 import google.auth
 from google.auth.transport.requests import AuthorizedSession
+import threading
+
+_rag_session_lock = threading.Lock()
+_rag_http_session: AuthorizedSession | None = None
+
+
+def _get_rag_http_session() -> AuthorizedSession:
+    """Return a pooled, thread-safe AuthorizedSession for Vertex AI RAG REST queries."""
+    global _rag_http_session
+    if _rag_http_session is not None:
+        return _rag_http_session
+    with _rag_session_lock:
+        if _rag_http_session is None:
+            credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _rag_http_session = AuthorizedSession(credentials)
+        return _rag_http_session
 
 # RAG Configuration Helpers
 def get_rag_config():
@@ -71,10 +89,7 @@ def _retrieve_contexts_rest(
     total_records: int,
 ) -> list[str]:
     """Retrieve contexts via the Vertex AI RAG REST API when vertexai SDK is absent."""
-    credentials, _ = google.auth.default(
-        scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-    session = AuthorizedSession(credentials)
+    session = _get_rag_http_session()
     url = (
         f"https://{location}-aiplatform.googleapis.com/v1beta1/"
         f"projects/{project_id}/locations/{location}:retrieveContexts"
