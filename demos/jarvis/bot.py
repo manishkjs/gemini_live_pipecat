@@ -24,6 +24,8 @@ from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    ErrorCategory,
+    ErrorFrame,
     Frame,
     FunctionCallInProgressFrame,
     InputAudioRawFrame,
@@ -48,6 +50,7 @@ from pipecat.services.google.gemini_live.llm import (
 )
 from pipecat.services.llm_service import FunctionCallParams
 
+import jarvis_config
 import mac_actions
 
 DEFAULT_MODEL = "gemini-3.8-live"
@@ -1128,12 +1131,7 @@ class JarvisTools:
 
 
 def _resolve_api_key() -> str:
-    if os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true"):
-        raise RuntimeError("Jarvis does not use Vertex AI. Unset GOOGLE_GENAI_USE_VERTEXAI.")
-    key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-    if not key:
-        raise RuntimeError("Set GEMINI_API_KEY (AI Studio key) in demos/jarvis/.env")
-    return key
+    return jarvis_config.resolve_api_key()
 
 
 def _resolve_transport_audio_indices() -> tuple[int | None, int | None]:
@@ -1155,6 +1153,8 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     as NON_BLOCKING on Gemini 3.8+ and sends WHEN_IDLE scheduling with their
     results, so no GeminiLiveLLMService subclass is needed.
     """
+    api_key = _resolve_api_key()
+
     # Imported here so the unit tests can import this module without PyAudio.
     from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
@@ -1186,7 +1186,7 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     definitions = tools.definitions()
 
     llm = GeminiLiveLLMService(
-        api_key=_resolve_api_key(),
+        api_key=api_key,
         settings=GeminiLiveLLMService.Settings(
             model=f"models/{model}",
             system_instruction=SYSTEM_INSTRUCTION,
@@ -1223,8 +1223,39 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
         ]
     )
     task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True))
+    rejected_reason: list[str] = []
+
+    @task.event_handler("on_pipeline_error")
+    async def _on_pipeline_error(_task: PipelineTask, frame: ErrorFrame) -> None:
+        reason = jarvis_config.classify_gemini_auth_error(
+            frame.exception, frame.error, api_key
+        )
+        if not reason and frame.category in (
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.AUTHORIZATION,
+        ):
+            reason = "Gemini rejected the saved API key. Paste a valid key from Google AI Studio."
+        if reason:
+            if not rejected_reason:
+                rejected_reason.append(reason)
+            await task.cancel()
+        elif frame.processor and not getattr(frame.processor, "is_usable", True):
+            safe_err = jarvis_config.redact_secrets(
+                str(frame.exception or frame.error), api_key
+            )
+            ui.emit({"type": "error", "text": f"Connection failed: {safe_err}"})
+            await task.cancel()
+
     control.bind(asyncio.get_running_loop(), task)
     ui.emit({"type": "state", "state": "idle"})
     ui.emit({"type": "bot_text", "text": "Jarvis online. At your service."})
     await task.queue_frames([LLMRunFrame()])
-    await PipelineRunner(handle_sigint=False).run(task)
+    try:
+        await PipelineRunner(handle_sigint=False).run(task)
+    except Exception as exc:
+        reason = jarvis_config.classify_gemini_auth_error(exc, str(exc), api_key)
+        if reason:
+            raise jarvis_config.ApiKeyRejectedError(reason) from None
+        raise
+    if rejected_reason:
+        raise jarvis_config.ApiKeyRejectedError(rejected_reason[0])

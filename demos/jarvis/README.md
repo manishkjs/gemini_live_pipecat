@@ -25,11 +25,13 @@ Mac mic / BlackHole ──▶ Pipecat LocalAudioTransport ──▶ Gemini Live 
 
 | File | What it does |
 |---|---|
-| `jarvis_app.py` | Starts the floating window (`pywebview`) and the voice pipeline thread |
+| `jarvis_app.py` | Starts the floating window (`pywebview`), first-run setup flow, and voice pipeline thread |
+| `jarvis_config.py` | API key lookup (`env` → `.env` → `~/.jarvis/config.json`), `0600` storage, and key validation |
+| `mac_permissions.py` | Non-prompting macOS permission checks and System Settings Privacy pane links |
 | `build_app.py` | Builds a native macOS `Jarvis.app` bundle in `/Applications` (with icon & permissions metadata) |
 | `bot.py` | Pipecat pipeline, Gemini Live setup, desktop/Meet/draw.io/mobile tools, approval gate |
 | `mac_actions.py` | Screenshots, clicks, typing, isolated Chrome profile, ADB mobile helpers, safety rules |
-| `ui/index.html` | The Dynamic-Island style UI |
+| `ui/index.html` | The Dynamic-Island style pill and first-run setup UI |
 
 ## Run it on your Mac
 
@@ -38,9 +40,28 @@ brew install portaudio            # needed by PyAudio
 cd demos/jarvis
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-echo "GEMINI_API_KEY=<your AI Studio key>" > .env
 python jarvis_app.py
 ```
+
+### First run
+
+When Jarvis starts without an API key configured, it opens a setup card in the
+same floating window instead of the collapsed pill:
+
+1. **Gemini API Key** — Click **Get a key ↗** to open Google AI Studio in your
+   default browser, paste your key into the masked field (with **Show / Hide**),
+   and click **Verify & Save**. Jarvis checks the key against the Gemini API
+   before saving it to `~/.jarvis/config.json` (mode `0600`). Lookup order is
+   environment variable (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) → `demos/jarvis/.env`
+   → `~/.jarvis/config.json`, so existing `.env` setups keep working unchanged.
+2. **macOS Permissions** — Shows the status of **Microphone**, **Screen Recording**,
+   **Accessibility**, and **Automation** (plainly noting when macOS cannot report
+   status beforehand), with **Open Settings** shortcuts to each Privacy pane and
+   a **Re-check** button.
+3. **Start Jarvis** — Shrinks the window into the floating pill and starts the
+   voice pipeline in the same process with no relaunch. Click the gear (**⚙**)
+   button on the pill anytime to replace your key, and if Gemini rejects a saved
+   key while connecting, Jarvis reopens setup with the reason.
 
 ### Install as a macOS Desktop App (`Jarvis.app`)
 

@@ -5,22 +5,31 @@
 <title>Jarvis</title>
 <style>
   :root {
-    --bg: rgba(10, 10, 14, 0.86);
-    --line: rgba(255, 255, 255, 0.08);
+    --bg: rgba(10, 10, 14, 0.88);
+    --bg-setup: rgba(12, 13, 19, 0.95);
+    --surface: rgba(255, 255, 255, 0.045);
+    --line: rgba(255, 255, 255, 0.09);
+    --line-strong: rgba(255, 255, 255, 0.16);
     --text: #f5f5f7;
-    --muted: #8e8e98;
+    --muted: #9494a0;
     --blue: #4285f4; --red: #ea4335; --yellow: #fbbc04; --green: #34a853;
     --accent: var(--blue);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { background: transparent; height: 100%; overflow: hidden;
+  html, body {
+    background: transparent; height: 100%; overflow: hidden;
     font: 13px/1.35 "SF Pro Text", -apple-system, "Google Sans", system-ui, sans-serif;
-    color: var(--text); -webkit-user-select: none; user-select: none; }
-  body { display: flex; justify-content: center; padding-top: 6px; }
+    color: var(--text); -webkit-user-select: none; user-select: none;
+  }
+  body { display: flex; justify-content: center; align-items: flex-start; padding-top: 6px; }
+  input, textarea { -webkit-user-select: text; user-select: text; cursor: text; }
+
+  body.setup-mode #island { display: none; }
+  body:not(.setup-mode) #setup { display: none; }
 
   /* The island ------------------------------------------------------------ */
   .island {
-    position: relative; width: 344px; height: 44px; border-radius: 22px;
+    position: relative; width: 364px; height: 44px; border-radius: 22px;
     background: var(--bg); backdrop-filter: blur(24px) saturate(160%);
     -webkit-backdrop-filter: blur(24px) saturate(160%);
     border: 1px solid var(--line);
@@ -30,8 +39,10 @@
     overflow: hidden;
   }
   .island.expanded { width: 560px; height: 132px; border-radius: 26px; }
-  .island.gate { width: 560px; height: 168px; border-color: rgba(251,188,4,0.55);
-    box-shadow: 0 0 0 1px rgba(251,188,4,0.25), 0 0 42px rgba(234,67,53,0.35), 0 12px 40px rgba(0,0,0,.5); }
+  .island.gate {
+    width: 560px; height: 168px; border-color: rgba(251,188,4,0.55);
+    box-shadow: 0 0 0 1px rgba(251,188,4,0.25), 0 0 42px rgba(234,67,53,0.35), 0 12px 40px rgba(0,0,0,.5);
+  }
 
   /* Animated gradient rim while Jarvis is active */
   .island::before {
@@ -46,13 +57,17 @@
   @keyframes spin { to { --angle: 360deg; } }
 
   /* Header row ------------------------------------------------------------ */
-  .row { display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 14px 0 8px; }
+  .row { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 11px 0 8px; }
   .orb { position: relative; width: 28px; height: 28px; flex: none; }
-  .orb .core { position: absolute; inset: 6px; border-radius: 50%;
+  .orb .core {
+    position: absolute; inset: 6px; border-radius: 50%;
     background: radial-gradient(circle at 30% 30%, #fff, var(--accent) 45%, #1a237e 100%);
-    box-shadow: 0 0 14px var(--accent); transition: background .3s, box-shadow .3s; }
-  .orb .ring { position: absolute; inset: 2px; border-radius: 50%; border: 1.5px solid var(--accent);
-    opacity: .0; transform: scale(.7); }
+    box-shadow: 0 0 14px var(--accent); transition: background .3s, box-shadow .3s;
+  }
+  .orb .ring {
+    position: absolute; inset: 2px; border-radius: 50%; border: 1.5px solid var(--accent);
+    opacity: .0; transform: scale(.7);
+  }
   .listening .orb .ring, .speaking .orb .ring { animation: pulse 1.4s ease-out infinite; }
   .speaking .orb .ring:nth-child(2) { animation-delay: .45s; }
   @keyframes pulse { 0% { opacity: .8; transform: scale(.7);} 100% { opacity: 0; transform: scale(1.45);} }
@@ -71,15 +86,16 @@
   .paused .wave i { animation: none; height: 3px; opacity: .35; }
   .paused .orb .core { filter: grayscale(.6) brightness(.8); box-shadow: 0 0 6px var(--muted); }
 
-  .ctrls { display: flex; align-items: center; gap: 5px; margin-left: 2px; }
+  .ctrls { display: flex; align-items: center; gap: 4px; margin-left: 2px; }
   .ctrl {
-    width: 24px; height: 24px; padding: 0; border-radius: 50%;
+    width: 23px; height: 23px; padding: 0; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
     background: rgba(255,255,255,.08); color: var(--text);
     border: 1px solid var(--line); font-size: 11px; line-height: 1;
     transition: background .15s, border-color .15s, color .15s;
   }
   .ctrl:hover { background: rgba(255,255,255,.16); }
+  .ctrl svg { width: 12px; height: 12px; display: block; }
   .island { cursor: grab; }
   .island.dragging { cursor: grabbing; }
   .island.pinned { cursor: default; }
@@ -93,9 +109,11 @@
   .expanded .body, .gate .body { opacity: 1; }
   .line { font-size: 14px; min-height: 38px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .line .who { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; margin-right: 6px; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 10px;
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 10px;
     border-radius: 999px; background: rgba(66,133,244,.14); color: #aecbfa; font-size: 12px; max-width: 100%;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
   /* Approval gate --------------------------------------------------------- */
@@ -109,9 +127,174 @@
   .approve { background: var(--green); color: #04150a; }
   .deny { background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--line); }
   .kbd { color: var(--muted); font-size: 11px; align-self: center; margin-left: 4px; }
+
+  /* Setup card ------------------------------------------------------------ */
+  .setup {
+    width: 520px; border-radius: 24px;
+    background: var(--bg-setup); backdrop-filter: blur(28px) saturate(165%);
+    -webkit-backdrop-filter: blur(28px) saturate(165%);
+    border: 1px solid var(--line-strong);
+    box-shadow: 0 18px 48px rgba(0,0,0,0.58), inset 0 1px 0 rgba(255,255,255,0.08);
+    display: flex; flex-direction: column; gap: 13px;
+    padding: 16px 18px 16px 18px;
+    cursor: default;
+  }
+  .setup-header {
+    display: flex; align-items: center; gap: 10px;
+    cursor: grab; padding-bottom: 2px;
+  }
+  .setup.pinned .setup-header { cursor: default; }
+  .setup-header.dragging { cursor: grabbing; }
+  .setup-titles { flex: 1; min-width: 0; }
+  .setup-titles h1 { font-size: 15px; font-weight: 650; letter-spacing: .15px; }
+  .setup-titles p { font-size: 12px; color: var(--muted); margin-top: 1px; }
+  .icon-close {
+    width: 26px; height: 26px; padding: 0; border-radius: 50%;
+    background: rgba(255,255,255,.07); color: var(--muted);
+    border: 1px solid var(--line); font-size: 13px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .icon-close:hover { background: rgba(234,67,53,.24); color: #f28b82; border-color: rgba(234,67,53,.45); }
+
+  .reason-banner {
+    display: none; padding: 9px 12px; border-radius: 12px;
+    background: rgba(234, 67, 53, 0.14); border: 1px solid rgba(234, 67, 53, 0.42);
+    color: #f6aea9; font-size: 12px; line-height: 1.4;
+  }
+  .reason-banner.visible { display: block; }
+
+  .section {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 16px; padding: 12px 13px;
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+  .section-title {
+    font-size: 12px; font-weight: 650; letter-spacing: .3px; text-transform: uppercase;
+    color: #d2d2dc; display: flex; align-items: center; gap: 8px;
+  }
+  .source-pill {
+    font-size: 11px; font-weight: 500; text-transform: none; letter-spacing: 0;
+    padding: 2px 8px; border-radius: 999px;
+    background: rgba(255,255,255,.07); color: var(--muted); border: 1px solid var(--line);
+  }
+  .source-pill.ok {
+    background: rgba(52,168,83,.16); color: #81c995; border-color: rgba(52,168,83,.38);
+  }
+
+  .ext-link {
+    font-size: 12px; font-weight: 600; color: #8ab4f8; text-decoration: none;
+    padding: 3px 8px; border-radius: 8px; background: rgba(66,133,244,.12);
+    border: 1px solid rgba(66,133,244,.28); cursor: pointer;
+  }
+  .ext-link:hover { background: rgba(66,133,244,.22); color: #aecbfa; }
+
+  .key-row { display: flex; gap: 7px; align-items: center; }
+  .key-input {
+    flex: 1; min-width: 0; height: 34px; padding: 0 11px;
+    border-radius: 10px; border: 1px solid var(--line-strong);
+    background: rgba(0, 0, 0, 0.36); color: var(--text);
+    font: 12.5px/1 "SF Mono", ui-monospace, Menlo, monospace;
+    outline: none; transition: border-color .15s, box-shadow .15s;
+  }
+  .key-input::placeholder {
+    font-family: "SF Pro Text", -apple-system, system-ui, sans-serif;
+    color: #6f6f7a;
+  }
+  .key-input:focus {
+    border-color: rgba(66,133,244,.75);
+    box-shadow: 0 0 0 2px rgba(66,133,244,.22);
+  }
+
+  .btn-sm {
+    height: 34px; padding: 0 11px; border-radius: 10px; font-size: 12px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--line);
+    white-space: nowrap; transition: background .15s, border-color .15s, opacity .15s;
+  }
+  .btn-sm:hover:not(:disabled) { background: rgba(255,255,255,.15); }
+  .btn-sm:disabled { opacity: .5; cursor: default; }
+  .btn-verify {
+    background: rgba(66,133,244,.22); color: #aecbfa; border-color: rgba(66,133,244,.48);
+  }
+  .btn-verify:hover:not(:disabled) { background: rgba(66,133,244,.34); color: #d2e3fc; }
+
+  .feedback {
+    font-size: 11.5px; line-height: 1.35; color: var(--muted); min-height: 16px;
+  }
+  .feedback.error { color: #f28b82; }
+  .feedback.ok { color: #81c995; }
+
+  /* Permissions list ------------------------------------------------------ */
+  .perm-list { display: flex; flex-direction: column; gap: 6px; }
+  .perm-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px; border-radius: 11px;
+    background: rgba(0, 0, 0, 0.24); border: 1px solid rgba(255,255,255,0.05);
+  }
+  .perm-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: #8e8e98;
+  }
+  .perm-dot.granted { background: var(--green); box-shadow: 0 0 8px rgba(52,168,83,.65); }
+  .perm-dot.denied { background: var(--red); box-shadow: 0 0 8px rgba(234,67,53,.55); }
+  .perm-dot.prompt { background: var(--yellow); }
+  .perm-dot.unknown { background: #7b8698; }
+
+  .perm-info { flex: 1; min-width: 0; }
+  .perm-name { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .perm-detail {
+    font-size: 11px; line-height: 1.3; color: var(--muted);
+    white-space: normal;
+  }
+  .perm-badge {
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap; border: 1px solid var(--line);
+    background: rgba(255,255,255,.06); color: #b8b8c4;
+  }
+  .perm-badge.granted { background: rgba(52,168,83,.16); color: #81c995; border-color: rgba(52,168,83,.36); }
+  .perm-badge.denied { background: rgba(234,67,53,.15); color: #f28b82; border-color: rgba(234,67,53,.36); }
+  .perm-badge.prompt { background: rgba(251,188,4,.15); color: #fdd663; border-color: rgba(251,188,4,.36); }
+  .perm-badge.unknown { background: rgba(138,180,248,.10); color: #adc4e8; border-color: rgba(138,180,248,.25); }
+
+  .btn-xs {
+    height: 26px; padding: 0 9px; border-radius: 8px; font-size: 11px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .btn-xs:hover { background: rgba(255,255,255,.16); }
+  .perm-note { font-size: 11px; color: var(--muted); }
+
+  .setup-footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding-top: 2px;
+  }
+  .start-hint { font-size: 11.5px; color: var(--muted); flex: 1; }
+  .footer-btns { display: flex; align-items: center; gap: 8px; }
+  .btn-primary {
+    height: 36px; padding: 0 18px; border-radius: 11px; font-size: 13px; font-weight: 650;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, #5492f7, #3576e8); color: #fff;
+    box-shadow: 0 6px 18px rgba(66,133,244,.35);
+    transition: filter .15s, opacity .15s, transform .1s;
+  }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn-primary:disabled {
+    opacity: .42; cursor: default; box-shadow: none; background: rgba(255,255,255,.12); color: var(--muted);
+  }
 </style>
 </head>
 <body>
+  <script>
+    if (new URLSearchParams(window.location.search).get("mode") === "setup") {
+      document.body.classList.add("setup-mode");
+    }
+  </script>
+
+  <!-- Floating Dynamic-Island Pill -->
   <div id="island" class="island idle">
     <div class="row">
       <div class="orb"><div class="ring"></div><div class="ring"></div><div class="core"></div></div>
@@ -119,6 +302,12 @@
       <span id="status" class="status">Starting…</span>
       <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
       <div class="ctrls" onmousedown="event.stopPropagation()">
+        <button id="settingsBtn" class="ctrl settings" title="Settings & API key" onclick="openSetup()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1.05 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
         <button id="pinBtn" class="ctrl pin" title="Pin here (lock position) / unpin to drag" onclick="togglePin()">📌</button>
         <button id="pauseBtn" class="ctrl pause" title="Pause / Resume Jarvis" onclick="togglePause()">⏸</button>
         <button id="stopBtn" class="ctrl stop" title="Stop Jarvis" onclick="stopJarvis()">■</button>
@@ -137,15 +326,104 @@
       </div>
     </div>
   </div>
+
+  <!-- First-Run & Settings Screen -->
+  <div id="setup" class="setup">
+    <div id="setupHeader" class="setup-header">
+      <div class="orb"><div class="core"></div></div>
+      <div class="setup-titles">
+        <h1 id="setupHeading">Welcome to Jarvis</h1>
+        <p id="setupSubheading">Connect a Gemini AI Studio key and review macOS permissions.</p>
+      </div>
+      <button type="button" class="icon-close" data-no-drag title="Quit Jarvis" onclick="stopJarvis()">✕</button>
+    </div>
+
+    <div id="setupReason" class="reason-banner"></div>
+
+    <div class="section" data-no-drag>
+      <div class="section-head">
+        <div class="section-title">
+          <span>Gemini API Key</span>
+          <span id="keySourceBadge" class="source-pill">Not configured</span>
+        </div>
+        <a id="getKeyLink" class="ext-link" href="https://aistudio.google.com/apikey"
+           onclick="openExternalLink(event, 'https://aistudio.google.com/apikey')">Get a key ↗</a>
+      </div>
+      <div class="key-row">
+        <input id="apiKeyInput" class="key-input" type="password"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+               placeholder="Paste your Gemini API key">
+        <button id="toggleKeyBtn" type="button" class="btn-sm" onclick="toggleKeyVisibility()">Show</button>
+        <button id="saveKeyBtn" type="button" class="btn-sm btn-verify" onclick="validateAndSaveKey()">Verify &amp; Save</button>
+      </div>
+      <div id="keyFeedback" class="feedback">Saved locally to ~/.jarvis/config.json (permissions 0600).</div>
+    </div>
+
+    <div class="section" data-no-drag>
+      <div class="section-head">
+        <div class="section-title"><span>macOS Permissions</span></div>
+        <button id="recheckBtn" type="button" class="btn-xs" onclick="recheckPermissions()">↻ Re-check</button>
+      </div>
+      <div id="permList" class="perm-list"></div>
+      <div class="perm-note">Grant access to Jarvis.app (or to Terminal / your IDE when running from the CLI).</div>
+    </div>
+
+    <div class="setup-footer" data-no-drag>
+      <span id="startHint" class="start-hint">Verify and save your API key above to start.</span>
+      <div class="footer-btns">
+        <button id="cancelSetupBtn" type="button" class="btn-sm" style="display:none" onclick="cancelSetup()">Back</button>
+        <button id="startBtn" type="button" class="btn-primary" disabled onclick="startJarvis()">Start Jarvis</button>
+      </div>
+    </div>
+  </div>
+
 <script>
   const island = document.getElementById("island");
+  const setupEl = document.getElementById("setup");
+  const setupHeader = document.getElementById("setupHeader");
   const statusEl = document.getElementById("status");
   const lineEl = document.getElementById("line");
   const chipEl = document.getElementById("chip");
-  const STATE_TEXT = { idle: "At your service", listening: "Listening…", speaking: "Speaking", acting: "Working on it…", paused: "Paused" };
-  const ACCENT = { idle: "#4285f4", listening: "#34a853", speaking: "#4285f4", acting: "#fbbc04", paused: "#8e8e98" };
   const pauseBtn = document.getElementById("pauseBtn");
+
+  const setupHeading = document.getElementById("setupHeading");
+  const setupReasonEl = document.getElementById("setupReason");
+  const keySourceBadge = document.getElementById("keySourceBadge");
+  const apiKeyInput = document.getElementById("apiKeyInput");
+  const toggleKeyBtn = document.getElementById("toggleKeyBtn");
+  const saveKeyBtn = document.getElementById("saveKeyBtn");
+  const keyFeedback = document.getElementById("keyFeedback");
+  const permListEl = document.getElementById("permList");
+  const recheckBtn = document.getElementById("recheckBtn");
+  const startHint = document.getElementById("startHint");
+  const cancelSetupBtn = document.getElementById("cancelSetupBtn");
+  const startBtn = document.getElementById("startBtn");
+
+  const STATE_TEXT = {
+    idle: "At your service",
+    listening: "Listening…",
+    speaking: "Speaking",
+    acting: "Working on it…",
+    paused: "Paused"
+  };
+  const ACCENT = {
+    idle: "#4285f4",
+    listening: "#34a853",
+    speaking: "#4285f4",
+    acting: "#fbbc04",
+    paused: "#8e8e98"
+  };
+  const SOURCE_LABELS = {
+    config: "Saved in ~/.jarvis/config.json",
+    dotenv: "Loaded from .env",
+    env: "Loaded from environment"
+  };
+
   let state = "idle", who = "", text = "", collapseTimer = null, gateOpen = false, isPaused = false;
+  let setupOpen = document.body.classList.contains("setup-mode");
+  let hasConfiguredKey = false;
+  let validatingKey = false;
+  let lastResizeHeight = 0;
 
   function setState(s) {
     state = s;
@@ -162,16 +440,20 @@
     setState(isPaused ? "paused" : "idle");
   }
   function setCompact(compact) {
+    if (setupOpen) return;
     window.pywebview && window.pywebview.api.set_compact && window.pywebview.api.set_compact(compact);
   }
   function expand() {
+    if (setupOpen) return;
     if (!island.classList.contains("expanded")) setCompact(false);
     island.classList.add("expanded");
     clearTimeout(collapseTimer);
     collapseTimer = setTimeout(() => {
-      if (gateOpen) return;
+      if (gateOpen || setupOpen) return;
       island.classList.remove("expanded");
-      setTimeout(() => { if (!gateOpen && !island.classList.contains("expanded")) setCompact(true); }, 460);
+      setTimeout(() => {
+        if (!gateOpen && !setupOpen && !island.classList.contains("expanded")) setCompact(true);
+      }, 460);
     }, 7000);
   }
   function say(speaker, chunk) {
@@ -182,10 +464,220 @@
     expand();
   }
 
+  function syncSetupHeight() {
+    if (!setupOpen) return;
+    requestAnimationFrame(() => {
+      if (!setupOpen) return;
+      const needed = Math.ceil(setupEl.getBoundingClientRect().height) + 22;
+      if (Math.abs(needed - lastResizeHeight) >= 4) {
+        lastResizeHeight = needed;
+        window.pywebview && window.pywebview.api.resize_setup && window.pywebview.api.resize_setup(needed);
+      }
+    });
+  }
+
+  function resetKeyFieldMask() {
+    apiKeyInput.type = "password";
+    toggleKeyBtn.textContent = "Show";
+  }
+
+  function toggleKeyVisibility() {
+    const reveal = apiKeyInput.type === "password";
+    apiKeyInput.type = reveal ? "text" : "password";
+    toggleKeyBtn.textContent = reveal ? "Hide" : "Show";
+  }
+
+  function updateKeyStatusUI(hasKey, source, rejected) {
+    hasConfiguredKey = !!hasKey && !rejected;
+    if (hasKey && source) {
+      keySourceBadge.textContent = SOURCE_LABELS[source] || "Key configured";
+      keySourceBadge.classList.toggle("ok", !rejected);
+      apiKeyInput.placeholder = "Paste a new Gemini API key to replace";
+    } else {
+      keySourceBadge.textContent = "Not configured";
+      keySourceBadge.classList.remove("ok");
+      apiKeyInput.placeholder = "Paste your Gemini API key";
+    }
+    startBtn.disabled = !hasConfiguredKey || validatingKey;
+    startHint.textContent = hasConfiguredKey
+      ? "Ready — starts the voice pipeline right in this window."
+      : "Verify and save your API key above to start.";
+  }
+
+  function renderPermissions(perms) {
+    permListEl.innerHTML = "";
+    (perms || []).forEach((p) => {
+      const row = document.createElement("div");
+      row.className = "perm-row";
+
+      const dot = document.createElement("span");
+      dot.className = `perm-dot ${p.status || "unknown"}`;
+
+      const info = document.createElement("div");
+      info.className = "perm-info";
+      const name = document.createElement("div");
+      name.className = "perm-name";
+      name.textContent = p.name;
+      const detail = document.createElement("div");
+      detail.className = "perm-detail";
+      detail.textContent = p.detail || p.purpose || "";
+      detail.title = p.detail || p.purpose || "";
+      info.appendChild(name);
+      info.appendChild(detail);
+
+      const badge = document.createElement("span");
+      badge.className = `perm-badge ${p.status || "unknown"}`;
+      badge.textContent = p.label || "Unknown";
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn-xs";
+      btn.textContent = "Open Settings";
+      btn.onclick = () => openPermSettings(p.id);
+
+      row.appendChild(dot);
+      row.appendChild(info);
+      row.appendChild(badge);
+      row.appendChild(btn);
+      permListEl.appendChild(row);
+    });
+    syncSetupHeight();
+  }
+
+  function applySetupState(s) {
+    if (!s) return;
+    setupOpen = true;
+    clearTimeout(collapseTimer);
+    document.body.classList.add("setup-mode");
+
+    const hasReason = !!(s.reason && s.reason.trim());
+    setupReasonEl.textContent = hasReason ? s.reason : "";
+    setupReasonEl.classList.toggle("visible", hasReason);
+
+    setupHeading.textContent = (s.pipeline_running || s.has_saved_config_key || s.has_key)
+      ? (hasReason ? "Check Your Gemini Key" : "Jarvis Settings")
+      : "Welcome to Jarvis";
+
+    // If setup opened because the saved key was rejected, require saving a valid key first.
+    updateKeyStatusUI(s.has_key, s.source, hasReason);
+    cancelSetupBtn.style.display = s.can_cancel ? "inline-flex" : "none";
+    renderPermissions(s.permissions || []);
+    syncSetupHeight();
+  }
+
+  function exitSetupView() {
+    setupOpen = false;
+    lastResizeHeight = 0;
+    apiKeyInput.value = "";
+    resetKeyFieldMask();
+    document.body.classList.remove("setup-mode");
+  }
+
+  function openExternalLink(ev, url) {
+    if (ev) ev.preventDefault();
+    if (window.pywebview && window.pywebview.api.open_external) {
+      window.pywebview.api.open_external(url);
+    }
+    return false;
+  }
+
+  async function validateAndSaveKey() {
+    if (validatingKey || !window.pywebview || !window.pywebview.api.validate_and_save_key) return;
+    const candidate = apiKeyInput.value;
+    validatingKey = true;
+    saveKeyBtn.disabled = true;
+    saveKeyBtn.textContent = "Checking…";
+    startBtn.disabled = true;
+    keyFeedback.className = "feedback";
+    keyFeedback.textContent = "Checking key with Google AI Studio…";
+    syncSetupHeight();
+
+    try {
+      const res = await window.pywebview.api.validate_and_save_key(candidate);
+      if (res && res.ok) {
+        apiKeyInput.value = "";
+        resetKeyFieldMask();
+        setupReasonEl.textContent = "";
+        setupReasonEl.classList.remove("visible");
+        keyFeedback.className = "feedback ok";
+        keyFeedback.textContent = res.message || "Key verified and saved.";
+        validatingKey = false;
+        updateKeyStatusUI(true, res.source || "config", false);
+        cancelSetupBtn.style.display = "none";
+      } else {
+        keyFeedback.className = "feedback error";
+        keyFeedback.textContent = (res && res.message) || "Could not verify this key.";
+        validatingKey = false;
+        startBtn.disabled = !hasConfiguredKey;
+      }
+    } catch (_err) {
+      keyFeedback.className = "feedback error";
+      keyFeedback.textContent = "Couldn't validate the key right now. Please try again.";
+      validatingKey = false;
+      startBtn.disabled = !hasConfiguredKey;
+    } finally {
+      saveKeyBtn.disabled = false;
+      saveKeyBtn.textContent = "Verify & Save";
+      syncSetupHeight();
+    }
+  }
+
+  async function recheckPermissions() {
+    if (!window.pywebview || !window.pywebview.api.check_permissions) return;
+    recheckBtn.disabled = true;
+    recheckBtn.textContent = "Checking…";
+    try {
+      const perms = await window.pywebview.api.check_permissions();
+      renderPermissions(perms);
+    } finally {
+      recheckBtn.disabled = false;
+      recheckBtn.textContent = "↻ Re-check";
+    }
+  }
+
+  function openPermSettings(permId) {
+    if (window.pywebview && window.pywebview.api.open_permission_settings) {
+      window.pywebview.api.open_permission_settings(permId);
+    }
+  }
+
+  async function openSetup() {
+    if (!window.pywebview || !window.pywebview.api.open_setup) return;
+    keyFeedback.className = "feedback";
+    keyFeedback.textContent = "Saved locally to ~/.jarvis/config.json (permissions 0600).";
+    const s = await window.pywebview.api.open_setup();
+    applySetupState(s);
+  }
+
+  async function cancelSetup() {
+    if (!window.pywebview || !window.pywebview.api.close_setup) return;
+    const res = await window.pywebview.api.close_setup();
+    if (res && res.ok) exitSetupView();
+  }
+
+  async function startJarvis() {
+    if (!window.pywebview || !window.pywebview.api.start_jarvis) return;
+    startBtn.disabled = true;
+    const res = await window.pywebview.api.start_jarvis();
+    if (res && res.ok) {
+      exitSetupView();
+    } else {
+      startBtn.disabled = !hasConfiguredKey;
+      if (res && res.message) {
+        keyFeedback.className = "feedback error";
+        keyFeedback.textContent = res.message;
+        syncSetupHeight();
+      }
+    }
+  }
+
   // Called from Python with one event at a time.
   window.jarvis = {
     update(ev) {
       switch (ev.type) {
+        case "setup_open": applySetupState(ev.setup); break;
+        case "setup_closed": exitSetupView(); break;
+        case "status_text": statusEl.textContent = ev.text; break;
         case "state": setState(ev.state); break;
         case "paused": setPaused(ev.paused); break;
         case "pinned": setPinned(ev.pinned); break;
@@ -209,19 +701,36 @@
       }
     }
   };
+
   function decide(ok) {
     if (!gateOpen) return;
     window.pywebview && window.pywebview.api.decide(ok);
   }
+
   // Drag the pill with the mouse: Python follows the pointer natively while
   // the button is held, so fast drags and other monitors work.
   island.addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || e.target.closest("button") || island.classList.contains("pinned")) return;
+    if (e.button !== 0 || e.target.closest("button, input, a, [data-no-drag]") || island.classList.contains("pinned")) return;
     island.classList.add("dragging");
     window.pywebview && window.pywebview.api.begin_drag(e.clientX, e.clientY);
   });
-  window.addEventListener("mouseup", () => island.classList.remove("dragging"));
-  function setPinned(on) { island.classList.toggle("pinned", !!on); }
+
+  // On the setup screen, only the header bar initiates a window drag — never text fields or buttons.
+  setupHeader.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || e.target.closest("button, input, a, [data-no-drag]") || setupEl.classList.contains("pinned")) return;
+    setupHeader.classList.add("dragging");
+    window.pywebview && window.pywebview.api.begin_drag(e.clientX, e.clientY);
+  });
+
+  window.addEventListener("mouseup", () => {
+    island.classList.remove("dragging");
+    setupHeader.classList.remove("dragging");
+  });
+
+  function setPinned(on) {
+    island.classList.toggle("pinned", !!on);
+    setupEl.classList.toggle("pinned", !!on);
+  }
   function togglePin() {
     window.pywebview && window.pywebview.api.toggle_pin().then(setPinned);
   }
@@ -231,10 +740,41 @@
   function stopJarvis() {
     window.pywebview && window.pywebview.api.stop();
   }
+
+  apiKeyInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      validateAndSaveKey();
+    }
+  });
+
   document.addEventListener("keydown", (e) => {
+    if (setupOpen) {
+      if (e.key === "Escape" && cancelSetupBtn.style.display !== "none") {
+        cancelSetup();
+      }
+      return;
+    }
     if (e.key === "Enter") decide(true);
     if (e.key === "Escape") decide(false);
   });
+
+  window.addEventListener("focus", () => {
+    if (setupOpen) recheckPermissions();
+  });
+
+  function initSetupIfNeeded() {
+    if (setupOpen && window.pywebview && window.pywebview.api.get_setup_state) {
+      window.pywebview.api.get_setup_state().then(applySetupState);
+    }
+  }
+  if (window.pywebview && window.pywebview.api) {
+    initSetupIfNeeded();
+  } else {
+    window.addEventListener("pywebviewready", initSetupIfNeeded);
+  }
+
   setState("idle");
 </script>
 </body>
