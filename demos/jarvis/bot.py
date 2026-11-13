@@ -229,8 +229,10 @@ class JarvisControl:
         return self.paused
 
     def stop(self) -> None:
-        if self._loop and self._task:
-            self._loop.call_soon_threadsafe(self._task.cancel)
+        if self._loop and self._task and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._task.cancel())
+            )
 
 
 class _SpeakerEchoGuard(FrameProcessor):
