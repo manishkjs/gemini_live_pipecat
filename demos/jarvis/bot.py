@@ -11,12 +11,16 @@ is deliberately not supported.
 
 from __future__ import annotations
 
+import array
 import asyncio
+import collections
+import math
 import os
+import sys
 import time
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
-from google.genai.types import HttpOptions
+from google.genai.types import EndSensitivity, HttpOptions, StartSensitivity, TurnCoverage
 from loguru import logger
 
 from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
@@ -47,6 +51,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.google.gemini_live.llm import (
     ContextWindowCompressionParams,
     GeminiLiveLLMService,
+    GeminiVADParams,
 )
 from pipecat.services.llm_service import FunctionCallParams
 
@@ -55,9 +60,24 @@ import mac_actions
 
 DEFAULT_MODEL = "gemini-3.8-live"
 DEFAULT_VOICE = "Charon"
+# speech_config.language_code picks the reference voice sample the Live
+# backend loads for the session. Leaving it unset (or "en") falls back to the
+# en-US sample; "en-IN" gives an Indian English accent from the first word.
+DEFAULT_LANGUAGE = "en-IN"
+# Added to every tool result while an Indian locale is active. Raw English JSON
+# right before decoding pulls the voice back toward a US accent; a short tone
+# line in the result itself keeps the accent steady after tool calls.
+VOCAL_TONE = "Natural Indian English accent on every word; calm, warm and clear."
+# Context compression: start trimming at this many tokens instead of the
+# default 80% of the window, so every turn doesn't re-bill a huge audio and
+# screenshot history.
+_COMPRESSION_TRIGGER_TOKENS = 32_000
 _TOOL_TIMEOUT_SECONDS = 120
 _ECHO_PRE_ROLL_SECONDS = 0.50
 _ECHO_TAIL_SECONDS = 0.60
+# How long to keep dropping Jarvis's audio after a local barge-in while we wait
+# for Gemini's own "interrupted" signal for the reply it was still streaming.
+_BARGE_IN_SUPPRESS_SECONDS = 2.0
 _ISOLATED_OUTPUT_KEYWORDS = (
     "headphone",
     "airpod",
@@ -133,12 +153,38 @@ How you work:
 - Mobile apps (e.g. Swiggy): If an Android device/emulator is connected, use
   mobile_open_app / mobile_tap / mobile_type / mobile_swipe. If not, open
   iPhone Mirroring or the emulator/browser window and use Mac desktop tools.
-- If the user interrupts you, stop and follow the new instruction.
+- If the user starts talking while you are speaking, stop at once and follow
+  the new instruction. Do not finish or repeat the old sentence.
+- Respond only to the user's newest words. If your own last sentence echoes
+  back from the speakers, ignore it and keep listening for the user.
+- Tool results are private guidance. Say what matters in your own words; never
+  read field names, JSON, or the vocal_tone field aloud.
+- Use short spoken acknowledgements ("Sure", "Right", "On it"), not "Hmm" or
+  "Umm".
 - Some actions (deleting data, force-push, Pay/Order/Checkout buttons) need
   approval. If a tool says waiting or denied, tell the user plainly and do not
   try to work around it.
 - Never invent results. If you cannot see something, say so.
 """
+
+_INDIAN_ACCENT_INSTRUCTION = """
+Voice: Speak English with a natural Indian accent on every word, like an
+Indian professional talking to a colleague: clear, warm and unhurried. Keep
+that accent for the whole conversation, including right after tool results.
+Use Indian conventions when they come up: lakh and crore, rupees, DD/MM dates.
+"""
+
+
+def accent_enabled(language: str) -> bool:
+    """Returns True when the session locale is an Indian one (e.g. en-IN, hi-IN)."""
+    return language.strip().upper().endswith("-IN")
+
+
+def build_system_instruction(language: str = DEFAULT_LANGUAGE) -> str:
+    """Returns the Jarvis system prompt, with the accent block for Indian locales."""
+    if accent_enabled(language):
+        return SYSTEM_INSTRUCTION + _INDIAN_ACCENT_INSTRUCTION
+    return SYSTEM_INSTRUCTION
 
 
 class UiBridge(Protocol):
@@ -193,9 +239,153 @@ def resolve_echo_guard_enabled(
         return True, device or "forced-on"
     if setting in ("0", "false", "off", "no"):
         return False, device or "forced-off"
+    if setting in ("smart", "mute"):
+        return True, device or f"forced-{setting}"
     if device and is_headphone_output(device):
         return False, device
     return True, device or "unknown output"
+
+
+def resolve_echo_mode(
+    env_value: str | None = None,
+    output_device_name: str | None = None,
+    output_device_index: int | None = None,
+) -> tuple[str, str]:
+    """Picks how the mic is handled while Jarvis speaks: "off", "smart" or "mute".
+
+    - "off": mic always open (headphones/virtual cables); Gemini's own VAD
+      handles barge-in.
+    - "smart" (default on open speakers): mic is silenced while Jarvis talks,
+      but loud, sustained speech well above the speaker echo counts as a
+      barge-in: Jarvis stops at once and the user's words go through.
+    - "mute": mic fully silenced while Jarvis talks plus a short tail (no
+      barge-in). JARVIS_ECHO_GUARD=on/mute selects it.
+    """
+    raw = env_value if env_value is not None else os.getenv("JARVIS_ECHO_GUARD", "auto")
+    setting = raw.strip().lower()
+    enabled, device = resolve_echo_guard_enabled(
+        setting, output_device_name, output_device_index
+    )
+    if not enabled:
+        return "off", device
+    if setting in ("1", "true", "on", "yes", "mute"):
+        return "mute", device
+    return "smart", device
+
+
+def _pcm16_rms(audio: bytes) -> float:
+    """Root-mean-square level of little/native-endian signed 16-bit PCM."""
+    usable = len(audio) - (len(audio) % 2)
+    if usable <= 0:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(audio[:usable])
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return math.sqrt(sum(s * s for s in samples) / len(samples))
+
+
+class _BargeInDetector:
+    """Spots the user talking over Jarvis's own speaker output.
+
+    While Jarvis speaks, the mic hears its echo. The detector keeps a slowly
+    decaying peak of that echo level and calls it a barge-in once the mic stays
+    well above it (`ratio` times, and at least `min_rms`) for `hold_seconds`.
+    The first `warmup_seconds` of each utterance only learn the echo level.
+    Raw frames from the last `preroll_seconds` are kept so the start of the
+    user's words can be forwarded after the barge-in fires.
+    """
+
+    def __init__(
+        self,
+        ratio: float = 2.2,
+        min_rms: float = 700.0,
+        hold_seconds: float = 0.18,
+        warmup_seconds: float = 0.30,
+        preroll_seconds: float = 0.50,
+        decay_per_second: float = 0.80,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ratio = ratio
+        self._min_rms = min_rms
+        self._hold = hold_seconds
+        self._warmup = warmup_seconds
+        self._preroll = preroll_seconds
+        self._decay_per_second = decay_per_second
+        self._clock = clock
+        self._echo_level = 0.0
+        self._loud_seconds = 0.0
+        self._quiet_frames = 0
+        self._started_at: float | None = None
+        self._buffer: collections.deque[InputAudioRawFrame] = collections.deque()
+        self._buffered_seconds = 0.0
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> _BargeInDetector:
+        """Builds a detector, letting JARVIS_BARGE_IN_RATIO / _MIN_RMS tune it."""
+        env = os.environ if env is None else env
+
+        def _num(name: str, default: float) -> float:
+            try:
+                return float(env.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            ratio=_num("JARVIS_BARGE_IN_RATIO", 2.2),
+            min_rms=_num("JARVIS_BARGE_IN_MIN_RMS", 700.0),
+        )
+
+    @property
+    def echo_level(self) -> float:
+        return self._echo_level
+
+    def start_utterance(self) -> None:
+        """Called when Jarvis starts a new stretch of speech."""
+        self._started_at = self._clock()
+        self._loud_seconds = 0.0
+        self._quiet_frames = 0
+        self._buffer.clear()
+        self._buffered_seconds = 0.0
+
+    def feed(self, frame: InputAudioRawFrame) -> bool:
+        """Feeds one mic frame captured while Jarvis speaks; True means barge-in."""
+        if self._started_at is None:
+            self.start_utterance()
+        channels = max(1, frame.num_channels)
+        duration = len(frame.audio) / (2 * channels * max(1, frame.sample_rate))
+        self._buffer.append(frame)
+        self._buffered_seconds += duration
+        while self._buffer and self._buffered_seconds - self._frame_seconds(self._buffer[0]) >= self._preroll:
+            self._buffered_seconds -= self._frame_seconds(self._buffer.popleft())
+
+        rms = _pcm16_rms(frame.audio)
+        threshold = max(self._min_rms, self._ratio * self._echo_level)
+        in_warmup = (self._clock() - self._started_at) < self._warmup
+        if in_warmup or rms < threshold:
+            # Learn the echo: jump up to new peaks, decay slowly otherwise.
+            decay = self._decay_per_second ** duration
+            self._echo_level = max(rms, self._echo_level * decay)
+            self._quiet_frames += 1
+            if self._quiet_frames > 1:  # allow one quiet frame inside a word
+                self._loud_seconds = 0.0
+            return False
+        self._quiet_frames = 0
+        self._loud_seconds += duration
+        return self._loud_seconds >= self._hold
+
+    def drain(self) -> list[InputAudioRawFrame]:
+        """Returns and clears the buffered raw frames (oldest first)."""
+        frames = list(self._buffer)
+        self._buffer.clear()
+        self._buffered_seconds = 0.0
+        self._loud_seconds = 0.0
+        return frames
+
+    @staticmethod
+    def _frame_seconds(frame: InputAudioRawFrame) -> float:
+        channels = max(1, frame.num_channels)
+        return len(frame.audio) / (2 * channels * max(1, frame.sample_rate))
 
 
 class _EchoGuardState:
@@ -207,13 +397,19 @@ class _EchoGuardState:
         pre_roll_seconds: float = _ECHO_PRE_ROLL_SECONDS,
         tail_seconds: float = _ECHO_TAIL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        barge_in: bool = False,
+        suppress_seconds: float = _BARGE_IN_SUPPRESS_SECONDS,
     ) -> None:
         self.enabled = enabled
+        self.barge_in = barge_in
         self._pre_roll_seconds = pre_roll_seconds
         self._tail_seconds = tail_seconds
+        self._suppress_seconds = suppress_seconds
         self._clock = clock
         self._bot_speaking = False
         self._mute_until = 0.0
+        self._suppress_output_until = 0.0
+        self._own_interrupts_pending = 0
 
     def on_pre_speech(self) -> None:
         if not self.enabled:
@@ -234,8 +430,33 @@ class _EchoGuardState:
 
     def on_interrupted(self) -> None:
         self._bot_speaking = False
-        if self.enabled:
+        # In smart mode the user is the one talking now: muting the tail would
+        # clip their first words. Plain mute mode keeps a short tail.
+        if self.enabled and not self.barge_in:
             self._mute_until = max(self._mute_until, self._clock() + 0.15)
+        else:
+            self._mute_until = 0.0
+
+    def on_local_barge_in(self) -> None:
+        """The user talked over Jarvis: open the mic and drop the stale reply."""
+        self._bot_speaking = False
+        self._mute_until = 0.0
+        self._suppress_output_until = self._clock() + self._suppress_seconds
+        # broadcast_interruption() sends one InterruptionFrame downstream to
+        # the output tap; the next one there is Gemini's own confirmation.
+        self._own_interrupts_pending = 1
+
+    def on_output_interruption(self) -> None:
+        """An InterruptionFrame reached the output side of the pipeline."""
+        if self._own_interrupts_pending:
+            self._own_interrupts_pending -= 1
+            return
+        # Gemini confirmed it: the stale reply is cancelled, new audio is fresh.
+        self._suppress_output_until = 0.0
+
+    def suppress_output(self) -> bool:
+        """True while Jarvis's leftover audio from an interrupted reply is dropped."""
+        return self._clock() < self._suppress_output_until
 
     def should_mute_mic(self) -> bool:
         if not self.enabled:
@@ -272,17 +493,25 @@ class JarvisControl:
 
 
 class _SpeakerEchoGuard(FrameProcessor):
-    """Replaces mic frames with silence while Jarvis is speaking or paused."""
+    """Silences mic frames while Jarvis is speaking or paused, with optional barge-in.
+
+    With a `detector` (smart mode), loud speech over Jarvis's echo triggers a
+    local interruption: Jarvis's queued audio is flushed right away, the mic
+    opens, and the buffered start of the user's words is forwarded to Gemini.
+    """
 
     def __init__(
         self,
         state: _EchoGuardState,
         control: JarvisControl | None = None,
+        detector: _BargeInDetector | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._state = state
         self._control = control
+        self._detector = detector
+        self._was_muting = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -292,16 +521,42 @@ class _SpeakerEchoGuard(FrameProcessor):
             self._state.on_bot_stopped()
         elif isinstance(frame, InterruptionFrame):
             self._state.on_interrupted()
-        elif isinstance(frame, InputAudioRawFrame) and (
-            (self._control is not None and self._control.paused)
-            or self._state.should_mute_mic()
-        ):
-            frame = InputAudioRawFrame(
-                audio=b"\x00" * len(frame.audio),
-                sample_rate=frame.sample_rate,
-                num_channels=frame.num_channels,
-            )
+        elif isinstance(frame, InputAudioRawFrame):
+            if self._control is not None and self._control.paused:
+                frame = _silence_like(frame)
+            elif self._state.should_mute_mic():
+                if await self._maybe_barge_in(frame, direction):
+                    return
+                frame = _silence_like(frame)
+            else:
+                self._was_muting = False
         await self.push_frame(frame, direction)
+
+    async def _maybe_barge_in(self, frame: InputAudioRawFrame, direction: FrameDirection) -> bool:
+        """Returns True if this frame triggered a barge-in (frames already forwarded)."""
+        if self._detector is None or not self._state.barge_in:
+            return False
+        if not self._was_muting:
+            self._detector.start_utterance()
+            self._was_muting = True
+        if not self._detector.feed(frame):
+            return False
+        logger.info("Barge-in: user spoke over Jarvis (echo level {:.0f})", self._detector.echo_level)
+        self._state.on_local_barge_in()
+        self._was_muting = False
+        preroll = self._detector.drain()
+        await self.broadcast_interruption()
+        for buffered in preroll:
+            await self.push_frame(buffered, direction)
+        return True
+
+
+def _silence_like(frame: InputAudioRawFrame) -> InputAudioRawFrame:
+    return InputAudioRawFrame(
+        audio=b"\x00" * len(frame.audio),
+        sample_rate=frame.sample_rate,
+        num_channels=frame.num_channels,
+    )
 
 
 class _ScreenFeeder(FrameProcessor):
@@ -354,6 +609,13 @@ class _OutputUiTap(FrameProcessor):
         paused = self._control is not None and self._control.paused
         if paused and isinstance(frame, OutputAudioRawFrame):
             return
+        if (
+            isinstance(frame, OutputAudioRawFrame)
+            and self._echo_state is not None
+            and self._echo_state.suppress_output()
+        ):
+            # Leftover audio from a reply the user just talked over.
+            return
 
         if self._echo_state is not None:
             if isinstance(frame, (TTSStartedFrame, OutputAudioRawFrame)):
@@ -364,6 +626,7 @@ class _OutputUiTap(FrameProcessor):
                 self._echo_state.on_bot_stopped()
             elif isinstance(frame, InterruptionFrame):
                 self._echo_state.on_interrupted()
+                self._echo_state.on_output_interruption()
 
         if not paused:
             self._mirror_to_ui(frame, direction)
@@ -1146,6 +1409,74 @@ def _resolve_transport_audio_indices() -> tuple[int | None, int | None]:
     return input_idx, output_idx
 
 
+_TURN_COVERAGE_BY_NAME = {
+    "audio_and_video": TurnCoverage.TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO,
+    "all_input": TurnCoverage.TURN_INCLUDES_ALL_INPUT,
+    "activity": TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+    "default": None,
+}
+
+
+def build_live_settings(
+    model: str, env: Mapping[str, str] | None = None
+) -> GeminiLiveLLMService.Settings:
+    """Gemini Live session settings for Jarvis.
+
+    - language: speech_config.language_code, default en-IN (JARVIS_LANGUAGE).
+    - Server VAD: LOW start sensitivity so speaker echo and room noise don't
+      cut Jarvis off, LOW end sensitivity with 700 ms of silence so short
+      pauses mid-command don't end the turn, 200 ms prefix padding so short
+      words still register.
+    - Turn coverage: audio activity plus ALL video, so screenshots sent between
+      turns stay in the user's turn while silence/echo frames don't.
+    - Context window compression with an explicit trigger.
+    - temperature/top_k/top_p are left unset (greedy decoding on 3.8 Live has
+      caused audio loops).
+    """
+    env = os.environ if env is None else env
+    language = (env.get("JARVIS_LANGUAGE") or DEFAULT_LANGUAGE).strip()
+    coverage_name = (env.get("JARVIS_TURN_COVERAGE") or "audio_and_video").strip().lower()
+    turn_coverage = _TURN_COVERAGE_BY_NAME.get(
+        coverage_name, TurnCoverage.TURN_INCLUDES_AUDIO_ACTIVITY_AND_ALL_VIDEO
+    )
+    return GeminiLiveLLMService.Settings(
+        model=f"models/{model}",
+        system_instruction=build_system_instruction(language),
+        voice=env.get("JARVIS_VOICE") or DEFAULT_VOICE,
+        language=language,
+        vad=GeminiVADParams(
+            start_sensitivity=StartSensitivity.START_SENSITIVITY_LOW,
+            end_sensitivity=EndSensitivity.END_SENSITIVITY_LOW,
+            prefix_padding_ms=200,
+            silence_duration_ms=700,
+        ),
+        turn_coverage=turn_coverage,
+        context_window_compression=ContextWindowCompressionParams(
+            enabled=True, trigger_tokens=_COMPRESSION_TRIGGER_TOKENS
+        ),
+    )
+
+
+def with_vocal_tone(
+    handler: Callable[[FunctionCallParams], Awaitable[None]], tone: str = VOCAL_TONE
+) -> Callable[[FunctionCallParams], Awaitable[None]]:
+    """Wraps a tool handler so every dict result carries a `vocal_tone` line."""
+
+    async def wrapped(params: FunctionCallParams) -> None:
+        original = params.result_callback
+
+        async def result_with_tone(result: Any, *args: Any, **kwargs: Any) -> None:
+            if isinstance(result, dict):
+                result = {**result, "vocal_tone": tone}
+            await original(result, *args, **kwargs)
+
+        params.result_callback = result_with_tone
+        await handler(params)
+
+    wrapped.__name__ = getattr(handler, "__name__", "tool")
+    return wrapped
+
+
 async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None:
     """Builds and runs the pipeline until cancelled.
 
@@ -1163,15 +1494,19 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     logger.info("Starting Jarvis on {} (AI Studio, non-blocking tools)", model)
 
     input_idx, output_idx = _resolve_transport_audio_indices()
-    echo_guard_on, out_device = resolve_echo_guard_enabled(output_device_index=output_idx)
-    if echo_guard_on:
+    echo_mode, out_device = resolve_echo_mode(output_device_index=output_idx)
+    if echo_mode == "smart":
         logger.info(
-            "Speaker echo guard enabled for output device {!r} (set JARVIS_ECHO_GUARD=off to allow barge-in)",
+            "Open speakers {!r}: mic is silenced while Jarvis talks, but speaking over "
+            "it interrupts (JARVIS_ECHO_GUARD=mute to disable barge-in, off for headphones)",
             out_device,
         )
+    elif echo_mode == "mute":
+        logger.info("Echo guard (no barge-in) for output device {!r}", out_device)
     else:
-        logger.info("Isolated output {!r} detected; full barge-in enabled", out_device)
-    echo_state = _EchoGuardState(enabled=echo_guard_on)
+        logger.info("Isolated output {!r}; mic always open, Gemini VAD handles barge-in", out_device)
+    echo_state = _EchoGuardState(enabled=echo_mode != "off", barge_in=echo_mode == "smart")
+    detector = _BargeInDetector.from_env() if echo_mode == "smart" else None
 
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
@@ -1185,25 +1520,24 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     tools = JarvisTools(mac_actions.MacDesktop(), feeder, ui)
     definitions = tools.definitions()
 
+    settings = build_live_settings(model)
     llm = GeminiLiveLLMService(
         api_key=api_key,
-        settings=GeminiLiveLLMService.Settings(
-            model=f"models/{model}",
-            system_instruction=SYSTEM_INSTRUCTION,
-            voice=os.getenv("JARVIS_VOICE", DEFAULT_VOICE),
-            # Screenshots + audio hit the ~2 min audio/video session cap without
-            # a sliding window; Pipecat already reconnects with resumption handles.
-            context_window_compression=ContextWindowCompressionParams(enabled=True),
-        ),
+        settings=settings,
         tools=ToolsSchema(standard_tools=[schema for schema, _ in definitions]),
         http_options=HttpOptions(api_version="v1alpha"),
     )
+    tone_on = accent_enabled(str(settings.language))
+    logger.info("Voice {} with language {}", settings.voice, settings.language)
     for schema, handler in definitions:
         # Registered with cancel_on_interruption=False so tools are declared
         # NON_BLOCKING (Jarvis keeps speaking while acting) and approval gates
         # can wait up to two minutes without being cancelled mid-action.
         llm.register_function(
-            schema.name, handler, cancel_on_interruption=False, timeout_secs=_TOOL_TIMEOUT_SECONDS
+            schema.name,
+            with_vocal_tone(handler) if tone_on else handler,
+            cancel_on_interruption=False,
+            timeout_secs=_TOOL_TIMEOUT_SECONDS,
         )
 
     context = LLMContext()
@@ -1212,7 +1546,7 @@ async def run_jarvis(ui: UiBridge, control: JarvisControl | None = None) -> None
     pipeline = Pipeline(
         [
             transport.input(),
-            _SpeakerEchoGuard(echo_state, control),
+            _SpeakerEchoGuard(echo_state, control, detector),
             user_agg,
             _InputUiTap(ui),
             feeder,

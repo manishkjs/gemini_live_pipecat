@@ -76,7 +76,9 @@ Permissions: the app that launches Jarvis (Terminal, iTerm, or your IDE)
 needs **Microphone**, **Screen Recording** and **Accessibility** in
 System Settings → Privacy & Security. Restart the terminal after granting.
 
-Use headphones. Without them Jarvis hears itself and interrupts itself.
+Headphones work best. On the laptop speakers Jarvis silences the mic while it
+talks so it can't hear itself, but speaking clearly over it still interrupts
+it (see `JARVIS_ECHO_GUARD`).
 
 Optional `.env` settings:
 
@@ -84,9 +86,13 @@ Optional `.env` settings:
 |---|---|---|
 | `JARVIS_MODEL` | `gemini-3.8-live` | Any Gemini Live model your key can use |
 | `JARVIS_VOICE` | `Charon` | Gemini voice name |
+| `JARVIS_LANGUAGE` | `en-IN` | Speech locale. `en-IN` gives an Indian English accent; use `en-US` for American |
 | `JARVIS_INPUT_DEVICE` | System default | Audio input index or name substring (e.g. `BlackHole 2ch`) |
 | `JARVIS_OUTPUT_DEVICE` | System default | Audio output index or name substring (e.g. `BlackHole 16ch`) |
-| `JARVIS_ECHO_GUARD` | `auto` | Mutes mic during speech on open speakers (`auto`, `on`, `off`) |
+| `JARVIS_ECHO_GUARD` | `auto` | `auto`: `smart` on speakers, `off` on headphones. `smart`: mic silenced while Jarvis talks, but talking over it interrupts. `mute`/`on`: silenced, no interrupting. `off`: mic always open |
+| `JARVIS_BARGE_IN_RATIO` | `2.2` | In `smart` mode, how much louder than the speaker echo your voice must be to interrupt. Raise it if Jarvis cuts itself off; lower it if it ignores you |
+| `JARVIS_BARGE_IN_MIN_RMS` | `700` | In `smart` mode, the quietest voice level (16-bit RMS) that can interrupt |
+| `JARVIS_TURN_COVERAGE` | `audio_and_video` | What a user turn covers in Gemini Live: `audio_and_video`, `all_input`, `activity` or `default` |
 | `JARVIS_CHROME_PROFILE` | `~/.jarvis-chrome-profile` | Isolated Chrome profile for Jarvis as a separate Meet user |
 
 List audio device indexes on your Mac:
