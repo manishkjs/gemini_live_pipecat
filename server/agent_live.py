@@ -2671,19 +2671,13 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
-    from processors.emotion_perception import (
-        AudioEmotionObserver,
-        resolve_decision_api_key_async,
-    )
+    from processors.emotion_perception import AudioEmotionObserver
 
     live_vad = build_live_vad_processor(vad, vad_mode)
-    decision_api_key = (
-        await resolve_decision_api_key_async(project_id) if emotion_enabled else ""
-    )
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
-        api_key=decision_api_key,
+        project_id=project_id,
     )
     llm._emotion_observer = emotion_observer
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)

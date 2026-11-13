@@ -71,8 +71,10 @@ ONSET_HOLD_SECS = 0.16
 SILENCE_STOP_SECS = 0.48
 NEW_ONSET_TRANSCRIPT_GRACE_SECS = 0.70
 SECRET_MANAGER_EMPTY_TTL_SECS = 60.0
+SECRET_MANAGER_RPC_TIMEOUT_SECS = 2.0
 
 _SECRET_MANAGER_CACHE: dict[str, tuple[str, float | None]] = {}
+_IN_FLIGHT_KEY_LOOKUPS: dict[str, asyncio.Task[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -156,14 +158,21 @@ EMOTION_QUESTION = ChoiceQuestion(
 )
 
 
-def _fetch_secret_manager_key(target_project: str) -> str:
-    """Blocking Secret Manager RPC helper; callers on an event loop use resolve_decision_api_key_async."""
-    now = time.monotonic()
+def _get_cached_secret_key(target_project: str) -> str | None:
+    """Return cached Secret Manager key if present and unexpired, else None."""
     cached = _SECRET_MANAGER_CACHE.get(target_project)
     if cached is not None:
         cached_val, expires_at = cached
-        if expires_at is None or now < expires_at:
+        if expires_at is None or time.monotonic() < expires_at:
             return cached_val
+    return None
+
+
+def _fetch_secret_manager_key(target_project: str) -> str:
+    """Bounded blocking Secret Manager RPC helper; callers on an event loop use resolve_decision_api_key_async."""
+    cached_val = _get_cached_secret_key(target_project)
+    if cached_val is not None:
+        return cached_val
 
     resolved = ""
     try:
@@ -171,7 +180,11 @@ def _fetch_secret_manager_key(target_project: str) -> str:
 
         sm_client = secretmanager.SecretManagerServiceClient()
         sm_name = f"projects/{target_project}/secrets/GEMINI_API_KEY/versions/latest"
-        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+        sm_res = sm_client.access_secret_version(
+            request={"name": sm_name},
+            timeout=SECRET_MANAGER_RPC_TIMEOUT_SECS,
+            retry=None,
+        )
         resolved = sm_res.payload.data.decode("UTF-8").strip()
         if resolved:
             logger.info(
@@ -189,25 +202,12 @@ def _fetch_secret_manager_key(target_project: str) -> str:
     return resolved
 
 
-def resolve_decision_api_key(project_id: str | None = None) -> str:
-    """Resolve GEMINI_API_KEY from env or process-cached Cloud Secret Manager without mutating os.environ."""
-    env_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
-    if env_key:
-        return env_key
-
-    target_project = (
-        project_id
-        or os.getenv("GCP_PROJECT_ID")
-        or os.getenv("GOOGLE_CLOUD_PROJECT")
-        or ""
-    ).strip()
-    if not target_project:
-        return ""
-    return _fetch_secret_manager_key(target_project)
+async def _run_deduped_secret_lookup(target_project: str) -> str:
+    return await asyncio.to_thread(_fetch_secret_manager_key, target_project)
 
 
 async def resolve_decision_api_key_async(project_id: str | None = None) -> str:
-    """Non-blocking async Secret Manager resolver safe to call inside live session setup."""
+    """Bounded, deduplicated, non-blocking Secret Manager resolver."""
     env_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if env_key:
         return env_key
@@ -221,13 +221,18 @@ async def resolve_decision_api_key_async(project_id: str | None = None) -> str:
     if not target_project:
         return ""
 
-    cached = _SECRET_MANAGER_CACHE.get(target_project)
-    if cached is not None:
-        cached_val, expires_at = cached
-        if expires_at is None or time.monotonic() < expires_at:
-            return cached_val
+    cached_val = _get_cached_secret_key(target_project)
+    if cached_val is not None:
+        return cached_val
 
-    return await asyncio.to_thread(_fetch_secret_manager_key, target_project)
+    in_flight = _IN_FLIGHT_KEY_LOOKUPS.get(target_project)
+    if in_flight is None:
+        in_flight = asyncio.create_task(_run_deduped_secret_lookup(target_project))
+        _IN_FLIGHT_KEY_LOOKUPS[target_project] = in_flight
+        in_flight.add_done_callback(
+            lambda _t, proj=target_project: _IN_FLIGHT_KEY_LOOKUPS.pop(proj, None)
+        )
+    return await asyncio.shield(in_flight)
 
 
 def compute_pcm16_rms(pcm_bytes: bytes) -> float:
@@ -331,36 +336,65 @@ class AudioEmotionObserver(FrameProcessor):
         super().__init__(**kwargs)
         self._session_id = session_id or ""
         self._sample_rate = 16000
+        self._model_name = model
+        self._timeout_secs = timeout
         self._owns_classifier = False
         self._classifier: BaseClassifier | None = None
-
-        if api_key is not None:
-            resolved_key = api_key.strip()
-        elif enabled and classifier is None:
-            resolved_key = (
-                os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-            ).strip()
-        else:
-            resolved_key = ""
+        self._deferred_project_id = ""
+        self._key_ready = asyncio.Event()
+        self._key_ready.set()
 
         if enabled:
             if classifier is not None:
                 self._classifier = classifier
-            elif resolved_key:
-                self._classifier = GoogleDecisionsClassifier(
-                    api_key=resolved_key,
-                    model=model,
-                    timeout=timeout,
-                )
-                self._owns_classifier = True
+            elif api_key is not None:
+                resolved_key = api_key.strip()
+                if resolved_key:
+                    self._classifier = GoogleDecisionsClassifier(
+                        api_key=resolved_key,
+                        model=model,
+                        timeout=timeout,
+                    )
+                    self._owns_classifier = True
+                else:
+                    logger.warning(
+                        "[EmotionPerception] Caller emotion perception enabled (session={}), "
+                        "but no GEMINI_API_KEY / GOOGLE_API_KEY was available; disabling observer.",
+                        self._session_id or "-",
+                    )
             else:
-                logger.warning(
-                    "[EmotionPerception] Caller emotion perception enabled (session={}), "
-                    "but no GEMINI_API_KEY / GOOGLE_API_KEY was available; disabling observer.",
-                    self._session_id or "-",
+                env_key = (
+                    os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+                ).strip()
+                target_project = (
+                    project_id
+                    or os.getenv("GCP_PROJECT_ID")
+                    or os.getenv("GOOGLE_CLOUD_PROJECT")
+                    or ""
+                ).strip()
+                cached_key = (
+                    _get_cached_secret_key(target_project) if (not env_key and target_project) else None
                 )
+                immediate_key = env_key or (cached_key or "")
+                if immediate_key:
+                    self._classifier = GoogleDecisionsClassifier(
+                        api_key=immediate_key,
+                        model=model,
+                        timeout=timeout,
+                    )
+                    self._owns_classifier = True
+                elif target_project and cached_key is None:
+                    # Resolve Secret Manager lazily in _warm_classifier so call setup never waits.
+                    self._deferred_project_id = target_project
+                    self._key_ready.clear()
+                else:
+                    logger.warning(
+                        "[EmotionPerception] Caller emotion perception enabled (session={}), "
+                        "but no GEMINI_API_KEY / GOOGLE_API_KEY was available; disabling observer.",
+                        self._session_id or "-",
+                    )
 
-        self._usable = self._classifier is not None
+        self._usable = self._classifier is not None or bool(self._deferred_project_id)
         self._is_setup = False
         self._muted = False
         self._bot_speaking = False
@@ -434,12 +468,35 @@ class AudioEmotionObserver(FrameProcessor):
         return task
 
     async def _warm_classifier(self) -> None:
-        """Warm the Decisions HTTP/2 connection in the background without holding StartFrame."""
-        if self._classifier is None:
-            return
+        """Resolve deferred Secret Manager key and warm HTTP/2 connection in background."""
         try:
-            await self._classifier.setup(self.task_manager)
+            if self._classifier is None and self._deferred_project_id:
+                try:
+                    resolved_key = await resolve_decision_api_key_async(
+                        self._deferred_project_id
+                    )
+                    if resolved_key:
+                        self._classifier = GoogleDecisionsClassifier(
+                            api_key=resolved_key,
+                            model=self._model_name,
+                            timeout=self._timeout_secs,
+                        )
+                        self._owns_classifier = True
+                    else:
+                        self._usable = False
+                        logger.warning(
+                            "[EmotionPerception] Caller emotion perception enabled (session={}), "
+                            "but no GEMINI_API_KEY / GOOGLE_API_KEY was available; disabling observer.",
+                            self._session_id or "-",
+                        )
+                finally:
+                    self._deferred_project_id = ""
+                    self._key_ready.set()
+
+            if self._classifier is not None:
+                await self._classifier.setup(self.task_manager)
         except asyncio.CancelledError:
+            self._key_ready.set()
             raise
         except Exception as exc:
             logger.warning("[EmotionPerception] Classifier background warmup warning: {}", exc)
@@ -450,7 +507,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._is_setup = True
         if getattr(setup, "audio_in_sample_rate", 0):
             self._sample_rate = int(setup.audio_in_sample_rate)
-        if self._classifier is not None:
+        if self._classifier is not None or self._deferred_project_id:
             self._spawn_background_task(
                 self._warm_classifier(),
                 name="emotion_warm",
@@ -660,7 +717,7 @@ class AudioEmotionObserver(FrameProcessor):
         interim: bool,
         utterance_id: int,
     ) -> None:
-        if self._classifier is None or not self._usable:
+        if not self._usable or (self._classifier is None and not self._deferred_project_id):
             self._interim_in_flight = False
             return
         self._request_seq += 1
@@ -721,6 +778,8 @@ class AudioEmotionObserver(FrameProcessor):
     ) -> None:
         started = time.perf_counter()
         try:
+            if not self._key_ready.is_set():
+                await self._key_ready.wait()
             if self._classifier is None or not self._usable:
                 return
             async with self._concurrency_sem:

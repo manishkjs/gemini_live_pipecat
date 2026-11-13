@@ -1635,7 +1635,7 @@ button, input, select, textarea {
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-3));
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line-2));
   color: var(--ink);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 1;
   animation: vbEmotionPop 0.18s ease-out;

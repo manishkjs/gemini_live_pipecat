@@ -40,7 +40,6 @@ import processors.emotion_perception as emo_mod
 from processors.emotion_perception import (
     AudioEmotionObserver,
     compute_pcm16_rms,
-    resolve_decision_api_key,
     resolve_decision_api_key_async,
 )
 
@@ -180,8 +179,10 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(warn_mock.called)
 
         emo_mod._SECRET_MANAGER_CACHE.clear()
-        def slow_access(request):
-            time.sleep(0.30)
+        emo_mod._IN_FLIGHT_KEY_LOOKUPS.clear()
+
+        def slow_access(request, *, timeout=None, retry="UNSET"):
+            time.sleep(0.25)
             return SimpleNamespace(payload=SimpleNamespace(data=b"sm-test-key-123\n"))
 
         fake_sm = mock.MagicMock()
@@ -202,41 +203,66 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
             },
         ):
             max_gap = 0.0
+            ticks = 0
             running_hb = True
 
             async def heartbeat() -> None:
-                nonlocal max_gap
+                nonlocal max_gap, ticks
                 last = time.perf_counter()
                 while running_hb:
                     await asyncio.sleep(0.01)
                     now_hb = time.perf_counter()
+                    ticks += 1
                     max_gap = max(max_gap, now_hb - last)
                     last = now_hb
 
             hb_task = asyncio.create_task(heartbeat())
+            # Yield once so heartbeat starts ticking BEFORE resolve_decision_api_key_async runs.
+            await asyncio.sleep(0)
             try:
-                key1 = await resolve_decision_api_key_async("proj-emo-test")
+                # 10 concurrent cold lookups must deduplicate into 1 RPC with bounded timeout=2.0, retry=None.
+                results_10 = await asyncio.gather(
+                    *(resolve_decision_api_key_async("proj-emo-test") for _ in range(10))
+                )
             finally:
                 running_hb = False
                 await hb_task
 
-            self.assertEqual(key1, "sm-test-key-123")
+            self.assertEqual(results_10, ["sm-test-key-123"] * 10)
+            self.assertGreater(ticks, 5, "Heartbeat task never ticked during lookup")
             self.assertLess(
                 max_gap,
                 0.05,
                 f"Secret Manager lookup stalled event loop ({max_gap:.3f}s)",
             )
             self.assertNotIn("GEMINI_API_KEY", emo_mod.os.environ)
+            self.assertEqual(fake_sm.access_secret_version.call_count, 1)
+            call_kwargs = fake_sm.access_secret_version.call_args.kwargs
+            self.assertEqual(call_kwargs.get("timeout"), 2.0)
+            self.assertIsNone(call_kwargs.get("retry"))
 
+            # Cached 2nd lookup returns immediately without another RPC.
             key2 = await resolve_decision_api_key_async("proj-emo-test")
             self.assertEqual(key2, "sm-test-key-123")
             self.assertEqual(fake_sm.access_secret_version.call_count, 1)
 
-            # Empty lookup is cached only for SECRET_MANAGER_EMPTY_TTL_SECS and retries afterward.
+            # Observer setup with deferred project_id returns in <50ms even when Secret Manager sleeps 1.0s.
+            def very_slow_access(request, *, timeout=None, retry=None):
+                time.sleep(0.40)
+                return SimpleNamespace(payload=SimpleNamespace(data=b"lazy-key\n"))
+
+            fake_sm.access_secret_version.side_effect = very_slow_access
+            t_lazy = time.perf_counter()
+            lazy_obs = AudioEmotionObserver(enabled=True, project_id="proj-lazy-setup")
+            await self._attach_capture(lazy_obs)
+            self.assertLess(time.perf_counter() - t_lazy, 0.05)
+            await lazy_obs.cleanup()
+
+            # Empty lookup is cached for SECRET_MANAGER_EMPTY_TTL_SECS on the async path and retries once monotonic clock advances.
             emo_mod._SECRET_MANAGER_CACHE.clear()
             attempts = 0
 
-            def transient_fail(request):
+            def transient_fail(request, *, timeout=None, retry=None):
                 nonlocal attempts
                 attempts += 1
                 if attempts == 1:
@@ -244,19 +270,23 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
                 return SimpleNamespace(payload=SimpleNamespace(data=b"recovered-key\n"))
 
             fake_sm.access_secret_version.side_effect = transient_fail
-            first_empty = resolve_decision_api_key("proj-transient")
-            self.assertEqual(first_empty, "")
-            cached_empty = resolve_decision_api_key("proj-transient")
-            self.assertEqual(cached_empty, "")
-            self.assertEqual(attempts, 1)
+            t_base = time.monotonic()
+            fake_now = [t_base]
+            with mock.patch.object(emo_mod.time, "monotonic", side_effect=lambda: fake_now[0]):
+                first_empty = await resolve_decision_api_key_async("proj-transient")
+                self.assertEqual(first_empty, "")
+                fake_now[0] = t_base + 30.0  # Within 60s TTL -> still cached
+                cached_empty = await resolve_decision_api_key_async("proj-transient")
+                self.assertEqual(cached_empty, "")
+                self.assertEqual(attempts, 1)
 
-            # Advance cached expiry past TTL so the next call retries and recovers.
-            emo_mod._SECRET_MANAGER_CACHE["proj-transient"] = ("", time.monotonic() - 1.0)
-            recovered = resolve_decision_api_key("proj-transient")
-            self.assertEqual(recovered, "recovered-key")
-            self.assertEqual(attempts, 2)
+                fake_now[0] = t_base + 61.0  # Past 60s TTL -> async path expires entry and retries
+                recovered = await resolve_decision_api_key_async("proj-transient")
+                self.assertEqual(recovered, "recovered-key")
+                self.assertEqual(attempts, 2)
             self.assertNotIn("GEMINI_API_KEY", emo_mod.os.environ)
         emo_mod._SECRET_MANAGER_CACHE.clear()
+        emo_mod._IN_FLIGHT_KEY_LOOKUPS.clear()
 
     async def test_setup_warms_in_background_without_holding_start_frame(self) -> None:
         fake = _FakeDecisionsClassifier(setup_delay_secs=1.0)
@@ -619,11 +649,24 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
                 # transcript_utterance_id still attributes Turn 1's arriving STT transcript to 1.
                 self.assertEqual(observer.current_utterance_id, 2)
                 self.assertEqual(observer.transcript_utterance_id, 1)
+                # Past 700ms grace window, transcript_utterance_id advances to 2.
+                observer._utterance_started_at -= 0.80
+                self.assertEqual(observer.transcript_utterance_id, 2)
+                # When not actively speaking (e.g. speech aborted before completion while last_completed=1),
+                # transcript_utterance_id must NOT fall back to last_completed_utterance_id.
+                observer._utterance_started_at = time.monotonic()
+                observer._speaking = False
+                self.assertEqual(observer.transcript_utterance_id, 2)
+                observer._speaking = True
             await observer.process_frame(
                 InputAudioRawFrame(audio=_make_pcm_chunk(0.6, 9000), sample_rate=16000, num_channels=1),
                 FrameDirection.DOWNSTREAM,
             )
             await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            if turn_idx == 1:
+                # Once speech stops (not _speaking), transcript_utterance_id equals current_utterance_id (2), never 1.
+                observer._utterance_started_at = time.monotonic()
+                self.assertEqual(observer.transcript_utterance_id, 2)
 
         await asyncio.sleep(0.03)
         self.assertEqual(in_flight, 2)

@@ -2000,18 +2000,12 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
-    from processors.emotion_perception import (
-        AudioEmotionObserver,
-        resolve_decision_api_key_async,
-    )
+    from processors.emotion_perception import AudioEmotionObserver
 
-    decision_api_key = (
-        await resolve_decision_api_key_async(project_id) if emotion_enabled else ""
-    )
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
-        api_key=decision_api_key,
+        project_id=project_id,
     )
     initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
