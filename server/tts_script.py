@@ -15,8 +15,7 @@ import os
 import re
 import unicodedata
 
-from pipecat.utils.string import SENTENCE_ENDING_PUNCTUATION
-from pipecat.utils.text.base_text_aggregator import Aggregation, AggregationType
+from pipecat.utils.text.base_text_aggregator import Aggregation, TextType
 from pipecat.utils.text.markdown_text_filter import MarkdownTextFilter
 from pipecat.utils.text.simple_text_aggregator import SimpleTextAggregator
 
@@ -302,13 +301,14 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
     @property
     def text(self) -> Aggregation:
         joined = f"{self._held} {self._text}" if self._held else self._text
-        return Aggregation(text=joined.strip(" "), type=AggregationType.SENTENCE)
+        return Aggregation(text=joined.strip(" "), type=TextType.SENTENCE)
 
-    async def _check_sentence_with_lookahead(self, char: str) -> Aggregation | None:
-        if self._needs_lookahead and char in SENTENCE_ENDING_PUNCTUATION:
-            # Keep '...' and '?!' together before running NLTK lookahead.
-            return None
-        result = await super()._check_sentence_with_lookahead(char)
+    async def _check_sentence_with_lookahead(
+        self, char: str, *, protected_end: int = 0
+    ) -> Aggregation | None:
+        result = await super()._check_sentence_with_lookahead(
+            char, protected_end=protected_end
+        )
         if result is None:
             return None
         combined = f"{self._held} {result.text}".strip() if self._held else result.text
@@ -331,7 +331,7 @@ class MinWordsSentenceAggregator(SimpleTextAggregator):
         pieces = [p for p in (held, tail.text if tail else "") if p and p.strip()]
         if not pieces:
             return None
-        return Aggregation(text=" ".join(pieces).strip(), type=AggregationType.SENTENCE)
+        return Aggregation(text=" ".join(pieces).strip(), type=TextType.SENTENCE)
 
     async def handle_interruption(self):
         await super().handle_interruption()

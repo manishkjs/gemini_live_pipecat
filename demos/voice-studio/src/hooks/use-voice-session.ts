@@ -16,7 +16,12 @@ import {
   type SessionSettings,
 } from "@/lib/voice-session";
 import { getPersona, type PersonaId } from "@/lib/personas";
-import { createLiveSession, type LiveSession, type MessageMetrics } from "@/lib/pipecat-session";
+import {
+  createLiveSession,
+  type LiveSession,
+  type MessageMetrics,
+  type UserEmotionReading,
+} from "@/lib/pipecat-session";
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
@@ -137,6 +142,14 @@ export function useVoiceSession() {
   const cascadeCostRevision = useRef(-1);
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
+  const pendingUserEmotion = useRef<UserEmotionReading | null>(null);
+  const userTurnAwaitingFinalEmotion = useRef(false);
+  const [liveEmotion, setLiveEmotion] = useState<UserEmotionReading | null>(null);
+  const [emotionStats, setEmotionStats] = useState<{
+    readonly count: number;
+    readonly totalInputTokens: number;
+    readonly lastLatencyMs: number | null;
+  }>({ count: 0, totalInputTokens: 0, lastLatencyMs: null });
   const seenEvents = useRef(new Set<string>());
   const starting = useRef(false);
   const [interruptCount, setInterruptCount] = useState(0);
@@ -331,6 +344,8 @@ export function useVoiceSession() {
     publishAudioLevel(0);
     setMuted(false);
     setPartialUser("");
+    pendingUserEmotion.current = null;
+    userTurnAwaitingFinalEmotion.current = false;
     starting.current = false;
     avatarStream.reset();
     if (current) await current.disconnect();
@@ -366,6 +381,10 @@ export function useVoiceSession() {
     ledger.current = new UsageLedger();
     responseMetrics.current.clear();
     lastAssistantMetrics.current = null;
+    pendingUserEmotion.current = null;
+    userTurnAwaitingFinalEmotion.current = false;
+    setLiveEmotion(null);
+    setEmotionStats({ count: 0, totalInputTokens: 0, lastLatencyMs: null });
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
@@ -511,10 +530,19 @@ export function useVoiceSession() {
           if (role === "user") {
             lastAssistantMetrics.current = null;
             setPartialUser("");
+            const queuedEmotion = pendingUserEmotion.current;
+            pendingUserEmotion.current = null;
+            if (queuedEmotion) {
+              metrics = { ...metrics, userEmotion: queuedEmotion };
+              userTurnAwaitingFinalEmotion.current = queuedEmotion.interim;
+            } else {
+              userTurnAwaitingFinalEmotion.current = true;
+            }
             if (metrics?.sttLatency !== undefined) {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
           } else {
+            userTurnAwaitingFinalEmotion.current = false;
             const nextAssistantMetrics: MessageMetrics = {
               ...(lastAssistantMetrics.current?.responseId &&
               metrics?.responseId &&
@@ -714,6 +742,46 @@ export function useVoiceSession() {
                 costMaxUSD: cost?.maxUSD,
               });
             }
+          } else if (type === "user_emotion") {
+            if (val?.session_id && val.session_id !== activeSettings.sessionId) return;
+            if (typeof val?.emoji !== "string" || typeof val?.title !== "string") return;
+            const reading: UserEmotionReading = {
+              emotion: typeof val.emotion === "string" ? val.emotion : "calm",
+              emoji: val.emoji,
+              title: val.title,
+              confidence: Number.isFinite(val.confidence) ? Number(val.confidence) : 0,
+              interim: Boolean(val.interim),
+              latencyMs: Number.isFinite(val.latency_ms) ? Math.max(0, Math.round(Number(val.latency_ms))) : 0,
+              inputTokens: Number.isFinite(val.input_tokens) ? Math.max(0, Math.round(Number(val.input_tokens))) : 0,
+              model: typeof val.model === "string" ? val.model : "gemini-decision-1",
+              seq: typeof val.seq === "number" ? val.seq : undefined,
+              utteranceId: typeof val.utterance_id === "number" ? val.utterance_id : undefined,
+            };
+            setLiveEmotion(reading);
+            setEmotionStats((prev) => ({
+              count: prev.count + 1,
+              totalInputTokens: prev.totalInputTokens + reading.inputTokens,
+              lastLatencyMs: reading.latencyMs,
+            }));
+            if (userTurnAwaitingFinalEmotion.current) {
+              if (!reading.interim) {
+                userTurnAwaitingFinalEmotion.current = false;
+                pendingUserEmotion.current = null;
+              }
+              setMessages((items) => {
+                const idx = items.findLastIndex((m) => m.role === "user");
+                if (idx === -1) return items;
+                const target = items[idx];
+                const next = [...items];
+                next[idx] = {
+                  ...target,
+                  metrics: { ...target.metrics, userEmotion: reading },
+                };
+                return next;
+              });
+            } else {
+              pendingUserEmotion.current = reading;
+            }
           }
         },
         onPartialUser: (text) => {
@@ -857,6 +925,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     playingSample, subscribeAudioLevel, getAudioLevel,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
+    liveEmotion, emotionStats,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     toolInjection, dismissToolInjection,
     avatarStream, avatarFallbackNotice, setAvatarFallbackNotice, voiceFallbackNotice, setVoiceFallbackNotice,

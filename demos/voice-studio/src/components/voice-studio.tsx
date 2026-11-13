@@ -476,6 +476,8 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           cascadeCost={cascadeCost}
           sessionInterrupts={interruptCount}
           visitCount={visitCount}
+          liveEmotion={studio.liveEmotion}
+          emotionStats={studio.emotionStats}
         />
       </div>
 

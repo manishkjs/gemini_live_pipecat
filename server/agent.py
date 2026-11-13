@@ -1707,6 +1707,7 @@ async def run_agent(
     vad_mode: Optional[str] = None,
     custom_voice_key: Optional[str] = None,
     persona_id: Optional[str] = None,
+    emotion_enabled: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -1979,6 +1980,12 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
+    from processors.emotion_perception import AudioEmotionObserver
+
+    emotion_observer = AudioEmotionObserver(
+        enabled=emotion_enabled,
+        session_id=current_session_id(),
+    )
     initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
     if skip_stt:
@@ -2011,6 +2018,7 @@ async def run_agent(
             start_trigger,
             *([vad_processor] if vad_processor else []),
             TurnBoundaryProcessor(turn_tracker),
+            emotion_observer,
             accumulator,
             llm,
             TranscriptionBroadcaster(participant="Bot"),
@@ -2036,6 +2044,7 @@ async def run_agent(
             start_trigger,
             *([vad_processor] if vad_processor else []),
             TurnBoundaryProcessor(turn_tracker),
+            emotion_observer,
             stt,
             TranscriptionBroadcaster(participant="User"),
             context_aggregator.user(),

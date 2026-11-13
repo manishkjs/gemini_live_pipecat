@@ -5,6 +5,19 @@ import type { PipecatClientOptions, RTVIEventCallbacks, Tracks } from "@pipecat-
 
 type Phase = "idle" | "connecting" | "listening" | "thinking" | "speaking";
 
+export type UserEmotionReading = {
+  readonly emotion: string;
+  readonly emoji: string;
+  readonly title: string;
+  readonly confidence: number;
+  readonly interim: boolean;
+  readonly latencyMs: number;
+  readonly inputTokens: number;
+  readonly model: string;
+  readonly seq?: number;
+  readonly utteranceId?: number;
+};
+
 export type MessageMetrics = {
   responseId?: string;
   costEstimated?: boolean;
@@ -17,6 +30,7 @@ export type MessageMetrics = {
   interruptedMs?: number;
   turnCostUSD?: number;
   usage?: UsageTokenData;
+  userEmotion?: UserEmotionReading;
 };
 
 export type SessionEvents = {
@@ -490,6 +504,16 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       has_audio?: boolean;
       post_turn_decay?: boolean;
       tfdt?: number;
+      emotion?: string;
+      emoji?: string;
+      title?: string;
+      confidence?: number;
+      interim?: boolean;
+      latency_ms?: number;
+      input_tokens?: number;
+      model?: string;
+      utterance_id?: number;
+      session_id?: string;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
@@ -638,6 +662,12 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       events.onMetricUpdate?.("booking_confirmed", data);
     } else if (data.type === "context_compression") {
       events.onMetricUpdate?.("context_compression", data.payload);
+    } else if (
+      data.type === "user_emotion" &&
+      typeof data.emoji === "string" &&
+      typeof data.title === "string"
+    ) {
+      events.onMetricUpdate?.("user_emotion", data);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
     }

@@ -75,8 +75,8 @@ from pipecat.frames.frames import (
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
-from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.services.llm_service import FunctionCallParams
 # from pipecat.processors.user_idle_processor import UserIdleProcessor
 from system_prompt import SYSTEM_PROMPT
@@ -2335,6 +2335,7 @@ async def run_agent_live(
     avatar_name: str = "auto",
     avatar_custom_image: Optional[str] = None,
     custom_voice_audio: Optional[str] = None,
+    emotion_enabled: bool = True,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -2658,7 +2659,13 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
+    from processors.emotion_perception import AudioEmotionObserver
+
     live_vad = build_live_vad_processor(vad, vad_mode)
+    emotion_observer = AudioEmotionObserver(
+        enabled=emotion_enabled,
+        session_id=current_session_id(),
+    )
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
     llm.user_idle_processor = user_idle
 
@@ -2667,6 +2674,7 @@ async def run_agent_live(
         start_trigger,
         *([live_vad] if live_vad else []),
         TurnBoundaryProcessor(turn_tracker),
+        emotion_observer,
         user_idle,
         context_aggregator.user(),
         llm,

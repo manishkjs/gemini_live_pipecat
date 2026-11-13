@@ -145,6 +145,7 @@ async def websocket_endpoint(
     persona_id: Optional[str] = None,
     avatar_enabled: bool = False,
     avatar_name: str = "auto",
+    emotion_enabled: bool = True,
 ):
     await websocket.accept()
     _safe_print("WebSocket connection accepted")
@@ -237,6 +238,7 @@ async def websocket_endpoint(
                 avatar_name=avatar_name,
                 avatar_custom_image=avatar_custom_image,
                 custom_voice_audio=custom_voice_audio,
+                emotion_enabled=emotion_enabled,
             )
         elif bot_type == "tts-llm-stt":
             run_agent = await asyncio.to_thread(load_pipeline, bot_type)
@@ -260,6 +262,7 @@ async def websocket_endpoint(
                 vad_mode=vad_mode,
                 custom_voice_key=custom_voice_key,
                 persona_id=persona_id,
+                emotion_enabled=emotion_enabled,
             )
     except Exception as e:
         diagnostic_buffer.append_raw_log_entry(f"Session failed: {type(e).__name__}: {e}", "ERROR")
@@ -458,7 +461,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
         ):
             if field in body and body[field] is not None and not isinstance(body[field], str):
                 raise ValueError(f"Invalid {field}")
-        for field in ("context_compression", "thinking", "vad", "avatar_enabled"):
+        for field in ("context_compression", "thinking", "vad", "avatar_enabled", "emotion_enabled"):
             if field in body and not isinstance(body[field], bool):
                 raise ValueError(f"Invalid {field}")
         clone_key = body.get("custom_voice_key")
@@ -531,7 +534,7 @@ async def bot_connect(request: Request) -> Dict[Any, Any]:
                 if len(serialized_tools) <= MAX_WS_URL_TOOLS_CHARS:
                     params_dict["tools"] = serialized_tools
 
-        for field in ("context_compression", "thinking", "vad", "avatar_enabled"):
+        for field in ("context_compression", "thinking", "vad", "avatar_enabled", "emotion_enabled"):
             if field in body:
                 params_dict[field] = "true" if body[field] else "false"
         if "context_compression_trigger_tokens" in body:

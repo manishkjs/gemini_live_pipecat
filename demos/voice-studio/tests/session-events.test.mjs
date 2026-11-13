@@ -1150,3 +1150,95 @@ test('pre-call mic mute is applied immediately when startBackend creates the liv
   await h.render().endSession();
 });
 
+test('user_emotion updates liveEmotion while speaking and attaches to user turns across both arrival orders', async () => {
+  const h = await harness();
+  await h.render().startBackend('live');
+  const session_id = h.connections[0].sessionId;
+
+  // Foreign session emotion must be ignored.
+  h.send({
+    type: 'user_emotion',
+    session_id: 's_foreign',
+    emotion: 'angry',
+    emoji: '😠',
+    title: 'Angry',
+    confidence: 0.95,
+    interim: false,
+    latency_ms: 95,
+    input_tokens: 40,
+  });
+  assert.equal(h.render().liveEmotion, null);
+
+  // Order 1: interim while speaking -> final emotion arrives BEFORE user transcript.
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'hesitant',
+    emoji: '😟',
+    title: 'Hesitant',
+    confidence: 0.76,
+    interim: true,
+    latency_ms: 140,
+    input_tokens: 38,
+    seq: 1,
+  });
+  assert.equal(h.render().liveEmotion?.emotion, 'hesitant');
+  assert.equal(h.render().liveEmotion?.interim, true);
+
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'frustrated',
+    emoji: '😤',
+    title: 'Frustrated',
+    confidence: 0.91,
+    interim: false,
+    latency_ms: 162,
+    input_tokens: 52,
+    seq: 2,
+  });
+  h.send({
+    type: 'transcription',
+    participant: 'User',
+    text: 'Aaj poora payment karna mushkil hai.',
+  });
+  assert.equal(h.render().messages[0].role, 'user');
+  assert.equal(h.render().messages[0].metrics?.userEmotion?.emotion, 'frustrated');
+  assert.equal(h.render().messages[0].metrics?.userEmotion?.emoji, '😤');
+
+  // Order 2: user transcript arrives FIRST -> final emotion arrives AFTER and upgrades the turn.
+  h.send({
+    type: 'transcription',
+    participant: 'Assistant',
+    text: 'Koi baat nahi ji, kitna kar payenge?',
+    response_id: 'r1',
+  });
+  h.send({
+    type: 'transcription',
+    participant: 'User',
+    text: 'Theek hai, abhi 3,500 kar deta hoon.',
+  });
+  assert.equal(h.render().messages[2].metrics?.userEmotion, undefined);
+
+  h.send({
+    type: 'user_emotion',
+    session_id,
+    emotion: 'calm',
+    emoji: '😌',
+    title: 'Calm',
+    confidence: 0.89,
+    interim: false,
+    latency_ms: 128,
+    input_tokens: 44,
+    seq: 3,
+  });
+  const afterState = h.render();
+  assert.equal(afterState.messages[2].metrics?.userEmotion?.emotion, 'calm');
+  assert.equal(afterState.messages[2].metrics?.userEmotion?.emoji, '😌');
+  assert.equal(afterState.emotionStats.count, 3);
+  assert.equal(afterState.emotionStats.totalInputTokens, 134);
+  assert.equal(afterState.emotionStats.lastLatencyMs, 128);
+  await afterState.endSession();
+});
+
+

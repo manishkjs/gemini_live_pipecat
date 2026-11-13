@@ -21,6 +21,7 @@ import type { Persona } from "@/lib/personas";
 import { getLiveRateCard, totalIn, totalOut, type TokenSplit } from "@/lib/pricing";
 import { diagnosticHeaders } from "@/lib/session-diagnostics";
 import type { Message } from "@/lib/studio-types";
+import type { UserEmotionReading } from "@/lib/pipecat-session";
 import type { SessionSettings } from "@/lib/voice-session";
 
 interface SessionCostBoundsView {
@@ -86,6 +87,12 @@ export interface ObservabilityDrawerProps {
   readonly cascadeCost?: CascadeCost | null;
   readonly sessionInterrupts?: number;
   readonly visitCount?: number | null;
+  readonly liveEmotion?: UserEmotionReading | null;
+  readonly emotionStats?: {
+    readonly count: number;
+    readonly totalInputTokens: number;
+    readonly lastLatencyMs: number | null;
+  };
 }
 
 function computeClientPercentiles(values: readonly number[]): LatencyStat {
@@ -155,6 +162,8 @@ export default function ObservabilityDrawer({
   cascadeCost = null,
   sessionInterrupts = 0,
   visitCount = null,
+  liveEmotion = null,
+  emotionStats,
 }: ObservabilityDrawerProps) {
   const scope = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "";
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
@@ -532,6 +541,14 @@ export default function ObservabilityDrawer({
                   <span className="k">VAD</span>
                   <span className="v">{vadLabel}</span>
                 </div>
+                <div className="kv">
+                  <span className="k">Perception</span>
+                  <span className="v">
+                    {settings.emotionPerception !== false
+                      ? "gemini-decision-1 (audio)"
+                      : "Off"}
+                  </span>
+                </div>
                 {visitCount !== null && (
                   <div className="kv">
                     <span className="k">Studio visits</span>
@@ -678,6 +695,38 @@ export default function ObservabilityDrawer({
                   <p className="cs-empty">Waiting for first turn token usage.</p>
                 )}
               </section>
+
+              {settings?.emotionPerception !== false && (
+                <section className="cs-sec" id="obs-emotion-sec">
+                  <h3>
+                    <span>Caller perception</span>
+                    <span className="mono-pill">gemini-decision-1</span>
+                  </h3>
+                  {liveEmotion ? (
+                    <>
+                      <div className="kv">
+                        <span className="k">Latest tone</span>
+                        <span className="v">
+                          {liveEmotion.emoji} {liveEmotion.title} (
+                          {Math.round(liveEmotion.confidence * 100)}%)
+                        </span>
+                      </div>
+                      <div className="kv">
+                        <span className="k">Classifier</span>
+                        <span className="v">
+                          {emotionStats?.lastLatencyMs ?? liveEmotion.latencyMs}ms ·{" "}
+                          {(emotionStats?.totalInputTokens ?? liveEmotion.inputTokens).toLocaleString()}{" "}
+                          in · 0 out tok
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="cs-empty">
+                      Streaming caller vocal tone reads appear as you speak.
+                    </p>
+                  )}
+                </section>
+              )}
 
               <section className="cs-sec">
                 <h3>

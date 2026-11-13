@@ -37,6 +37,8 @@ interface VoiceBubbleProps {
   readonly bubble: ReturnType<typeof resolveVoiceBubbleState>;
   readonly subscribeAudioLevel: VoiceStudio["subscribeAudioLevel"];
   readonly getAudioLevel: VoiceStudio["getAudioLevel"];
+  readonly liveEmotion: VoiceStudio["liveEmotion"];
+  readonly emotionEnabled: boolean;
 }
 
 /** Isolated 14 Hz audio-level subscriber so live speech envelopes never re-render the rest of the studio. */
@@ -46,6 +48,8 @@ function VoiceBubble({
   bubble,
   subscribeAudioLevel,
   getAudioLevel,
+  liveEmotion,
+  emotionEnabled,
 }: VoiceBubbleProps) {
   const audioLevel = useSyncExternalStore(subscribeAudioLevel, getAudioLevel, SERVER_AUDIO_LEVEL);
   const bubbleClasses = [
@@ -96,6 +100,22 @@ function VoiceBubble({
       <span className="vb-label" id="vb-label">
         {bubble.label}
       </span>
+      {active && emotionEnabled && liveEmotion && !bubble.isMuted && (
+        <span
+          key={`${liveEmotion.emotion}-${liveEmotion.seq ?? 0}`}
+          className={`vb-emotion${liveEmotion.interim ? " is-interim" : ""}`}
+          id="vb-emotion"
+          title={`Caller tone: ${liveEmotion.title} (${Math.round(liveEmotion.confidence * 100)}%, ${liveEmotion.latencyMs}ms · ${liveEmotion.model})`}
+          aria-label={`Caller emotion: ${liveEmotion.title}`}
+        >
+          <span className="vb-emotion-emoji" aria-hidden="true">
+            {liveEmotion.emoji}
+          </span>
+          <span className="vb-emotion-title">
+            {bubble.isActive ? `You · ${liveEmotion.title}` : liveEmotion.title}
+          </span>
+        </span>
+      )}
     </div>
   );
 }
@@ -123,6 +143,7 @@ export default function CallDock({
     sessionCostBounds,
     cascadeCost,
     lastTTFB,
+    liveEmotion,
     session,
     setMuted,
     toggleSound,
@@ -249,6 +270,8 @@ export default function CallDock({
             bubble={bubble}
             subscribeAudioLevel={subscribeAudioLevel}
             getAudioLevel={getAudioLevel}
+            liveEmotion={liveEmotion}
+            emotionEnabled={settings.emotionPerception !== false}
           />
         )}
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional
 
-from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
 
 LAMBORGHINI_CENTERS: Dict[str, Dict[str, Any]] = {

@@ -30,11 +30,23 @@ function TurnMetricChips({
 }) {
   const metrics = message.metrics;
   if (message.role === "user") {
-    if (metrics?.sttLatency === undefined) return null;
-    const sttMs = Math.round(metrics.sttLatency * 1000);
+    const hasStt = metrics?.sttLatency !== undefined;
+    const emotion = metrics?.userEmotion;
+    if (!hasStt && !emotion) return null;
+    const sttMs = hasStt && metrics?.sttLatency !== undefined ? Math.round(metrics.sttLatency * 1000) : null;
     return (
       <div className="chips">
-        <span className={`chip ${sttMs < 500 ? "fast" : "warn"}`}>STT {sttMs}ms</span>
+        {emotion && (
+          <span
+            className="chip emotion"
+            title={`Caller vocal tone (${emotion.model}): ${emotion.title} · ${Math.round(emotion.confidence * 100)}% (${emotion.latencyMs}ms)`}
+          >
+            <span aria-hidden="true">{emotion.emoji}</span> {emotion.title}
+          </span>
+        )}
+        {sttMs !== null && (
+          <span className={`chip ${sttMs < 500 ? "fast" : "warn"}`}>STT {sttMs}ms</span>
+        )}
       </div>
     );
   }

@@ -1396,6 +1396,34 @@ export default function SettingsDialog({ studio }: SettingsDialogProps) {
               </select>
             </div>
 
+            <div className="cfg-switch-row">
+              <div>
+                <div className="cfg-switch-label" id="lbl-emotion-perception">
+                  Caller Emotion Perception (Gemini Decision 1)
+                </div>
+                <div className="cfg-help">
+                  Classify caller vocal tone and prosody out-of-band via Pipecat 1.16{" "}
+                  <code>gemini-decision-1</code> with zero TTFB impact.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                id="cfg-emotion-perception"
+                className="switch-btn"
+                aria-checked={settings.emotionPerception !== false}
+                aria-labelledby="lbl-emotion-perception"
+                disabled={active}
+                onClick={() =>
+                  updateBool("emotionPerception", settings.emotionPerception === false)
+                }
+              >
+                <span className="switch-track" aria-hidden="true">
+                  <span className="switch-thumb" />
+                </span>
+              </button>
+            </div>
+
             {isLive && (
               <>
                 <div className="cfg-switch-row">

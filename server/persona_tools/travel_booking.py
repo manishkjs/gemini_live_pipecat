@@ -238,7 +238,7 @@ def _json_schema_types(node: Any) -> Any:
 
 def function_schemas(names: Optional[List[str]] = None):
     """Pipecat ``FunctionSchema`` objects for setup (``names`` defaults to all six)."""
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 
     wanted = set(names or TOOL_NAMES)
     result = []
