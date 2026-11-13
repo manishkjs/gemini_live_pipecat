@@ -676,6 +676,9 @@ class MacDesktop:
         self._origin_y = 0.0
         # display index -> (origin_x, origin_y, points_per_pixel) of its last screenshot.
         self._geometry: dict[int, tuple[float, float, float]] = {}
+        # True once the model explicitly asked for a display; otherwise default
+        # screenshots go to the "home" display, where Jarvis's own pill sits.
+        self._display_pinned = False
 
     # -- eyes ---------------------------------------------------------------
 
@@ -725,10 +728,18 @@ class MacDesktop:
             )
         return displays[target_index - 1], len(displays)
 
-    def screenshot(self, display: int | None = None) -> Screenshot:
-        """Captures and downscales the requested (or currently active) display."""
+    def screenshot(self, display: int | None = None, pin: bool = False) -> Screenshot:
+        """Captures and downscales a display.
+
+        display=None means the home display (where Jarvis's floating pill is),
+        unless the model pinned another one with an explicit display earlier.
+        """
         from PIL import Image  # Imported lazily so tests don't need Pillow.
 
+        if display is not None and pin:
+            self._display_pinned = True
+        if display is None and not self._display_pinned:
+            display = self.home_display()
         info, display_count = self._resolve_display(display)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "screen.png"
@@ -899,6 +910,91 @@ class MacDesktop:
         self.click_global(target.x, target.y, double)
         self.focus_display_at(target.x, target.y)
         return target
+
+    # -- home display: the screen Jarvis's floating pill is on ---------------
+
+    def _display_index_at(self, gx: float, gy: float) -> int | None:
+        for d in self.list_displays():
+            if d.origin_x <= gx < d.origin_x + d.width and d.origin_y <= gy < d.origin_y + d.height:
+                return d.index
+        return None
+
+    def home_display(self) -> int:
+        """1-based index of the display showing Jarvis's own window (fallback 1).
+
+        Override with JARVIS_DISPLAY=<n>.
+        """
+        override = os.getenv("JARVIS_DISPLAY", "").strip()
+        if override.isdigit():
+            return int(override)
+        import Quartz
+
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID
+        ) or []
+        own = os.getpid()
+        for w in windows:
+            if w.get("kCGWindowOwnerPID") != own:
+                continue
+            b = w.get("kCGWindowBounds") or {}
+            if b.get("Width", 0) < 50:
+                continue
+            idx = self._display_index_at(b["X"] + b["Width"] / 2, b["Y"] + b["Height"] / 2)
+            if idx:
+                return idx
+        return 1
+
+    def unpin_display(self) -> None:
+        """Goes back to following the home display for default screenshots."""
+        self._display_pinned = False
+
+    def move_front_window_to_display(self, index: int) -> bool:
+        """Moves the frontmost app's focused window onto display `index`.
+
+        Keeps its size where it fits (shrinks it otherwise) and centres it.
+        Returns True if the window was moved. Never moves Jarvis's own window.
+        """
+        import AppKit
+        import ApplicationServices as AS
+        import Quartz
+
+        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None or app.processIdentifier() == os.getpid():
+            return False
+        displays = self.list_displays()
+        if not 1 <= index <= len(displays):
+            return False
+        target = displays[index - 1]
+        root = AS.AXUIElementCreateApplication(app.processIdentifier())
+
+        def attr(el, name):
+            err, value = AS.AXUIElementCopyAttributeValue(el, name, None)
+            return value if err == 0 else None
+
+        window = attr(root, "AXFocusedWindow") or attr(root, "AXMainWindow")
+        if window is None:
+            return False
+        pos, size = attr(window, "AXPosition"), attr(window, "AXSize")
+        if pos is None or size is None:
+            return False
+        _, pt = AS.AXValueGetValue(pos, AS.kAXValueCGPointType, None)
+        _, sz = AS.AXValueGetValue(size, AS.kAXValueCGSizeType, None)
+        if self._display_index_at(pt.x + sz.width / 2, pt.y + sz.height / 2) == index:
+            return False
+        top_margin = 32.0  # menu bar
+        width = min(sz.width, target.width - 20)
+        height = min(sz.height, target.height - top_margin - 10)
+        x = target.origin_x + (target.width - width) / 2
+        y = target.origin_y + top_margin + (target.height - top_margin - height) / 2
+        AS.AXUIElementSetAttributeValue(
+            window, "AXPosition",
+            AS.AXValueCreate(AS.kAXValueCGPointType, Quartz.CGPointMake(x, y)),
+        )
+        AS.AXUIElementSetAttributeValue(
+            window, "AXSize",
+            AS.AXValueCreate(AS.kAXValueCGSizeType, Quartz.CGSizeMake(width, height)),
+        )
+        return True
 
     def focus_display_at(self, gx: float, gy: float) -> None:
         """Makes the display containing a global point the active one for screenshots."""

@@ -82,9 +82,12 @@ How you work:
   call switch_to_tab(query) to reuse an existing tab (pass url_if_missing to
   open it otherwise). "My mail/mailbox/inbox/email" means Gmail in Chrome:
   call open_mailbox (compose=true to start a new email), not the Mail app.
-- Multi-monitor: You can see all connected displays. Call look_at_screen(display=2)
-  to inspect a second screen (or display=1 for the main screen). Once you switch
-  displays, follow-up screenshots and clicks stay on that display until switched.
+- Multi-monitor: Your home screen is the display your floating pill is on
+  (home_display in look_at_screen results). Work there by default: windows you
+  open or switch to are moved onto it automatically, and screenshots show it.
+  Only call look_at_screen(display=N) when the user points at another screen
+  ("my second screen"); follow-ups then stay on that display until you open or
+  switch to something, which brings you back home.
 - Clicking: Prefer click_text(text) for anything with a visible label: buttons,
   links, tabs, menu items, video/thumbnail titles (click the video's title
   text, e.g. click_text("Why AI Infrastructure Is Moving to Rust")). Use x/y
@@ -376,15 +379,28 @@ class JarvisTools:
         # Which Chrome the last meet_join used, so meet_action focuses that one.
         self._meet_isolated = False
 
-    def _safe_front_display(self) -> int | None:
-        try:
-            return self._desktop.front_window_display()
-        except Exception:  # Screenshot of the active display is a fine fallback.
-            logger.opt(exception=True).debug("front_window_display failed")
-            return None
+    def _bring_to_home_display(self) -> int | None:
+        """Moves the window an action just opened onto Jarvis's screen.
 
-    async def _look(self, display: int | None = None) -> dict[str, Any]:
-        shot = await asyncio.to_thread(self._desktop.screenshot, display)
+        Jarvis works on the display its floating pill is on; a window that
+        opened on another monitor is moved over so the user sees it next to
+        the pill and the screenshot shows it.
+        """
+        try:
+            home = self._desktop.home_display()
+            self._desktop.unpin_display()
+            if self._desktop.move_front_window_to_display(home):
+                time.sleep(0.4)  # Let the window finish moving before the screenshot.
+            return home
+        except Exception:  # A screenshot of the active display is a fine fallback.
+            logger.opt(exception=True).debug("Moving the front window to the home display failed")
+            try:
+                return self._desktop.front_window_display()
+            except Exception:
+                return None
+
+    async def _look(self, display: int | None = None, pin: bool = False) -> dict[str, Any]:
+        shot = await asyncio.to_thread(self._desktop.screenshot, display, pin)
         await self._feeder.send_screenshot(shot)
         return {
             "screenshot_size": list(shot.size),
@@ -420,7 +436,7 @@ class JarvisTools:
         await asyncio.sleep(self._SETTLE_SECONDS)
         display = None
         if follow_front:
-            display = await asyncio.to_thread(self._safe_front_display)
+            display = await asyncio.to_thread(self._bring_to_home_display)
         screen = await self._look(display)
         payload = {"status": "done", "action": label, "fresh_screenshot_attached": True, **screen}
         if callable(extra):
@@ -439,11 +455,13 @@ class JarvisTools:
         label = f"Looking at screen {display}" if display is not None else "Looking at the screen"
         self._ui.emit({"type": "action", "label": label})
         try:
-            screen_info = await self._look(display)
+            screen_info = await self._look(display, pin=display is not None)
         except Exception as exc:
             await params.result_callback({"status": "error", "error": str(exc)})
             return
         displays = await asyncio.to_thread(self._desktop.list_displays)
+        home = await asyncio.to_thread(self._desktop.home_display)
+        screen_info["home_display"] = home
         screen_info["displays"] = [
             {
                 "display": d.index,
