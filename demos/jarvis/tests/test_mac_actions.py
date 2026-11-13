@@ -96,8 +96,32 @@ class MeetAndMobileHelpersTest(unittest.TestCase):
             mac_actions.normalize_meet_url("https://meet.google.com/abc-defg-hij"),
             "https://meet.google.com/abc-defg-hij",
         )
-        with self.assertRaises(ValueError):
-            mac_actions.normalize_meet_url("   ")
+        self.assertEqual(
+            mac_actions.normalize_meet_url("abcdefghij"),
+            "https://meet.google.com/abc-defg-hij",
+        )
+        self.assertEqual(
+            mac_actions.normalize_meet_url("https://meet.google.com/abc-defg-hij?authuser=0"),
+            "https://meet.google.com/abc-defg-hij",
+        )
+
+    def test_normalize_meet_url_new_meeting(self):
+        for word in ["new", "instant", "start", "New Meeting", "   ", "", None,
+                     "meet.google.com/new", "https://meet.google.com/new"]:
+            self.assertEqual(
+                mac_actions.normalize_meet_url(word), "https://meet.google.com/new", word
+            )
+
+    def test_normalize_meet_url_rejects_bogus(self):
+        for bad in ["standup", "https://meet.google.com/instant", "https://evil.com/abc-defg-hij"]:
+            with self.assertRaises(ValueError, msg=bad):
+                mac_actions.normalize_meet_url(bad)
+
+    def test_chrome_open_command(self):
+        self.assertEqual(
+            mac_actions.chrome_open_command("https://meet.google.com/new"),
+            ["open", "-a", "Google Chrome", "https://meet.google.com/new"],
+        )
 
     def test_chrome_profile_command_and_drawio_url(self):
         cmd = mac_actions.chrome_profile_command("https://meet.google.com/x", "/tmp/p")

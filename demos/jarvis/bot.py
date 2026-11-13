@@ -89,10 +89,13 @@ How you work:
   meet_join, meet_action, open_drawio, mobile_*) automatically captures and
   attaches a fresh screenshot before returning. NEVER call look_at_screen right
   after another tool—use the screenshot already attached.
-- Google Meet: Use meet_join(meeting, use_jarvis_profile=True) to join in an
-  isolated Chrome profile as a separate persona ("Jarvis"). On the pre-join
-  screen, enter "Jarvis" if asked for a name, check mic state, and click Join.
-  In a group call, stay quiet unless addressed as "Jarvis".
+- Google Meet: To start/create a new meeting, call meet_join(meeting="new")
+  directly. Never click through the "New meeting" dropdown on meet.google.com.
+  To join an existing one, call meet_join with its code or URL. These open in
+  the user's own Chrome. Then click "Join now" on the pre-join screen in the
+  attached screenshot. Only pass use_jarvis_profile=True when the user asks
+  you to join as a separate participant ("Jarvis"); then enter "Jarvis" if
+  asked for a name. In a group call, stay quiet unless addressed as "Jarvis".
 - Architecture diagrams: Use open_drawio(mermaid_code) with clean Mermaid
   syntax. It opens draw.io and copies your Mermaid code to the clipboard.
   Then click Arrange -> Insert -> Advanced -> Mermaid (or '+' -> Mermaid),
@@ -361,6 +364,8 @@ class JarvisTools:
         self._desktop = desktop
         self._feeder = feeder
         self._ui = ui
+        # Which Chrome the last meet_join used, so meet_action focuses that one.
+        self._meet_isolated = False
 
     async def _look(self, display: int | None = None) -> dict[str, Any]:
         shot = await asyncio.to_thread(self._desktop.screenshot, display)
@@ -504,23 +509,36 @@ class JarvisTools:
     # -- Google Meet & draw.io handlers -------------------------------------
 
     async def meet_join(self, params: FunctionCallParams) -> None:
-        """Opens a Google Meet URL in Jarvis's isolated Chrome profile."""
+        """Starts or joins a Google Meet, in the user's Chrome by default."""
         args = params.arguments
-        url = mac_actions.normalize_meet_url(args["meeting"])
-        use_jarvis_profile = bool(args.get("use_jarvis_profile", True))
+        try:
+            url = mac_actions.normalize_meet_url(args.get("meeting", "new"))
+        except ValueError as exc:
+            await params.result_callback({"status": "error", "error": str(exc)})
+            return
+        use_jarvis_profile = bool(args.get("use_jarvis_profile", False))
+        self._meet_isolated = use_jarvis_profile
 
         def _launch() -> None:
             if use_jarvis_profile:
                 self._desktop.open_chrome_profile(url)
             else:
-                self._desktop.open_url(url)
+                self._desktop.open_in_chrome(url)
+            # Meet needs a moment to create the room and render the pre-join
+            # screen before the follow-up screenshot is useful.
+            time.sleep(2.5)
 
         await self._act(
             params,
             f"Open Meet {url}",
             _launch,
             mac_actions.RiskVerdict(False),
-            extra={"url": url, "isolated_profile": use_jarvis_profile},
+            extra={
+                "url": url,
+                "isolated_profile": use_jarvis_profile,
+                "next_step": "On the pre-join screen in the screenshot, click 'Join now'"
+                " (or 'Switch here'); if not visible yet, call look_at_screen.",
+            },
         )
 
     async def meet_action(self, params: FunctionCallParams) -> None:
@@ -535,7 +553,7 @@ class JarvisTools:
                 return
 
             def _send_chat() -> None:
-                self._desktop.focus_meet_window()
+                self._desktop.focus_meet_window(isolated=self._meet_isolated)
                 self._desktop.press_keys(mac_actions.MEET_SHORTCUTS["open_chat"])
                 time.sleep(0.4)
                 self._desktop.type_text(message, press_enter=True)
@@ -562,7 +580,7 @@ class JarvisTools:
             else mac_actions.RiskVerdict(False)
         )
         def _press_in_meet() -> None:
-            self._desktop.focus_meet_window()
+            self._desktop.focus_meet_window(isolated=self._meet_isolated)
             self._desktop.press_keys(shortcut)
 
         await self._act(
@@ -726,11 +744,18 @@ class JarvisTools:
             ),
             make_tool(
                 "meet_join",
-                "Open a Google Meet URL or code, optionally in Jarvis's own Chrome profile.",
+                "Start a new Google Meet (meeting='new') or join one by code/URL. Opens in the"
+                " user's Chrome; set use_jarvis_profile only to join as a separate 'Jarvis' persona.",
                 self.meet_join,
                 {
-                    "meeting": {"type": "string", "description": "Meet URL or code xxx-yyyy-zzz."},
-                    "use_jarvis_profile": {"type": "boolean"},
+                    "meeting": {
+                        "type": "string",
+                        "description": "'new' to start an instant meeting, or a Meet URL / code xxx-yyyy-zzz.",
+                    },
+                    "use_jarvis_profile": {
+                        "type": "boolean",
+                        "description": "Default false (user's Chrome). True only when asked to join as Jarvis itself.",
+                    },
                 },
                 ["meeting"],
             ),

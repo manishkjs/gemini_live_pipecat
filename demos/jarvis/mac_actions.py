@@ -131,16 +131,64 @@ def key_combo_to_applescript(combo: str) -> str:
     return f'tell application "System Events" to {action}{using}'
 
 
-def normalize_meet_url(meeting: str) -> str:
-    """Normalizes a Meet code ('abc-defg-hij') or URL into a meet.google.com URL."""
-    cleaned = meeting.strip()
-    if not cleaned:
-        raise ValueError("empty meeting code or URL")
-    if re.match(r"^https?://", cleaned):
-        return cleaned
-    if cleaned.startswith("meet.google.com/"):
-        return "https://" + cleaned
-    return f"https://meet.google.com/{cleaned.lstrip('/')}"
+MEET_NEW_URL = "https://meet.google.com/new"
+_MEET_NEW_WORDS = {
+    "",
+    "new",
+    "instant",
+    "start",
+    "create",
+    "new meeting",
+    "instant meeting",
+    "start meeting",
+    "start a new meeting",
+    "new meet",
+}
+_MEET_CODE_RE = re.compile(r"^[a-z]{3}-?[a-z]{4}-?[a-z]{3}$")
+_MEET_LOOKUP_RE = re.compile(r"^lookup/[\w-]+$")
+
+
+def normalize_meet_url(meeting: str | None) -> str:
+    """Normalizes a Meet request into a meet.google.com URL.
+
+    - "new", "instant", "start" (or empty) -> https://meet.google.com/new, which
+      creates and opens a fresh instant meeting.
+    - A code "abc-defg-hij" (dashes optional), "meet.google.com/<code>" or a full
+      https://meet.google.com/... URL -> that meeting.
+    Anything else raises ValueError rather than opening a bogus
+    meet.google.com/<word> page.
+    """
+    cleaned = (meeting or "").strip()
+    lowered = cleaned.lower().rstrip("/")
+    if lowered in _MEET_NEW_WORDS:
+        return MEET_NEW_URL
+    path = re.sub(r"^(https?://)?(www\.)?meet\.google\.com/?", "", lowered)
+    if path != lowered or re.match(r"^https?://", lowered):
+        if re.match(r"^https?://", path):
+            raise ValueError(f"not a Google Meet URL: {cleaned!r}")
+        path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+        if path in ("", "new"):
+            return MEET_NEW_URL
+        if _MEET_CODE_RE.match(path) or _MEET_LOOKUP_RE.match(path):
+            return f"https://meet.google.com/{_format_meet_code(path)}"
+        raise ValueError(f"not a Google Meet meeting URL: {cleaned!r}")
+    if _MEET_CODE_RE.match(lowered):
+        return f"https://meet.google.com/{_format_meet_code(lowered)}"
+    raise ValueError(
+        f"{cleaned!r} is not a Meet code (xxx-yyyy-zzz) or URL; use 'new' to start a meeting"
+    )
+
+
+def _format_meet_code(path: str) -> str:
+    if _MEET_LOOKUP_RE.match(path):
+        return path
+    letters = path.replace("-", "")
+    return f"{letters[:3]}-{letters[3:7]}-{letters[7:]}"
+
+
+def chrome_open_command(url: str) -> list[str]:
+    """Builds the command that opens a URL in the user's normal Google Chrome."""
+    return ["open", "-a", "Google Chrome", url]
 
 
 def drawio_url() -> str:
@@ -452,12 +500,18 @@ class MacDesktop:
         """Presses a key or shortcut via System Events."""
         _osascript(key_combo_to_applescript(combo))
 
-    def focus_meet_window(self, profile_dir: str | None = None) -> None:
-        """Brings Jarvis's Chrome (isolated profile if running) to the front.
+    def focus_meet_window(self, profile_dir: str | None = None, isolated: bool = True) -> None:
+        """Brings the Chrome running the Meet call to the front.
 
+        With isolated=True, prefers Jarvis's own Chrome profile if it runs;
+        with isolated=False, activates the user's normal Google Chrome.
         Meet shortcuts go to whichever app is frontmost, so `cmd+w` ("leave")
         would otherwise close a Terminal tab or the draw.io window.
         """
+        if not isolated:
+            _osascript('tell application "Google Chrome" to activate')
+            time.sleep(0.2)
+            return
         resolved_dir = profile_dir or os.getenv(
             "JARVIS_CHROME_PROFILE", str(Path.home() / ".jarvis-chrome-profile")
         )
@@ -488,6 +542,10 @@ class MacDesktop:
         if not re.match(r"^https?://", url):
             url = "https://" + url
         subprocess.run(["open", url], check=True)
+
+    def open_in_chrome(self, url: str) -> None:
+        """Opens a URL in the user's normal Google Chrome (signed-in profile)."""
+        subprocess.run(chrome_open_command(url), check=True, capture_output=True, text=True)
 
     def open_chrome_profile(self, url: str, profile_dir: str | None = None) -> str:
         """Opens a URL in an isolated Chrome profile for a separate persona."""
