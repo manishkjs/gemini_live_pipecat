@@ -727,7 +727,7 @@ export default function ObservabilityDrawer({
                       <div className="kv">
                         <span className="k">Reads</span>
                         <span className="v">
-                          {(emotionStats?.count ?? 1).toLocaleString()} out-of-band (billed separately)
+                          {(emotionStats?.count ?? 1).toLocaleString()} background (billed separately)
                         </span>
                       </div>
                     </>

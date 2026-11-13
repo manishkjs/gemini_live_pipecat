@@ -930,7 +930,14 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 'text': clean_sentence,
             }
             emo_obs = getattr(self, "_emotion_observer", None)
-            utt_id = int(getattr(emo_obs, "current_utterance_id", 0) or 0)
+            utt_id = int(
+                getattr(
+                    emo_obs,
+                    "transcript_utterance_id",
+                    getattr(emo_obs, "current_utterance_id", 0),
+                )
+                or 0
+            )
             if utt_id > 0:
                 tx_payload['utterance_id'] = utt_id
             await self.push_frame(OutputTransportMessageFrame(message={
@@ -2664,13 +2671,19 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
-    from processors.emotion_perception import AudioEmotionObserver
+    from processors.emotion_perception import (
+        AudioEmotionObserver,
+        resolve_decision_api_key_async,
+    )
 
     live_vad = build_live_vad_processor(vad, vad_mode)
+    decision_api_key = (
+        await resolve_decision_api_key_async(project_id) if emotion_enabled else ""
+    )
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
-        project_id=project_id,
+        api_key=decision_api_key,
     )
     llm._emotion_observer = emotion_observer
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)

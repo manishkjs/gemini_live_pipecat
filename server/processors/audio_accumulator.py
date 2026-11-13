@@ -175,7 +175,14 @@ class AudioAccumulator(FrameProcessor):
                     'text': bubble_label,
                 }
                 emo_obs = getattr(self, "_emotion_observer", None)
-                utt_id = int(getattr(emo_obs, "current_utterance_id", 0) or 0)
+                utt_id = int(
+                    getattr(
+                        emo_obs,
+                        "transcript_utterance_id",
+                        getattr(emo_obs, "current_utterance_id", 0),
+                    )
+                    or 0
+                )
                 if utt_id > 0:
                     tx_payload['utterance_id'] = utt_id
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={

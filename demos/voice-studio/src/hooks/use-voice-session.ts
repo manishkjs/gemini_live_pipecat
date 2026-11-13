@@ -29,10 +29,8 @@ import { computeTurnTtfbSeconds } from "@/lib/call-console";
 import { useAvatarStream } from "@/hooks/use-avatar-stream";
 import type { Message, Phase } from "@/lib/studio-types";
 
-const PENDING_EMOTION_TTL_MS = 6000;
-const OPEN_TURN_FINAL_WINDOW_MS = 5000;
-const DOCK_EMOTION_TTL_MS = 5200;
-const DOCK_SPEAKING_FINAL_TTL_MS = 4500;
+const UTTERANCE_EMOTION_WINDOW_MS = 5000;
+const DOCK_EMOTION_TTL_MS = 4800;
 
 interface PendingCallerEmotion {
   readonly reading: UserEmotionReading;
@@ -162,7 +160,7 @@ export function useVoiceSession() {
   const pendingCallerEmotion = useRef<PendingCallerEmotion | null>(null);
   const openCallerTurn = useRef<OpenCallerTurn | null>(null);
   const utteranceMessageIds = useRef(new Map<number, string>());
-  const utteranceReadings = useRef(new Map<number, UserEmotionReading>());
+  const utteranceReadings = useRef(new Map<number, PendingCallerEmotion>());
   const turnSettledBeforeBotReply = useRef(false);
   const [liveEmotion, setLiveEmotion] = useState<UserEmotionReading | null>(null);
   const [dockEmotion, setDockEmotion] = useState<UserEmotionReading | null>(null);
@@ -595,18 +593,25 @@ export function useVoiceSession() {
             const uttId = metrics?.utteranceId;
             let attachedEmotion: UserEmotionReading | undefined;
             const pending = pendingCallerEmotion.current;
-            if (pending && now - pending.recordedAt > PENDING_EMOTION_TTL_MS) {
+            if (pending && now - pending.recordedAt > UTTERANCE_EMOTION_WINDOW_MS) {
               pendingCallerEmotion.current = null;
             }
             const freshPending = pendingCallerEmotion.current;
             const existingMsgForUtterance =
               uttId !== undefined ? utteranceMessageIds.current.get(uttId) : undefined;
-            const cachedUtteranceReading =
+            const rawCachedUtterance =
               uttId !== undefined ? utteranceReadings.current.get(uttId) : undefined;
+            const cachedUtteranceEntry =
+              rawCachedUtterance && now - rawCachedUtterance.recordedAt <= UTTERANCE_EMOTION_WINDOW_MS
+                ? rawCachedUtterance
+                : undefined;
+            if (rawCachedUtterance && !cachedUtteranceEntry && uttId !== undefined) {
+              utteranceReadings.current.delete(uttId);
+            }
             if (existingMsgForUtterance !== undefined) {
               // Continuation sentence of an already-badged utterance: leave emotion on primary bubble.
-            } else if (cachedUtteranceReading !== undefined) {
-              attachedEmotion = cachedUtteranceReading;
+            } else if (cachedUtteranceEntry !== undefined) {
+              attachedEmotion = cachedUtteranceEntry.reading;
               if (freshPending?.reading.utteranceId === uttId) {
                 pendingCallerEmotion.current = null;
               }
@@ -892,10 +897,7 @@ export function useVoiceSession() {
               prevDock.seq === undefined ||
               reading.seq >= prevDock.seq;
             if (shouldUpdateDock) {
-              publishDockEmotion(
-                reading,
-                reading.interim ? DOCK_EMOTION_TTL_MS : DOCK_SPEAKING_FINAL_TTL_MS,
-              );
+              publishDockEmotion(reading, DOCK_EMOTION_TTL_MS);
             }
             setEmotionStats((prev) => {
               const nextIn = Number.isFinite(val.total_input_tokens)
@@ -913,9 +915,9 @@ export function useVoiceSession() {
             });
 
             if (reading.utteranceId !== undefined) {
-              const prevUttReading = utteranceReadings.current.get(reading.utteranceId);
-              if (!prevUttReading || prevUttReading.interim || !reading.interim) {
-                utteranceReadings.current.set(reading.utteranceId, reading);
+              const prevUttEntry = utteranceReadings.current.get(reading.utteranceId);
+              if (!prevUttEntry || prevUttEntry.reading.interim || !reading.interim) {
+                utteranceReadings.current.set(reading.utteranceId, { reading, recordedAt: now });
               }
             }
             if (reading.interim) {
@@ -985,7 +987,7 @@ export function useVoiceSession() {
 
             const openTurn = openCallerTurn.current;
             const openTurnFresh =
-              openTurn !== null && now - openTurn.openedAt <= OPEN_TURN_FINAL_WINDOW_MS;
+              openTurn !== null && now - openTurn.openedAt <= UTTERANCE_EMOTION_WINDOW_MS;
             const openTurnMatches =
               openTurnFresh &&
               openTurn !== null &&

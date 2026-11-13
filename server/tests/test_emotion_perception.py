@@ -41,6 +41,7 @@ from processors.emotion_perception import (
     AudioEmotionObserver,
     compute_pcm16_rms,
     resolve_decision_api_key,
+    resolve_decision_api_key_async,
 )
 
 
@@ -179,26 +180,82 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(warn_mock.called)
 
         emo_mod._SECRET_MANAGER_CACHE.clear()
+        def slow_access(request):
+            time.sleep(0.30)
+            return SimpleNamespace(payload=SimpleNamespace(data=b"sm-test-key-123\n"))
+
         fake_sm = mock.MagicMock()
-        fake_sm.access_secret_version.return_value = SimpleNamespace(
-            payload=SimpleNamespace(data=b"sm-test-key-123\n")
+        fake_sm.access_secret_version.side_effect = slow_access
+        fake_sm_module = SimpleNamespace(
+            SecretManagerServiceClient=mock.MagicMock(return_value=fake_sm)
         )
-        fake_sm_module = SimpleNamespace(SecretManagerServiceClient=mock.MagicMock(return_value=fake_sm))
-        with mock.patch.dict(
-            "os.environ",
-            {"GEMINI_API_KEY": "", "GOOGLE_API_KEY": ""},
-            clear=False,
-        ), mock.patch.dict("sys.modules", {"google.cloud.secretmanager": fake_sm_module, "google.cloud": SimpleNamespace(secretmanager=fake_sm_module)}):
-            key1 = resolve_decision_api_key("proj-emo-test")
-            self.assertEqual(key1, "sm-test-key-123")
-            env_backup = emo_mod.os.environ.pop("GEMINI_API_KEY", None)
+        clean_env = {
+            k: v
+            for k, v in emo_mod.os.environ.items()
+            if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        }
+        with mock.patch.dict("os.environ", clean_env, clear=True), mock.patch.dict(
+            "sys.modules",
+            {
+                "google.cloud.secretmanager": fake_sm_module,
+                "google.cloud": SimpleNamespace(secretmanager=fake_sm_module),
+            },
+        ):
+            max_gap = 0.0
+            running_hb = True
+
+            async def heartbeat() -> None:
+                nonlocal max_gap
+                last = time.perf_counter()
+                while running_hb:
+                    await asyncio.sleep(0.01)
+                    now_hb = time.perf_counter()
+                    max_gap = max(max_gap, now_hb - last)
+                    last = now_hb
+
+            hb_task = asyncio.create_task(heartbeat())
             try:
-                key2 = resolve_decision_api_key("proj-emo-test")
-                self.assertEqual(key2, "sm-test-key-123")
-                self.assertEqual(fake_sm.access_secret_version.call_count, 1)
+                key1 = await resolve_decision_api_key_async("proj-emo-test")
             finally:
-                if env_backup is not None:
-                    emo_mod.os.environ["GEMINI_API_KEY"] = env_backup
+                running_hb = False
+                await hb_task
+
+            self.assertEqual(key1, "sm-test-key-123")
+            self.assertLess(
+                max_gap,
+                0.05,
+                f"Secret Manager lookup stalled event loop ({max_gap:.3f}s)",
+            )
+            self.assertNotIn("GEMINI_API_KEY", emo_mod.os.environ)
+
+            key2 = await resolve_decision_api_key_async("proj-emo-test")
+            self.assertEqual(key2, "sm-test-key-123")
+            self.assertEqual(fake_sm.access_secret_version.call_count, 1)
+
+            # Empty lookup is cached only for SECRET_MANAGER_EMPTY_TTL_SECS and retries afterward.
+            emo_mod._SECRET_MANAGER_CACHE.clear()
+            attempts = 0
+
+            def transient_fail(request):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("transient IAM propagation delay")
+                return SimpleNamespace(payload=SimpleNamespace(data=b"recovered-key\n"))
+
+            fake_sm.access_secret_version.side_effect = transient_fail
+            first_empty = resolve_decision_api_key("proj-transient")
+            self.assertEqual(first_empty, "")
+            cached_empty = resolve_decision_api_key("proj-transient")
+            self.assertEqual(cached_empty, "")
+            self.assertEqual(attempts, 1)
+
+            # Advance cached expiry past TTL so the next call retries and recovers.
+            emo_mod._SECRET_MANAGER_CACHE["proj-transient"] = ("", time.monotonic() - 1.0)
+            recovered = resolve_decision_api_key("proj-transient")
+            self.assertEqual(recovered, "recovered-key")
+            self.assertEqual(attempts, 2)
+            self.assertNotIn("GEMINI_API_KEY", emo_mod.os.environ)
         emo_mod._SECRET_MANAGER_CACHE.clear()
 
     async def test_setup_warms_in_background_without_holding_start_frame(self) -> None:
@@ -516,6 +573,73 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
         await bad_obs.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         await asyncio.sleep(0.04)
         self.assertFalse(bad_obs.is_usable)
+
+    async def test_concurrency_semaphore_caps_in_flight_requests_and_transcript_grace_window(self) -> None:
+        gate = asyncio.Event()
+        in_flight = 0
+        max_in_flight = 0
+
+        class _GatedClassifier(BaseClassifier):
+            def __init__(self) -> None:
+                super().__init__()
+                self._usage = SimpleNamespace(input_tokens=0, output_tokens=0)
+                self.client = SimpleNamespace(usage=self._usage)
+
+            @property
+            def model(self) -> str:
+                return "gemini-decision-1"
+
+            @property
+            def supports_audio(self) -> bool:
+                return True
+
+            async def _ask(self, state, questions, inputs=()):
+                nonlocal in_flight, max_in_flight
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+                try:
+                    await gate.wait()
+                    self._usage.input_tokens += 20
+                    self._usage.output_tokens += 2
+                    res = ChoiceResult(choice="calm", probabilities={"calm": 0.9}, confidence=0.9)
+                    return {"emotion": res}, LLMTokenUsage(
+                        prompt_tokens=20, completion_tokens=2, total_tokens=22
+                    )
+                finally:
+                    in_flight -= 1
+
+        gated = _GatedClassifier()
+        observer = AudioEmotionObserver(enabled=True, classifier=gated)
+        captured = await self._attach_capture(observer)
+
+        for turn_idx in range(4):
+            await observer.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            if turn_idx == 1:
+                # Immediately after Utterance 1 completed (<700ms grace window, no interim yet),
+                # transcript_utterance_id still attributes Turn 1's arriving STT transcript to 1.
+                self.assertEqual(observer.current_utterance_id, 2)
+                self.assertEqual(observer.transcript_utterance_id, 1)
+            await observer.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.6, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+            await observer.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+        await asyncio.sleep(0.03)
+        self.assertEqual(in_flight, 2)
+        self.assertEqual(max_in_flight, 2)
+
+        gate.set()
+        await asyncio.sleep(0.06)
+        self.assertEqual(max_in_flight, 2)
+        emotion_msgs = [
+            f.message["data"]
+            for f, _ in captured
+            if isinstance(f, OutputTransportMessageUrgentFrame)
+        ]
+        self.assertEqual(len(emotion_msgs), 4)
+        self.assertEqual(emotion_msgs[-1]["total_input_tokens"], 80)
+        self.assertEqual(emotion_msgs[-1]["total_output_tokens"], 8)
 
 
 if __name__ == "__main__":

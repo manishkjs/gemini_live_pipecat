@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from contextvars import ContextVar
 import os
 import time
 from dataclasses import dataclass
@@ -44,7 +43,6 @@ from pipecat.frames.frames import (
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.processors.frame_processor import (
     FrameDirection,
     FrameProcessor,
@@ -71,11 +69,10 @@ RMS_BARGE_IN_ONSET = 0.036
 RMS_SILENCE_FLOOR = 0.010
 ONSET_HOLD_SECS = 0.16
 SILENCE_STOP_SECS = 0.48
+NEW_ONSET_TRANSCRIPT_GRACE_SECS = 0.70
+SECRET_MANAGER_EMPTY_TTL_SECS = 60.0
 
-_CALL_USAGE_VAR: ContextVar[tuple[int, int] | None] = ContextVar(
-    "emotion_classifier_call_usage", default=None
-)
-_SECRET_MANAGER_CACHE: dict[str, str] = {}
+_SECRET_MANAGER_CACHE: dict[str, tuple[str, float | None]] = {}
 
 
 @dataclass(frozen=True)
@@ -159,8 +156,41 @@ EMOTION_QUESTION = ChoiceQuestion(
 )
 
 
+def _fetch_secret_manager_key(target_project: str) -> str:
+    """Blocking Secret Manager RPC helper; callers on an event loop use resolve_decision_api_key_async."""
+    now = time.monotonic()
+    cached = _SECRET_MANAGER_CACHE.get(target_project)
+    if cached is not None:
+        cached_val, expires_at = cached
+        if expires_at is None or now < expires_at:
+            return cached_val
+
+    resolved = ""
+    try:
+        from google.cloud import secretmanager
+
+        sm_client = secretmanager.SecretManagerServiceClient()
+        sm_name = f"projects/{target_project}/secrets/GEMINI_API_KEY/versions/latest"
+        sm_res = sm_client.access_secret_version(request={"name": sm_name})
+        resolved = sm_res.payload.data.decode("UTF-8").strip()
+        if resolved:
+            logger.info(
+                "[EmotionPerception] Retrieved GEMINI_API_KEY from Secret Manager for project {}.",
+                target_project,
+            )
+    except Exception as sm_err:
+        logger.debug(
+            "[EmotionPerception] Secret Manager GEMINI_API_KEY lookup skipped: {}",
+            sm_err,
+        )
+
+    expires = None if resolved else (time.monotonic() + SECRET_MANAGER_EMPTY_TTL_SECS)
+    _SECRET_MANAGER_CACHE[target_project] = (resolved, expires)
+    return resolved
+
+
 def resolve_decision_api_key(project_id: str | None = None) -> str:
-    """Resolve GEMINI_API_KEY from env or process-cached Cloud Secret Manager."""
+    """Resolve GEMINI_API_KEY from env or process-cached Cloud Secret Manager without mutating os.environ."""
     env_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if env_key:
         return env_key
@@ -173,31 +203,31 @@ def resolve_decision_api_key(project_id: str | None = None) -> str:
     ).strip()
     if not target_project:
         return ""
-    if target_project in _SECRET_MANAGER_CACHE:
-        return _SECRET_MANAGER_CACHE[target_project]
+    return _fetch_secret_manager_key(target_project)
 
-    resolved = ""
-    try:
-        from google.cloud import secretmanager
 
-        sm_client = secretmanager.SecretManagerServiceClient()
-        sm_name = f"projects/{target_project}/secrets/GEMINI_API_KEY/versions/latest"
-        sm_res = sm_client.access_secret_version(request={"name": sm_name})
-        resolved = sm_res.payload.data.decode("UTF-8").strip()
-        if resolved:
-            os.environ["GEMINI_API_KEY"] = resolved
-            logger.info(
-                "[EmotionPerception] Retrieved GEMINI_API_KEY from Secret Manager for project {}.",
-                target_project,
-            )
-    except Exception as sm_err:
-        logger.debug(
-            "[EmotionPerception] Secret Manager GEMINI_API_KEY lookup skipped: {}",
-            sm_err,
-        )
+async def resolve_decision_api_key_async(project_id: str | None = None) -> str:
+    """Non-blocking async Secret Manager resolver safe to call inside live session setup."""
+    env_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if env_key:
+        return env_key
 
-    _SECRET_MANAGER_CACHE[target_project] = resolved
-    return resolved
+    target_project = (
+        project_id
+        or os.getenv("GCP_PROJECT_ID")
+        or os.getenv("GOOGLE_CLOUD_PROJECT")
+        or ""
+    ).strip()
+    if not target_project:
+        return ""
+
+    cached = _SECRET_MANAGER_CACHE.get(target_project)
+    if cached is not None:
+        cached_val, expires_at = cached
+        if expires_at is None or time.monotonic() < expires_at:
+            return cached_val
+
+    return await asyncio.to_thread(_fetch_secret_manager_key, target_project)
 
 
 def compute_pcm16_rms(pcm_bytes: bytes) -> float:
@@ -307,7 +337,9 @@ class AudioEmotionObserver(FrameProcessor):
         if api_key is not None:
             resolved_key = api_key.strip()
         elif enabled and classifier is None:
-            resolved_key = resolve_decision_api_key(project_id)
+            resolved_key = (
+                os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+            ).strip()
         else:
             resolved_key = ""
 
@@ -328,15 +360,6 @@ class AudioEmotionObserver(FrameProcessor):
                     self._session_id or "-",
                 )
 
-        if self._classifier is not None and hasattr(self._classifier, "event_handler"):
-            @self._classifier.event_handler("on_metrics")
-            async def _on_classifier_metrics(_cls: Any, data: list[Any]) -> None:
-                for item in data:
-                    if isinstance(item, LLMUsageMetricsData) and item.value is not None:
-                        in_tok = int(getattr(item.value, "prompt_tokens", 0) or 0)
-                        out_tok = int(getattr(item.value, "completion_tokens", 0) or 0)
-                        _CALL_USAGE_VAR.set((in_tok, out_tok))
-
         self._usable = self._classifier is not None
         self._is_setup = False
         self._muted = False
@@ -350,6 +373,9 @@ class AudioEmotionObserver(FrameProcessor):
         self._last_interim_at = 0.0
         self._interim_in_flight = False
         self._utterance_id = 0
+        self._utterance_started_at = 0.0
+        self._utterance_has_interim = False
+        self._last_completed_utterance_id = 0
         self._request_seq = 0
         self._latest_emitted_seq = 0
         self._prev_client_in_tokens = 0
@@ -369,6 +395,24 @@ class AudioEmotionObserver(FrameProcessor):
     @property
     def current_utterance_id(self) -> int:
         """Monotonic 1-based counter of caller utterances observed in this session."""
+        return self._utterance_id
+
+    @property
+    def transcript_utterance_id(self) -> int:
+        """Utterance ID to stamp onto an outgoing caller transcript.
+
+        When a cough or fresh speech onset began within NEW_ONSET_TRANSCRIPT_GRACE_SECS
+        and has not yet emitted an interim read, prefer the just-completed utterance ID
+        so Turn N's slightly delayed STT transcript is not stamped N+1.
+        """
+        if (
+            self._speaking
+            and self._last_completed_utterance_id > 0
+            and not self._utterance_has_interim
+            and (time.monotonic() - self._utterance_started_at)
+            < NEW_ONSET_TRANSCRIPT_GRACE_SECS
+        ):
+            return self._last_completed_utterance_id
         return self._utterance_id
 
     def _spawn_background_task(
@@ -498,7 +542,10 @@ class AudioEmotionObserver(FrameProcessor):
         self._pre_roll.clear()
 
     def _begin_utterance(self) -> None:
+        now = time.monotonic()
         self._utterance_id += 1
+        self._utterance_started_at = now
+        self._utterance_has_interim = False
         self._speaking = True
         self._onset_secs = 0.0
         self._silence_secs = 0.0
@@ -506,7 +553,7 @@ class AudioEmotionObserver(FrameProcessor):
             self._pre_roll, self._bytes_for_secs(MAX_BUFFER_SECS)
         )
         self._pre_roll.clear()
-        self._last_interim_at = time.monotonic()
+        self._last_interim_at = now
 
     def _finish_utterance(self, trim_tail_secs: float = 0.0) -> None:
         if not self._speaking:
@@ -525,6 +572,7 @@ class AudioEmotionObserver(FrameProcessor):
         if len(raw) < min_bytes:
             return
 
+        self._last_completed_utterance_id = self._utterance_id
         window_bytes = self._bytes_for_secs(FINAL_WINDOW_SECS)
         clip = raw[-window_bytes:] if len(raw) > window_bytes else raw
         self._spawn_classification(
@@ -593,6 +641,7 @@ class AudioEmotionObserver(FrameProcessor):
             and (now - self._last_interim_at) >= INTERIM_INTERVAL_SECS
         ):
             self._last_interim_at = now
+            self._utterance_has_interim = True
             window_bytes = self._bytes_for_secs(INTERIM_WINDOW_SECS, frame_rate)
             clip = self._speech_buffer.tail_bytes(window_bytes)
             self._interim_in_flight = True
@@ -629,21 +678,15 @@ class AudioEmotionObserver(FrameProcessor):
         )
 
     def _consume_call_tokens(self) -> tuple[int, int]:
-        """Extract exact per-call (input_tokens, output_tokens) and update session totals."""
-        recorded = _CALL_USAGE_VAR.get()
-        _CALL_USAGE_VAR.set(None)
-        if recorded is not None:
-            in_tok, out_tok = recorded
-        else:
-            client = getattr(self._classifier, "client", None)
-            usage = getattr(client, "usage", None)
-            total_in = int(getattr(usage, "input_tokens", 0) or 0)
-            total_out = int(getattr(usage, "output_tokens", 0) or 0)
-            in_tok = max(0, total_in - self._prev_client_in_tokens)
-            out_tok = max(0, total_out - self._prev_client_out_tokens)
-            self._prev_client_in_tokens = total_in
-            self._prev_client_out_tokens = total_out
-
+        """Consume cumulative client.usage deltas and update exact session token totals."""
+        client = getattr(self._classifier, "client", None)
+        usage = getattr(client, "usage", None)
+        total_in = int(getattr(usage, "input_tokens", 0) or 0)
+        total_out = int(getattr(usage, "output_tokens", 0) or 0)
+        in_tok = max(0, total_in - self._prev_client_in_tokens)
+        out_tok = max(0, total_out - self._prev_client_out_tokens)
+        self._prev_client_in_tokens = total_in
+        self._prev_client_out_tokens = total_out
         self._total_input_tokens += in_tok
         self._total_output_tokens += out_tok
         return in_tok, out_tok
@@ -683,7 +726,6 @@ class AudioEmotionObserver(FrameProcessor):
             async with self._concurrency_sem:
                 if self._classifier is None or not self._usable:
                     return
-                _CALL_USAGE_VAR.set(None)
                 audio_input = ClassifierAudio(audio=pcm_bytes, sample_rate=sample_rate)
                 answers = await self._classifier.choice(
                     state={"speaker": "caller"},

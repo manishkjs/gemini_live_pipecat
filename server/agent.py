@@ -1541,7 +1541,14 @@ class TranscriptionBroadcaster(FrameProcessor):
             'text': text,
         }
         if self.participant == "User" and self._emotion_observer is not None:
-            utt_id = int(getattr(self._emotion_observer, "current_utterance_id", 0) or 0)
+            utt_id = int(
+                getattr(
+                    self._emotion_observer,
+                    "transcript_utterance_id",
+                    getattr(self._emotion_observer, "current_utterance_id", 0),
+                )
+                or 0
+            )
             if utt_id > 0:
                 data['utterance_id'] = utt_id
         await self.push_frame(OutputTransportMessageFrame(message={
@@ -1993,12 +2000,18 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
-    from processors.emotion_perception import AudioEmotionObserver
+    from processors.emotion_perception import (
+        AudioEmotionObserver,
+        resolve_decision_api_key_async,
+    )
 
+    decision_api_key = (
+        await resolve_decision_api_key_async(project_id) if emotion_enabled else ""
+    )
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
-        project_id=project_id,
+        api_key=decision_api_key,
     )
     initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
