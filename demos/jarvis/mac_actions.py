@@ -301,6 +301,52 @@ def scroll_steps(amount: int, step_px: int = 60) -> list[int]:
     return steps
 
 
+_SEARCH_URLS = {
+    "youtube": "https://www.youtube.com/results?search_query={q}",
+    "google": "https://www.google.com/search?q={q}",
+    "maps": "https://www.google.com/maps/search/{q}",
+    "images": "https://www.google.com/search?tbm=isch&q={q}",
+    "news": "https://news.google.com/search?q={q}",
+    "drive": "https://drive.google.com/drive/search?q={q}",
+    "github": "https://github.com/search?q={q}",
+    "amazon": "https://www.amazon.in/s?k={q}",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search={q}",
+    "twitter": "https://x.com/search?q={q}",
+    "x": "https://x.com/search?q={q}",
+}
+SEARCH_SITE_HOSTS = {
+    "youtube": "youtube.com", "google": "google.com/search", "maps": "google.com/maps",
+    "images": "tbm=isch", "news": "news.google.com", "drive": "drive.google.com",
+    "github": "github.com", "amazon": "amazon.", "wikipedia": "wikipedia.org",
+    "twitter": "x.com", "x": "x.com", "gmail": "mail.google.com",
+}
+
+
+def site_search_url(site: str, query: str, gmail_base: str = "") -> str:
+    """URL that runs `query` on `site` directly (no clicking a search box)."""
+    import urllib.parse
+
+    key = site.strip().lower().replace(" ", "").removesuffix(".com")
+    if key in ("mail", "gmail", "email", "inbox"):
+        m = re.search(r"https://mail\.google\.com/mail/u/(\d+)", gmail_base or "")
+        return (f"https://mail.google.com/mail/u/{m.group(1) if m else 0}/#search/"
+                + urllib.parse.quote(query, safe=""))
+    template = _SEARCH_URLS.get(key)
+    if template is None:
+        raise ValueError(f"unknown site {site!r}; use one of {sorted([*_SEARCH_URLS, 'gmail'])}")
+    return template.format(q=urllib.parse.quote_plus(query))
+
+
+def maps_directions_url(origin: str, destination: str, mode: str = "") -> str:
+    """Google Maps directions URL (mode: driving, walking, transit, bicycling)."""
+    import urllib.parse
+
+    params = {"api": "1", "origin": origin, "destination": destination}
+    if mode:
+        params["travelmode"] = mode.lower()
+    return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params)
+
+
 def drawio_url() -> str:
     """Returns the draw.io URL that skips the startup storage dialog."""
     return "https://app.diagrams.net/?splash=0"
@@ -913,6 +959,27 @@ class MacDesktop:
             if all(abs(m.x - u.x) > 6 or abs(m.y - u.y) > 6 for u in unique):
                 unique.append(m)
         return unique[:limit]
+
+    _TEXT_ROLES = ("AXTextField", "AXSearchField", "AXComboBox", "AXTextArea")
+
+    def focus_text_field(self, label: str) -> UiMatch:
+        """Clicks into the text field / search box best matching label."""
+        for attempt in range(2):
+            matches = [
+                m for m in self.find_ui_elements(label, limit=10) if m.role in self._TEXT_ROLES
+            ]
+            if not matches and label.lower() != "search":
+                matches = [
+                    m for m in self.find_ui_elements("search", limit=10)
+                    if m.role in self._TEXT_ROLES and "search" in label.lower()
+                ]
+            if matches:
+                target = matches[0]
+                self.click_global(target.x, target.y)
+                time.sleep(0.15)
+                return target
+            time.sleep(0.8)
+        raise LookupError(f"No text field matching {label!r} in the front window")
 
     def click_text(self, query: str, nth: int = 1, double: bool = False) -> UiMatch:
         """Clicks the nth best on-screen element whose accessible text matches query."""

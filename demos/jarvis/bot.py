@@ -92,6 +92,11 @@ How you work:
   Only call look_at_screen(display=N) when the user points at another screen
   ("my second screen"); follow-ups then stay on that display until you open or
   switch to something, which brings you back home.
+- Searching: "search X on YouTube/Google/Maps/Gmail/..." -> web_search(site, X).
+  Distances/routes -> maps_directions(origin, destination). Never click a
+  search box by x/y and type; these tools do it reliably in the user's tab.
+- Typing into a box: type_text(text, field="Search") (field = its label or
+  placeholder). Only omit field if you just clicked into the box with click_text.
 - Clicking: Prefer click_text(text) for anything with a visible label: buttons,
   links, tabs, menu items, video/thumbnail titles (click the video's title
   text, e.g. click_text("Why AI Infrastructure Is Moving to Rust")). Use x/y
@@ -515,15 +520,73 @@ class JarvisTools:
         )
 
     async def type_text(self, params: FunctionCallParams) -> None:
-        """Types text after checking for destructive commands."""
+        """Types text, first clicking into a named field when one is given."""
         args = params.arguments
         text = args["text"]
         press_enter = bool(args.get("press_enter", False))
+        field = (args.get("field") or "").strip()
+        info: dict[str, Any] = {}
+
+        def _type() -> None:
+            if field:
+                m = self._desktop.focus_text_field(field)
+                info["typed_into"] = m.text or m.role
+            self._desktop.type_text(text, press_enter)
+
         await self._act(
             params,
-            f"Type “{text[:60]}”",
-            lambda: self._desktop.type_text(text, press_enter),
+            f"Type “{text[:60]}”" + (f" into {field}" if field else ""),
+            _type,
             mac_actions.assess_text(text),
+            extra=lambda: info,
+        )
+
+    async def _open_here_or_new(self, host_hint: str, url: str, label: str,
+                                params: FunctionCallParams) -> None:
+        """Navigates an existing tab of that site (keeps the user's place), or opens one."""
+        info: dict[str, Any] = {"url": url}
+
+        def _go() -> None:
+            tab = self._desktop.focus_chrome_tab(host_hint) if host_hint else None
+            if tab:
+                self._desktop.set_front_tab_url(url)
+                info.update(reused_tab=True, previous_tab=tab.title[:80])
+            else:
+                self._desktop.open_in_chrome(url)
+                info["reused_tab"] = False
+            time.sleep(1.5)
+
+        await self._act(params, label, _go, mac_actions.RiskVerdict(False),
+                        extra=lambda: info, follow_front=True)
+
+    async def web_search(self, params: FunctionCallParams) -> None:
+        """Runs a search on a site by URL: no search box clicking or typing."""
+        args = params.arguments
+        site, query = (args.get("site") or "google"), (args.get("query") or "").strip()
+        if not query:
+            await params.result_callback({"status": "error", "error": "query is required"})
+            return
+        key = site.strip().lower().replace(" ", "").removesuffix(".com")
+        gmail_base = ""
+        if key in ("mail", "gmail", "email", "inbox"):
+            tab = await asyncio.to_thread(self._desktop.focus_chrome_tab, "mail.google.com")
+            gmail_base = tab.url if tab else ""
+        try:
+            url = mac_actions.site_search_url(site, query, gmail_base)
+        except ValueError as exc:
+            await params.result_callback({"status": "error", "error": str(exc)})
+            return
+        hint = mac_actions.SEARCH_SITE_HOSTS.get(key, "")
+        await self._open_here_or_new(hint, url, f"Search {site}: {query[:40]}", params)
+
+    async def maps_directions(self, params: FunctionCallParams) -> None:
+        """Opens Google Maps directions between two places."""
+        args = params.arguments
+        url = mac_actions.maps_directions_url(
+            args.get("origin", ""), args.get("destination", ""), args.get("mode", "")
+        )
+        await self._open_here_or_new(
+            "google.com/maps", url, f"Directions to {args.get('destination', '')[:40]}", params
         )
 
     async def press_keys(self, params: FunctionCallParams) -> None:
@@ -849,9 +912,15 @@ class JarvisTools:
             ),
             make_tool(
                 "type_text",
-                "Type text into the focused field or terminal.",
+                "Type text. Pass `field` (its visible label/placeholder, e.g. 'Search',"
+                " 'To', 'Subject') to click into that box first; without it, text goes to"
+                " whatever is focused.",
                 self.type_text,
-                {"text": {"type": "string"}, "press_enter": {"type": "boolean"}},
+                {
+                    "text": {"type": "string"},
+                    "press_enter": {"type": "boolean"},
+                    "field": {"type": "string", "description": "Label of the text box to type into."},
+                },
                 ["text"],
             ),
             make_tool(
@@ -867,6 +936,27 @@ class JarvisTools:
                 self.open_app,
                 {"name": {"type": "string"}},
                 ["name"],
+            ),
+            make_tool(
+                "web_search",
+                "Search a site directly by URL (no clicking/typing): site = youtube, google,"
+                " maps, images, news, gmail, drive, github, amazon, wikipedia, x. Reuses the"
+                " user's open tab for that site, else opens one. ALWAYS use this for 'search"
+                " X on Y'.",
+                self.web_search,
+                {"site": {"type": "string"}, "query": {"type": "string"}},
+                ["site", "query"],
+            ),
+            make_tool(
+                "maps_directions",
+                "Open Google Maps directions/distance between two places (reuses a Maps tab).",
+                self.maps_directions,
+                {
+                    "origin": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "mode": {"type": "string", "description": "driving, walking, transit or bicycling"},
+                },
+                ["origin", "destination"],
             ),
             make_tool(
                 "click_text",

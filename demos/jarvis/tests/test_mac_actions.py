@@ -278,3 +278,23 @@ class ScrollStepsTest(unittest.TestCase):
         self.assertTrue(all(abs(s) <= 60 for s in mac_actions.scroll_steps(-800)))
         self.assertEqual(sum(mac_actions.scroll_steps(-100000)), -6000)
         self.assertEqual(mac_actions.scroll_steps(0), [])
+
+
+class SiteSearchTest(unittest.TestCase):
+
+    def test_site_search_urls(self):
+        self.assertEqual(
+            mac_actions.site_search_url("YouTube", "google cloud videos"),
+            "https://www.youtube.com/results?search_query=google+cloud+videos",
+        )
+        self.assertEqual(
+            mac_actions.site_search_url("gmail", "from:boss", "https://mail.google.com/mail/u/1/#inbox"),
+            "https://mail.google.com/mail/u/1/#search/from%3Aboss",
+        )
+        with self.assertRaises(ValueError):
+            mac_actions.site_search_url("myspace", "x")
+
+    def test_maps_directions_url(self):
+        url = mac_actions.maps_directions_url("Raja Ritz Avenue", "Google Kyoto office, Bengaluru", "driving")
+        self.assertTrue(url.startswith("https://www.google.com/maps/dir/?api=1&origin=Raja+Ritz+Avenue"))
+        self.assertIn("travelmode=driving", url)

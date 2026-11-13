@@ -30,6 +30,15 @@ _WIDTH, _HEIGHT = 600, 190
 # Collapsed pill (344x44 plus 6px top padding) with a little slack, so the
 # transparent window doesn't swallow clicks on browser tabs around it.
 _COMPACT_WIDTH, _COMPACT_HEIGHT = 360, 56
+_PILL_STATE = Path.home() / ".jarvis" / "pill.json"
+
+
+def _saved_pill_position(default_x: int, default_y: int) -> tuple[int, int]:
+    try:
+        data = json.loads(_PILL_STATE.read_text())
+        return int(data["cx"] - _COMPACT_WIDTH / 2), int(data["y"])
+    except Exception:
+        return default_x, default_y
 
 
 class WebviewBridge:
@@ -71,11 +80,26 @@ class WebviewBridge:
             return
         width, height = (_COMPACT_WIDTH, _COMPACT_HEIGHT) if compact else (_WIDTH, _HEIGHT)
         try:
+            # Grow/shrink around the pill's current centre so a pill the user
+            # dragged elsewhere (even to another screen) stays where they put it.
+            old_w = window.width or width
+            cx = (window.x or 0) + old_w / 2
             window.resize(width, height)
-            if self.screen_width:
-                window.move(int((self.screen_width - width) / 2), 0)
+            window.move(int(cx - width / 2), int(window.y or 0))
         except Exception:
             logger.opt(exception=True).debug("Failed to resize Jarvis window")
+
+    def remember_position(self, *_args) -> None:
+        """Saves the pill's position so Jarvis reopens where the user left it."""
+        window = self.window
+        if not window:
+            return
+        try:
+            _PILL_STATE.parent.mkdir(parents=True, exist_ok=True)
+            cx = (window.x or 0) + (window.width or _COMPACT_WIDTH) / 2
+            _PILL_STATE.write_text(json.dumps({"cx": cx, "y": window.y or 0}))
+        except Exception:
+            logger.opt(exception=True).debug("Failed to save Jarvis pill position")
 
     def stop(self) -> None:
         """Stops the pipeline and closes the floating Jarvis window."""
@@ -179,14 +203,15 @@ def main() -> None:
 
     screen = webview.screens[0]
     bridge.screen_width = int(screen.width)
+    start_x, start_y = _saved_pill_position(int((screen.width - _COMPACT_WIDTH) / 2), 0)
     window = webview.create_window(
         "Jarvis",
         url=_UI_FILE.as_uri(),
         js_api=_JsApi(bridge),
         width=_COMPACT_WIDTH,
         height=_COMPACT_HEIGHT,
-        x=int((screen.width - _COMPACT_WIDTH) / 2),
-        y=0,
+        x=start_x,
+        y=start_y,
         frameless=True,
         easy_drag=False,
         transparent=True,
@@ -197,6 +222,7 @@ def main() -> None:
     )
     bridge.window = window
     window.events.loaded += bridge.mark_ready
+    window.events.moved += bridge.remember_position
 
     threading.Thread(target=_run_pipeline, args=(bridge,), daemon=True).start()
     try:
