@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jarvis</title>
+<style>
+  :root {
+    --bg: rgba(10, 10, 14, 0.86);
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #f5f5f7;
+    --muted: #8e8e98;
+    --blue: #4285f4; --red: #ea4335; --yellow: #fbbc04; --green: #34a853;
+    --accent: var(--blue);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; height: 100%; overflow: hidden;
+    font: 13px/1.35 "SF Pro Text", -apple-system, "Google Sans", system-ui, sans-serif;
+    color: var(--text); -webkit-user-select: none; user-select: none; }
+  body { display: flex; justify-content: center; padding-top: 6px; }
+
+  /* The island ------------------------------------------------------------ */
+  .island {
+    position: relative; width: 300px; height: 44px; border-radius: 22px;
+    background: var(--bg); backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid var(--line);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+    transition: width .45s cubic-bezier(.2,.9,.25,1.15), height .45s cubic-bezier(.2,.9,.25,1.15),
+                border-radius .45s, box-shadow .3s, border-color .3s;
+    overflow: hidden;
+  }
+  .island.expanded { width: 560px; height: 132px; border-radius: 26px; }
+  .island.gate { width: 560px; height: 168px; border-color: rgba(251,188,4,0.55);
+    box-shadow: 0 0 0 1px rgba(251,188,4,0.25), 0 0 42px rgba(234,67,53,0.35), 0 12px 40px rgba(0,0,0,.5); }
+
+  /* Animated gradient rim while Jarvis is active */
+  .island::before {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
+    background: conic-gradient(from var(--angle, 0deg), var(--blue), var(--red), var(--yellow), var(--green), var(--blue));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    opacity: 0; transition: opacity .4s; animation: spin 3s linear infinite; pointer-events: none;
+  }
+  .island.speaking::before, .island.acting::before { opacity: .9; }
+  @property --angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+  @keyframes spin { to { --angle: 360deg; } }
+
+  /* Header row ------------------------------------------------------------ */
+  .row { display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 14px 0 8px; }
+  .orb { position: relative; width: 28px; height: 28px; flex: none; }
+  .orb .core { position: absolute; inset: 6px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, #fff, var(--accent) 45%, #1a237e 100%);
+    box-shadow: 0 0 14px var(--accent); transition: background .3s, box-shadow .3s; }
+  .orb .ring { position: absolute; inset: 2px; border-radius: 50%; border: 1.5px solid var(--accent);
+    opacity: .0; transform: scale(.7); }
+  .listening .orb .ring, .speaking .orb .ring { animation: pulse 1.4s ease-out infinite; }
+  .speaking .orb .ring:nth-child(2) { animation-delay: .45s; }
+  @keyframes pulse { 0% { opacity: .8; transform: scale(.7);} 100% { opacity: 0; transform: scale(1.45);} }
+  .acting .orb .core { animation: breathe .9s ease-in-out infinite alternate; }
+  @keyframes breathe { to { transform: scale(.75); filter: brightness(1.4);} }
+
+  .title { font-weight: 600; letter-spacing: .2px; }
+  .status { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+
+  .wave { display: flex; gap: 3px; align-items: center; height: 18px; }
+  .wave i { width: 3px; height: 4px; border-radius: 2px; background: var(--accent); opacity: .85; }
+  .speaking .wave i, .listening .wave i { animation: bar .9s ease-in-out infinite; }
+  .wave i:nth-child(2){animation-delay:.1s}.wave i:nth-child(3){animation-delay:.2s}
+  .wave i:nth-child(4){animation-delay:.3s}.wave i:nth-child(5){animation-delay:.15s}
+  @keyframes bar { 0%,100%{height:4px} 50%{height:16px} }
+
+  /* Body ------------------------------------------------------------------ */
+  .body { padding: 2px 18px 12px 46px; opacity: 0; transition: opacity .25s .1s; }
+  .expanded .body, .gate .body { opacity: 1; }
+  .line { font-size: 14px; min-height: 38px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .line .who { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; margin-right: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 4px 10px;
+    border-radius: 999px; background: rgba(66,133,244,.14); color: #aecbfa; font-size: 12px; max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+  /* Approval gate --------------------------------------------------------- */
+  .gatebox { display: none; margin-top: 8px; }
+  .gate .gatebox { display: block; }
+  .gate .chip { display: none; }
+  .gatebox .why { color: #fdd663; font-size: 12px; margin-bottom: 8px; }
+  .gatebox .why b { color: #f28b82; }
+  .btns { display: flex; gap: 8px; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 7px 16px; cursor: pointer; }
+  .approve { background: var(--green); color: #04150a; }
+  .deny { background: rgba(255,255,255,.08); color: var(--text); border: 1px solid var(--line); }
+  .kbd { color: var(--muted); font-size: 11px; align-self: center; margin-left: 4px; }
+</style>
+</head>
+<body>
+  <div id="island" class="island idle pywebview-drag-region">
+    <div class="row">
+      <div class="orb"><div class="ring"></div><div class="ring"></div><div class="core"></div></div>
+      <span class="title">Jarvis</span>
+      <span id="status" class="status">Starting…</span>
+      <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="body">
+      <div id="line" class="line"></div>
+      <div id="chip" class="chip" style="display:none"></div>
+      <div class="gatebox">
+        <div class="why">⚠ Needs your OK: <b id="gateLabel"></b> — <span id="gateReason"></span></div>
+        <div class="btns">
+          <button class="approve" onclick="decide(true)">Approve</button>
+          <button class="deny" onclick="decide(false)">Deny</button>
+          <span class="kbd">⏎ approve · esc deny</span>
+        </div>
+      </div>
+    </div>
+  </div>
+<script>
+  const island = document.getElementById("island");
+  const statusEl = document.getElementById("status");
+  const lineEl = document.getElementById("line");
+  const chipEl = document.getElementById("chip");
+  const STATE_TEXT = { idle: "At your service", listening: "Listening…", speaking: "Speaking", acting: "Working on it…" };
+  const ACCENT = { idle: "#4285f4", listening: "#34a853", speaking: "#4285f4", acting: "#fbbc04" };
+  let state = "idle", who = "", text = "", collapseTimer = null, gateOpen = false;
+
+  function setState(s) {
+    state = s;
+    island.classList.remove("idle", "listening", "speaking", "acting");
+    island.classList.add(s);
+    document.documentElement.style.setProperty("--accent", gateOpen ? "#ea4335" : ACCENT[s]);
+    if (!gateOpen) statusEl.textContent = STATE_TEXT[s] || s;
+  }
+  function expand() {
+    island.classList.add("expanded");
+    clearTimeout(collapseTimer);
+    collapseTimer = setTimeout(() => { if (!gateOpen) island.classList.remove("expanded"); }, 7000);
+  }
+  function say(speaker, chunk) {
+    if (speaker !== who) { who = speaker; text = ""; }
+    text = (text + (speaker === "you" ? " " : "") + chunk).replace(/\s+/g, " ").trim().slice(-220);
+    lineEl.innerHTML = `<span class="who">${speaker}</span>`;
+    lineEl.appendChild(document.createTextNode(text));
+    expand();
+  }
+
+  // Called from Python with one event at a time.
+  window.jarvis = {
+    update(ev) {
+      switch (ev.type) {
+        case "state": setState(ev.state); break;
+        case "user_text": say("you", ev.text); break;
+        case "bot_text": say("jarvis", ev.text); break;
+        case "action":
+          chipEl.style.display = "inline-flex"; chipEl.textContent = ev.label;
+          statusEl.textContent = ev.label; expand(); break;
+        case "gate":
+          gateOpen = true;
+          document.getElementById("gateLabel").textContent = ev.label;
+          document.getElementById("gateReason").textContent = ev.reason;
+          island.classList.add("gate"); statusEl.textContent = "Waiting for approval";
+          document.documentElement.style.setProperty("--accent", "#ea4335"); break;
+        case "gate_resolved":
+          gateOpen = false; island.classList.remove("gate");
+          chipEl.textContent = ev.approved ? "Approved ✓" : "Blocked ✕";
+          setState(state); expand(); break;
+        case "error": statusEl.textContent = ev.text; say("error", ev.text); break;
+      }
+    }
+  };
+  function decide(ok) {
+    if (!gateOpen) return;
+    window.pywebview && window.pywebview.api.decide(ok);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") decide(true);
+    if (e.key === "Escape") decide(false);
+  });
+  setState("idle");
+</script>
+</body>
+</html>

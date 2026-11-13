@@ -1,0 +1,116 @@
+"""Jarvis: a floating voice agent for the Mac desktop.
+
+Run with `python jarvis_app.py`. A glass "Dynamic Island" window sits at the
+top of the screen and shows what Jarvis hears, says and does. The voice
+pipeline runs in a background thread; the window must own the main thread on
+macOS.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+from pathlib import Path
+from typing import Any
+
+import webview
+from dotenv import load_dotenv
+from loguru import logger
+
+import bot
+
+_UI_FILE = Path(__file__).parent / "ui" / "index.html"
+_WIDTH, _HEIGHT = 600, 190
+
+
+class WebviewBridge:
+    """Connects the pipeline (asyncio thread) to the window (main thread)."""
+
+    def __init__(self) -> None:
+        self.window: webview.Window | None = None
+        self._ready = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._pending: asyncio.Future[bool] | None = None
+
+    # -- called by the window ---------------------------------------------
+
+    def mark_ready(self) -> None:
+        """Signals that the webview DOM has loaded and can receive JS calls."""
+        self._ready.set()
+
+    def decide(self, approved: bool) -> None:
+        """Approve/Deny button handler, exposed to JavaScript."""
+        loop, pending = self._loop, self._pending
+        if loop and pending and not pending.done():
+            loop.call_soon_threadsafe(pending.set_result, bool(approved))
+
+    # -- called by the pipeline (UiBridge protocol) -------------------------
+
+    def emit(self, event: dict[str, Any]) -> None:
+        """Forwards a JSON event payload to the floating pill UI."""
+        if not self.window or not self._ready.is_set():
+            return
+        self.window.evaluate_js(f"window.jarvis.update({json.dumps(event)})")
+
+    async def request_approval(self, action: str, reason: str) -> bool:
+        """Suspends until the user approves or denies the action in the UI."""
+        self._loop = asyncio.get_running_loop()
+        self._pending = self._loop.create_future()
+        logger.warning("Approval needed: {} ({})", action, reason)
+        try:
+            return await self._pending
+        finally:
+            self._pending = None
+
+
+class _JsApi:
+    """The only methods JavaScript can call. Kept separate from the bridge so
+    pywebview does not try to expose the window object itself."""
+
+    def __init__(self, bridge: WebviewBridge) -> None:
+        self._bridge = bridge
+
+    def decide(self, approved: bool) -> None:
+        self._bridge.decide(approved)
+
+
+def _run_pipeline(bridge: WebviewBridge) -> None:
+    bridge._ready.wait(timeout=10)
+    try:
+        asyncio.run(bot.run_jarvis(bridge))
+    except Exception as e:
+        logger.exception("Jarvis pipeline stopped")
+        bridge.emit({"type": "error", "text": f"Stopped: {e}"})
+
+
+def main() -> None:
+    load_dotenv(Path(__file__).parent / ".env")
+    bridge = WebviewBridge()
+
+    screen = webview.screens[0]
+    window = webview.create_window(
+        "Jarvis",
+        url=_UI_FILE.as_uri(),
+        js_api=_JsApi(bridge),
+        width=_WIDTH,
+        height=_HEIGHT,
+        x=int((screen.width - _WIDTH) / 2),
+        y=0,
+        frameless=True,
+        easy_drag=False,
+        transparent=True,
+        on_top=True,
+        resizable=False,
+        shadow=False,
+        background_color="#000000",
+    )
+    bridge.window = window
+    window.events.loaded += bridge.mark_ready
+
+    threading.Thread(target=_run_pipeline, args=(bridge,), daemon=True).start()
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()
