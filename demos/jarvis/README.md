@@ -26,6 +26,7 @@ Mac mic / BlackHole ──▶ Pipecat LocalAudioTransport ──▶ Gemini Live 
 | File | What it does |
 |---|---|
 | `jarvis_app.py` | Starts the floating window (`pywebview`) and the voice pipeline thread |
+| `build_app.py` | Builds a native macOS `Jarvis.app` bundle in `/Applications` (with icon & permissions metadata) |
 | `bot.py` | Pipecat pipeline, Gemini Live setup, desktop/Meet/draw.io/mobile tools, approval gate |
 | `mac_actions.py` | Screenshots, clicks, typing, isolated Chrome profile, ADB mobile helpers, safety rules |
 | `ui/index.html` | The Dynamic-Island style UI |
@@ -40,6 +41,15 @@ pip install -r requirements.txt
 echo "GEMINI_API_KEY=<your AI Studio key>" > .env
 python jarvis_app.py
 ```
+
+### Install as a macOS Desktop App (`Jarvis.app`)
+
+```bash
+python build_app.py               # installs /Applications/Jarvis.app
+open /Applications/Jarvis.app     # or launch "Jarvis" from Spotlight / Dock
+```
+
+Logs for the desktop app are written to `~/Library/Logs/Jarvis/jarvis.log`.
 
 Permissions: the app that launches Jarvis (Terminal, iTerm, or your IDE)
 needs **Microphone**, **Screen Recording** and **Accessibility** in
@@ -103,4 +113,3 @@ and run on any OS.
 - Gemini Live caps audio+video sessions (about 2 minutes without context
   compression, about 10 minutes per connection). Long sessions need
   compression and session resumption, which are not wired in yet.
-- Only the main display is supported.
