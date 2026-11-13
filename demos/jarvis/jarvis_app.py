@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import queue
 import threading
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ class WebviewBridge:
         self._ready = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pending: asyncio.Future[bool] | None = None
+        self._ui_queue: queue.SimpleQueue[dict[str, Any]] = queue.SimpleQueue()
+        threading.Thread(target=self._ui_worker, name="jarvis-ui-bridge", daemon=True).start()
 
     # -- called by the window ---------------------------------------------
 
@@ -50,10 +53,21 @@ class WebviewBridge:
     # -- called by the pipeline (UiBridge protocol) -------------------------
 
     def emit(self, event: dict[str, Any]) -> None:
-        """Forwards a JSON event payload to the floating pill UI."""
-        if not self.window or not self._ready.is_set():
-            return
-        self.window.evaluate_js(f"window.jarvis.update({json.dumps(event)})")
+        """Queues a JSON event payload for the floating pill UI without blocking asyncio."""
+        self._ui_queue.put_nowait(event)
+
+    def _ui_worker(self) -> None:
+        """Flushes queued UI events on a dedicated thread so evaluate_js never stalls audio."""
+        self._ready.wait()
+        while True:
+            event = self._ui_queue.get()
+            window = self.window
+            if not window:
+                continue
+            try:
+                window.evaluate_js(f"window.jarvis.update({json.dumps(event)})")
+            except Exception:
+                logger.opt(exception=True).debug("Failed to push event to Jarvis webview")
 
     async def request_approval(self, action: str, reason: str) -> bool:
         """Suspends until the user approves or denies the action in the UI."""

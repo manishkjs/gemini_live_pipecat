@@ -16,20 +16,23 @@ import os
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from google.genai.types import HttpOptions
+from google.genai.types import FunctionResponse, FunctionResponseScheduling, HttpOptions
 from loguru import logger
 
-from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
-from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     FunctionCallInProgressFrame,
+    InputAudioRawFrame,
     InputImageRawFrame,
+    InterruptionFrame,
     LLMRunFrame,
-    LLMTextFrame,
+    OutputAudioRawFrame,
     TranscriptionFrame,
+    TTSStartedFrame,
     TTSTextFrame,
     UserStartedSpeakingFrame,
 )
@@ -48,18 +51,37 @@ import mac_actions
 DEFAULT_MODEL = "gemini-3.8-live"
 DEFAULT_VOICE = "Charon"
 _TOOL_TIMEOUT_SECONDS = 120
+_ECHO_PRE_ROLL_SECONDS = 0.50
+_ECHO_TAIL_SECONDS = 0.60
+_ISOLATED_OUTPUT_KEYWORDS = (
+    "headphone",
+    "airpod",
+    "earphone",
+    "earbud",
+    "headset",
+    "beats",
+    "blackhole",
+    "loopback",
+)
 
 SYSTEM_INSTRUCTION = """\
 You are Jarvis, a calm, witty voice assistant operating a Mac desktop.
 You can see the screen through screenshots and act with the tools provided.
 
 How you work:
-- Keep spoken replies short: one or two sentences. Narrate what you are doing
-  as you do it ("Opening draw.io... pasting the architecture now").
-- Before clicking, call look_at_screen unless you just received a fresh
-  screenshot. Coordinates are pixels in the latest screenshot.
+- Keep spoken replies short: one or two sentences.
+- All tools run asynchronously (NON_BLOCKING): keep speaking naturally while
+  tools execute ("Opening draw.io right now... pasting the architecture")
+  instead of going silent during actions, then briefly follow up once the tool
+  result arrives.
 - Prefer open_app, open_url, meet_join, meet_action, open_drawio and press_keys
   over raw coordinate clicking whenever they do the job.
+- Before clicking for the first time in a turn, call look_at_screen only if you
+  have not received a screenshot yet. Coordinates are pixels in the latest screenshot.
+- Every action tool (click, type_text, press_keys, open_app, open_url, scroll,
+  meet_join, meet_action, open_drawio, mobile_*) automatically captures and
+  attaches a fresh screenshot before returning. NEVER call look_at_screen right
+  after another tool—use the screenshot already attached.
 - Google Meet: Use meet_join(meeting, use_jarvis_profile=True) to join in an
   isolated Chrome profile as a separate persona ("Jarvis"). On the pre-join
   screen, enter "Jarvis" if asked for a name, check mic state, and click Join.
@@ -71,7 +93,6 @@ How you work:
 - Mobile apps (e.g. Swiggy): If an Android device/emulator is connected, use
   mobile_open_app / mobile_tap / mobile_type / mobile_swipe. If not, open
   iPhone Mirroring or the emulator/browser window and use Mac desktop tools.
-- After each action you get a fresh screenshot. Check that it worked.
 - If the user interrupts you, stop and follow the new instruction.
 - Some actions (deleting data, force-push, Pay/Order/Checkout buttons) need
   approval. If a tool says waiting or denied, tell the user plainly and do not
@@ -88,6 +109,124 @@ class UiBridge(Protocol):
     async def request_approval(self, action: str, reason: str) -> bool: ...
 
 
+def is_headphone_output(device_name: str) -> bool:
+    """Returns True when the output device is isolated from the mic (headphones/virtual cable)."""
+    lowered = device_name.lower()
+    if "speaker" in lowered:
+        return False
+    return any(keyword in lowered for keyword in _ISOLATED_OUTPUT_KEYWORDS)
+
+
+def _detect_output_device_name(output_device_index: int | None = None) -> str:
+    try:
+        import pyaudio
+
+        pa = pyaudio.PyAudio()
+        try:
+            if output_device_index is not None:
+                info = pa.get_device_info_by_index(output_device_index)
+            else:
+                info = pa.get_default_output_device_info()
+            return str(info.get("name", ""))
+        finally:
+            pa.terminate()
+    except Exception:
+        return ""
+
+
+def resolve_echo_guard_enabled(
+    env_value: str | None = None,
+    output_device_name: str | None = None,
+    output_device_index: int | None = None,
+) -> tuple[bool, str]:
+    """Determines whether to mute mic input during bot speech to prevent speaker echo."""
+    setting = (
+        env_value if env_value is not None else os.getenv("JARVIS_ECHO_GUARD", "auto")
+    ).strip().lower()
+    device = (
+        output_device_name
+        if output_device_name is not None
+        else _detect_output_device_name(output_device_index)
+    )
+
+    if setting in ("1", "true", "on", "yes"):
+        return True, device or "forced-on"
+    if setting in ("0", "false", "off", "no"):
+        return False, device or "forced-off"
+    if device and is_headphone_output(device):
+        return False, device
+    return True, device or "unknown output"
+
+
+class _EchoGuardState:
+    """Tracks when Jarvis is speaking (plus acoustic tail) so speaker output isn't fed back."""
+
+    def __init__(
+        self,
+        enabled: bool,
+        pre_roll_seconds: float = _ECHO_PRE_ROLL_SECONDS,
+        tail_seconds: float = _ECHO_TAIL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.enabled = enabled
+        self._pre_roll_seconds = pre_roll_seconds
+        self._tail_seconds = tail_seconds
+        self._clock = clock
+        self._bot_speaking = False
+        self._mute_until = 0.0
+
+    def on_pre_speech(self) -> None:
+        if not self.enabled:
+            return
+        self._mute_until = max(self._mute_until, self._clock() + self._pre_roll_seconds)
+
+    def on_bot_started(self) -> None:
+        if not self.enabled:
+            return
+        self._bot_speaking = True
+        self._mute_until = max(self._mute_until, self._clock() + self._pre_roll_seconds)
+
+    def on_bot_stopped(self) -> None:
+        if not self.enabled:
+            return
+        self._bot_speaking = False
+        self._mute_until = max(self._mute_until, self._clock() + self._tail_seconds)
+
+    def on_interrupted(self) -> None:
+        self._bot_speaking = False
+        if self.enabled:
+            self._mute_until = max(self._mute_until, self._clock() + 0.15)
+
+    def should_mute_mic(self) -> bool:
+        if not self.enabled:
+            return False
+        return self._bot_speaking or (self._clock() < self._mute_until)
+
+
+class _SpeakerEchoGuard(FrameProcessor):
+    """Replaces mic frames with silence while Jarvis is speaking out of open speakers."""
+
+    def __init__(self, state: _EchoGuardState, **kwargs):
+        super().__init__(**kwargs)
+        self._state = state
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._state.on_bot_started()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._state.on_bot_stopped()
+        elif isinstance(frame, InterruptionFrame):
+            self._state.on_interrupted()
+        elif isinstance(frame, InputAudioRawFrame) and self._state.should_mute_mic():
+            frame = InputAudioRawFrame(
+                audio=b"\x00" * len(frame.audio),
+                sample_rate=frame.sample_rate,
+                num_channels=frame.num_channels,
+            )
+        await self.push_frame(frame, direction)
+
+
 class _ScreenFeeder(FrameProcessor):
     """Sits before the LLM so screenshots can be injected as video frames."""
 
@@ -102,8 +241,8 @@ class _ScreenFeeder(FrameProcessor):
         )
 
 
-class _UiTap(FrameProcessor):
-    """Passes every frame through and mirrors the interesting ones to the UI."""
+class _InputUiTap(FrameProcessor):
+    """Mirrors user speech and transcription events (before the LLM) to the UI."""
 
     def __init__(self, ui: UiBridge, **kwargs):
         super().__init__(**kwargs)
@@ -113,15 +252,40 @@ class _UiTap(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
             self._ui.emit({"type": "user_text", "text": frame.text})
-        elif isinstance(frame, (TTSTextFrame, LLMTextFrame)):
-            self._ui.emit({"type": "bot_text", "text": frame.text})
         elif isinstance(frame, UserStartedSpeakingFrame):
             self._ui.emit({"type": "state", "state": "listening"})
+        await self.push_frame(frame, direction)
+
+
+class _OutputUiTap(FrameProcessor):
+    """Mirrors assistant speech/tool events (after the LLM) to the UI and echo guard."""
+
+    def __init__(self, ui: UiBridge, echo_state: _EchoGuardState | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self._ui = ui
+        self._echo_state = echo_state
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if self._echo_state is not None:
+            if isinstance(frame, (TTSStartedFrame, OutputAudioRawFrame)):
+                self._echo_state.on_pre_speech()
+            elif isinstance(frame, BotStartedSpeakingFrame):
+                self._echo_state.on_bot_started()
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self._echo_state.on_bot_stopped()
+            elif isinstance(frame, InterruptionFrame):
+                self._echo_state.on_interrupted()
+
+        # GeminiLiveLLMService emits both LLMTextFrame and TTSTextFrame for every
+        # spoken chunk; tap only TTSTextFrame so words aren't duplicated.
+        if isinstance(frame, TTSTextFrame):
+            self._ui.emit({"type": "bot_text", "text": frame.text})
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._ui.emit({"type": "state", "state": "speaking"})
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._ui.emit({"type": "state", "state": "idle"})
-        elif isinstance(frame, FunctionCallInProgressFrame):
+        elif isinstance(frame, FunctionCallInProgressFrame) and direction == FrameDirection.DOWNSTREAM:
             self._ui.emit({"type": "state", "state": "acting"})
         await self.push_frame(frame, direction)
 
@@ -169,7 +333,7 @@ class JarvisTools:
             return
         await asyncio.sleep(self._SETTLE_SECONDS)
         screen = await self._look()
-        payload = {"status": "done", "action": label, **screen}
+        payload = {"status": "done", "action": label, "fresh_screenshot_attached": True, **screen}
         if extra:
             payload.update(extra)
         await params.result_callback(payload)
@@ -179,7 +343,9 @@ class JarvisTools:
     async def look_at_screen(self, params: FunctionCallParams) -> None:
         """Captures a fresh screenshot and returns its dimensions."""
         self._ui.emit({"type": "action", "label": "Looking at the screen"})
-        await params.result_callback({"status": "done", **(await self._look())})
+        await params.result_callback(
+            {"status": "done", "fresh_screenshot_attached": True, **(await self._look())}
+        )
 
     async def click(self, params: FunctionCallParams) -> None:
         """Clicks a screen coordinate with a safety check on the target."""
@@ -394,7 +560,7 @@ class JarvisTools:
         return [
             make_tool(
                 "look_at_screen",
-                "Take a fresh screenshot of the Mac screen.",
+                "Take a fresh screenshot of the Mac screen. Only call when no action tool was just used (all action tools already attach a fresh screenshot).",
                 self.look_at_screen,
             ),
             make_tool(
@@ -533,12 +699,64 @@ def _resolve_transport_audio_indices() -> tuple[int | None, int | None]:
     return input_idx, output_idx
 
 
+class _NonBlockingGeminiLiveLLMService(GeminiLiveLLMService):
+    """Enables NON_BLOCKING tool declarations and WHEN_IDLE scheduling on Gemini 3.8+.
+
+    Pipecat 1.2.1 disables `_supports_non_blocking_tools` whenever `"gemini-3"`
+    is in the model name (`llm.py` L378-L384) and places `"scheduling"` inside
+    `response` instead of the top-level `FunctionResponse.scheduling` field.
+    `gemini-3.8-live` natively supports both `behavior="NON_BLOCKING"` and
+    `FunctionResponseScheduling.WHEN_IDLE`, allowing Jarvis to keep speaking
+    smoothly while tools execute in the background.
+    """
+
+    @property
+    def _supports_non_blocking_tools(self) -> bool:
+        return True
+
+    async def _tool_result(
+        self, tool_call_id: str, tool_name: str, tool_result_message: dict[str, Any]
+    ):
+        if self._disconnecting or not self._session:
+            return
+        logger.debug(
+            "Sending non-blocking tool result for tool_call_id={}, payload={}",
+            tool_call_id,
+            tool_result_message,
+        )
+        scheduling = (
+            FunctionResponseScheduling.WHEN_IDLE
+            if self._function_is_async(tool_name)
+            else None
+        )
+        response = FunctionResponse(
+            name=tool_name,
+            id=tool_call_id,
+            response=tool_result_message,
+            scheduling=scheduling,
+        )
+        try:
+            await self._session.send_tool_response(function_responses=response)
+        except Exception as exc:
+            await self._handle_send_error(exc)
+
+
 async def run_jarvis(ui: UiBridge) -> None:
     """Builds and runs the pipeline until cancelled."""
     model = os.getenv("JARVIS_MODEL", DEFAULT_MODEL)
-    logger.info("Starting Jarvis on {} (AI Studio)", model)
+    logger.info("Starting Jarvis on {} (AI Studio, non-blocking tools)", model)
 
     input_idx, output_idx = _resolve_transport_audio_indices()
+    echo_guard_on, out_device = resolve_echo_guard_enabled(output_device_index=output_idx)
+    if echo_guard_on:
+        logger.info(
+            "Speaker echo guard enabled for output device {!r} (set JARVIS_ECHO_GUARD=off to allow barge-in)",
+            out_device,
+        )
+    else:
+        logger.info("Isolated output {!r} detected; full barge-in enabled", out_device)
+    echo_state = _EchoGuardState(enabled=echo_guard_on)
+
     transport = LocalAudioTransport(
         LocalAudioTransportParams(
             audio_in_enabled=True,
@@ -551,7 +769,7 @@ async def run_jarvis(ui: UiBridge) -> None:
     tools = JarvisTools(mac_actions.MacDesktop(), feeder, ui)
     definitions = tools.definitions()
 
-    llm = GeminiLiveLLMService(
+    llm = _NonBlockingGeminiLiveLLMService(
         api_key=_resolve_api_key(),
         settings=GeminiLiveLLMService.Settings(
             model=f"models/{model}",
@@ -562,8 +780,9 @@ async def run_jarvis(ui: UiBridge) -> None:
         http_options=HttpOptions(api_version="v1alpha"),
     )
     for schema, handler in definitions:
-        # Desktop actions must not be cut off halfway by a barge-in, and the
-        # approval gate can wait up to two minutes for the user.
+        # Registered with cancel_on_interruption=False so tools are declared
+        # NON_BLOCKING (Jarvis keeps speaking while acting) and approval gates
+        # can wait up to two minutes without being cancelled mid-action.
         llm.register_function(
             schema.name, handler, cancel_on_interruption=False, timeout_secs=_TOOL_TIMEOUT_SECONDS
         )
@@ -574,11 +793,12 @@ async def run_jarvis(ui: UiBridge) -> None:
     pipeline = Pipeline(
         [
             transport.input(),
+            _SpeakerEchoGuard(echo_state),
             user_agg,
-            _UiTap(ui),
+            _InputUiTap(ui),
             feeder,
             llm,
-            _UiTap(ui),
+            _OutputUiTap(ui, echo_state),
             transport.output(),
             assistant_agg,
         ]

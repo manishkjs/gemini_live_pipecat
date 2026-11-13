@@ -55,6 +55,7 @@ Optional `.env` settings:
 | `JARVIS_VOICE` | `Charon` | Gemini voice name |
 | `JARVIS_INPUT_DEVICE` | System default | Audio input index or name substring (e.g. `BlackHole 2ch`) |
 | `JARVIS_OUTPUT_DEVICE` | System default | Audio output index or name substring (e.g. `BlackHole 16ch`) |
+| `JARVIS_ECHO_GUARD` | `auto` | Mutes mic during speech on open speakers (`auto`, `on`, `off`) |
 | `JARVIS_CHROME_PROFILE` | `~/.jarvis-chrome-profile` | Isolated Chrome profile for Jarvis as a separate Meet user |
 
 List audio device indexes on your Mac:
