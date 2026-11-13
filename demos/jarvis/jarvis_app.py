@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import queue
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,10 @@ class WebviewBridge:
         """Stops the pipeline and closes the floating Jarvis window."""
         logger.info("Stopping Jarvis from UI")
         self.control.stop()
+        # Fallback in case Cocoa runloop doesn't unwind promptly after window.destroy().
+        timer = threading.Timer(1.5, lambda: os._exit(0))
+        timer.daemon = True
+        timer.start()
         window = self.window
         if window:
             try:
@@ -170,7 +176,15 @@ def main() -> None:
     window.events.loaded += bridge.mark_ready
 
     threading.Thread(target=_run_pipeline, args=(bridge,), daemon=True).start()
-    webview.start()
+    try:
+        webview.start()
+    finally:
+        bridge.control.stop()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Non-daemon worker threads in audio/SDK libraries can hang Python's
+        # interpreter shutdown (wait_for_thread_shutdown) after the window closes.
+        os._exit(0)
 
 
 if __name__ == "__main__":
