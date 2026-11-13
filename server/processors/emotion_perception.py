@@ -776,12 +776,12 @@ class AudioEmotionObserver(FrameProcessor):
         utterance_id: int,
         seq: int,
     ) -> None:
-        started = time.perf_counter()
         try:
             if not self._key_ready.is_set():
                 await self._key_ready.wait()
             if self._classifier is None or not self._usable:
                 return
+            started = time.perf_counter()
             async with self._concurrency_sem:
                 if self._classifier is None or not self._usable:
                     return

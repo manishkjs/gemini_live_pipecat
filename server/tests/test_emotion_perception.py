@@ -239,7 +239,8 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fake_sm.access_secret_version.call_count, 1)
             call_kwargs = fake_sm.access_secret_version.call_args.kwargs
             self.assertEqual(call_kwargs.get("timeout"), 2.0)
-            self.assertIsNone(call_kwargs.get("retry"))
+            self.assertIn("retry", call_kwargs)
+            self.assertIsNone(call_kwargs["retry"])
 
             # Cached 2nd lookup returns immediately without another RPC.
             key2 = await resolve_decision_api_key_async("proj-emo-test")
@@ -683,6 +684,75 @@ class TestAudioEmotionObserver(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(emotion_msgs), 4)
         self.assertEqual(emotion_msgs[-1]["total_input_tokens"], 80)
         self.assertEqual(emotion_msgs[-1]["total_output_tokens"], 8)
+
+    async def test_deferred_key_warmup_e2e_shield_and_empty_disable(self) -> None:
+        emo_mod._SECRET_MANAGER_CACHE.clear()
+        emo_mod._IN_FLIGHT_KEY_LOOKUPS.clear()
+
+        def delayed_key(request, *, timeout=None, retry=None):
+            time.sleep(0.15)
+            return SimpleNamespace(payload=SimpleNamespace(data=b"deferred-key-789\n"))
+
+        fake_sm = mock.MagicMock()
+        fake_sm.access_secret_version.side_effect = delayed_key
+        fake_sm_module = SimpleNamespace(
+            SecretManagerServiceClient=mock.MagicMock(return_value=fake_sm)
+        )
+        clean_env = {
+            k: v
+            for k, v in emo_mod.os.environ.items()
+            if k not in ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        }
+        fake_cls = _FakeDecisionsClassifier([("frustrated", 0.92, 0.0, 44, 4)])
+        with mock.patch.dict("os.environ", clean_env, clear=True), mock.patch.dict(
+            "sys.modules",
+            {
+                "google.cloud.secretmanager": fake_sm_module,
+                "google.cloud": SimpleNamespace(secretmanager=fake_sm_module),
+            },
+        ), mock.patch.object(emo_mod, "GoogleDecisionsClassifier", return_value=fake_cls):
+            # 1. Utterance spoken before deferred Secret Manager key resolves is classified cleanly
+            #    and latency_ms excludes Secret Manager wait time.
+            obs = AudioEmotionObserver(enabled=True, project_id="proj-def-e2e")
+            captured = await self._attach_capture(obs)
+            await obs.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            await obs.process_frame(
+                InputAudioRawFrame(audio=_make_pcm_chunk(0.6, 9000), sample_rate=16000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+            await obs.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            await asyncio.sleep(0.28)
+            msgs = [
+                f.message["data"]
+                for f, _ in captured
+                if isinstance(f, OutputTransportMessageUrgentFrame)
+            ]
+            self.assertEqual(len(msgs), 1)
+            self.assertEqual(msgs[0]["emotion"], "frustrated")
+            self.assertLess(msgs[0]["latency_ms"], 100)
+
+            # 2. Shield: cancelling observer A mid-lookup does not cancel sibling observer B.
+            obs_a = AudioEmotionObserver(enabled=True, project_id="proj-def-shield")
+            obs_b = AudioEmotionObserver(enabled=True, project_id="proj-def-shield")
+            await self._attach_capture(obs_a)
+            await self._attach_capture(obs_b)
+            await asyncio.sleep(0.02)
+            await obs_a.cleanup()
+            await asyncio.sleep(0.22)
+            self.assertTrue(obs_b.is_usable)
+            self.assertIsNotNone(obs_b._classifier)
+
+            # 3. Empty deferred Secret Manager lookup sets is_usable=False cleanly.
+            fake_sm.access_secret_version.side_effect = lambda request, **kw: SimpleNamespace(
+                payload=SimpleNamespace(data=b"")
+            )
+            obs_empty = AudioEmotionObserver(enabled=True, project_id="proj-def-empty")
+            await self._attach_capture(obs_empty)
+            await asyncio.sleep(0.05)
+            self.assertFalse(obs_empty.is_usable)
+
+        emo_mod._SECRET_MANAGER_CACHE.clear()
+        emo_mod._IN_FLIGHT_KEY_LOOKUPS.clear()
 
 
 if __name__ == "__main__":
