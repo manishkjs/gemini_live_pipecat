@@ -35,6 +35,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r server/requirements.txt pytest httpx
 
+      - name: Run wire-contract & persona/language functional mock suite
+        working-directory: server
+        run: python -m unittest tests.test_functional_wire_contracts -v
+
       - name: Run server unit tests
         working-directory: server
         run: python -m pytest -q tests/
