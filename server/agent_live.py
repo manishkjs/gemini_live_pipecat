@@ -1616,9 +1616,14 @@ class CustomGeminiLiveLLMService(GeminiSessionLoggerMixin, GeminiLiveLLMService)
     def create_client(self):
         """Create the Gemini API client instance forcing AI Studio mode."""
         from google.genai import Client
+        from pipecat.services.google.utils import gemini_api_http_options
 
         logger.info("Creating Client forcing AI Studio mode (vertexai=False)...")
-        self._client = Client(api_key=self._api_key, vertexai=False, http_options=self._http_options)
+        self._client = Client(
+            api_key=self._api_key,
+            vertexai=False,
+            http_options=gemini_api_http_options(self._http_options),
+        )
 
 
 async def dynamic_tool_handler(params: FunctionCallParams):

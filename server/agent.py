@@ -226,7 +226,9 @@ class CustomGeminiTranscribeLiveService(TurnOriginMixin, STTService):
             **kwargs,
         )
         if is_ai_studio:
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(
+                api_key=api_key, http_options={"api_version": "v1beta"}
+            )
         else:
             self._client = genai.Client(vertexai=True, project=project_id, location=location)
 
@@ -650,7 +652,9 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
                 aggregation_type=self._text_aggregation_mode
             )
         if self._is_aistudio:
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(
+                api_key=api_key, http_options={"api_version": "v1beta"}
+            )
             self._cost_provider = "gemini"
             self._cost_region = "global"
         else:
@@ -1033,6 +1037,8 @@ Pace: {getattr(self, '_tts_pace_label', None) or 'Conversational'}.
             logger.exception(f"{self} error generating TTS: {e}")
             yield ErrorFrame(error=f"Gemini TTS generation error: {str(e)}")
         finally:
+            if not completed:
+                self._my_ttfb_start = None
             if meter:
                 if last_usage_metadata is not None:
                     observe_tokens(meter, cost_key, last_usage_metadata)
@@ -1176,7 +1182,9 @@ class _MeteredGeminiLLMMixin:
         generation_params.pop("thinking_config", None)
         generation_config = types.GenerateContentConfig(**generation_params)
         if getattr(self, "_aistudio_fallback_client", None) is None:
-            self._aistudio_fallback_client = genai.Client(api_key=api_key)
+            self._aistudio_fallback_client = genai.Client(
+                api_key=api_key, http_options={"api_version": "v1beta"}
+            )
         self._my_ttfb_start = None
         await self.start_ttfb_metrics()
         logger.warning(

@@ -42,7 +42,9 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(api_key="test_api_key")
+        self.client_factory.assert_called_once_with(
+            api_key="test_api_key", http_options={"api_version": "v1beta"}
+        )
 
     def test_init_ai_studio_suffix_clean(self):
         service = CustomGeminiTranscribeLiveService(
@@ -53,7 +55,9 @@ class TestGeminiTranscribeLiveService(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(service.model_name, "gemini-3.5-transcribe-live")
         self.assertTrue(service.is_ai_studio)
-        self.client_factory.assert_called_once_with(api_key="test_api_key")
+        self.client_factory.assert_called_once_with(
+            api_key="test_api_key", http_options={"api_version": "v1beta"}
+        )
 
 
 class TestTranscribeLiveFinals(unittest.IsolatedAsyncioTestCase):

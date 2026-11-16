@@ -297,6 +297,41 @@ class TestLibraryVoices(unittest.TestCase):
         self.assertIn("female voice", tts_script.voice_gender_rule("en-in-csagent-3"))
         self.assertIn("male voice", tts_script.voice_gender_rule("en-in-csagent-4"))
 
+    def test_aistudio_tts_client_uses_v1beta_api_version(self):
+        from agent import CustomVertexGeminiTTSService
+        from pipecat.services.google.tts import GeminiTTSService
+
+        with patch.object(GeminiTTSService, "_create_client", return_value=None), \
+             patch("agent.genai.Client") as client_cls, \
+             patch("agent._resolve_gemini_api_key", return_value="fake-key"):
+            CustomVertexGeminiTTSService(
+                project_id="p",
+                location="us-central1",
+                voice_id="Aoede",
+                model="gemini-3.8-flash-lite-tts",
+            )
+            client_cls.assert_called_once_with(
+                api_key="fake-key", http_options={"api_version": "v1beta"}
+            )
+
+    def test_failed_tts_clears_ttfb_start(self):
+        svc = make_service(voice_id="Aoede", model="gemini-3.8-flash-lite-tts", language_code="hi-IN")
+
+        async def broken_stream(model, contents, config):
+            raise RuntimeError("400 Bad Request")
+
+        svc._client = SimpleNamespace(
+            aio=SimpleNamespace(models=SimpleNamespace(generate_content_stream=broken_stream))
+        )
+        svc._cascade_meter = None
+
+        async def drain():
+            return [f async for f in svc.run_tts("Hello world, testing TTS.", "ctx")]
+
+        frames = run(drain())
+        self.assertIsNone(svc._my_ttfb_start)
+        self.assertTrue(any("Gemini TTS generation error" in str(getattr(f, "error", "")) for f in frames))
+
 
 if __name__ == "__main__":
     unittest.main()
