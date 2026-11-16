@@ -110,7 +110,7 @@ async def websocket_endpoint(
     bot_type: str = "tts-llm-stt",
     model: str = "gemini-3.8-live",
     voice: Optional[str] = "Puck",
-    language: str = "en-US",
+    language: Optional[str] = None,
     system_instruction: Optional[str] = None,
     tts: bool = False,
     tts_voice: str = "en-US-Chirp3-HD-Aoede",

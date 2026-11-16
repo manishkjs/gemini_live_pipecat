@@ -1633,8 +1633,8 @@ def cascade_greeting_text(persona_architecture, stt_language) -> str:
     persona_text = getattr(persona_architecture, "greeting_text", None)
     if persona_text:
         return persona_text
-    is_hindi = bool(stt_language and any(l in stt_language.lower() for l in ["hi", "hindi"]))
-    return "नमस्ते!" if is_hindi else "Hello!"
+    from agent_live import default_greeting_text
+    return default_greeting_text(stt_language)
 
 
 CASCADE_LANGUAGE_RULE = (

@@ -152,6 +152,29 @@ class TestGreetingAudioGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(append_frames), 1)
         self.assertEqual(append_frames[0].messages, [{"role": "user", "content": "नमस्ते!"}])
 
+    async def test_non_english_start_trigger_uses_locale_greeting_instead_of_english_hello(self):
+        for locale, expected_greeting in (
+            ("mr-IN", "नमस्कार!"),
+            ("ta-IN", "வணக்கம்!"),
+            ("es-ES", "¡Hola!"),
+            ("en-US", "Hello!"),
+            ("en-IN", "Hello!"),
+        ):
+            processor = StartTriggerProcessor(language=locale, gate_mic_on_greeting=False)
+            pushed = []
+
+            async def capture(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+                pushed.append(frame)
+
+            processor.push_frame = capture
+            await processor.process_frame(
+                InputTransportMessageFrame(message={"type": "start_trigger", "id": locale}),
+                FrameDirection.DOWNSTREAM,
+            )
+            append_frames = [f for f in pushed if isinstance(f, LLMMessagesAppendFrame)]
+            self.assertEqual(len(append_frames), 1, locale)
+            self.assertEqual(append_frames[0].messages, [{"role": "user", "content": expected_greeting}], locale)
+
     def test_create_client_does_not_mutate_os_environ(self):
         from unittest.mock import patch
         from agent_live import CustomGeminiLiveLLMService

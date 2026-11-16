@@ -153,7 +153,7 @@ def get_persona_system_instruction(persona_id: str, engine: str = "live", tone: 
 
 
 _LANGUAGE_NAMES = {
-    "hi-IN": "Hindi", "en-IN": "English", "en-US": "English", "bn-IN": "Bengali",
+    "hi-IN": "Hindi", "en-IN": "Indian English", "en-US": "American English", "bn-IN": "Bengali",
     "te-IN": "Telugu", "mr-IN": "Marathi", "ta-IN": "Tamil", "gu-IN": "Gujarati",
     "kn-IN": "Kannada", "ml-IN": "Malayalam", "pa-IN": "Punjabi", "ur-IN": "Urdu",
     "es-ES": "Spanish", "fr-FR": "French", "de-DE": "German", "ja-JP": "Japanese",
