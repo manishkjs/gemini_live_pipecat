@@ -343,7 +343,7 @@ export function getPersonaVoiceDesign(personaId: string): PersonaVoiceDesign {
 
 export const LANGUAGE_MAP: Record<string, string> = {
   "hi-IN": "Hindi",
-  "en-IN": "English",
+  "en-IN": "Indian English",
   "bn-IN": "Bengali",
   "te-IN": "Telugu",
   "mr-IN": "Marathi",
@@ -353,7 +353,7 @@ export const LANGUAGE_MAP: Record<string, string> = {
   "ml-IN": "Malayalam",
   "pa-IN": "Punjabi",
   "ur-IN": "Urdu",
-  "en-US": "English",
+  "en-US": "American English",
   "es-ES": "Spanish",
   "fr-FR": "French",
   "de-DE": "German",

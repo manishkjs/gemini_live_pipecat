@@ -135,6 +135,11 @@ class TestLanguageSwitchingRules(unittest.TestCase):
         self.assertIn("switch to it from your next sentence without announcing it", prompt)
         self.assertNotIn("unless the user requests another language", prompt)
 
+        us_prompt = get_session_preset("car-negotiator", engine="live", language="en-US")
+        in_prompt = get_session_preset("car-negotiator", engine="live", language="en-IN")
+        self.assertIn("Start in American English.", us_prompt)
+        self.assertIn("Start in Indian English.", in_prompt)
+
     def test_tara_switches_on_a_whole_turn_in_another_language(self):
         from persona_prompt_cards.tara_cards import _CORE_SI
 

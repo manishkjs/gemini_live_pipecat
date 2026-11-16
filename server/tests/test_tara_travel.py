@@ -1129,11 +1129,16 @@ class TestAgentLiveHooks(unittest.TestCase):
         from persona_registry import get_persona_architecture
 
         tara = get_persona_architecture("travel-concierge")
+        abhay = get_persona_architecture("car-negotiator")
         custom = get_persona_architecture("custom")
-        self.assertEqual(resolve_speech_language_code("en-US", tara), "en-IN")
-        self.assertEqual(resolve_speech_language_code("en", tara), "en-IN")
+        self.assertEqual(resolve_speech_language_code("en-US", tara), "en-US")
+        self.assertEqual(resolve_speech_language_code("en-US", abhay), "en-US")
+        self.assertEqual(resolve_speech_language_code("en", tara), "en-US")
+        self.assertEqual(resolve_speech_language_code("en-IN", tara), "en-IN")
         self.assertEqual(resolve_speech_language_code(None, tara), "en-IN")
+        self.assertEqual(resolve_speech_language_code("", tara), "en-IN")
         self.assertEqual(resolve_speech_language_code("en-US", custom), "en-US")
+        self.assertEqual(resolve_speech_language_code(None, custom), "en-US")
         self.assertEqual(resolve_speech_language_code("hi", custom), "hi-IN")
         self.assertEqual(resolve_speech_language_code("hi_in", custom), "hi-IN")
         for supported in SUPPORTED_INDIC_SPEECH_CODES:
@@ -1148,7 +1153,8 @@ class TestAgentLiveHooks(unittest.TestCase):
 
         for lang, persona, expected_locale in (
             ("bn-IN", custom, "bn-IN"),
-            ("en-US", tara, "en-IN"),
+            (None, tara, "en-IN"),
+            ("en-US", tara, "en-US"),
             ("hi", custom, "hi-IN"),
             ("en-US", custom, "en-US"),
         ):

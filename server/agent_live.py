@@ -1766,8 +1766,12 @@ class StartTriggerProcessor(FrameProcessor):
                 if not self.triggered:
                     self.triggered = True
                     self._gate_start_time = time.monotonic()
-                    greeting_text = self.greeting_text or ("नमस्ते!" if self.language == "hi-IN" else "Hello!")
-                    logger.info(f"[StartTriggerProcessor] start_trigger received. Queueing single greeting turn: {greeting_text}")
+                    greeting_text = self.greeting_text or default_greeting_text(self.language)
+                    logger.info(
+                        "[StartTriggerProcessor] start_trigger received. "
+                        "Queueing single greeting turn: {}",
+                        greeting_text,
+                    )
                     messages = [*self.opening_messages, {"role": "user", "content": greeting_text}]
                     await self.push_frame(LLMMessagesAppendFrame(messages=messages))
                     await self.push_frame(LLMRunFrame())
@@ -1989,6 +1993,53 @@ LIVE_LANGUAGE_MAP = {
 }
 
 
+DEFAULT_GREETING_BY_LANGUAGE = {
+    "ar-XA": "مرحباً!",
+    "as-IN": "নমস্কাৰ!",
+    "bn-IN": "নমস্কার!",
+    "cmn-CN": "你好！",
+    "de-DE": "Hallo!",
+    "es-ES": "¡Hola!",
+    "es-US": "¡Hola!",
+    "fr-CA": "Bonjour !",
+    "fr-FR": "Bonjour !",
+    "gu-IN": "નમસ્તે!",
+    "hi-IN": "नमस्ते!",
+    "id-ID": "Halo!",
+    "it-IT": "Ciao!",
+    "ja-JP": "こんにちは！",
+    "kn-IN": "ನಮಸ್ಕಾರ!",
+    "ko-KR": "안녕하세요!",
+    "ml-IN": "നമസ്കാരം!",
+    "mr-IN": "नमस्कार!",
+    "nl-NL": "Hallo!",
+    "or-IN": "ନମସ୍କାର!",
+    "pa-IN": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ!",
+    "pl-PL": "Cześć!",
+    "pt-BR": "Olá!",
+    "ru-RU": "Здравствуйте!",
+    "ta-IN": "வணக்கம்!",
+    "te-IN": "నమస్కారం!",
+    "th-TH": "สวัสดีครับ!",
+    "tr-TR": "Merhaba!",
+    "ur-IN": "السلام علیکم!",
+    "vi-VN": "Xin chào!",
+}
+
+
+def default_greeting_text(language: Optional[str]) -> str:
+    """Return a short opening greeting in ``language`` so Turn 1 stays in the chosen locale."""
+    if not language:
+        return "Hello!"
+    primary = language.split(",", 1)[0].strip()
+    if primary.lower() == "hindi":
+        return "नमस्ते!"
+    normalized = normalize_language_code(primary)
+    if not normalized:
+        return "Hello!"
+    return DEFAULT_GREETING_BY_LANGUAGE.get(normalized, "Hello!")
+
+
 def normalize_language_code(language: Optional[str]) -> Optional[str]:
     """Normalize a BCP-47 or bare ISO language tag into canonical ``ll-RR`` form."""
     if not language:
@@ -2009,7 +2060,7 @@ def resolve_transcription_language_code(
     """Resolve the requested BCP-47 locale for transcription and external TTS."""
     normalized = normalize_language_code(language)
     persona_speech_code = getattr(persona_architecture, "speech_language_code", None)
-    if (not normalized or normalized == "en-US") and persona_speech_code:
+    if not normalized and persona_speech_code:
         return persona_speech_code
     return normalized or "en-US"
 
@@ -2020,10 +2071,10 @@ def resolve_speech_language_code(
 ) -> str:
     """Resolve the BCP-47 code passed to ``SpeechConfig.language_code``.
 
-    1. When the caller leaves the UI language at default ``"en-US"`` (or empty)
-       and the persona declares ``speech_language_code`` (such as ``"en-IN"``
-       for Indian English / Hinglish personas), use the persona's studio sample
-       code so Turn 1 does not load the ``en-US`` studio sample.
+    1. When ``language`` is omitted/empty and the persona declares
+       ``speech_language_code`` (such as ``"en-IN"`` for Indian English /
+       Hinglish personas), use the persona's studio sample code. Explicit
+       caller selections such as ``"en-US"`` are preserved as-is.
     2. When the caller selects an Indic language whose studio voice sample is
        not in ``SUPPORTED_INDIC_SPEECH_CODES`` (``bn-IN``, ``gu-IN``, ``kn-IN``,
        ``ml-IN``, ``or-IN``, ``pa-IN``, ``as-IN``, ``ur-IN``), anchor
@@ -2327,7 +2378,7 @@ async def run_agent_live(
     websocket: WebSocket,
     model: str,
     voice: Optional[str],
-    language: str,
+    language: Optional[str] = None,
     system_instruction: Optional[str] = None,
     tts: bool = True,
     tts_pace: float = 0.80,
@@ -2585,6 +2636,7 @@ async def run_agent_live(
         llm = CustomGeminiLiveVertexLLMService(**vertex_params)
 
     # Avatar & Voice Clone flags for CustomGeminiLiveVertexLLMService._connection_task_handler & _handle_msg_model_turn
+    llm._language_code = speech_language
     llm._transcription_language_code = transcription_language
     llm._avatar_enabled = bool(avatar_enabled)
     llm._avatar_name = resolved_avatar_name

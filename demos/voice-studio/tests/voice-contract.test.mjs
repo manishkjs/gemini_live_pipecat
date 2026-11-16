@@ -176,6 +176,14 @@ test('custom instructions replace any persona preset and are sent in the body fo
 test('blank custom instructions omit the override and preserve the backend default', () => {
   assert.deepEqual(buildConnectRequest({ ...settings, personaId: 'custom', instructions: ' \n ' }).body, {});
 });
+test('en-US and en-IN produce distinct American vs Indian English instructions and language params', () => {
+  const usReq = buildConnectRequest({ ...settings, personaId: 'car-negotiator', language: 'en-US', instructions: 'you are Abhay' });
+  const inReq = buildConnectRequest({ ...settings, personaId: 'car-negotiator', language: 'en-IN', instructions: 'you are Abhay' });
+  assert.equal(usReq.url.searchParams.get('language'), 'en-US');
+  assert.equal(inReq.url.searchParams.get('language'), 'en-IN');
+  assert.match(usReq.body.system_instruction, /Start in American English\./);
+  assert.match(inReq.body.system_instruction, /Start in Indian English\./);
+});
 test('maximum custom instruction length remains under the backend limit with a language suffix', () => {
   const maxChars = Math.floor(4000 * 3.8);
   const { body } = buildConnectRequest({ ...settings, instructions: 'x'.repeat(maxChars) });
