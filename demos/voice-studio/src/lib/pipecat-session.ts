@@ -673,6 +673,8 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       typeof data.title === "string"
     ) {
       events.onMetricUpdate?.("user_emotion", data);
+    } else if (data.type === "background_gate") {
+      events.onMetricUpdate?.("background_gate", data);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
     }

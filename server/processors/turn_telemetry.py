@@ -32,7 +32,11 @@ class TurnBoundaryProcessor(FrameProcessor):
             elif isinstance(frame, VADUserStoppedSpeakingFrame) or (
                 not local_vad and isinstance(frame, UserStoppedSpeakingFrame)
             ):
-                self.tracker.stop(vad=isinstance(frame, VADUserStoppedSpeakingFrame))
+                stop_now = frame.metadata.get("_vad_stop_monotonic")
+                self.tracker.stop(
+                    vad=isinstance(frame, VADUserStoppedSpeakingFrame),
+                    now=stop_now,
+                )
             elif isinstance(frame, InterruptionFrame):
                 origin = frame.metadata.get(ORIGIN_KEY)
                 if origin is not None:

@@ -456,6 +456,9 @@ class AudioEmotionObserver(FrameProcessor):
         self._utterance_started_at = 0.0
         self._utterance_has_interim = False
         self._last_completed_utterance_id = 0
+        self._last_completed_audio: bytes | None = None
+        self._last_raw_utterance_audio: bytes | None = None
+        self._last_raw_utterance_id: int = 0
         self._request_seq = 0
         self._latest_emitted_seq = 0
         self._prev_client_in_tokens = 0
@@ -634,6 +637,20 @@ class AudioEmotionObserver(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
+    def get_last_utterance_audio(self) -> tuple[bytes | None, int]:
+        """Return strictly the current completed utterance's unpadded PCM clip.
+
+        Returns ``(None, sample_rate)`` if the current utterance has not
+        completed or was too short, so a new short reply (e.g. "haan") can
+        never be paired with a previous turn's audio clip.
+        """
+        if (
+            self._last_raw_utterance_audio is not None
+            and self._last_raw_utterance_id == self._utterance_id
+        ):
+            return (self._last_raw_utterance_audio, self._sample_rate)
+        return (None, self._sample_rate)
+
     def _bytes_for_secs(self, secs: float, sample_rate: int | None = None) -> int:
         rate = sample_rate or self._sample_rate or 16000
         even_bytes = int(round(secs * rate * 2))
@@ -650,6 +667,7 @@ class AudioEmotionObserver(FrameProcessor):
     def _begin_utterance(self) -> None:
         now = time.monotonic()
         self._utterance_id += 1
+        self._last_raw_utterance_audio = None
         self._utterance_started_at = now
         self._utterance_has_interim = False
         self._speaking = True
@@ -686,12 +704,15 @@ class AudioEmotionObserver(FrameProcessor):
             return
 
         self._last_completed_utterance_id = self._utterance_id
+        self._last_raw_utterance_audio = raw
+        self._last_raw_utterance_id = self._utterance_id
         preferred_bytes = self._bytes_for_secs(PREFERRED_FINAL_SECS)
         window_bytes = self._bytes_for_secs(FINAL_WINDOW_SECS)
         clip = raw[-window_bytes:] if len(raw) > window_bytes else raw
         if len(clip) < preferred_bytes and len(self._turn_recent_audio) > 0:
             needed = preferred_bytes - len(clip)
             clip = self._turn_recent_audio.tail_bytes(needed) + clip
+        self._last_completed_audio = clip
         self._turn_recent_audio.append(raw, self._bytes_for_secs(MAX_BUFFER_SECS))
         self._spawn_classification(
             clip,

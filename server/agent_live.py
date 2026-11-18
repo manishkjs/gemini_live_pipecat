@@ -2115,7 +2115,11 @@ def resolve_tts_voice_and_language(
     return f"{locale}-Chirp3-HD-{base_voice}", LIVE_LANGUAGE_MAP[locale]
 
 
-def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:
+def resolve_live_vad_mode(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> tuple[str, bool, bool]:
     """Resolve VAD mode into (mode_name, use_silero_vad, disable_gemini_internal_vad).
 
     Supported modes:
@@ -2123,7 +2127,12 @@ def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> t
     - "gemini": Local Silero VAD disabled; Gemini Live internal server-side VAD enabled.
     - "silero": Local Silero VAD on WebSocket transport; Gemini Live internal server-side VAD disabled
       (AutomaticActivityDetection(disabled=True) so Pipecat sends explicit ActivityStart/ActivityEnd).
+
+    When ``ignore_background=True``, forces ``"silero"`` so Pipecat owns turn
+    boundaries and can gate background speech before Gemini Live receives it.
     """
+    if ignore_background:
+        return ("silero", True, True)
     normalized = (vad_mode or "").strip().lower()
     if normalized == "silero":
         return ("silero", True, True)
@@ -2132,32 +2141,50 @@ def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> t
     return ("both", True, False)
 
 
-def build_live_vad_analyzer(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[SileroVADAnalyzer]:
+def build_live_vad_analyzer(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[SileroVADAnalyzer]:
     """Client-side turn detection for the Live pipeline.
 
     Returning ``None`` hands endpointing to Gemini's own server-side turn
     detection. That is a legitimate configuration for native audio, not a
     degraded one, but it changes interruption behaviour — so it stays opt-in.
     """
-    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode)
+    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode, ignore_background=ignore_background)
     if not use_silero:
         return None
+    if ignore_background:
+        return SileroVADAnalyzer(
+            params=VADParams(confidence=0.75, start_secs=0.2, stop_secs=0.4, min_volume=0.6)
+        )
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
 
 
-def build_live_vad_processor(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[VADProcessor]:
+def build_live_vad_processor(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[VADProcessor]:
     """Silero must run as a pipeline processor.
 
     Pipecat 1.2.1 ``FastAPIWebsocketParams`` has no ``vad_analyzer`` field and
     Pydantic drops it silently, so passing it to the transport never ran VAD.
     """
-    analyzer = build_live_vad_analyzer(vad, vad_mode)
+    analyzer = build_live_vad_analyzer(vad, vad_mode, ignore_background=ignore_background)
     return VADProcessor(vad_analyzer=analyzer) if analyzer is not None else None
 
 
-def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[GeminiVADParams]:
+def build_gemini_live_vad_params(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[GeminiVADParams]:
     """Server-side AutomaticActivityDetection configuration for Gemini Live."""
-    _, _, disable_gemini_internal = resolve_live_vad_mode(vad, vad_mode)
+    _, _, disable_gemini_internal = resolve_live_vad_mode(
+        vad, vad_mode, ignore_background=ignore_background
+    )
     if disable_gemini_internal:
         return GeminiVADParams(disabled=True)
     return None
@@ -2404,6 +2431,7 @@ async def run_agent_live(
     avatar_custom_image: Optional[str] = None,
     custom_voice_audio: Optional[str] = None,
     emotion_enabled: bool = True,
+    ignore_background: bool = False,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -2443,11 +2471,14 @@ async def run_agent_live(
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
 
-    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(vad, vad_mode)
+    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(
+        vad, vad_mode, ignore_background=ignore_background
+    )
     logger.info(
         f"Live VAD mode: {effective_vad_mode} "
         f"(Silero={'enabled' if use_silero else 'disabled'}, "
-        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'})"
+        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'}, "
+        f"ignore_background={ignore_background})"
     )
     transport = FastAPIWebsocketTransport(
         websocket,
@@ -2584,7 +2615,9 @@ async def run_agent_live(
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
-        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+        gemini_vad_params = build_gemini_live_vad_params(
+            vad, vad_mode, ignore_background=ignore_background
+        )
 
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
@@ -2611,7 +2644,9 @@ async def run_agent_live(
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
-        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+        gemini_vad_params = build_gemini_live_vad_params(
+            vad, vad_mode, ignore_background=ignore_background
+        )
 
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
@@ -2728,15 +2763,60 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
+    from processors.background_speech_gate import (
+        BackgroundSpeechEvaluator,
+        LIVE_DEFAULT_TIMEOUT_SECS,
+        LiveBackgroundSpeechGate,
+    )
     from processors.emotion_perception import AudioEmotionObserver
 
-    live_vad = build_live_vad_processor(vad, vad_mode)
+    live_vad = build_live_vad_processor(vad, vad_mode, ignore_background=ignore_background)
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
         project_id=project_id,
     )
     llm._emotion_observer = emotion_observer
+
+    bg_gate = None
+    if ignore_background:
+        shared_decisions_client = (
+            getattr(emotion_observer._classifier, "client", None)
+            if getattr(emotion_observer, "_classifier", None) is not None
+            else None
+        )
+
+        def _last_live_bot_utterance() -> str:
+            history = getattr(llm, "_dialogue_history", None) or []
+            for entry in reversed(history):
+                if isinstance(entry, dict) and str(entry.get("role", "")).lower() in (
+                    "assistant",
+                    "bot",
+                    "model",
+                ):
+                    text = str(entry.get("text") or "").strip()
+                    if text:
+                        return text
+            return ""
+
+        bg_evaluator = BackgroundSpeechEvaluator(
+            enabled=True,
+            timeout_secs=LIVE_DEFAULT_TIMEOUT_SECS,
+            project_id=project_id,
+            shared_client=shared_decisions_client,
+            persona_hint=persona_id or "",
+        )
+        bg_gate = LiveBackgroundSpeechGate(
+            bg_evaluator,
+            get_last_bot_utterance=_last_live_bot_utterance,
+            on_decision=lambda dec: append_diagnostic_log(
+                "Background Gate (Live)",
+                f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
+                f"(addressed={dec.addressed_probability:.0%}, "
+                f"bg={dec.background_probability:.0%}, {dec.latency_ms}ms, {dec.reason})",
+            ),
+        )
+
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
     llm.user_idle_processor = user_idle
 
@@ -2744,6 +2824,7 @@ async def run_agent_live(
         transport.input(),
         start_trigger,
         *([live_vad] if live_vad else []),
+        *([bg_gate] if bg_gate else []),
         TurnBoundaryProcessor(turn_tracker),
         emotion_observer,
         user_idle,

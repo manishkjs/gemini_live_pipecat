@@ -17,7 +17,17 @@ from cascade_metering import billed_duration, publish_cost
 
 
 class AudioAccumulator(FrameProcessor):
-    def __init__(self, context, *, project_id, stt_languages=None, cost_meter=None, enable_parallel_stt=False, **kwargs):
+    def __init__(
+        self,
+        context,
+        *,
+        project_id,
+        stt_languages=None,
+        cost_meter=None,
+        enable_parallel_stt=False,
+        defer_interruption=False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._context = context
         self._audio_frames = []
@@ -29,6 +39,9 @@ class AudioAccumulator(FrameProcessor):
         self._stt_task = None
         self._cascade_meter = cost_meter
         self._enable_parallel_stt = bool(enable_parallel_stt)
+        self._defer_interruption = bool(defer_interruption)
+        self._last_turn_audio: bytes | None = None
+        self._last_turn_sample_rate: int = 16000
         self._push_lock = asyncio.Lock()
         logger.info(
             f"AudioAccumulator initialized (parallel_stt={self._enable_parallel_stt}, languages={self._stt_languages})"
@@ -123,19 +136,21 @@ class AudioAccumulator(FrameProcessor):
             self._preroll_frames.clear()
             self._accumulating = True
 
-            # Interrupt any in-flight LLM/TTS generation on the server
-            await self.broadcast_interruption()
-            await self.push_frame(UserStartedSpeakingFrame())
+            # Interrupt any in-flight LLM/TTS generation on the server unless a
+            # downstream background-speech gate owns interruption timing.
+            if not self._defer_interruption:
+                await self.broadcast_interruption()
+                await self.push_frame(UserStartedSpeakingFrame())
 
-            # Flush client WebAudio playback queue and show immediate VAD listening indicator
-            await self.push_frame(OutputTransportMessageUrgentFrame(message={
-                "label": "rtvi-ai",
-                "type": "server-message",
-                "data": {
-                    "type": "metrics",
-                    "payload": {"type": "interruption", "count": 1},
-                },
-            }))
+                # Flush client WebAudio playback queue and show immediate VAD listening indicator
+                await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                    "label": "rtvi-ai",
+                    "type": "server-message",
+                    "data": {
+                        "type": "metrics",
+                        "payload": {"type": "interruption", "count": 1},
+                    },
+                }))
             await self.push_frame(OutputTransportMessageUrgentFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",
@@ -153,6 +168,8 @@ class AudioAccumulator(FrameProcessor):
                 logger.info(f"AudioAccumulator: Sending {len(self._audio_frames)} audio frames to LLM")
 
                 audio_data = b''.join([f.audio for f in self._audio_frames])
+                self._last_turn_audio = audio_data
+                self._last_turn_sample_rate = getattr(self._audio_frames[0], "sample_rate", 16000) or 16000
 
                 maybe_coro = self._context.add_audio_frames_message(
                     audio_frames=self._audio_frames,
