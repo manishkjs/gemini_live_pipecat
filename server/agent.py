@@ -2009,6 +2009,7 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
+    from diagnostic_buffer import append_diagnostic_log
     from processors.background_speech_gate import (
         BackgroundSpeechEvaluator,
         CascadeBackgroundSpeechGate,
@@ -2058,7 +2059,6 @@ async def run_agent(
             stt_languages=stt_languages,
             cost_meter=None,
             enable_parallel_stt=False,
-            defer_interruption=bool(bg_evaluator is not None),
         )
         accumulator._emotion_observer = emotion_observer
         bg_gate = (
@@ -2068,8 +2068,6 @@ async def run_agent(
                     accumulator._last_turn_audio,
                     accumulator._last_turn_sample_rate,
                 ),
-                interrupt_on_respond=True,
-                defer_turn_boundaries=True,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade/SkipSTT)",
                     f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
@@ -2081,19 +2079,16 @@ async def run_agent(
             else None
         )
         context_aggregator = LLMContextAggregatorPair(context)
-        if bg_gate is not None:
-            bg_gate.attach_assistant_aggregator(context_aggregator.assistant())
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
 
-        turn_boundary = TurnBoundaryProcessor(turn_tracker)
         pipeline_elements = [
             transport.input(),
             start_trigger,
             *([vad_processor] if vad_processor else []),
-            *([turn_boundary] if bg_gate is None else []),
+            TurnBoundaryProcessor(turn_tracker),
             emotion_observer,
             accumulator,
-            *([bg_gate, turn_boundary] if bg_gate else []),
+            *([bg_gate] if bg_gate else []),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
@@ -2105,31 +2100,10 @@ async def run_agent(
         context = LLMContext(messages=[
             {"role": "user", "content": initial_greeting}
         ])
-        user_turn_strategies = None
-        if bg_evaluator is not None:
-            from pipecat.turns.user_start import (
-                TranscriptionUserTurnStartStrategy,
-                VADUserTurnStartStrategy,
-            )
-            from pipecat.turns.user_turn_strategies import UserTurnStrategies
-
-            # Defer interruption until CascadeBackgroundSpeechGate approves the
-            # finished user turn so background TV/side-talk never cuts the bot off.
-            user_turn_strategies = UserTurnStrategies(
-                start=[
-                    VADUserTurnStartStrategy(enable_interruptions=False),
-                    TranscriptionUserTurnStartStrategy(enable_interruptions=False),
-                ]
-            )
         user_params = LLMUserAggregatorParams(
             # VADProcessor above owns audio analysis and broadcasts VAD frames.
             # Feeding the same analyzer here again would process each PCM twice.
             vad_analyzer=None,
-            **(
-                {"user_turn_strategies": user_turn_strategies}
-                if user_turn_strategies is not None
-                else {}
-            ),
         )
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
@@ -2137,8 +2111,6 @@ async def run_agent(
             CascadeBackgroundSpeechGate(
                 bg_evaluator,
                 get_recent_audio=emotion_observer.get_last_utterance_audio,
-                interrupt_on_respond=True,
-                defer_turn_boundaries=True,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade)",
                     f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
@@ -2149,20 +2121,17 @@ async def run_agent(
             if bg_evaluator is not None
             else None
         )
-        if bg_gate is not None:
-            bg_gate.attach_assistant_aggregator(context_aggregator.assistant())
 
-        turn_boundary = TurnBoundaryProcessor(turn_tracker)
         pipeline_elements = [
             transport.input(),
             start_trigger,
             *([vad_processor] if vad_processor else []),
-            *([turn_boundary] if bg_gate is None else []),
+            TurnBoundaryProcessor(turn_tracker),
             emotion_observer,
             stt,
             TranscriptionBroadcaster(participant="User", emotion_observer=emotion_observer),
             context_aggregator.user(),
-            *([bg_gate, turn_boundary] if bg_gate else []),
+            *([bg_gate] if bg_gate else []),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,

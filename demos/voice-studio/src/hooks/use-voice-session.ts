@@ -1068,28 +1068,53 @@ export function useVoiceSession() {
               return;
             }
 
-            // Attach to the most recent unbadged user bubble if already present (Cascade),
-            // otherwise hold briefly for the upcoming user transcript (Gemini Live respond).
+            // Attach to the matching or most recent unbadged user bubble if already present
+            // (Cascade), otherwise hold briefly for the upcoming user transcript (Gemini Live respond).
+            const gateTranscript =
+              typeof val?.transcript === "string" ? val.transcript.trim() : "";
             setMessages((items) => {
               const nowEpoch = Date.now();
-              for (let i = items.length - 1; i >= 0; i--) {
-                const candidate = items[i];
-                if (candidate.role === "assistant") break;
-                if (
-                  candidate.role === "user" &&
-                  !candidate.metrics?.backgroundGate &&
-                  (!candidate.createdAt || nowEpoch - candidate.createdAt <= 12000)
-                ) {
-                  const next = [...items];
-                  next[i] = {
-                    ...candidate,
-                    metrics: { ...candidate.metrics, backgroundGate: gateReading },
-                  };
-                  pendingBackgroundGate.current = null;
-                  return next;
+              let matchIdx = -1;
+              if (gateTranscript) {
+                for (let i = items.length - 1; i >= 0; i--) {
+                  const candidate = items[i];
+                  if (
+                    candidate.role === "user" &&
+                    !candidate.metrics?.backgroundGate &&
+                    (!candidate.createdAt || nowEpoch - candidate.createdAt <= 15000) &&
+                    candidate.text.trim() === gateTranscript
+                  ) {
+                    matchIdx = i;
+                    break;
+                  }
                 }
               }
-              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+              if (matchIdx === -1) {
+                for (let i = items.length - 1; i >= 0; i--) {
+                  const candidate = items[i];
+                  if (
+                    candidate.role === "user" &&
+                    !candidate.metrics?.backgroundGate &&
+                    (!candidate.createdAt || nowEpoch - candidate.createdAt <= 15000)
+                  ) {
+                    matchIdx = i;
+                    break;
+                  }
+                }
+              }
+              if (matchIdx !== -1) {
+                const next = [...items];
+                const target = items[matchIdx];
+                next[matchIdx] = {
+                  ...target,
+                  metrics: { ...target.metrics, backgroundGate: gateReading },
+                };
+                pendingBackgroundGate.current = null;
+                return next;
+              }
+              if (mode === "live") {
+                pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+              }
               return items;
             });
           }

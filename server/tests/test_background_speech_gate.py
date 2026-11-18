@@ -287,6 +287,35 @@ class TestLiveBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             [UserMuteStartedFrame, UserMuteStoppedFrame, EndFrame, CancelFrame],
         )
 
+    async def test_live_gate_interrupts_bot_immediately_on_speech_start(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from pipecat.frames.frames import BotStartedSpeakingFrame
+
+        stub = _StubDecisionsClassifier(probability=0.04)
+        gate = LiveBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=stub))
+        gate.broadcast_interruption = AsyncMock()
+
+        emitted: list[Frame] = []
+        gate.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: asyncio.sleep(0, result=emitted.append(f))
+
+        # Bot starts speaking -> upstream BotStartedSpeakingFrame reaches gate.
+        await gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        # User starts speaking -> immediate interruption BEFORE speech stops!
+        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        gate.broadcast_interruption.assert_awaited_once()
+        # Client WebAudio playback flush sent immediately on VAD start.
+        self.assertEqual(emitted[-1].message["data"]["payload"]["type"], "interruption")
+
+        # Background speech still gets dropped at VAD stop without reaching Gemini.
+        await gate.process_frame(
+            InputAudioRawFrame(audio=_pcm_chunk(0.50), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await gate.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2), FrameDirection.DOWNSTREAM)
+        self.assertEqual(emitted[-1].message["data"]["decision"], "ignore")
+        self.assertEqual([f for f in emitted if isinstance(f, InputAudioRawFrame)], [])
+
     def test_live_vad_mode_forces_silero_when_ignore_background_enabled(self) -> None:
         self.assertEqual(
             agent_live.resolve_live_vad_mode(vad=False, vad_mode="gemini", ignore_background=True),

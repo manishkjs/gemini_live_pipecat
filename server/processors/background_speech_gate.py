@@ -481,6 +481,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         self._on_decision = on_decision
 
         self._muted = False
+        self._bot_speaking = False
         self._in_speech = False
         self._pass_through_turn = False
         self._drop_turn = False
@@ -569,6 +570,11 @@ class LiveBackgroundSpeechGate(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
         if not self._evaluator.enabled or direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             return
@@ -604,6 +610,23 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             self._turn_bytes = self._pre_roll_bytes
             self._pre_roll.clear()
             self._pre_roll_bytes = 0
+            # Interrupt bot audio playback immediately (<50ms) when speech starts
+            # while keeping the turn's audio buffered locally until Decisions runs.
+            if self._bot_speaking:
+                self._bot_speaking = False
+                await self.broadcast_interruption()
+                await self.push_frame(
+                    OutputTransportMessageUrgentFrame(
+                        message={
+                            "label": "rtvi-ai",
+                            "type": "server-message",
+                            "data": {
+                                "type": "metrics",
+                                "payload": {"type": "interruption", "count": 1},
+                            },
+                        }
+                    )
+                )
             return
 
         if isinstance(frame, InputAudioRawFrame):

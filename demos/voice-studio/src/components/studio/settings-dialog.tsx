@@ -1429,7 +1429,7 @@ export default function SettingsDialog({ studio }: SettingsDialogProps) {
                   Ignore Background Speech (Gemini Decision 1)
                 </div>
                 <div className="cfg-help">
-                  Filters out TV, announcements, and side-talk before the assistant responds. In Gemini Live, automatically uses local Silero VAD and buffers each turn before forwarding (so barge-in waits for the turn check).
+                  Filters out TV, announcements, and side-talk before the assistant replies, while keeping immediate barge-in when you speak. In Gemini Live, automatically uses local Silero VAD.
                 </div>
               </div>
               <button

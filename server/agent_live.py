@@ -841,6 +841,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 return
 
         if isinstance(frame, InterruptionFrame):
+            self._awaiting_interrupted_turn_complete = True
             await self._record_bot_interruption()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
