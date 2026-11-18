@@ -33,12 +33,14 @@ function TurnMetricChips({
     const hasStt = metrics?.sttLatency !== undefined;
     const emotion = metrics?.userEmotion;
     const gate = metrics?.backgroundGate;
-    if (!hasStt && !emotion && !gate) return null;
+    const showGateChip = Boolean(gate && !gate.continuation);
+    const showEmotionChip = Boolean(emotion && gate?.decision !== "ignore");
+    if (!hasStt && !showEmotionChip && !showGateChip) return null;
     const sttMs = hasStt && metrics?.sttLatency !== undefined ? Math.round(metrics.sttLatency * 1000) : null;
     const addressedPct = gate ? Math.round(gate.addressedProbability * 100) : null;
     return (
       <div className="chips">
-        {gate && (
+        {gate && showGateChip && (
           <>
             <span
               className={`chip bg-gate ${gate.decision === "respond" ? "respond" : "quiet"}`}

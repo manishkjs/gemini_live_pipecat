@@ -25,7 +25,6 @@ class AudioAccumulator(FrameProcessor):
         stt_languages=None,
         cost_meter=None,
         enable_parallel_stt=False,
-        defer_interruption=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -39,7 +38,6 @@ class AudioAccumulator(FrameProcessor):
         self._stt_task = None
         self._cascade_meter = cost_meter
         self._enable_parallel_stt = bool(enable_parallel_stt)
-        self._defer_interruption = bool(defer_interruption)
         self._last_turn_audio: bytes | None = None
         self._last_turn_sample_rate: int = 16000
         self._push_lock = asyncio.Lock()
@@ -136,21 +134,19 @@ class AudioAccumulator(FrameProcessor):
             self._preroll_frames.clear()
             self._accumulating = True
 
-            # Interrupt any in-flight LLM/TTS generation on the server unless a
-            # downstream background-speech gate owns interruption timing.
-            if not self._defer_interruption:
-                await self.broadcast_interruption()
-                await self.push_frame(UserStartedSpeakingFrame())
+            # Interrupt any in-flight LLM/TTS generation on the server
+            await self.broadcast_interruption()
+            await self.push_frame(UserStartedSpeakingFrame())
 
-                # Flush client WebAudio playback queue and show immediate VAD listening indicator
-                await self.push_frame(OutputTransportMessageUrgentFrame(message={
-                    "label": "rtvi-ai",
-                    "type": "server-message",
-                    "data": {
-                        "type": "metrics",
-                        "payload": {"type": "interruption", "count": 1},
-                    },
-                }))
+            # Flush client WebAudio playback queue and show immediate VAD listening indicator
+            await self.push_frame(OutputTransportMessageUrgentFrame(message={
+                "label": "rtvi-ai",
+                "type": "server-message",
+                "data": {
+                    "type": "metrics",
+                    "payload": {"type": "interruption", "count": 1},
+                },
+            }))
             await self.push_frame(OutputTransportMessageUrgentFrame(message={
                 "label": "rtvi-ai",
                 "type": "server-message",

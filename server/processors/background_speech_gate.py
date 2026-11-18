@@ -1,24 +1,28 @@
 """Background speech & side-talk gate powered by Google Decisions (`gemini-decision-1`).
 
 Provides two Pipecat processors that prevent background voices (TV, radio,
-side-talk to others in the room) from triggering unwanted assistant replies:
+announcements, or side-talk to others in the room) from triggering unwanted
+assistant replies, while preserving immediate `<50ms` playback barge-in when
+speech begins:
 
 - `LiveBackgroundSpeechGate`: For Gemini Live in Silero VAD mode
   (`vad_mode="silero"`, where Gemini's server-side VAD is disabled and Pipecat
-  owns `ActivityStart`/`ActivityEnd`). Buffers a turn's PCM audio locally
-  between `VADUserStartedSpeakingFrame` and `VADUserStoppedSpeakingFrame`,
-  classifies the audio clip + last bot utterance via Google Decisions, and only
-  forwards the turn to Gemini Live when it is addressed to the assistant.
+  owns `ActivityStart`/`ActivityEnd`). Interrupts local playback immediately on
+  `VADUserStartedSpeakingFrame`, buffers the turn's PCM audio locally (absorbing
+  `UserSpeakingFrame` so ignored chatter never resets idle timers), classifies
+  the mono audio clip + last bot utterance via Google Decisions at `VADUserStoppedSpeakingFrame`, and only forwards the turn to
+  Gemini Live when addressed to the assistant.
 - `CascadeBackgroundSpeechGate`: For Cascade (`STT -> LLM -> TTS` and
-  `skip_stt` audio-to-LLM) pipelines. Sits right before the LLM, inspects each
-  completed user turn (`LLMContextFrame`) with transcript + optional audio +
-  last assistant utterance, and suppresses the LLM turn (removing the ignored
-  user message from context to prevent poisoning subsequent turns) only when
-  background speech confidence exceeds a high threshold.
+  `skip_stt` audio-to-LLM) pipelines. Sits right before the LLM, atomically
+  removes each new user message from `LLMContext.messages` before running an
+  un-cancelled Decisions evaluation (so mid-flight `InterruptionFrame` task
+  cancellations can never strand ignored TV speech in `LLMContext`), and
+  restores/forwards the turn only when addressed to the assistant.
 
-Both gates are strictly fail-open: API errors, timeouts, missing API keys, or
-ambiguous probabilities always let the caller's turn through so real customer
-speech (e.g. "yes", "haan", OTP digits) is never silently dropped.
+Both gates own an isolated `GoogleDecisionsClassifier` instance (so token
+accounting never collides with `AudioEmotionObserver`), warm Secret Manager /
+TLS connections in a non-blocking background task, and fail open on timeouts,
+errors, or missing credentials.
 """
 
 from __future__ import annotations
@@ -26,11 +30,13 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
+import inspect
 import os
 import time
 from typing import Any, Callable
 
 from loguru import logger
+import numpy as np
 
 from pipecat.classifiers.base_classifier import (
     BaseClassifier,
@@ -52,7 +58,7 @@ from pipecat.frames.frames import (
     StartFrame,
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
-    UserStartedSpeakingFrame,
+    UserSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -95,9 +101,25 @@ ADDRESSED_TO_ASSISTANT_QUESTION = YesNoQuestion(
         "The speech is clearly NOT meant for the assistant: background TV, "
         "radio, or video dialogue, public announcements, or the caller talking "
         "to another person in the room ('mummy ek minute', 'hold on I am on a "
-        "call', 'pass the water') unrelated to the call."
+        "call', 'pass the water', 'turn off the TV') unrelated to the call."
     ),
 )
+
+
+def downmix_pcm16_to_mono(pcm: bytes, num_channels: int = 1) -> bytes:
+    """Convert multi-channel 16-bit PCM to 1-channel mono for `ClassifierAudio`."""
+    if not pcm:
+        return b""
+    channels = max(1, int(num_channels or 1))
+    frame_width = 2 * channels
+    aligned_len = len(pcm) - (len(pcm) % frame_width)
+    if aligned_len <= 0:
+        return b""
+    if channels == 1:
+        return pcm[:aligned_len]
+    samples = np.frombuffer(pcm[:aligned_len], dtype=np.int16).reshape(-1, channels)
+    mono = np.round(samples.mean(axis=1)).astype(np.int16)
+    return mono.tobytes()
 
 
 @dataclass(frozen=True)
@@ -111,6 +133,8 @@ class BackgroundSpeechDecision:
     reason: str
     transcript: str = ""
     audio_duration_secs: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     def to_rtvi_payload(self, mode: str) -> dict[str, Any]:
         """Serialize the decision for RTVI server-message telemetry."""
@@ -122,13 +146,15 @@ class BackgroundSpeechDecision:
             "latency_ms": self.latency_ms,
             "mode": mode,
             "reason": self.reason,
-            "transcript": self.transcript[:160] if self.transcript else "",
+            "transcript": self.transcript[:2000] if self.transcript else "",
             "audio_duration_secs": round(self.audio_duration_secs, 1),
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
         }
 
 
 class BackgroundSpeechEvaluator:
-    """Shared fail-open evaluator backed by `GoogleDecisionsClassifier`."""
+    """Isolated, fail-open evaluator backed by `GoogleDecisionsClassifier`."""
 
     def __init__(
         self,
@@ -140,7 +166,6 @@ class BackgroundSpeechEvaluator:
         api_key: str | None = None,
         project_id: str | None = None,
         classifier: BaseClassifier | None = None,
-        shared_client: Any = None,
         persona_hint: str = "",
     ) -> None:
         self.enabled = bool(enabled)
@@ -150,42 +175,44 @@ class BackgroundSpeechEvaluator:
         self._project_id = project_id
         self._persona_hint = (persona_hint or "").strip()
         self._classifier: BaseClassifier | None = classifier
+        self._owns_classifier = False
         self._classifier_setup_done = False
+        self._deferred_project_id: str | None = None
+        self._warm_task: asyncio.Task[None] | None = None
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
         self._disabled_reason: str | None = None
+        self._prev_client_in_tokens = 0
+        self._prev_client_out_tokens = 0
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
 
         if not self.enabled:
             self._disabled_reason = "disabled"
             return
 
         if self._classifier is None:
-            if shared_client is not None:
-                self._classifier = GoogleDecisionsClassifier(client=shared_client)
+            if api_key is not None:
+                resolved_key = api_key.strip()
             else:
-                if api_key is not None:
-                    resolved_key = api_key.strip()
-                else:
-                    resolved_key = (
-                        os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-                    ).strip()
-                if resolved_key:
-                    self._classifier = GoogleDecisionsClassifier(
-                        api_key=resolved_key,
-                        model=model,
-                        timeout=self._timeout_secs,
-                    )
-                elif api_key is None and project_id:
-                    # Resolve Secret Manager lazily in setup() so call setup never blocks.
-                    self._deferred_project_id: str | None = project_id
-                else:
-                    self._deferred_project_id = None
-                    self._disabled_reason = "missing_api_key"
-                    logger.warning(
-                        "[BackgroundGate] No Gemini API key available; gate will fail-open."
-                    )
-        else:
-            self._deferred_project_id = None
+                resolved_key = (
+                    os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+                ).strip()
+            if resolved_key:
+                self._classifier = GoogleDecisionsClassifier(
+                    api_key=resolved_key,
+                    model=model,
+                    timeout=self._timeout_secs,
+                )
+                self._owns_classifier = True
+            elif api_key is None and project_id:
+                # Resolve Secret Manager asynchronously so pipeline startup never blocks.
+                self._deferred_project_id = project_id
+            else:
+                self._disabled_reason = "missing_api_key"
+                logger.warning(
+                    "[BackgroundGate] No Gemini API key available; gate will fail-open."
+                )
 
     @property
     def classifier(self) -> BaseClassifier | None:
@@ -195,25 +222,58 @@ class BackgroundSpeechEvaluator:
     def ignore_threshold(self) -> float:
         return self._ignore_threshold
 
+    @property
+    def total_tokens(self) -> tuple[int, int]:
+        return (self._total_input_tokens, self._total_output_tokens)
+
+    async def _warm_classifier(self, task_manager: Any) -> None:
+        try:
+            if self._classifier is None and self._deferred_project_id:
+                resolved = await resolve_decision_api_key_async(self._deferred_project_id)
+                if resolved:
+                    self._classifier = GoogleDecisionsClassifier(
+                        api_key=resolved,
+                        model=self._model,
+                        timeout=self._timeout_secs,
+                    )
+                    self._owns_classifier = True
+                else:
+                    self._disabled_reason = "missing_api_key"
+            if self._classifier is not None and not self._classifier_setup_done:
+                await self._classifier.setup(task_manager)
+                self._classifier_setup_done = True
+        except Exception as exc:
+            logger.warning("[BackgroundGate] Warmup failed ({}): {}", type(exc).__name__, exc)
+
     async def setup(self, task_manager: Any) -> None:
-        if self._classifier is None and getattr(self, "_deferred_project_id", None):
-            resolved = await resolve_decision_api_key_async(self._deferred_project_id)
-            if resolved:
-                self._classifier = GoogleDecisionsClassifier(
-                    api_key=resolved,
-                    model=self._model,
-                    timeout=self._timeout_secs,
-                )
-            else:
-                self._disabled_reason = "missing_api_key"
-        if self._classifier is not None and not self._classifier_setup_done:
-            await self._classifier.setup(task_manager)
-            self._classifier_setup_done = True
+        """Warm API credentials and HTTP connection without blocking `StartFrame`."""
+        if not self.enabled:
+            return
+        if self._warm_task is None:
+            self._warm_task = asyncio.create_task(self._warm_classifier(task_manager))
 
     async def cleanup(self) -> None:
-        if self._classifier is not None and self._classifier_setup_done:
+        if self._warm_task is not None:
+            if not self._warm_task.done():
+                self._warm_task.cancel()
+            await asyncio.gather(self._warm_task, return_exceptions=True)
+            self._warm_task = None
+        if self._classifier is not None and (self._classifier_setup_done or self._owns_classifier):
             await self._classifier.cleanup()
             self._classifier_setup_done = False
+
+    def _consume_call_tokens(self) -> tuple[int, int]:
+        client = getattr(self._classifier, "client", None)
+        usage = getattr(client, "usage", None)
+        total_in = int(getattr(usage, "input_tokens", 0) or 0)
+        total_out = int(getattr(usage, "output_tokens", 0) or 0)
+        in_tok = max(0, total_in - self._prev_client_in_tokens)
+        out_tok = max(0, total_out - self._prev_client_out_tokens)
+        self._prev_client_in_tokens = total_in
+        self._prev_client_out_tokens = total_out
+        self._total_input_tokens += in_tok
+        self._total_output_tokens += out_tok
+        return (in_tok, out_tok)
 
     def _build_state_text(
         self,
@@ -239,6 +299,7 @@ class BackgroundSpeechEvaluator:
         transcript: str = "",
         audio_pcm: bytes | None = None,
         sample_rate: int = 16000,
+        num_channels: int = 1,
         last_bot_utterance: str = "",
     ) -> BackgroundSpeechDecision:
         """Classify a turn, always failing open on errors, timeouts, or missing inputs."""
@@ -252,6 +313,22 @@ class BackgroundSpeechEvaluator:
                 reason="disabled",
                 transcript=clean_tx,
             )
+
+        t0 = time.monotonic()
+        if self._warm_task is not None and not self._warm_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self._warm_task), timeout=self._timeout_secs)
+            except asyncio.TimeoutError:
+                elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+                self._record_failure("warmup_timeout")
+                return BackgroundSpeechDecision(
+                    should_respond=True,
+                    addressed_probability=1.0,
+                    background_probability=0.0,
+                    latency_ms=elapsed_ms,
+                    reason="fail_open_timeout",
+                    transcript=clean_tx,
+                )
 
         if self._classifier is None:
             return BackgroundSpeechDecision(
@@ -278,12 +355,13 @@ class BackgroundSpeechEvaluator:
         audio_dur_secs = 0.0
         classify_audio: bytes | None = None
         if audio_pcm and sample_rate > 0:
-            audio_dur_secs = len(audio_pcm) / (sample_rate * 2.0)
+            mono_pcm = downmix_pcm16_to_mono(audio_pcm, num_channels)
+            audio_dur_secs = len(mono_pcm) / (sample_rate * 2.0)
             if audio_dur_secs >= MIN_AUDIO_SECS:
                 has_usable_audio = True
                 max_bytes = int(MAX_CLASSIFY_AUDIO_SECS * sample_rate * 2)
                 max_bytes -= max_bytes % 2
-                classify_audio = audio_pcm[-max_bytes:] if len(audio_pcm) > max_bytes else audio_pcm
+                classify_audio = mono_pcm[-max_bytes:] if len(mono_pcm) > max_bytes else mono_pcm
 
         if not clean_tx and not has_usable_audio:
             return BackgroundSpeechDecision(
@@ -307,7 +385,7 @@ class BackgroundSpeechEvaluator:
             has_audio=has_usable_audio,
         )
 
-        t0 = time.monotonic()
+        remaining_timeout = max(0.1, self._timeout_secs - (time.monotonic() - t0))
         try:
             results = await asyncio.wait_for(
                 self._classifier.ask(
@@ -315,25 +393,30 @@ class BackgroundSpeechEvaluator:
                     questions={"addressed": ADDRESSED_TO_ASSISTANT_QUESTION},
                     inputs=inputs,
                 ),
-                timeout=self._timeout_secs,
+                timeout=remaining_timeout,
             )
             elapsed_ms = int(round((time.monotonic() - t0) * 1000))
-            res = results.get("addressed")
-            if not isinstance(res, YesNoResult):
-                raise ClassifierError(f"Unexpected Decisions result type: {type(res).__name__}")
+            in_tok, out_tok = self._consume_call_tokens()
+            addressed_result = results.get("addressed")
+            if not isinstance(addressed_result, YesNoResult):
+                raise ClassifierError(
+                    f"Unexpected Decisions result type: {type(addressed_result).__name__}"
+                )
 
-            addressed_p = max(0.0, min(1.0, float(res.probability)))
-            background_p = max(0.0, min(1.0, 1.0 - addressed_p))
-            should_respond = background_p < self._ignore_threshold
+            addressed_prob = max(0.0, min(1.0, float(addressed_result.probability)))
+            background_prob = max(0.0, min(1.0, 1.0 - addressed_prob))
+            should_respond = background_prob < self._ignore_threshold
             self._consecutive_failures = 0
             return BackgroundSpeechDecision(
                 should_respond=should_respond,
-                addressed_probability=addressed_p,
-                background_probability=background_p,
+                addressed_probability=addressed_prob,
+                background_probability=background_prob,
                 latency_ms=elapsed_ms,
                 reason="addressed" if should_respond else "background_speech",
                 transcript=clean_tx,
                 audio_duration_secs=audio_dur_secs,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
             )
         except asyncio.TimeoutError:
             elapsed_ms = int(round((time.monotonic() - t0) * 1000))
@@ -380,7 +463,7 @@ def _coalesce_audio_frames(
     frames: list[InputAudioRawFrame],
     chunk_ms: int = FLUSH_CHUNK_MS,
 ) -> list[InputAudioRawFrame]:
-    """Merge small 20ms PCM frames into uniform chunks while preserving sample rate."""
+    """Merge small 20ms PCM frames into uniform chunks while preserving metadata."""
     if not frames:
         return []
     coalesced: list[InputAudioRawFrame] = []
@@ -457,10 +540,14 @@ def _extract_message_text(message: Any) -> str:
 class LiveBackgroundSpeechGate(FrameProcessor):
     """Silero-VAD turn gate for Gemini Live (`vad_mode='silero'`).
 
-    Buffers microphone PCM locally while the caller speaks, evaluates the turn
-    via `BackgroundSpeechEvaluator` at `VADUserStoppedSpeakingFrame`, and only
-    forwards `VADUserStartedSpeakingFrame` + audio + `VADUserStoppedSpeakingFrame`
-    downstream when the speech is addressed to the assistant.
+    Interrupts local bot playback immediately (`<50ms`) when speech begins so
+    the bot never talks over the caller, buffers microphone PCM locally until
+    `VADUserStoppedSpeakingFrame`, evaluates the mono audio clip + last bot
+    utterance via `BackgroundSpeechEvaluator`, and only forwards
+    `VADUserStartedSpeakingFrame` + audio + `VADUserStoppedSpeakingFrame`
+    downstream when addressed to the assistant. If an interrupting sound is
+    classified as background noise (`STAYED QUIET`), notifies
+    `on_ignored_barge_in` so `RepeatOnFiller` is disarmed and Gemini stays quiet.
     """
 
     def __init__(
@@ -468,6 +555,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         evaluator: BackgroundSpeechEvaluator,
         *,
         get_last_bot_utterance: Callable[[], str] | None = None,
+        on_ignored_barge_in: Callable[[], Any] | None = None,
         max_buffer_secs: float = MAX_BUFFER_SECS,
         pre_roll_secs: float = PRE_ROLL_SECS,
         on_decision: Callable[[BackgroundSpeechDecision], None] | None = None,
@@ -476,6 +564,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         super().__init__(**kwargs)
         self._evaluator = evaluator
         self._get_last_bot_utterance = get_last_bot_utterance
+        self._on_ignored_barge_in = on_ignored_barge_in
         self._max_buffer_secs = max(1.0, float(max_buffer_secs))
         self._pre_roll_secs = max(0.0, float(pre_roll_secs))
         self._on_decision = on_decision
@@ -483,13 +572,15 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         self._muted = False
         self._bot_speaking = False
         self._in_speech = False
+        self._turn_interrupted_bot = False
         self._pass_through_turn = False
         self._drop_turn = False
         self._held_start_frame: VADUserStartedSpeakingFrame | None = None
         self._pre_roll: deque[InputAudioRawFrame] = deque()
-        self._pre_roll_bytes = 0
+        self._pre_roll_mono_bytes = 0
         self._turn_frames: list[InputAudioRawFrame] = []
-        self._turn_bytes = 0
+        self._turn_mono_chunks: list[bytes] = []
+        self._turn_mono_bytes = 0
         self._sample_rate = 16000
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
@@ -502,22 +593,28 @@ class LiveBackgroundSpeechGate(FrameProcessor):
 
     def _reset_turn_state(self) -> None:
         self._in_speech = False
+        self._turn_interrupted_bot = False
         self._pass_through_turn = False
         self._drop_turn = False
         self._held_start_frame = None
         self._turn_frames.clear()
-        self._turn_bytes = 0
+        self._turn_mono_chunks.clear()
+        self._turn_mono_bytes = 0
 
     def _append_pre_roll(self, frame: InputAudioRawFrame) -> None:
         if not frame.audio or self._pre_roll_secs <= 0:
             return
         self._sample_rate = frame.sample_rate or self._sample_rate
-        max_bytes = int(round(self._pre_roll_secs * self._sample_rate * frame.num_channels * 2))
+        mono = downmix_pcm16_to_mono(frame.audio, frame.num_channels)
+        if not mono:
+            return
+        max_bytes = int(round(self._pre_roll_secs * self._sample_rate * 2))
         self._pre_roll.append(frame)
-        self._pre_roll_bytes += len(frame.audio)
-        while self._pre_roll and self._pre_roll_bytes > max_bytes:
+        self._pre_roll_mono_bytes += len(mono)
+        while self._pre_roll and self._pre_roll_mono_bytes > max_bytes:
             old = self._pre_roll.popleft()
-            self._pre_roll_bytes -= len(old.audio)
+            old_mono_len = len(downmix_pcm16_to_mono(old.audio, old.num_channels))
+            self._pre_roll_mono_bytes = max(0, self._pre_roll_mono_bytes - old_mono_len)
 
     async def _emit_decision(self, decision: BackgroundSpeechDecision) -> None:
         if self._on_decision is not None:
@@ -535,10 +632,20 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             )
         )
 
+    async def _notify_ignored_barge_in(self) -> None:
+        if not self._turn_interrupted_bot or self._on_ignored_barge_in is None:
+            return
+        try:
+            maybe_coro = self._on_ignored_barge_in()
+            if inspect.iscoroutine(maybe_coro):
+                await maybe_coro
+        except Exception:
+            logger.exception("[LiveBackgroundGate] on_ignored_barge_in callback failed")
+
     async def _evaluate_buffered_audio(self, trim_tail_secs: float = 0.0) -> BackgroundSpeechDecision:
-        raw_pcm = b"".join(f.audio for f in self._turn_frames if f.audio)
+        mono_pcm = b"".join(self._turn_mono_chunks)
         rate = self._turn_frames[0].sample_rate if self._turn_frames else self._sample_rate
-        classify_pcm = raw_pcm
+        classify_pcm = mono_pcm
         if trim_tail_secs > 0 and rate > 0:
             trim_bytes = int(round(trim_tail_secs * rate * 2))
             trim_bytes -= trim_bytes % 2
@@ -549,6 +656,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         return await self._evaluator.evaluate(
             audio_pcm=classify_pcm,
             sample_rate=rate,
+            num_channels=1,
             last_bot_utterance=last_bot,
         )
 
@@ -563,7 +671,8 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         for chunk in _coalesce_audio_frames(self._turn_frames):
             await self.push_frame(chunk, direction)
         self._turn_frames.clear()
-        self._turn_bytes = 0
+        self._turn_mono_chunks.clear()
+        self._turn_mono_bytes = 0
         if stop_frame is not None:
             await self.push_frame(stop_frame, direction)
 
@@ -583,7 +692,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             if isinstance(frame, (EndFrame, CancelFrame)):
                 self._reset_turn_state()
                 self._pre_roll.clear()
-                self._pre_roll_bytes = 0
+                self._pre_roll_mono_bytes = 0
             await self.push_frame(frame, direction)
             return
 
@@ -591,13 +700,20 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             self._muted = True
             self._reset_turn_state()
             self._pre_roll.clear()
-            self._pre_roll_bytes = 0
+            self._pre_roll_mono_bytes = 0
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, UserMuteStoppedFrame):
             self._muted = False
             await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, UserSpeakingFrame):
+            # Absorb ongoing speaking heartbeats while buffering so ignored
+            # background chatter never resets downstream UserIdleProcessor timers.
+            if self._pass_through_turn and not self._muted:
+                await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, VADUserStartedSpeakingFrame):
@@ -607,26 +723,20 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             self._in_speech = True
             self._held_start_frame = frame
             self._turn_frames = list(self._pre_roll)
-            self._turn_bytes = self._pre_roll_bytes
+            self._turn_mono_chunks = [
+                downmix_pcm16_to_mono(f.audio, f.num_channels)
+                for f in self._turn_frames
+                if f.audio
+            ]
+            self._turn_mono_bytes = sum(len(c) for c in self._turn_mono_chunks)
             self._pre_roll.clear()
-            self._pre_roll_bytes = 0
-            # Interrupt bot audio playback immediately (<50ms) when speech starts
+            self._pre_roll_mono_bytes = 0
+            # Interrupt local bot playback immediately (<50ms) when speech begins
             # while keeping the turn's audio buffered locally until Decisions runs.
             if self._bot_speaking:
                 self._bot_speaking = False
+                self._turn_interrupted_bot = True
                 await self.broadcast_interruption()
-                await self.push_frame(
-                    OutputTransportMessageUrgentFrame(
-                        message={
-                            "label": "rtvi-ai",
-                            "type": "server-message",
-                            "data": {
-                                "type": "metrics",
-                                "payload": {"type": "interruption", "count": 1},
-                            },
-                        }
-                    )
-                )
             return
 
         if isinstance(frame, InputAudioRawFrame):
@@ -642,20 +752,25 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             if self._drop_turn:
                 return
 
+            mono = downmix_pcm16_to_mono(frame.audio, frame.num_channels)
             self._turn_frames.append(frame)
-            self._turn_bytes += len(frame.audio)
-            max_bytes = int(round(self._max_buffer_secs * self._sample_rate * frame.num_channels * 2))
-            if self._turn_bytes >= max_bytes:
+            if mono:
+                self._turn_mono_chunks.append(mono)
+                self._turn_mono_bytes += len(mono)
+            max_bytes = int(round(self._max_buffer_secs * self._sample_rate * 2))
+            if self._turn_mono_bytes >= max_bytes:
                 decision = await self._evaluate_buffered_audio(trim_tail_secs=0.0)
                 await self._emit_decision(decision)
                 if decision.should_respond:
                     self._pass_through_turn = True
                     await self._flush_held_turn(direction, stop_frame=None)
                 else:
+                    await self._notify_ignored_barge_in()
                     self._drop_turn = True
                     self._held_start_frame = None
                     self._turn_frames.clear()
-                    self._turn_bytes = 0
+                    self._turn_mono_chunks.clear()
+                    self._turn_mono_bytes = 0
             return
 
         if isinstance(frame, VADUserStoppedSpeakingFrame):
@@ -677,6 +792,7 @@ class LiveBackgroundSpeechGate(FrameProcessor):
             if decision.should_respond:
                 await self._flush_held_turn(direction, stop_frame=frame)
             else:
+                await self._notify_ignored_barge_in()
                 logger.info(
                     "[LiveBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms).",
                     decision.background_probability,
@@ -695,6 +811,13 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
     the user's transcript (if present), optional turn audio clip, and the
     assistant's last message. Opening greetings and tool-call follow-up turns
     pass straight through without classification.
+
+    Cancellation safety: Pipecat 1.16 cancels `__process_frame_task` on any
+    incoming `InterruptionFrame` (`LLMContextFrame` is `interruptible=True`). To
+    prevent a mid-evaluation cancellation from stranding ignored background
+    speech in `LLMContext.messages`, the candidate user message is removed from
+    `messages` *before* awaiting `evaluate()`, and restored at its original
+    position only if the evaluation approves the turn.
     """
 
     def __init__(
@@ -703,64 +826,30 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         *,
         get_recent_audio: Callable[[], tuple[bytes | None, int]] | None = None,
         on_decision: Callable[[BackgroundSpeechDecision], None] | None = None,
-        interrupt_on_respond: bool = False,
-        defer_turn_boundaries: bool = False,
+        on_ignored_turn: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._evaluator = evaluator
         self._get_recent_audio = get_recent_audio
         self._on_decision = on_decision
-        self._interrupt_on_respond = bool(interrupt_on_respond)
-        self._defer_turn_boundaries = bool(defer_turn_boundaries)
+        self._on_ignored_turn = on_ignored_turn
         self._seen_user_speech = False
-        self._held_vad_start: VADUserStartedSpeakingFrame | None = None
-        self._held_vad_stop: VADUserStoppedSpeakingFrame | None = None
-        self._last_vad_stop_monotonic: float | None = None
-        # Tracks whether the assistant aggregator has an active turn in progress so
-        # barge-in interruptions only fire when needed and never interleave a
-        # partial assistant message after the newly appended user message.
-        self._assistant_idle_event = asyncio.Event()
-        self._assistant_idle_event.set()
-        self._tracks_assistant_lifecycle = False
-        self._bot_speaking = False
-
-    def mark_assistant_turn_started(self) -> None:
-        """Record that the assistant aggregator started a response turn."""
-        self._tracks_assistant_lifecycle = True
-        self._assistant_idle_event.clear()
-
-    def mark_assistant_turn_stopped(self) -> None:
-        """Record that the assistant aggregator committed/stopped its turn."""
-        self._tracks_assistant_lifecycle = True
-        self._assistant_idle_event.set()
-
-    def attach_assistant_aggregator(self, assistant_aggregator: Any) -> None:
-        """Subscribe to Pipecat `LLMAssistantAggregator` turn lifecycle events."""
-        if assistant_aggregator is None or not hasattr(assistant_aggregator, "event_handler"):
-            return
-        self._tracks_assistant_lifecycle = True
-
-        @assistant_aggregator.event_handler("on_assistant_turn_started")
-        async def _on_assistant_started(_aggregator: Any, *_args: Any) -> None:
-            self.mark_assistant_turn_started()
-
-        @assistant_aggregator.event_handler("on_assistant_turn_stopped")
-        async def _on_assistant_stopped(_aggregator: Any, *_args: Any) -> None:
-            self.mark_assistant_turn_stopped()
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         await super().setup(setup)
         await self._evaluator.setup(setup.task_manager)
 
     async def cleanup(self) -> None:
+        for task in list(self._bg_tasks):
+            if not task.done():
+                task.cancel()
+        if self._bg_tasks:
+            await asyncio.gather(*self._bg_tasks, return_exceptions=True)
+            self._bg_tasks.clear()
         await self._evaluator.cleanup()
         await super().cleanup()
-
-    def _clear_held_boundaries(self) -> None:
-        self._held_vad_start = None
-        self._held_vad_stop = None
-        self._last_vad_stop_monotonic = None
 
     async def _emit_decision(self, decision: BackgroundSpeechDecision) -> None:
         if self._on_decision is not None:
@@ -778,49 +867,69 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             )
         )
 
+    def _notify_ignored_turn(self) -> None:
+        if self._on_ignored_turn is not None:
+            try:
+                self._on_ignored_turn()
+            except Exception:
+                logger.exception("[CascadeBackgroundGate] on_ignored_turn callback failed")
+
     @staticmethod
     def _last_assistant_text(messages: list[Any]) -> str:
-        for msg in reversed(messages[:-1]):
+        for msg in reversed(messages):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 text = _extract_message_text(msg)
                 if text:
                     return text
         return ""
 
+    async def _finish_cancelled_evaluation(
+        self,
+        eval_task: asyncio.Task[BackgroundSpeechDecision],
+        messages: list[Any],
+        candidate_msg: dict[str, Any],
+        insert_index: int,
+        user_text: str,
+    ) -> None:
+        """Reconcile a turn whose `process_frame` was interrupted mid-classification."""
+        try:
+            decision = await eval_task
+            await self._emit_decision(decision)
+            if decision.should_respond:
+                # Restore the caller's interrupted Turn-1 message in chronological
+                # order so Turn 2's upcoming LLMContextFrame retains full context.
+                bounded_idx = max(0, min(insert_index, len(messages)))
+                messages.insert(bounded_idx, candidate_msg)
+            else:
+                self._notify_ignored_turn()
+                logger.info(
+                    "[CascadeBackgroundGate] Ignored interrupted background turn (p_bg={:.2f}, text={!r}).",
+                    decision.background_probability,
+                    user_text[:80],
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Fail open on unexpected reconciliation error: restore user message.
+            bounded_idx = max(0, min(insert_index, len(messages)))
+            messages.insert(bounded_idx, candidate_msg)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
-
-        # Track bot playback state from upstream/downstream Bot*SpeakingFrames
-        # so barge-in still interrupts queued TTS audio after LLMFullResponseEndFrame.
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_speaking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking = False
 
         if not self._evaluator.enabled or direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             return
 
-        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
-            if self._defer_turn_boundaries:
-                # Downstream Cascade processors (TurnBoundaryProcessor, LLM, TTS)
-                # only consume the VAD boundary pair and LLMContextFrame, so we
-                # hold VAD start/stop and absorb semantic User*SpeakingFrames.
-                if isinstance(frame, VADUserStartedSpeakingFrame):
-                    self._held_vad_start = frame
-                return
+        if isinstance(frame, (EndFrame, CancelFrame)):
+            for task in list(self._bg_tasks):
+                if not task.done():
+                    task.cancel()
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             self._seen_user_speech = True
-            if self._defer_turn_boundaries:
-                if isinstance(frame, VADUserStoppedSpeakingFrame):
-                    self._held_vad_stop = frame
-                    self._last_vad_stop_monotonic = time.monotonic()
-                elif self._last_vad_stop_monotonic is None:
-                    self._last_vad_stop_monotonic = time.monotonic()
-                return
             await self.push_frame(frame, direction)
             return
 
@@ -846,7 +955,12 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 return
 
             user_text = _extract_message_text(last_msg)
+            # Pop `last_msg` up front so an incoming InterruptionFrame cancelling
+            # `__process_frame_task` can never leave ignored background speech in `messages`.
+            pop_index = len(messages) - 1
+            messages.pop()
             last_bot = self._last_assistant_text(messages)
+
             audio_pcm: bytes | None = None
             sample_rate = 16000
             if self._get_recent_audio is not None:
@@ -855,65 +969,36 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 except Exception:
                     audio_pcm = None
 
-            decision = await self._evaluator.evaluate(
-                transcript=user_text,
-                audio_pcm=audio_pcm,
-                sample_rate=sample_rate,
-                last_bot_utterance=last_bot,
+            eval_task = asyncio.create_task(
+                self._evaluator.evaluate(
+                    transcript=user_text,
+                    audio_pcm=audio_pcm,
+                    sample_rate=sample_rate,
+                    last_bot_utterance=last_bot,
+                )
             )
-            await self._emit_decision(decision)
+            self._bg_tasks.add(eval_task)
+            eval_task.add_done_callback(self._bg_tasks.discard)
 
-            if decision.should_respond:
-                if self._interrupt_on_respond:
-                    assistant_turn_active = not self._assistant_idle_event.is_set()
-                    needs_interrupt = (
-                        assistant_turn_active
-                        or self._bot_speaking
-                        or not self._tracks_assistant_lifecycle
+            try:
+                decision = await asyncio.shield(eval_task)
+            except asyncio.CancelledError:
+                reconcile_task = asyncio.create_task(
+                    self._finish_cancelled_evaluation(
+                        eval_task, messages, last_msg, pop_index, user_text
                     )
-                    if needs_interrupt:
-                        # Only pop/wait/re-append when the assistant aggregator
-                        # has an open turn whose partial reply will be committed
-                        # by the interruption; if the LLM already finished and
-                        # only TTS playback is still draining, interrupt directly.
-                        popped_msg = (
-                            messages.pop()
-                            if assistant_turn_active and messages and messages[-1] is last_msg
-                            else None
-                        )
-                        try:
-                            await self.broadcast_interruption()
-                            if (
-                                assistant_turn_active
-                                and self._tracks_assistant_lifecycle
-                                and not self._assistant_idle_event.is_set()
-                            ):
-                                try:
-                                    await asyncio.wait_for(
-                                        self._assistant_idle_event.wait(),
-                                        timeout=0.5,
-                                    )
-                                except asyncio.TimeoutError:
-                                    logger.warning(
-                                        "[CascadeBackgroundGate] Timed out waiting for assistant turn commit after interruption."
-                                    )
-                        finally:
-                            if popped_msg is not None:
-                                messages.append(popped_msg)
-                if self._defer_turn_boundaries:
-                    if self._held_vad_start is not None:
-                        await self.push_frame(self._held_vad_start, direction)
-                    stop_frame = self._held_vad_stop or VADUserStoppedSpeakingFrame()
-                    if self._last_vad_stop_monotonic is not None:
-                        stop_frame.metadata["_vad_stop_monotonic"] = self._last_vad_stop_monotonic
-                    await self.push_frame(stop_frame, direction)
-                    self._clear_held_boundaries()
+                )
+                self._bg_tasks.add(reconcile_task)
+                reconcile_task.add_done_callback(self._bg_tasks.discard)
+                raise
+
+            await self._emit_decision(decision)
+            if decision.should_respond:
+                bounded_idx = max(0, min(pop_index, len(messages)))
+                messages.insert(bounded_idx, last_msg)
                 await self.push_frame(frame, direction)
             else:
-                self._clear_held_boundaries()
-                # Remove the ignored background message so it cannot poison the next turn.
-                if messages and messages[-1] is last_msg:
-                    messages.pop()
+                self._notify_ignored_turn()
                 logger.info(
                     "[CascadeBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms, text={!r}).",
                     decision.background_probability,

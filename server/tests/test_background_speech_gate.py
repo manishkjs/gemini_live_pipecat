@@ -299,22 +299,62 @@ class TestLiveBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         emitted: list[Frame] = []
         gate.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: asyncio.sleep(0, result=emitted.append(f))
 
-        # Bot starts speaking -> upstream BotStartedSpeakingFrame reaches gate.
+        # Bot starts speaking -> upstream BotStartedSpeakingFrame reaches gate and passes upstream.
         await gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-        # User starts speaking -> immediate interruption BEFORE speech stops!
+        emitted.clear()
+        # User starts speaking -> immediate interruption BEFORE speech stops, without
+        # emitting a duplicate raw RTVI metric (llm._record_bot_interruption owns that).
         await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
         gate.broadcast_interruption.assert_awaited_once()
-        # Client WebAudio playback flush sent immediately on VAD start.
-        self.assertEqual(emitted[-1].message["data"]["payload"]["type"], "interruption")
+        self.assertEqual(emitted, [])
 
-        # Background speech still gets dropped at VAD stop without reaching Gemini.
+        # Background speech still gets dropped at VAD stop without reaching Gemini,
+        # and on_ignored_barge_in is notified once.
+        ignored_barge_ins: list[int] = []
+        gate._on_ignored_barge_in = lambda: ignored_barge_ins.append(1)
         await gate.process_frame(
             InputAudioRawFrame(audio=_pcm_chunk(0.50), sample_rate=16000, num_channels=1),
             FrameDirection.DOWNSTREAM,
         )
         await gate.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2), FrameDirection.DOWNSTREAM)
+        self.assertEqual(len(ignored_barge_ins), 1)
         self.assertEqual(emitted[-1].message["data"]["decision"], "ignore")
         self.assertEqual([f for f in emitted if isinstance(f, InputAudioRawFrame)], [])
+
+    async def test_speaking_frames_absorbed_while_buffering_and_stereo_downmixed(self) -> None:
+        from pipecat.frames.frames import UserSpeakingFrame
+        import numpy as np
+
+        stub = _StubDecisionsClassifier(probability=0.03)
+        gate = LiveBackgroundSpeechGate(
+            BackgroundSpeechEvaluator(enabled=True, classifier=stub),
+            pre_roll_secs=0.0,
+        )
+        # Build 0.50s of 2-channel stereo PCM (left=1000, right=3000 -> mono=2000).
+        num_frames = int(0.50 * 16000)
+        stereo = np.column_stack(
+            [
+                np.full(num_frames, 1000, dtype=np.int16),
+                np.full(num_frames, 3000, dtype=np.int16),
+            ]
+        ).tobytes()
+
+        emitted = await self._run_gate_capture(
+            gate,
+            [
+                VADUserStartedSpeakingFrame(),
+                UserSpeakingFrame(),
+                InputAudioRawFrame(audio=stereo, sample_rate=16000, num_channels=2),
+                VADUserStoppedSpeakingFrame(stop_secs=0.0),
+            ],
+        )
+        # Zero speaking frames leaked downstream; classifier received 1-channel mono 0.50s audio.
+        self.assertEqual([type(f) for f in emitted], [OutputTransportMessageUrgentFrame])
+        self.assertEqual(emitted[0].message["data"]["audio_duration_secs"], 0.5)
+        sent_audio = stub.calls[0]["inputs"][0].audio
+        self.assertEqual(len(sent_audio), num_frames * 2)
+        mono_vals = np.frombuffer(sent_audio, dtype=np.int16)
+        self.assertTrue(np.all(mono_vals == 2000))
 
     def test_live_vad_mode_forces_silero_when_ignore_background_enabled(self) -> None:
         self.assertEqual(
@@ -428,177 +468,235 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.messages), 1)
         self.assertEqual(ctx.messages[0]["role"], "assistant")
 
-    async def test_r1_cascade_defers_interruption_and_turn_boundaries_until_approved(self) -> None:
-        from unittest.mock import AsyncMock
-
-        from processors.audio_accumulator import AudioAccumulator
-        from processors.turn_telemetry import TurnBoundaryProcessor
+    async def test_pipeline_task_interruption_mid_evaluate_never_poisons_llm_context(self) -> None:
+        """Real Pipecat 1.16 PipelineTask test for InterruptionFrame task cancellation."""
+        from pipecat.frames.frames import EndTaskFrame, InterruptionFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.runner import PipelineRunner
+        from pipecat.pipeline.task import PipelineParams, PipelineTask
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.frame_processor import FrameProcessor
         from turn_telemetry import TurnTracker
 
-        # 1. AudioAccumulator with defer_interruption=True must NOT interrupt on VAD start.
-        acc_ctx = SimpleNamespace(messages=[])
-        acc = AudioAccumulator(acc_ctx, project_id="test-proj", defer_interruption=True)
-        acc.broadcast_interruption = AsyncMock()
-        acc.push_frame = AsyncMock()
-        await acc.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        acc.broadcast_interruption.assert_not_awaited()
+        class _Sink(FrameProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.context_frames: list[LLMContextFrame] = []
 
-        # 2. Ignored background turn in CascadeBackgroundSpeechGate must NOT interrupt or mint a TurnTracker turn.
-        tracker = TurnTracker("s-r1", "tts-llm-stt", vad_stop_padding_ms=400)
-        boundary = TurnBoundaryProcessor(tracker)
-        boundary_out: list[Frame] = []
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                if isinstance(frame, LLMContextFrame):
+                    self.context_frames.append(frame)
+                await self.push_frame(frame, direction)
 
-        async def _boundary_capture(frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
-            boundary_out.append(frame)
+        class _ScriptedClassifier(_StubDecisionsClassifier):
+            def __init__(self) -> None:
+                super().__init__()
+                self.entered = asyncio.Event()
+                self.probs = [0.03, 0.96]  # 1st = TV noise (ignore), 2nd = real caller (respond)
 
-        boundary.push_frame = _boundary_capture
+            async def _ask(self, state, questions, inputs=()):
+                idx = len(self.calls)
+                self.calls.append({"state": state})
+                if idx == 0:
+                    self.entered.set()
+                    await asyncio.sleep(0.12)
+                prob = self.probs[min(idx, len(self.probs) - 1)]
+                return (
+                    {name: YesNoResult(probability=prob) for name in questions},
+                    LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+                )
 
-        stub_ignore = _StubDecisionsClassifier(probability=0.05)
-        gate_ignore = CascadeBackgroundSpeechGate(
-            BackgroundSpeechEvaluator(enabled=True, classifier=stub_ignore),
-            interrupt_on_respond=True,
-            defer_turn_boundaries=True,
-        )
-        gate_ignore.broadcast_interruption = AsyncMock()
-        gate_ignore.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: boundary.process_frame(f, d)
-
-        bg_ctx = SimpleNamespace(
-            messages=[
-                {"role": "assistant", "content": "Hello, how can I help?"},
-                {"role": "user", "content": "TV commercial audio"},
-            ]
-        )
-        await gate_ignore.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate_ignore.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate_ignore.process_frame(LLMContextFrame(context=bg_ctx), FrameDirection.DOWNSTREAM)
-
-        gate_ignore.broadcast_interruption.assert_not_awaited()
-        self.assertEqual(tracker.current.turn_id, 0)
-        self.assertIsNone(tracker.current.status)
-
-        # 3. Approved turn calls broadcast_interruption() and advances TurnTracker cleanly.
-        stub_ok = _StubDecisionsClassifier(probability=0.95)
-        gate_ok = CascadeBackgroundSpeechGate(
-            BackgroundSpeechEvaluator(enabled=True, classifier=stub_ok),
-            interrupt_on_respond=True,
-            defer_turn_boundaries=True,
-        )
-        gate_ok.broadcast_interruption = AsyncMock()
-        gate_ok.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: boundary.process_frame(f, d)
-
-        ok_ctx = SimpleNamespace(
-            messages=[
-                {"role": "assistant", "content": "Hello, how can I help?"},
-                {"role": "user", "content": "Check my balance please"},
-            ]
-        )
-        await gate_ok.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate_ok.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate_ok.process_frame(LLMContextFrame(context=ok_ctx), FrameDirection.DOWNSTREAM)
-
-        gate_ok.broadcast_interruption.assert_awaited_once()
-        self.assertEqual(tracker.current.turn_id, 1)
-        self.assertIsNotNone(tracker.current.vad_stop)
-
-    async def test_n1_cascade_barge_in_preserves_assistant_before_user_context_order(self) -> None:
-        from unittest.mock import AsyncMock
-
-        stub = _StubDecisionsClassifier(probability=0.96)
+        tracker = TurnTracker("s-cancel", "tts-llm-stt", vad_stop_padding_ms=400)
+        tracker.current.vad_start = 1.0
+        tracker.current.vad_stop = 1.5
+        stub = _ScriptedClassifier()
         gate = CascadeBackgroundSpeechGate(
             BackgroundSpeechEvaluator(enabled=True, classifier=stub),
-            interrupt_on_respond=True,
-            defer_turn_boundaries=True,
+            on_ignored_turn=tracker.mark_ignored,
         )
-        emitted: list[Frame] = []
-        gate.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: asyncio.sleep(0, result=emitted.append(f))
+        sink = _Sink()
+        pipeline = Pipeline([gate, sink])
+        task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
 
-        ctx = SimpleNamespace(
+        ctx = LLMContext(
             messages=[
-                {"role": "assistant", "content": "Welcome to mutual fund advisory."},
-                {"role": "user", "content": "Wait, switch to my SIP details."},
+                {"role": "assistant", "content": "How can I help you today?"},
             ]
         )
 
-        # Simulate an active assistant turn whose partial reply commits asynchronously
-        # when broadcast_interruption() fires (mirroring LLMAssistantAggregator._handle_interruptions).
-        gate.mark_assistant_turn_started()
+        async def _drive() -> None:
+            await asyncio.sleep(0.05)
+            await task.queue_frame(VADUserStoppedSpeakingFrame())
+            # Turn 1: TV speech enters gate.process_frame(LLMContextFrame) and blocks in evaluate().
+            ctx.messages.append({"role": "user", "content": "Buy crispy chips on Channel 5!"})
+            await task.queue_frame(LLMContextFrame(context=ctx))
+            await asyncio.wait_for(stub.entered.wait(), timeout=2.0)
+            # Mid-evaluation InterruptionFrame cancels Pipecat's __process_frame_task!
+            await task.queue_frame(InterruptionFrame())
+            await asyncio.sleep(0.18)
+            # Ignored TV message MUST NOT remain in ctx.messages, and Turn 1 is marked ignored.
+            self.assertEqual(
+                [(m["role"], m["content"]) for m in ctx.messages],
+                [("assistant", "How can I help you today?")],
+            )
+            self.assertEqual(tracker.current.status, "ignored")
 
-        async def _fake_broadcast_interruption() -> None:
-            async def _commit_partial() -> None:
-                await asyncio.sleep(0.02)
-                ctx.messages.append({"role": "assistant", "content": "Your portfolio value is..."})
-                gate.mark_assistant_turn_stopped()
+            # Turn 2: Real caller utterance passes cleanly through the same gate.
+            ctx.messages.append({"role": "user", "content": "Book a car service for Friday."})
+            await task.queue_frame(LLMContextFrame(context=ctx))
+            await asyncio.sleep(0.08)
+            await task.queue_frame(EndFrame())
 
-            asyncio.create_task(_commit_partial())
+        runner = PipelineRunner(handle_sigint=False)
+        await asyncio.gather(runner.run(task), _drive())
 
-        gate.broadcast_interruption = AsyncMock(side_effect=_fake_broadcast_interruption)
-
-        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
-
-        gate.broadcast_interruption.assert_awaited_once()
-        # Context must end with [..., assistant(partial), user(new)], NEVER reversed.
+        self.assertEqual(len(sink.context_frames), 1)
         self.assertEqual(
             [(m["role"], m["content"]) for m in ctx.messages],
             [
-                ("assistant", "Welcome to mutual fund advisory."),
-                ("assistant", "Your portfolio value is..."),
-                ("user", "Wait, switch to my SIP details."),
+                ("assistant", "How can I help you today?"),
+                ("user", "Book a car service for Friday."),
             ],
         )
 
-        # When assistant is already idle, an approved turn must NOT call broadcast_interruption().
-        gate.broadcast_interruption.reset_mock()
-        ctx.messages.append({"role": "assistant", "content": "Your SIP is 5000."})
-        ctx.messages.append({"role": "user", "content": "Great, thanks."})
-        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
-        gate.broadcast_interruption.assert_not_awaited()
+    async def test_live_barge_in_delayed_server_interrupted_and_filler_races(self) -> None:
+        """Verifies all 3 Gemini Live Silero-VAD barge-in invariants on CustomGeminiLiveLLMService."""
+        from unittest.mock import AsyncMock, patch
+        from pipecat.frames.frames import InterruptionFrame, LLMFullResponseEndFrame
+        from pipecat.processors.frame_processor import FrameProcessor
+        from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
+        from processors.turn_telemetry import TurnBoundaryProcessor
+        from turn_telemetry import TurnTracker
 
-    async def test_n5_cascade_barge_in_interrupts_when_llm_done_but_bot_still_speaking(self) -> None:
-        from unittest.mock import AsyncMock
+        pushed: list[tuple[Frame, FrameDirection]] = []
 
-        from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+        async def _capture(proc, frame, direction=FrameDirection.DOWNSTREAM):
+            pushed.append((frame, direction))
 
-        stub = _StubDecisionsClassifier(probability=0.95)
-        gate = CascadeBackgroundSpeechGate(
-            BackgroundSpeechEvaluator(enabled=True, classifier=stub),
-            interrupt_on_respond=True,
-            defer_turn_boundaries=True,
+        def _live_msg(*, audio=None, transcript=None, user_transcript=None, turn_complete=False, interrupted=False):
+            parts = []
+            if audio is not None:
+                parts.append(
+                    SimpleNamespace(
+                        text=None,
+                        thought=None,
+                        inline_data=SimpleNamespace(mime_type="audio/pcm;rate=24000", data=audio),
+                    )
+                )
+            sc = SimpleNamespace(
+                model_turn=SimpleNamespace(parts=parts) if parts else None,
+                output_transcription=SimpleNamespace(text=transcript) if transcript else None,
+                input_transcription=SimpleNamespace(text=user_transcript) if user_transcript else None,
+                grounding_metadata=None,
+                turn_complete=turn_complete,
+                interrupted=interrupted,
+            )
+            return SimpleNamespace(server_content=sc, usage_metadata=None)
+
+        with (
+            patch.object(FrameProcessor, "push_frame", new=_capture),
+            patch.object(FrameProcessor, "broadcast_interruption", new=AsyncMock()),
+            patch.object(FrameProcessor, "stop_all_metrics", new=AsyncMock()),
+        ):
+            llm = agent_live.CustomGeminiLiveLLMService(api_key="dummy")
+            llm._vad_disabled = True
+            tracker = TurnTracker("s-live-race", "gemini-live", vad_stop_padding_ms=400)
+            boundary = TurnBoundaryProcessor(tracker)
+            llm._turn_tracker = tracker
+
+            # --- Race A: Post-turn_complete tail barge-in must NOT stick _awaiting_interrupted_turn_complete ---
+            await llm._handle_msg_output_transcription(_live_msg(transcript="Hello!"))
+            await llm._handle_msg_model_turn(_live_msg(audio=b"\x01\x00" * 240))
+            await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
+            self.assertFalse(llm._mixin_bot_responding)
+            with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+                await llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+            self.assertFalse(llm._awaiting_interrupted_turn_complete)
+
+            # --- Race B: Ignored mid-turn side-talk must disarm RepeatOnFiller ---
+            await llm._handle_msg_output_transcription(_live_msg(transcript="Your balance is"))
+            await llm._handle_msg_model_turn(_live_msg(audio=b"\x01\x00" * 240))
+            with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+                await llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+            self.assertTrue(llm._repeat_on_filler_pending)
+            llm.clear_pending_filler_after_ignored_turn()
+            self.assertFalse(llm._repeat_on_filler_pending)
+            await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
+
+            llm._send_repeat_instruction = AsyncMock()
+            await llm._handle_msg_input_transcription(_live_msg(user_transcript="Haan."))
+            llm._send_repeat_instruction.assert_not_awaited()
+
+            # --- Race C: Real caller barge-in with in-flight Turn-1 chunk + delayed server_content.interrupted ---
+            pushed.clear()
+            with patch.object(FrameProcessor, "process_frame", new=AsyncMock()):
+                s1, e1 = VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame()
+                await boundary.process_frame(s1, FrameDirection.DOWNSTREAM)
+                await boundary.process_frame(e1, FrameDirection.DOWNSTREAM)
+            with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+                await llm.process_frame(e1, FrameDirection.DOWNSTREAM)
+            turn1 = tracker.current
+
+            await llm._handle_msg_output_transcription(_live_msg(transcript="Long Turn 1 reply"))
+            await llm._handle_msg_model_turn(_live_msg(audio=b"\x01\x00" * 240))
+            # 1. Local gate interrupts immediately at VAD start before ActivityStart is sent.
+            with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+                await llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+            self.assertEqual(turn1.status, "interrupted")
+            self.assertTrue(llm._awaiting_interrupted_turn_complete)
+
+            # 2. Gate approves Turn 2 and flushes VADStart + VADStop while Turn 1 has not sent turn_complete yet.
+            with patch.object(FrameProcessor, "process_frame", new=AsyncMock()):
+                s2, e2 = VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame()
+                await boundary.process_frame(s2, FrameDirection.DOWNSTREAM)
+                await boundary.process_frame(e2, FrameDirection.DOWNSTREAM)
+            with (
+                patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()),
+                patch.object(GeminiLiveLLMService, "_handle_user_started_speaking", new=AsyncMock()),
+                patch.object(GeminiLiveLLMService, "_handle_user_stopped_speaking", new=AsyncMock()),
+            ):
+                await llm.process_frame(s2, FrameDirection.DOWNSTREAM)
+                await llm.process_frame(e2, FrameDirection.DOWNSTREAM)
+            turn2 = tracker.current
+            self.assertEqual(turn2.turn_id, 2)
+            # Must STILL mute stale Turn-1 chunks until Turn 1's turn_complete arrives!
+            self.assertTrue(llm._awaiting_interrupted_turn_complete)
+
+            pushed_before_stale = len(pushed)
+            await llm._handle_msg_output_transcription(_live_msg(transcript=" leaked stale tail"))
+            await llm._handle_msg_model_turn(_live_msg(audio=b"\x02\x00" * 240))
+            self.assertEqual(len(pushed), pushed_before_stale, "Stale Turn-1 chunks must not leak!")
+
+            # 3. Gemini processes ActivityStart and sends delayed server_content.interrupted + Turn-1 turn_complete.
+            await llm.broadcast_interruption()
+            await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
+            self.assertFalse(llm._awaiting_interrupted_turn_complete)
+            self.assertIsNone(turn2.status, "Delayed Turn-1 interrupted echo must NOT abort Turn 2!")
+
+            # 4. Turn 2 output arrives and completes cleanly.
+            await llm._handle_msg_input_transcription(_live_msg(user_transcript="Switch to Friday."))
+            await llm._handle_msg_output_transcription(_live_msg(transcript="Switched to Friday."))
+            await llm._handle_msg_model_turn(_live_msg(audio=b"\x03\x00" * 240))
+            await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
+            end_frames = [f for f, _ in pushed if isinstance(f, LLMFullResponseEndFrame)]
+            self.assertEqual(len(end_frames), 1)
+
+    async def test_emotion_observer_disabled_still_records_utterance_audio_when_requested(self) -> None:
+        from processors.emotion_perception import AudioEmotionObserver
+
+        obs = AudioEmotionObserver(enabled=False, record_utterance_audio=True)
+        obs.push_frame = lambda f, d=FrameDirection.DOWNSTREAM: asyncio.sleep(0)
+        await obs.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await obs.process_frame(
+            InputAudioRawFrame(audio=_pcm_chunk(0.50), sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
         )
-        gate.push_frame = AsyncMock()
-        gate.broadcast_interruption = AsyncMock()
-
-        # Assistant LLM finished (on_assistant_turn_stopped fired), but TTS audio is still playing.
-        gate.mark_assistant_turn_started()
-        gate.mark_assistant_turn_stopped()
-        await gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
-
-        ctx = SimpleNamespace(
-            messages=[
-                {"role": "assistant", "content": "Here is the complete breakdown of your portfolio..."},
-                {"role": "user", "content": "Stop, just tell me the total."},
-            ]
-        )
-        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
-
-        gate.broadcast_interruption.assert_awaited_once()
-        # Message order remains intact without unnecessary wait.
-        self.assertEqual(ctx.messages[-1]["content"], "Stop, just tell me the total.")
-
-        # Once BotStoppedSpeakingFrame arrives and LLM is idle, no interruption is broadcast.
-        gate.broadcast_interruption.reset_mock()
-        await gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
-        ctx.messages.append({"role": "assistant", "content": "Total is 5 lakhs."})
-        ctx.messages.append({"role": "user", "content": "Thanks."})
-        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-        await gate.process_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
-        gate.broadcast_interruption.assert_not_awaited()
+        await obs.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.0), FrameDirection.DOWNSTREAM)
+        pcm, sr = obs.get_last_utterance_audio()
+        self.assertIsNotNone(pcm)
+        self.assertEqual(len(pcm), len(_pcm_chunk(0.50)))
+        self.assertEqual(sr, 16000)
 
     async def test_r2_skip_stt_audio_message_does_not_leak_synthetic_prompt_as_transcript(self) -> None:
         stub = _StubDecisionsClassifier(probability=0.05)

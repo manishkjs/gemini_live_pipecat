@@ -376,6 +376,7 @@ class AudioEmotionObserver(FrameProcessor):
         model: str = DEFAULT_DECISION_MODEL,
         timeout: float = DEFAULT_TIMEOUT_SECS,
         classifier: BaseClassifier | None = None,
+        record_utterance_audio: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -383,6 +384,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._sample_rate = 16000
         self._model_name = model
         self._timeout_secs = timeout
+        self._record_utterance_audio = bool(record_utterance_audio)
         self._owns_classifier = False
         self._classifier: BaseClassifier | None = None
         self._deferred_project_id = ""
@@ -456,7 +458,6 @@ class AudioEmotionObserver(FrameProcessor):
         self._utterance_started_at = 0.0
         self._utterance_has_interim = False
         self._last_completed_utterance_id = 0
-        self._last_completed_audio: bytes | None = None
         self._last_raw_utterance_audio: bytes | None = None
         self._last_raw_utterance_id: int = 0
         self._request_seq = 0
@@ -609,7 +610,7 @@ class AudioEmotionObserver(FrameProcessor):
             await self.push_frame(frame, direction)
             return
 
-        if not self._usable:
+        if not self._usable and not self._record_utterance_audio:
             await self.push_frame(frame, direction)
             return
 
@@ -706,13 +707,14 @@ class AudioEmotionObserver(FrameProcessor):
         self._last_completed_utterance_id = self._utterance_id
         self._last_raw_utterance_audio = raw
         self._last_raw_utterance_id = self._utterance_id
+        if not self._usable:
+            return
         preferred_bytes = self._bytes_for_secs(PREFERRED_FINAL_SECS)
         window_bytes = self._bytes_for_secs(FINAL_WINDOW_SECS)
         clip = raw[-window_bytes:] if len(raw) > window_bytes else raw
         if len(clip) < preferred_bytes and len(self._turn_recent_audio) > 0:
             needed = preferred_bytes - len(clip)
             clip = self._turn_recent_audio.tail_bytes(needed) + clip
-        self._last_completed_audio = clip
         self._turn_recent_audio.append(raw, self._bytes_for_secs(MAX_BUFFER_SECS))
         self._spawn_classification(
             clip,
@@ -770,6 +772,9 @@ class AudioEmotionObserver(FrameProcessor):
             self._append_bounded_speech(pcm)
         else:
             self._pre_roll.append(pcm, self._bytes_for_secs(PRE_ROLL_SECS, frame_rate))
+            return
+
+        if not self._usable:
             return
 
         now = time.monotonic()

@@ -18,11 +18,17 @@ import {
 import { getPersona, type PersonaId } from "@/lib/personas";
 import {
   createLiveSession,
-  type BackgroundGateReading,
   type LiveSession,
   type MessageMetrics,
   type UserEmotionReading,
 } from "@/lib/pipecat-session";
+import {
+  attachCascadeGateToTurn,
+  consumePendingBackgroundGate,
+  formatIgnoredBackgroundLabel,
+  parseBackgroundGatePayload,
+  type PendingBackgroundGate,
+} from "@/lib/background-gate";
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
@@ -159,7 +165,8 @@ export function useVoiceSession() {
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
   const pendingCallerEmotion = useRef<PendingCallerEmotion | null>(null);
-  const pendingBackgroundGate = useRef<{ reading: BackgroundGateReading; recordedAt: number } | null>(null);
+  const pendingBackgroundGate = useRef<PendingBackgroundGate | null>(null);
+  const activeCascadeUserTurnIds = useRef<string[]>([]);
   const openCallerTurn = useRef<OpenCallerTurn | null>(null);
   const utteranceMessageIds = useRef(new Map<number, string>());
   const utteranceReadings = useRef(new Map<number, PendingCallerEmotion>());
@@ -395,6 +402,7 @@ export function useVoiceSession() {
     setPartialUser("");
     pendingCallerEmotion.current = null;
     pendingBackgroundGate.current = null;
+    activeCascadeUserTurnIds.current = [];
     openCallerTurn.current = null;
     turnSettledBeforeBotReply.current = false;
     clearDockEmotion();
@@ -435,6 +443,7 @@ export function useVoiceSession() {
     lastAssistantMetrics.current = null;
     pendingCallerEmotion.current = null;
     pendingBackgroundGate.current = null;
+    activeCascadeUserTurnIds.current = [];
     openCallerTurn.current = null;
     utteranceMessageIds.current.clear();
     utteranceReadings.current.clear();
@@ -639,14 +648,15 @@ export function useVoiceSession() {
             if (attachedEmotion) {
               metrics = { ...metrics, userEmotion: attachedEmotion };
             }
-            const pendingGate = pendingBackgroundGate.current;
-            if (pendingGate && now - pendingGate.recordedAt <= 10000) {
-              metrics = { ...metrics, backgroundGate: pendingGate.reading };
-              pendingBackgroundGate.current = null;
-            } else if (pendingGate) {
-              pendingBackgroundGate.current = null;
+            const consumedGate = consumePendingBackgroundGate(pendingBackgroundGate.current, now);
+            pendingBackgroundGate.current = consumedGate.nextPending;
+            if (consumedGate.attached) {
+              metrics = { ...metrics, backgroundGate: consumedGate.attached };
             }
             const entry = transcriptMessage("user", text, metrics, callStartedAt.current);
+            if (targetEngine === "cascade" && !consumedGate.attached) {
+              activeCascadeUserTurnIds.current.push(entry.id);
+            }
             const effectiveUttId = uttId ?? attachedEmotion?.utteranceId;
             const alreadyClaimedUtterance =
               effectiveUttId !== undefined && utteranceMessageIds.current.has(effectiveUttId);
@@ -668,6 +678,7 @@ export function useVoiceSession() {
             setMessages((items) => [...items, entry]);
             return;
           } else {
+            activeCascadeUserTurnIds.current = [];
             turnSettledBeforeBotReply.current = false;
             if (openCallerTurn.current) {
               openCallerTurn.current.botReplied = true;
@@ -1020,103 +1031,66 @@ export function useVoiceSession() {
             }
           } else if (type === "background_gate") {
             const now = performance.now();
-            const decision = val?.decision === "ignore" ? "ignore" : "respond";
-            const mode = val?.mode === "live" ? "live" : "cascade";
-            const addressedProbability = Number.isFinite(val?.addressed_probability)
-              ? Math.max(0, Math.min(1, Number(val.addressed_probability)))
-              : decision === "respond"
-                ? 1
-                : 0;
-            const backgroundProbability = Number.isFinite(val?.background_probability)
-              ? Math.max(0, Math.min(1, Number(val.background_probability)))
-              : Math.max(0, 1 - addressedProbability);
-            const latencyMs = Number.isFinite(val?.latency_ms)
-              ? Math.max(0, Math.round(Number(val.latency_ms)))
-              : 0;
-            const audioDurationSecs = Number.isFinite(val?.audio_duration_secs)
-              ? Math.max(0, Number(val.audio_duration_secs))
-              : undefined;
-            const gateReading: BackgroundGateReading = {
-              decision,
-              addressedProbability,
-              backgroundProbability,
-              latencyMs,
-              mode,
-              reason: typeof val?.reason === "string" ? val.reason : "",
-              audioDurationSecs,
-            };
+            const { reading: gateReading, transcript: gateTranscript } =
+              parseBackgroundGatePayload(val);
 
-            if (mode === "live" && decision === "ignore") {
-              // In Gemini Live Silero mode, ignored audio is dropped before the model,
-              // so we emit a compact muted transcript entry showing the STAYED QUIET score.
+            if (gateReading.decision === "ignore") {
               setPartialUser("");
-              const durText =
-                audioDurationSecs && audioDurationSecs > 0
-                  ? ` (${audioDurationSecs.toFixed(1)}s)`
-                  : "";
-              const label =
-                typeof val?.transcript === "string" && val.transcript.trim()
-                  ? val.transcript.trim()
-                  : `🔇 Background speech${durText}`;
-              const ignoredEntry = transcriptMessage(
-                "user",
-                label,
-                { backgroundGate: gateReading },
-                callStartedAt.current,
-              );
-              setMessages((items) => [...items, ignoredEntry]);
+              setPhase((p) => (p === "thinking" ? "listening" : p));
+              pendingBackgroundGate.current = null;
+              if (gateReading.mode === "cascade") {
+                clearDockEmotion();
+                setLiveEmotion(null);
+                openCallerTurn.current = null;
+                pendingCallerEmotion.current = null;
+                const turnIds = [...activeCascadeUserTurnIds.current];
+                activeCascadeUserTurnIds.current = [];
+                if (turnIds.length > 0) {
+                  setMessages((items) =>
+                    attachCascadeGateToTurn(items, turnIds, gateReading, gateTranscript),
+                  );
+                } else {
+                  const ignoredEntry = transcriptMessage(
+                    "user",
+                    formatIgnoredBackgroundLabel(gateTranscript, gateReading.audioDurationSecs),
+                    { backgroundGate: gateReading },
+                    callStartedAt.current,
+                  );
+                  setMessages((items) => [...items, ignoredEntry]);
+                }
+              } else {
+                const ignoredEntry = transcriptMessage(
+                  "user",
+                  formatIgnoredBackgroundLabel(gateTranscript, gateReading.audioDurationSecs),
+                  { backgroundGate: gateReading },
+                  callStartedAt.current,
+                );
+                setMessages((items) => [...items, ignoredEntry]);
+              }
               return;
             }
 
-            // Attach to the matching or most recent unbadged user bubble if already present
-            // (Cascade), otherwise hold briefly for the upcoming user transcript (Gemini Live respond).
-            const gateTranscript =
-              typeof val?.transcript === "string" ? val.transcript.trim() : "";
-            setMessages((items) => {
-              const nowEpoch = Date.now();
-              let matchIdx = -1;
-              if (gateTranscript) {
-                for (let i = items.length - 1; i >= 0; i--) {
-                  const candidate = items[i];
-                  if (
-                    candidate.role === "user" &&
-                    !candidate.metrics?.backgroundGate &&
-                    (!candidate.createdAt || nowEpoch - candidate.createdAt <= 15000) &&
-                    candidate.text.trim() === gateTranscript
-                  ) {
-                    matchIdx = i;
-                    break;
-                  }
-                }
-              }
-              if (matchIdx === -1) {
-                for (let i = items.length - 1; i >= 0; i--) {
-                  const candidate = items[i];
-                  if (
-                    candidate.role === "user" &&
-                    !candidate.metrics?.backgroundGate &&
-                    (!candidate.createdAt || nowEpoch - candidate.createdAt <= 15000)
-                  ) {
-                    matchIdx = i;
-                    break;
-                  }
-                }
-              }
-              if (matchIdx !== -1) {
-                const next = [...items];
-                const target = items[matchIdx];
-                next[matchIdx] = {
-                  ...target,
-                  metrics: { ...target.metrics, backgroundGate: gateReading },
-                };
-                pendingBackgroundGate.current = null;
-                return next;
-              }
-              if (mode === "live") {
-                pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
-              }
-              return items;
-            });
+            // Decision === "respond":
+            // - In Gemini Live Silero mode, the decision arrives BEFORE audio is flushed
+            //   to Gemini, so Turn N+1's user bubble does not exist yet; hold in
+            //   pendingBackgroundGate so Turn N's continuation sentences never steal it.
+            // - In Cascade mode, attach to the active post-assistant user turn if already
+            //   emitted, otherwise hold briefly for the arriving user bubble.
+            if (gateReading.mode === "live") {
+              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+              return;
+            }
+
+            const turnIds = [...activeCascadeUserTurnIds.current];
+            activeCascadeUserTurnIds.current = [];
+            if (turnIds.length > 0) {
+              pendingBackgroundGate.current = null;
+              setMessages((items) =>
+                attachCascadeGateToTurn(items, turnIds, gateReading, gateTranscript),
+              );
+            } else {
+              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+            }
           }
         },
         onPartialUser: (text) => {

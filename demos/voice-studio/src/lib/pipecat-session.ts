@@ -19,15 +19,8 @@ export type UserEmotionReading = {
   readonly utteranceId?: number;
 };
 
-export type BackgroundGateReading = {
-  readonly decision: "respond" | "ignore";
-  readonly addressedProbability: number;
-  readonly backgroundProbability: number;
-  readonly latencyMs: number;
-  readonly mode: "live" | "cascade";
-  readonly reason: string;
-  readonly audioDurationSecs?: number;
-};
+import type { BackgroundGateReading } from "./background-gate.ts";
+export type { BackgroundGateReading } from "./background-gate.ts";
 
 export type MessageMetrics = {
   responseId?: string;
@@ -527,6 +520,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       model?: string;
       utterance_id?: number;
       session_id?: string;
+      decision?: string;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
@@ -685,6 +679,13 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
     ) {
       events.onMetricUpdate?.("user_emotion", data);
     } else if (data.type === "background_gate") {
+      if (data.decision === "ignore") {
+        lastUserAt = null;
+        pendingSTTLatency = null;
+        lastTurnSTTLatency = null;
+        events.onPartialUser("");
+        events.onPhase("listening");
+      }
       events.onMetricUpdate?.("background_gate", data);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");

@@ -2018,19 +2018,14 @@ async def run_agent(
 
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
+        record_utterance_audio=bool(ignore_background),
         session_id=current_session_id(),
         project_id=project_id,
-    )
-    shared_decisions_client = (
-        getattr(emotion_observer._classifier, "client", None)
-        if getattr(emotion_observer, "_classifier", None) is not None
-        else None
     )
     bg_evaluator = (
         BackgroundSpeechEvaluator(
             enabled=True,
             project_id=project_id,
-            shared_client=shared_decisions_client,
             persona_hint=persona_id or "",
         )
         if ignore_background
@@ -2068,6 +2063,7 @@ async def run_agent(
                     accumulator._last_turn_audio,
                     accumulator._last_turn_sample_rate,
                 ),
+                on_ignored_turn=turn_tracker.mark_ignored,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade/SkipSTT)",
                     f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
@@ -2111,6 +2107,7 @@ async def run_agent(
             CascadeBackgroundSpeechGate(
                 bg_evaluator,
                 get_recent_audio=emotion_observer.get_last_utterance_audio,
+                on_ignored_turn=turn_tracker.mark_ignored,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade)",
                     f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
