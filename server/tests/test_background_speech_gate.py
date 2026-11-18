@@ -557,10 +557,11 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(stub.entered_interrupted.wait(), timeout=2.0)
 
                 await task.queue_frame(InterruptionFrame())
+                await asyncio.sleep(0.03)
                 utt_counter[0] = 3
                 await task.queue_frame(VADUserStartedSpeakingFrame())
                 await task.queue_frame(VADUserStoppedSpeakingFrame())
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.03)
                 turn3 = tracker.current
 
                 await asyncio.sleep(0.18)
@@ -764,10 +765,10 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             tail_interrupts = [
                 f
                 for f, _ in pushed
-                if isinstance(f, OutputTransportMessageFrame)
+                if isinstance(f, OutputTransportMessageUrgentFrame)
                 and f.message.get("data", {}).get("payload", {}).get("type") == "interruption"
             ]
-            self.assertEqual(len(tail_interrupts), 1, "Playback tail barge-in must flush browser WebAudio!")
+            self.assertEqual(len(tail_interrupts), 1, "Playback tail barge-in must flush browser WebAudio via UrgentFrame!")
 
             # --- Race B: Ignored mid-turn side-talk must disarm RepeatOnFiller ---
             await llm._handle_msg_output_transcription(_live_msg(transcript="Your balance is"))
@@ -838,6 +839,168 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
             end_frames = [f for f, _ in pushed if isinstance(f, LLMFullResponseEndFrame)]
             self.assertEqual(len(end_frames), 1)
+
+    async def test_live_urgent_interruption_survives_trailing_interruption_frame_past_queued_tts(self) -> None:
+        """Real PipelineTask test proving UrgentFrame(interruption) is NOT wiped by InterruptionFrame."""
+        from pipecat.frames.frames import InterruptionFrame, TTSAudioRawFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.runner import PipelineRunner
+        from pipecat.pipeline.task import PipelineParams, PipelineTask
+        from pipecat.processors.frame_processor import FrameProcessor
+
+        class _SlowOutputSink(FrameProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.urgent_interruptions: list[dict[str, Any]] = []
+
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                if isinstance(frame, TTSAudioRawFrame):
+                    await asyncio.sleep(0.15)
+                elif isinstance(frame, OutputTransportMessageUrgentFrame):
+                    if frame.message.get("data", {}).get("payload", {}).get("type") == "interruption":
+                        self.urgent_interruptions.append(frame.message["data"]["payload"])
+                await self.push_frame(frame, direction)
+
+        class _PassThroughBase(FrameProcessor):
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                await self.push_frame(frame, direction)
+
+        class _FakeLiveService(agent_live.GeminiSessionLoggerMixin, _PassThroughBase):
+            def __init__(self) -> None:
+                super().__init__()
+                self._mixin_bot_responding = True
+                self._response_started_at = 1.0
+
+        svc = _FakeLiveService()
+        sink = _SlowOutputSink()
+        task = PipelineTask(Pipeline([svc, sink]), params=PipelineParams(allow_interruptions=True))
+
+        async def _drive() -> None:
+            try:
+                await asyncio.sleep(0.03)
+                # Queue slow TTS audio frames so DataFrame queue is busy, then send InterruptionFrame.
+                for _ in range(4):
+                    await task.queue_frame(TTSAudioRawFrame(audio=b"\x01\x00" * 240, sample_rate=24000, num_channels=1))
+                await asyncio.sleep(0.02)
+                await task.queue_frame(InterruptionFrame())
+                await asyncio.sleep(0.08)
+                await task.queue_frame(EndFrame())
+            except Exception:
+                await task.cancel()
+                raise
+
+        await asyncio.gather(PipelineRunner(handle_sigint=False).run(task), _drive())
+        self.assertEqual(len(sink.urgent_interruptions), 1)
+
+    async def test_r3_cascade_delayed_stt_and_aggregator_append_race_and_utterance_fifo(self) -> None:
+        """Covers Round 3 probes: delayed T2 >1s after VADStop, append-before-dequeue race, & utt_id FIFO."""
+        from pipecat.frames.frames import InterruptionFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.runner import PipelineRunner
+        from pipecat.pipeline.task import PipelineParams, PipelineTask
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.frame_processor import FrameProcessor
+
+        class _Sink(FrameProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.llm_calls: list[list[str]] = []
+                self.gate_events: list[dict[str, Any]] = []
+
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                if isinstance(frame, LLMContextFrame):
+                    self.llm_calls.append([m["content"] for m in frame.context.messages])
+                elif isinstance(frame, OutputTransportMessageUrgentFrame):
+                    data = frame.message.get("data", {})
+                    if data.get("type") == "background_gate":
+                        self.gate_events.append(data)
+                await self.push_frame(frame, direction)
+
+        class _EnteredClassifier(_StubDecisionsClassifier):
+            def __init__(self, delay_secs: float) -> None:
+                super().__init__(probability=0.95, delay_secs=delay_secs)
+                self.first_entered = asyncio.Event()
+
+            async def _ask(self, state, questions, inputs=()):
+                if not self.calls:
+                    self.first_entered.set()
+                return await super()._ask(state, questions, inputs=inputs)
+
+        # 1. T1 cancelled -> T2 VADStart/VADStop -> T2 STT/Aggregator lands 1.0s later -> ONLY 1 LLM call!
+        clf_a = _EnteredClassifier(delay_secs=0.20)
+        gate_a = CascadeBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=clf_a))
+        sink_a = _Sink()
+        task_a = PipelineTask(Pipeline([gate_a, sink_a]), params=PipelineParams(allow_interruptions=True))
+        ctx_a = LLMContext(messages=[{"role": "assistant", "content": "A0"}])
+
+        async def _drive_a() -> None:
+            try:
+                await asyncio.sleep(0.03)
+                await task_a.queue_frame(VADUserStartedSpeakingFrame())
+                await task_a.queue_frame(VADUserStoppedSpeakingFrame())
+                await task_a.queue_frame(UserStoppedSpeakingFrame())
+                ctx_a.messages.append({"role": "user", "content": "T1"})
+                await task_a.queue_frame(LLMContextFrame(context=ctx_a))
+                await asyncio.wait_for(clf_a.first_entered.wait(), timeout=2.0)
+                # T2 starts and VAD-stops quickly, but aggregator/STT takes 1.0s!
+                await task_a.queue_frame(InterruptionFrame())
+                await task_a.queue_frame(VADUserStartedSpeakingFrame())
+                await task_a.queue_frame(VADUserStoppedSpeakingFrame())
+                await asyncio.sleep(1.0)
+                await task_a.queue_frame(UserStoppedSpeakingFrame())
+                ctx_a.messages.append({"role": "user", "content": "T2"})
+                await task_a.queue_frame(LLMContextFrame(context=ctx_a))
+                await asyncio.sleep(0.30)
+                await task_a.queue_frame(EndFrame())
+            except Exception:
+                await task_a.cancel()
+                raise
+
+        await asyncio.gather(PipelineRunner(handle_sigint=False).run(task_a), _drive_a())
+        self.assertEqual(sink_a.llm_calls, [["A0", "T1", "T2"]])
+
+        # 2. Aggregator appends T2 BEFORE T1's background settle commits, AND before T2 frame is dequeued!
+        clf_b = _EnteredClassifier(delay_secs=0.12)
+        utt_ref = [1]
+        gate_b = CascadeBackgroundSpeechGate(
+            BackgroundSpeechEvaluator(enabled=True, classifier=clf_b),
+            get_current_utterance_id=lambda: utt_ref[0],
+        )
+        sink_b = _Sink()
+        task_b = PipelineTask(Pipeline([gate_b, sink_b]), params=PipelineParams(allow_interruptions=True))
+        ctx_b = LLMContext(messages=[{"role": "assistant", "content": "A0"}])
+
+        async def _drive_b() -> None:
+            try:
+                await asyncio.sleep(0.03)
+                utt_ref[0] = 1
+                await task_b.queue_frame(VADUserStartedSpeakingFrame())
+                await task_b.queue_frame(VADUserStoppedSpeakingFrame())
+                await task_b.queue_frame(UserStoppedSpeakingFrame())
+                ctx_b.messages.append({"role": "user", "content": "T1"})
+                await task_b.queue_frame(LLMContextFrame(context=ctx_b))
+                await asyncio.wait_for(clf_b.first_entered.wait(), timeout=2.0)
+                await task_b.queue_frame(InterruptionFrame())
+                # T2 VAD completes (utt_id=2) and T2 is appended to ctx_b BEFORE T1 settles!
+                utt_ref[0] = 2
+                await task_b.queue_frame(VADUserStartedSpeakingFrame())
+                await task_b.queue_frame(VADUserStoppedSpeakingFrame())
+                ctx_b.messages.append({"role": "user", "content": "T2"})
+                await asyncio.sleep(0.18)  # Let T1 settle while T2 is already in ctx_b.messages!
+                await task_b.queue_frame(UserStoppedSpeakingFrame())
+                await task_b.queue_frame(LLMContextFrame(context=ctx_b))
+                await asyncio.sleep(0.20)
+                await task_b.queue_frame(EndFrame())
+            except Exception:
+                await task_b.cancel()
+                raise
+
+        await asyncio.gather(PipelineRunner(handle_sigint=False).run(task_b), _drive_b())
+        self.assertEqual(sink_b.llm_calls, [["A0", "T1", "T2"]])
+        self.assertEqual([e.get("utterance_id") for e in sink_b.gate_events], [1, 2])
 
     async def test_emotion_observer_disabled_still_records_utterance_audio_when_requested(self) -> None:
         from processors.emotion_perception import AudioEmotionObserver

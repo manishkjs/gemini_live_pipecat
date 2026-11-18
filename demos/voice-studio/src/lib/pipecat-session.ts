@@ -162,6 +162,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let avatarSpeechInTurn = false;
   let lastUserAt: number | null = null;
   let latestUserUtteranceId = 0;
+  const ignoredUtteranceIds = new Set<number>();
 
   // Latency buffers according to canonical protocol invariants
   let pendingSTTLatency: number | null = null;
@@ -572,21 +573,29 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         return;
       }
       if (data.participant?.toLowerCase() === "user") {
+        const isAlreadyIgnored =
+          typeof data.utterance_id === "number" && ignoredUtteranceIds.has(data.utterance_id);
         turnStarted = false;
         avatarSpeechInTurn = false;
-        lastUserAt = performance.now();
-        if (typeof data.utterance_id === "number" && data.utterance_id > latestUserUtteranceId) {
-          latestUserUtteranceId = data.utterance_id;
+        if (!isAlreadyIgnored) {
+          lastUserAt = performance.now();
+          if (typeof data.utterance_id === "number" && data.utterance_id > latestUserUtteranceId) {
+            latestUserUtteranceId = data.utterance_id;
+          }
         }
         events.onPartialUser("");
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
         pendingSTTLatency = null;
-        lastTurnSTTLatency = effStt ?? null;
+        if (!isAlreadyIgnored) {
+          lastTurnSTTLatency = effStt ?? null;
+        }
         events.onMessage("user", data.text, false, {
           sttLatency: effStt,
           utteranceId: typeof data.utterance_id === "number" ? data.utterance_id : undefined,
         });
-        events.onPhase("thinking");
+        if (!isAlreadyIgnored) {
+          events.onPhase("thinking");
+        }
       } else {
         const effLlm = data.ttft !== undefined ? data.ttft : (!data.response_id && pendingLLMLatency !== null ? pendingLLMLatency : undefined);
         pendingLLMLatency = null;
@@ -685,6 +694,9 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       events.onMetricUpdate?.("user_emotion", data);
     } else if (data.type === "background_gate") {
       if (data.decision === "ignore") {
+        if (typeof data.utterance_id === "number") {
+          ignoredUtteranceIds.add(data.utterance_id);
+        }
         const isLiveWithActiveTurn = data.mode === "live" && lastUserAt !== null;
         const isSupersededCascade =
           typeof data.utterance_id === "number" &&

@@ -223,12 +223,18 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
   }
 
   const cleanTx = transcript.trim();
-  const txMatchedIndices = !matchedByUtteranceId
+  const txMatchedIndices = cleanTx
     ? matchTranscriptSlice(items, candidateIndices, cleanTx)
     : null;
-  if (!matchedByUtteranceId && cleanTx && txMatchedIndices === null && candidateIndices.length > 1) {
-    // Multiple unkeyed bubbles exist and none match this transcript: leave untouched.
-    return [...items];
+  if (cleanTx && txMatchedIndices === null) {
+    // When a non-empty transcript was evaluated, refuse to attach onto a
+    // bubble whose text does not match (protects against skewed utterance_ids).
+    if (!matchedByUtteranceId && candidateIndices.length > 1) {
+      return [...items];
+    }
+    if (matchedByUtteranceId) {
+      return [...items];
+    }
   }
   const effectiveIndices = txMatchedIndices ?? candidateIndices;
 

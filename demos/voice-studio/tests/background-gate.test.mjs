@@ -128,6 +128,11 @@ test("Overlapping Cascade Turn 1 (ignore) + Turn 2 (respond) never mis-badges Tu
   assert.equal(afterT1Unkeyed[2].metrics, undefined);
   const afterT2Unkeyed = attachCascadeGateToTurn(afterT1Unkeyed, ["m1", "m2"], respondT2, tx2, false);
   assert.equal(afterT2Unkeyed[2].metrics?.backgroundGate?.decision, "respond");
+
+  // Skewed utterance_id guard: even if matchedByUtteranceId=true points at m2, a mismatched
+  // non-empty transcript refuses to corrupt m2 with Turn 1's ignore badge.
+  const skewedAttempt = attachCascadeGateToTurn(initial, ["m2"], ignoreT1, tx1, true);
+  assert.equal(skewedAttempt[2].metrics, undefined);
 });
 
 test("Cascade skip_stt attaches badge to audio placeholder bubble and formats empty fallback", () => {

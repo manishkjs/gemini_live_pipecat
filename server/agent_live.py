@@ -669,7 +669,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         await super()._handle_msg_model_turn(message)
 
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+        urgent_cls = globals().get("OutputTransportMessageUrgentFrame", OutputTransportMessageFrame)
+        if isinstance(frame, (OutputTransportMessageFrame, urgent_cls)) and isinstance(frame.message, dict):
             data = frame.message.get("data", {})
             if data.get("type") == "transcription" and data.get("participant", "").lower() != "user":
                 data = {**data, "response_id": self.response_identity.begin()}
@@ -790,7 +791,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
             metric_payload['elapsed_ms'] = elapsed_ms
             append_diagnostic_log("⚡ Interruption", f"Bot interrupted {elapsed_ms} ms into its reply")
-        await self.push_frame(OutputTransportMessageFrame(message={
+        # Must be UrgentFrame (SystemFrame) so a trailing InterruptionFrame never wipes it
+        # from Pipecat 1.16's output transport queue before the browser flushes WebAudio.
+        await self.push_frame(OutputTransportMessageUrgentFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
             "data": {'type': 'metrics', 'payload': metric_payload}

@@ -29,6 +29,7 @@ import {
   EMPTY_BACKGROUND_GATE_STATS,
   formatIgnoredBackgroundLabel,
   parseBackgroundGatePayload,
+  type BackgroundGateReading,
   type BackgroundGateStats,
   type PendingBackgroundGate,
 } from "@/lib/background-gate";
@@ -172,6 +173,8 @@ export function useVoiceSession() {
   const activeCascadeUserTurnIds = useRef<string[]>([]);
   const utteranceGateBubbleIds = useRef(new Map<number, string[]>());
   const ignoredUtteranceIds = useRef(new Set<number>());
+  const ignoredUtteranceReadings = useRef(new Map<number, BackgroundGateReading>());
+  const ignoredFallbackBubbleIds = useRef(new Map<number, string>());
   const latestUserUtteranceId = useRef<number | null>(null);
   const openCallerTurn = useRef<OpenCallerTurn | null>(null);
   const utteranceMessageIds = useRef(new Map<number, string>());
@@ -412,6 +415,8 @@ export function useVoiceSession() {
     activeCascadeUserTurnIds.current = [];
     utteranceGateBubbleIds.current.clear();
     ignoredUtteranceIds.current.clear();
+    ignoredUtteranceReadings.current.clear();
+    ignoredFallbackBubbleIds.current.clear();
     latestUserUtteranceId.current = null;
     openCallerTurn.current = null;
     turnSettledBeforeBotReply.current = false;
@@ -456,6 +461,8 @@ export function useVoiceSession() {
     activeCascadeUserTurnIds.current = [];
     utteranceGateBubbleIds.current.clear();
     ignoredUtteranceIds.current.clear();
+    ignoredUtteranceReadings.current.clear();
+    ignoredFallbackBubbleIds.current.clear();
     latestUserUtteranceId.current = null;
     openCallerTurn.current = null;
     utteranceMessageIds.current.clear();
@@ -618,6 +625,30 @@ export function useVoiceSession() {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
             const uttId = metrics?.utteranceId;
+            if (uttId !== undefined && ignoredUtteranceIds.current.has(uttId)) {
+              // Late/trailing STT transcript chunk for an utterance already ignored by
+              // BackgroundSpeechGate: merge into fallback bubble or dim as continuation,
+              // never creating an unbadged bubble or stranding phase in "thinking".
+              const fallbackId = ignoredFallbackBubbleIds.current.get(uttId);
+              if (fallbackId !== undefined) {
+                ignoredFallbackBubbleIds.current.delete(uttId);
+                setMessages((items) =>
+                  items.map((m) => (m.id === fallbackId ? { ...m, text } : m)),
+                );
+                return;
+              }
+              const ignoredReading = ignoredUtteranceReadings.current.get(uttId);
+              if (ignoredReading) {
+                const contEntry = transcriptMessage(
+                  "user",
+                  text,
+                  { ...metrics, backgroundGate: { ...ignoredReading, continuation: true } },
+                  callStartedAt.current,
+                );
+                setMessages((items) => [...items, contEntry]);
+              }
+              return;
+            }
             let attachedEmotion: UserEmotionReading | undefined;
             const pending = pendingCallerEmotion.current;
             if (pending && now - pending.recordedAt > UTTERANCE_EMOTION_WINDOW_MS) {
@@ -1072,6 +1103,7 @@ export function useVoiceSession() {
             if (gateReading.decision === "ignore") {
               if (gateReading.utteranceId !== undefined) {
                 ignoredUtteranceIds.current.add(gateReading.utteranceId);
+                ignoredUtteranceReadings.current.set(gateReading.utteranceId, gateReading);
               }
               if (gateReading.mode === "live") {
                 // Ignored Live audio never reaches Gemini and never emits input_transcription,
@@ -1146,6 +1178,9 @@ export function useVoiceSession() {
                   { backgroundGate: gateReading },
                   callStartedAt.current,
                 );
+                if (gateReading.utteranceId !== undefined) {
+                  ignoredFallbackBubbleIds.current.set(gateReading.utteranceId, ignoredEntry.id);
+                }
                 setMessages((items) => [...items, ignoredEntry]);
               }
               return;

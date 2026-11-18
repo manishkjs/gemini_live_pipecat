@@ -850,18 +850,19 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
     pass straight through without classification.
 
     Concurrency & cancellation invariants:
-    1. Each candidate user message is synchronously popped from `LLMContext.messages`
+    1. Each new uncommitted user message is popped from `LLMContext.messages`
        before any `await`, so Pipecat 1.16's `InterruptionFrame` task cancellation
        can never strand ignored background speech in `messages`.
-    2. All overlapping evaluations commit strictly in FIFO arrival order via
-       `_inflight_entries` + `_commit_lock`, preserving exact chronological order
-       even when a fast Turn 2 finishes before a slower interrupted Turn 1.
-    3. If an addressed Turn 1 is interrupted mid-evaluation by an ignored Turn 2
-       (or an empty-STT cough), the gate still forwards `LLMContextFrame` once
-       the pending queue drains so the caller's real turn is never left unanswered.
+    2. All evaluations commit strictly in FIFO arrival order via `_inflight_entries`,
+       inserting approved messages *before* any newly appended uncommitted user
+       messages (`_committed_msg_ids`) so history never reorders or re-classifies.
+    3. Recovery of an interrupted addressed turn waits until the interrupting
+       aggregator turn closes (`UserStoppedSpeakingFrame`, or `AGGREGATOR_SAFETY_SECS`
+       if STT produced zero tokens and timed out), preventing double LLM replies.
     """
 
-    EMPTY_STT_RECOVERY_DELAY_SECS = 0.85
+    POST_STOP_RECOVERY_SECS = 0.05
+    AGGREGATOR_SAFETY_SECS = 5.2
 
     def __init__(
         self,
@@ -880,13 +881,18 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         self._on_decision = on_decision
         self._on_ignored_turn = on_ignored_turn
         self._seen_user_speech = False
-        self._user_speaking = False
+        self._turn_open_in_aggregator = False
         self._seq_counter = 0
-        self._latest_turn_origin: Any = None
+        self._open_vad_snapshot: tuple[Any, int | None, bytes | None, int] | None = None
+        self._closed_turn_snapshots: deque[tuple[Any, int | None, bytes | None, int]] = deque(
+            maxlen=16
+        )
+        self._committed_msg_ids: set[int] = set()
         self._inflight_entries: list[_InflightCascadeTurn] = []
         self._commit_lock = asyncio.Lock()
         self._unanswered_addressed_turn = False
         self._last_addressed_context: Any = None
+        self._recovery_task: asyncio.Task[None] | None = None
         self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
@@ -898,7 +904,35 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         task.add_done_callback(self._bg_tasks.discard)
         return task
 
+    def _cancel_recovery_task(self) -> None:
+        if self._recovery_task is not None and not self._recovery_task.done():
+            self._recovery_task.cancel()
+        self._recovery_task = None
+
+    def _schedule_recovery(self, delay_secs: float, *, force_close_open_turn: bool = False) -> None:
+        self._cancel_recovery_task()
+
+        async def _runner() -> None:
+            try:
+                await asyncio.sleep(delay_secs)
+                if force_close_open_turn:
+                    self._turn_open_in_aggregator = False
+                if (
+                    self._unanswered_addressed_turn
+                    and not self._inflight_entries
+                    and not self._turn_open_in_aggregator
+                    and self._last_addressed_context is not None
+                ):
+                    ctx = self._last_addressed_context
+                    self._unanswered_addressed_turn = False
+                    await self.push_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
+            except asyncio.CancelledError:
+                pass
+
+        self._recovery_task = self._track_bg_task(asyncio.create_task(_runner()))
+
     async def cleanup(self) -> None:
+        self._cancel_recovery_task()
         for task in list(self._bg_tasks):
             if not task.done():
                 task.cancel()
@@ -906,6 +940,8 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
         self._inflight_entries.clear()
+        self._closed_turn_snapshots.clear()
+        self._open_vad_snapshot = None
         await self._evaluator.cleanup()
         await super().cleanup()
 
@@ -947,6 +983,81 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                     return text
         return ""
 
+    def _insert_committed_message(self, messages: list[Any], msg: dict[str, Any]) -> None:
+        """Insert `msg` before any trailing user message that has not been evaluated yet."""
+        self._committed_msg_ids.add(id(msg))
+        insert_at = len(messages)
+        while (
+            insert_at > 0
+            and isinstance(messages[insert_at - 1], dict)
+            and messages[insert_at - 1].get("role") == "user"
+            and id(messages[insert_at - 1]) not in self._committed_msg_ids
+        ):
+            insert_at -= 1
+        messages.insert(insert_at, msg)
+
+    def _capture_vad_stop_snapshot(self, frame: Frame) -> None:
+        origin = frame.metadata.get(ORIGIN_KEY)
+        utt_id: int | None = None
+        if self._get_current_utterance_id is not None:
+            try:
+                raw_utt = int(self._get_current_utterance_id() or 0)
+                if raw_utt > 0:
+                    utt_id = raw_utt
+            except Exception:
+                utt_id = None
+        audio_pcm: bytes | None = None
+        sample_rate = 16000
+        if self._get_recent_audio is not None:
+            try:
+                audio_pcm, sample_rate = self._get_recent_audio()
+            except Exception:
+                audio_pcm = None
+
+        if self._open_vad_snapshot is not None:
+            prev_origin, prev_utt, prev_pcm, prev_sr = self._open_vad_snapshot
+            merged_pcm = (
+                (prev_pcm or b"") + (audio_pcm or b"")
+                if (prev_pcm or audio_pcm) and prev_sr == sample_rate
+                else (audio_pcm or prev_pcm)
+            )
+            self._open_vad_snapshot = (
+                origin or prev_origin,
+                prev_utt or utt_id,
+                merged_pcm,
+                sample_rate,
+            )
+        else:
+            self._open_vad_snapshot = (origin, utt_id, audio_pcm, sample_rate)
+
+    def _pop_turn_snapshot(
+        self, frame: Frame
+    ) -> tuple[Any, int | None, bytes | None, int]:
+        if self._closed_turn_snapshots:
+            origin, utt_id, audio_pcm, sample_rate = self._closed_turn_snapshots.popleft()
+            return (frame.metadata.get(ORIGIN_KEY) or origin, utt_id, audio_pcm, sample_rate)
+        if self._open_vad_snapshot is not None:
+            origin, utt_id, audio_pcm, sample_rate = self._open_vad_snapshot
+            self._open_vad_snapshot = None
+            return (frame.metadata.get(ORIGIN_KEY) or origin, utt_id, audio_pcm, sample_rate)
+
+        utt_id = None
+        if self._get_current_utterance_id is not None:
+            try:
+                raw_utt = int(self._get_current_utterance_id() or 0)
+                if raw_utt > 0:
+                    utt_id = raw_utt
+            except Exception:
+                utt_id = None
+        audio_pcm = None
+        sample_rate = 16000
+        if self._get_recent_audio is not None:
+            try:
+                audio_pcm, sample_rate = self._get_recent_audio()
+            except Exception:
+                audio_pcm = None
+        return (frame.metadata.get(ORIGIN_KEY), utt_id, audio_pcm, sample_rate)
+
     async def _drain_commits(self) -> None:
         """Commit completed evaluations strictly in FIFO arrival order."""
         async with self._commit_lock:
@@ -978,7 +1089,7 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 head.should_respond = decision.should_respond
                 head.committed = True
                 if decision.should_respond:
-                    head.context.messages.append(head.message)
+                    self._insert_committed_message(head.context.messages, head.message)
                     self._unanswered_addressed_turn = True
                     self._last_addressed_context = head.context
                 else:
@@ -998,23 +1109,6 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 await asyncio.shield(oldest.eval_task)
             await self._drain_commits()
 
-    async def _flush_unanswered_if_idle(self, delay_secs: float = 0.0) -> None:
-        """Forward a stranded addressed turn if an interrupting sound produced no LLM turn."""
-        try:
-            if delay_secs > 0:
-                await asyncio.sleep(delay_secs)
-            if (
-                self._unanswered_addressed_turn
-                and not self._inflight_entries
-                and not self._user_speaking
-                and self._last_addressed_context is not None
-            ):
-                ctx = self._last_addressed_context
-                self._unanswered_addressed_turn = False
-                await self.push_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
-        except asyncio.CancelledError:
-            pass
-
     async def _settle_cancelled_turn(self, entry: _InflightCascadeTurn) -> None:
         """Ensure an interrupted `process_frame` still commits in FIFO order."""
         try:
@@ -1022,11 +1116,9 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             if (
                 self._unanswered_addressed_turn
                 and not self._inflight_entries
-                and not self._user_speaking
+                and not self._turn_open_in_aggregator
             ):
-                # Yield briefly so an immediately queued Turn-2 LLMContextFrame can enter
-                # process_frame first; if none arrives, flush the addressed Turn 1 now.
-                await self._flush_unanswered_if_idle(delay_secs=0.05)
+                self._schedule_recovery(self.POST_STOP_RECOVERY_SECS)
         except asyncio.CancelledError:
             pass
 
@@ -1038,6 +1130,7 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             return
 
         if isinstance(frame, (EndFrame, CancelFrame)):
+            self._cancel_recovery_task()
             for task in list(self._bg_tasks):
                 if not task.done():
                     task.cancel()
@@ -1047,29 +1140,39 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             return
 
         if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
-            self._user_speaking = True
-            origin = frame.metadata.get(ORIGIN_KEY)
-            if origin is not None:
-                self._latest_turn_origin = origin
+            self._turn_open_in_aggregator = True
+            self._cancel_recovery_task()
             await self.push_frame(frame, direction)
             return
 
-        if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._seen_user_speech = True
-            self._user_speaking = False
-            origin = frame.metadata.get(ORIGIN_KEY)
-            if origin is not None:
-                self._latest_turn_origin = origin
+            self._capture_vad_stop_snapshot(frame)
             await self.push_frame(frame, direction)
-            if self._unanswered_addressed_turn:
-                self._track_bg_task(
-                    asyncio.create_task(
-                        self._flush_unanswered_if_idle(delay_secs=self.EMPTY_STT_RECOVERY_DELAY_SECS)
-                    )
-                )
+            if self._unanswered_addressed_turn and self._turn_open_in_aggregator:
+                # Safety ceiling > Pipecat's 5.0s user_turn_stop_timeout in case an
+                # empty-STT cough never triggers UserStoppedSpeakingFrame.
+                self._schedule_recovery(self.AGGREGATOR_SAFETY_SECS, force_close_open_turn=True)
+            return
+
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            self._seen_user_speech = True
+            self._turn_open_in_aggregator = False
+            if self._open_vad_snapshot is not None:
+                self._closed_turn_snapshots.append(self._open_vad_snapshot)
+                self._open_vad_snapshot = None
+            elif frame.metadata.get(ORIGIN_KEY) is not None:
+                self._capture_vad_stop_snapshot(frame)
+                if self._open_vad_snapshot is not None:
+                    self._closed_turn_snapshots.append(self._open_vad_snapshot)
+                    self._open_vad_snapshot = None
+            await self.push_frame(frame, direction)
+            if self._unanswered_addressed_turn and not self._inflight_entries:
+                self._schedule_recovery(self.POST_STOP_RECOVERY_SECS)
             return
 
         if isinstance(frame, LLMContextFrame):
+            self._cancel_recovery_task()
             context = getattr(frame, "context", None)
             messages = getattr(context, "messages", None)
             if not isinstance(messages, list) or not messages:
@@ -1087,32 +1190,22 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             )
             if not self._seen_user_speech and not has_assistant_history:
                 # Opening greeting trigger from StartTriggerProcessor always passes through.
+                self._committed_msg_ids.add(id(last_msg))
+                await self.push_frame(frame, direction)
+                return
+
+            if id(last_msg) in self._committed_msg_ids:
+                # Already evaluated and approved (e.g. recovery frame); forward directly.
+                self._unanswered_addressed_turn = False
                 await self.push_frame(frame, direction)
                 return
 
             # Synchronously pop `last_msg` and snapshot turn metadata BEFORE any await.
             candidate_msg = messages.pop()
+            self._turn_open_in_aggregator = False
             user_text = _extract_message_text(candidate_msg)
             last_bot = self._last_assistant_text(messages)
-            turn_origin = frame.metadata.get(ORIGIN_KEY) or self._latest_turn_origin
-            self._latest_turn_origin = None
-
-            utt_id: int | None = None
-            if self._get_current_utterance_id is not None:
-                try:
-                    raw_utt = int(self._get_current_utterance_id() or 0)
-                    if raw_utt > 0:
-                        utt_id = raw_utt
-                except Exception:
-                    utt_id = None
-
-            audio_pcm: bytes | None = None
-            sample_rate = 16000
-            if self._get_recent_audio is not None:
-                try:
-                    audio_pcm, sample_rate = self._get_recent_audio()
-                except Exception:
-                    audio_pcm = None
+            turn_origin, utt_id, audio_pcm, sample_rate = self._pop_turn_snapshot(frame)
 
             self._seq_counter += 1
             eval_task = self._track_bg_task(
