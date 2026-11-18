@@ -521,6 +521,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       input_tokens?: number;
       model?: string;
       utterance_id?: number;
+      utterance_ids?: number[];
       session_id?: string;
       decision?: string;
       mode?: string;
@@ -696,6 +697,13 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       if (data.decision === "ignore") {
         if (typeof data.utterance_id === "number") {
           ignoredUtteranceIds.add(data.utterance_id);
+        }
+        if (Array.isArray(data.utterance_ids)) {
+          for (const uid of data.utterance_ids) {
+            if (typeof uid === "number" && uid > 0) {
+              ignoredUtteranceIds.add(uid);
+            }
+          }
         }
         const isLiveWithActiveTurn = data.mode === "live" && lastUserAt !== null;
         const isSupersededCascade =

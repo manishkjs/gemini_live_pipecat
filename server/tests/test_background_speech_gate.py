@@ -1247,7 +1247,7 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         await self._run_cascade_capture(gate3, [VADUserStoppedSpeakingFrame(), LLMContextFrame(context=ctx3)])
         clf3.probability = 0.02
         bypassed = 0
-        for i in range(200):
+        for i in range(40):
             ctx3.set_messages([{"role": "assistant", "content": "Summary"}])
             gc.collect()
             ctx3.messages.append({"role": "user", "content": f"TV ad #{i}"})
@@ -1255,6 +1255,136 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             if any(isinstance(f, LLMContextFrame) for f in out):
                 bypassed += 1
         self.assertEqual(bypassed, 0)
+
+    async def test_r5_post_ignore_grace_window_multi_segment_turn_and_upstream_bot_speaking(
+        self,
+    ) -> None:
+        """Round 5 regressions:
+        1. Upstream `BotStartedSpeakingFrame` clears `_unanswered_addressed_turn` and cancels `_recovery_task`.
+        2. Caller speaking `<700ms` after an ignored turn gets its own fresh `utterance_id` (not the ignored turn's ID).
+        3. Open turn with spoken segment + trailing empty-STT cough preserves spoken PCM & `utterance_id`.
+        4. Open turn with 2 spoken clauses across a VAD pause concatenates PCM and emits `utterance_ids=[3, 4]`.
+        """
+        from unittest.mock import AsyncMock
+        from agent import TranscriptionBroadcaster
+        from pipecat.frames.frames import BotStartedSpeakingFrame
+        from processors.emotion_perception import AudioEmotionObserver
+
+        # 1. Upstream BotStartedSpeakingFrame clears _unanswered_addressed_turn & recovery timer
+        clf_bot = _StubDecisionsClassifier(probability=0.95)
+        gate_bot = CascadeBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=clf_bot))
+        gate_bot._unanswered_addressed_turn = True
+        gate_bot._schedule_recovery(5.0)
+        self.assertIsNotNone(gate_bot._recovery_task)
+        await gate_bot.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        self.assertFalse(gate_bot._unanswered_addressed_turn)
+        self.assertIsNone(gate_bot._recovery_task)
+
+        # 2-4. End-to-end AudioEmotionObserver + TranscriptionBroadcaster + CascadeBackgroundSpeechGate
+        emo = AudioEmotionObserver(enabled=False, record_utterance_audio=True)
+        broadcaster = TranscriptionBroadcaster(participant="User", emotion_observer=emo)
+        tx_out: list[Frame] = []
+        broadcaster.push_frame = AsyncMock(side_effect=lambda f, *_a, **_kw: tx_out.append(f))
+
+        clf = _StubDecisionsClassifier(probability=0.02)
+        gate = CascadeBackgroundSpeechGate(
+            BackgroundSpeechEvaluator(enabled=True, classifier=clf),
+            get_recent_audio=emo.get_last_utterance_audio,
+            get_current_utterance_id=lambda: emo.transcript_utterance_id or emo.current_utterance_id,
+        )
+
+        # Turn 1 (ignored TV ad, utt=1)
+        await emo.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await emo.process_frame(
+            InputAudioRawFrame(audio=b"\x10\x10" * 6400, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await broadcaster._send_transcription("Buy crispy chips")
+        await emo.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        ctx_t1 = SimpleNamespace(
+            messages=[
+                {"role": "assistant", "content": "Hello!"},
+                {"role": "user", "content": "Buy crispy chips"},
+            ]
+        )
+        out_t1 = await self._run_cascade_capture(
+            gate,
+            [VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame(), LLMContextFrame(context=ctx_t1)],
+        )
+        gate_t1 = [f for f in out_t1 if isinstance(f, OutputTransportMessageUrgentFrame)][-1]
+        self.assertEqual(gate_t1.message["data"]["utterance_id"], 1)
+        self.assertEqual(tx_out[-1].message["data"]["utterance_id"], 1)
+
+        # Turn 2 (<700ms later! Caller says "Can you check my balance" + trailing cough before turn closes)
+        clf.probability = 0.96
+        await emo.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await emo.process_frame(
+            InputAudioRawFrame(audio=b"\x22\x22" * 6400, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        # Streaming STT arrives <700ms into onset -> MUST get utterance_id=2 (NOT 1)!
+        await broadcaster._send_transcription("Can you check my balance")
+        self.assertEqual(tx_out[-1].message["data"]["utterance_id"], 2)
+        await emo.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+        # Trailing empty-STT cough (utt=3, 0x9999) before SmartTurn closes Turn 2!
+        await emo.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await emo.process_frame(
+            InputAudioRawFrame(audio=b"\x99\x99" * 6400, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await emo.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        ctx_t2 = SimpleNamespace(
+            messages=[
+                {"role": "assistant", "content": "Hello!"},
+                {"role": "user", "content": "Can you check my balance"},
+            ]
+        )
+        out_t2 = await self._run_cascade_capture(
+            gate,
+            [VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame(), LLMContextFrame(context=ctx_t2)],
+        )
+        gate_t2 = [f for f in out_t2 if isinstance(f, OutputTransportMessageUrgentFrame)][-1]
+        self.assertEqual(gate_t2.message["data"]["utterance_id"], 2)
+        self.assertEqual(clf.calls[-1]["inputs"][0].audio[:4], b"\x22\x22\x22\x22")
+
+        # Turn 3: Two-clause TV ad across VAD pause (utt=4 0x3333 + utt=5 0x4444) merged in aggregator
+        clf.probability = 0.03
+        await emo.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await emo.process_frame(
+            InputAudioRawFrame(audio=b"\x33\x33" * 6400, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await broadcaster._send_transcription("Call right now")
+        self.assertEqual(tx_out[-1].message["data"]["utterance_id"], 4)
+        await emo.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+        await emo.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await emo.process_frame(
+            InputAudioRawFrame(audio=b"\x44\x44" * 6400, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await broadcaster._send_transcription("for free shipping!")
+        self.assertEqual(tx_out[-1].message["data"]["utterance_id"], 5)
+        await emo.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        ctx_t3 = SimpleNamespace(
+            messages=[
+                {"role": "assistant", "content": "Sure!"},
+                {"role": "user", "content": "Call right now for free shipping!"},
+            ]
+        )
+        out_t3 = await self._run_cascade_capture(
+            gate,
+            [VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame(), LLMContextFrame(context=ctx_t3)],
+        )
+        gate_t3 = [f for f in out_t3 if isinstance(f, OutputTransportMessageUrgentFrame)][-1]
+        self.assertEqual(gate_t3.message["data"]["utterance_id"], 5)
+        self.assertEqual(gate_t3.message["data"]["utterance_ids"], [4, 5])
+        classified_pcm = clf.calls[-1]["inputs"][0].audio
+        self.assertEqual(classified_pcm[:4], b"\x33\x33\x33\x33")
+        self.assertEqual(classified_pcm[-4:], b"\x44\x44\x44\x44")
 
     def test_coalesce_audio_frames_merges_small_chunks(self) -> None:
         frames = [

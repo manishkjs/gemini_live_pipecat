@@ -1559,6 +1559,9 @@ class TranscriptionBroadcaster(FrameProcessor):
             )
             if utt_id > 0:
                 data['utterance_id'] = utt_id
+                record_fn = getattr(self._emotion_observer, "record_transcribed_utterance", None)
+                if callable(record_fn):
+                    record_fn(utt_id)
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
@@ -2059,6 +2062,7 @@ async def run_agent(
         bg_gate = (
             CascadeBackgroundSpeechGate(
                 bg_evaluator,
+                emotion_observer=emotion_observer,
                 get_recent_audio=lambda: (
                     accumulator._last_turn_audio,
                     accumulator._last_turn_sample_rate,
@@ -2111,6 +2115,7 @@ async def run_agent(
         bg_gate = (
             CascadeBackgroundSpeechGate(
                 bg_evaluator,
+                emotion_observer=emotion_observer,
                 get_recent_audio=emotion_observer.get_last_utterance_audio,
                 get_current_utterance_id=lambda: (
                     emotion_observer.transcript_utterance_id

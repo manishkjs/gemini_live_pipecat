@@ -18,6 +18,7 @@ export type BackgroundGateReading = {
   readonly inputTokens?: number;
   readonly outputTokens?: number;
   readonly utteranceId?: number;
+  readonly utteranceIds?: readonly number[];
   /** True on earlier bubbles of a multi-sentence ignored turn so the chip renders once. */
   readonly continuation?: boolean;
 };
@@ -83,6 +84,19 @@ export function parseBackgroundGatePayload(val: Record<string, unknown> | null |
   const outputTokens = Number.isFinite(rawOut) && rawOut >= 0 ? Math.round(rawOut) : undefined;
   const rawUtt = Number(val?.utterance_id);
   const utteranceId = Number.isSafeInteger(rawUtt) && rawUtt > 0 ? rawUtt : undefined;
+  let utteranceIds: number[] | undefined;
+  if (Array.isArray(val?.utterance_ids)) {
+    const parsedIds = Array.from(
+      new Set(
+        val.utterance_ids
+          .map((item) => Number(item))
+          .filter((n) => Number.isSafeInteger(n) && n > 0),
+      ),
+    );
+    if (parsedIds.length > 0) {
+      utteranceIds = parsedIds;
+    }
+  }
   const transcript = typeof val?.transcript === "string" ? val.transcript.trim() : "";
 
   return {
@@ -97,6 +111,7 @@ export function parseBackgroundGatePayload(val: Record<string, unknown> | null |
       inputTokens,
       outputTokens,
       utteranceId,
+      ...(utteranceIds ? { utteranceIds } : {}),
     },
     transcript,
   };
@@ -223,9 +238,34 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
   }
 
   const cleanTx = normalizeGateTranscript(transcript);
-  const txMatchedIndices = cleanTx
+  let txMatchedIndices = cleanTx
     ? matchTranscriptSlice(items, candidateIndices, cleanTx)
     : null;
+  if (cleanTx && txMatchedIndices === null && matchedByUtteranceId) {
+    // SmartTurn / SpeechTimeout can merge >= 2 VAD segments (utterance_id K-1, K)
+    // into a single Cascade turn whose `utterance_id` is K while `transcript`
+    // spans Clauses 1..K. Expand across contiguous unbadged user bubbles since
+    // the last assistant turn iff the matched slice ends at `candidateIndices[-1]`.
+    const lastCandidateIdx = candidateIndices[candidateIndices.length - 1];
+    const priorUnbadgedIndices: number[] = [];
+    for (let i = 0; i <= lastCandidateIdx; i++) {
+      const msg = items[i];
+      if (msg.role === "assistant") {
+        priorUnbadgedIndices.length = 0;
+        continue;
+      }
+      if (msg.role === "user" && !msg.metrics?.backgroundGate) {
+        priorUnbadgedIndices.push(i);
+      }
+    }
+    const expandedMatch = matchTranscriptSlice(items, priorUnbadgedIndices, cleanTx);
+    if (
+      expandedMatch !== null &&
+      expandedMatch[expandedMatch.length - 1] === lastCandidateIdx
+    ) {
+      txMatchedIndices = expandedMatch;
+    }
+  }
   if (cleanTx && txMatchedIndices === null) {
     // When a non-empty transcript was evaluated, refuse to attach onto a
     // bubble whose text does not match (protects against skewed utterance_ids).

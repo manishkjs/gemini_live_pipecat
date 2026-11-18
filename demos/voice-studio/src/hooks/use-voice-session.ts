@@ -1100,10 +1100,18 @@ export function useVoiceSession() {
               parseBackgroundGatePayload(val);
             setGateStats((prev) => accumulateBackgroundGateStats(prev, gateReading));
 
+            const turnUtteranceIds =
+              gateReading.utteranceIds && gateReading.utteranceIds.length > 0
+                ? [...gateReading.utteranceIds]
+                : gateReading.utteranceId !== undefined
+                  ? [gateReading.utteranceId]
+                  : [];
+            const turnUtteranceIdSet = new Set(turnUtteranceIds);
+
             if (gateReading.decision === "ignore") {
-              if (gateReading.utteranceId !== undefined) {
-                ignoredUtteranceIds.current.add(gateReading.utteranceId);
-                ignoredUtteranceReadings.current.set(gateReading.utteranceId, gateReading);
+              for (const uid of turnUtteranceIds) {
+                ignoredUtteranceIds.current.add(uid);
+                ignoredUtteranceReadings.current.set(uid, gateReading);
               }
               if (gateReading.mode === "live") {
                 // Ignored Live audio never reaches Gemini and never emits input_transcription,
@@ -1131,20 +1139,20 @@ export function useVoiceSession() {
                 setPhase((p) => (p === "thinking" ? "listening" : p));
                 if (
                   !dockEmotionRef.current?.utteranceId ||
-                  dockEmotionRef.current.utteranceId === gateReading.utteranceId
+                  turnUtteranceIdSet.has(dockEmotionRef.current.utteranceId)
                 ) {
                   clearDockEmotion();
                   setLiveEmotion(null);
                 }
                 if (
                   !openCallerTurn.current?.utteranceId ||
-                  openCallerTurn.current.utteranceId === gateReading.utteranceId
+                  turnUtteranceIdSet.has(openCallerTurn.current.utteranceId)
                 ) {
                   openCallerTurn.current = null;
                 }
                 if (
                   !pendingCallerEmotion.current?.reading.utteranceId ||
-                  pendingCallerEmotion.current.reading.utteranceId === gateReading.utteranceId
+                  turnUtteranceIdSet.has(pendingCallerEmotion.current.reading.utteranceId)
                 ) {
                   pendingCallerEmotion.current = null;
                 }
@@ -1152,9 +1160,14 @@ export function useVoiceSession() {
 
               let turnIds: string[] = [];
               let matchedByUttId = false;
-              if (gateReading.utteranceId !== undefined) {
-                turnIds = utteranceGateBubbleIds.current.get(gateReading.utteranceId) ?? [];
-                utteranceGateBubbleIds.current.delete(gateReading.utteranceId);
+              if (turnUtteranceIds.length > 0) {
+                for (const uid of turnUtteranceIds) {
+                  const bucket = utteranceGateBubbleIds.current.get(uid);
+                  if (bucket) {
+                    turnIds.push(...bucket);
+                    utteranceGateBubbleIds.current.delete(uid);
+                  }
+                }
                 matchedByUttId = true;
               } else {
                 turnIds = [...activeCascadeUserTurnIds.current];
@@ -1194,9 +1207,14 @@ export function useVoiceSession() {
 
             let turnIds: string[] = [];
             let matchedByUttId = false;
-            if (gateReading.utteranceId !== undefined) {
-              turnIds = utteranceGateBubbleIds.current.get(gateReading.utteranceId) ?? [];
-              utteranceGateBubbleIds.current.delete(gateReading.utteranceId);
+            if (turnUtteranceIds.length > 0) {
+              for (const uid of turnUtteranceIds) {
+                const bucket = utteranceGateBubbleIds.current.get(uid);
+                if (bucket) {
+                  turnIds.push(...bucket);
+                  utteranceGateBubbleIds.current.delete(uid);
+                }
+              }
               matchedByUttId = true;
             } else {
               turnIds = [...activeCascadeUserTurnIds.current];

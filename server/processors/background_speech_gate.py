@@ -138,9 +138,20 @@ class BackgroundSpeechDecision:
     input_tokens: int = 0
     output_tokens: int = 0
     utterance_id: int | None = None
+    utterance_ids: tuple[int, ...] = ()
 
-    def with_utterance_id(self, utterance_id: int | None) -> BackgroundSpeechDecision:
-        if not utterance_id or utterance_id <= 0:
+    def with_utterance_ids(
+        self,
+        utterance_id: int | None,
+        utterance_ids: tuple[int, ...] = (),
+    ) -> BackgroundSpeechDecision:
+        valid_ids = tuple(dict.fromkeys(int(u) for u in utterance_ids if u and int(u) > 0))
+        resolved_id = int(utterance_id) if utterance_id and utterance_id > 0 else None
+        if resolved_id is None and valid_ids:
+            resolved_id = valid_ids[-1]
+        if resolved_id is not None and resolved_id not in valid_ids:
+            valid_ids = (*valid_ids, resolved_id)
+        if resolved_id is None and not valid_ids:
             return self
         return BackgroundSpeechDecision(
             should_respond=self.should_respond,
@@ -152,8 +163,12 @@ class BackgroundSpeechDecision:
             audio_duration_secs=self.audio_duration_secs,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
-            utterance_id=int(utterance_id),
+            utterance_id=resolved_id,
+            utterance_ids=valid_ids,
         )
+
+    def with_utterance_id(self, utterance_id: int | None) -> BackgroundSpeechDecision:
+        return self.with_utterance_ids(utterance_id)
 
     def to_rtvi_payload(self, mode: str) -> dict[str, Any]:
         """Serialize the decision for RTVI server-message telemetry."""
@@ -172,6 +187,8 @@ class BackgroundSpeechDecision:
         }
         if self.utterance_id is not None and self.utterance_id > 0:
             payload["utterance_id"] = self.utterance_id
+        if len(self.utterance_ids) > 1:
+            payload["utterance_ids"] = list(self.utterance_ids)
         return payload
 
 
@@ -834,6 +851,7 @@ class _InflightCascadeTurn:
     message: dict[str, Any]
     user_text: str
     utterance_id: int | None
+    utterance_ids: tuple[int, ...]
     turn_origin: Any
     eval_task: asyncio.Task[BackgroundSpeechDecision]
     committed: bool = False
@@ -841,6 +859,7 @@ class _InflightCascadeTurn:
 
 
 TurnSnapshot = tuple[Any, int | None, bytes | None, int]
+CollapsedTurnSnapshot = tuple[Any, int | None, tuple[int, ...], bytes | None, int]
 
 
 class CascadeBackgroundSpeechGate(FrameProcessor):
@@ -860,16 +879,20 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
        messages (`_committed_msgs`) so history never reorders or re-classifies.
     3. Recovery of an interrupted addressed turn waits until the interrupting
        aggregator turn closes (`UserStoppedSpeakingFrame`, or `AGGREGATOR_SAFETY_SECS`
-       if STT produced zero tokens and timed out), preventing double LLM replies.
+       > Pipecat's 5.0s `user_turn_stop_timeout` so slow STT taking 1-4s never
+       races an early recovery push into double LLM replies).
     """
 
     POST_STOP_RECOVERY_SECS = 0.05
+    # Must exceed Pipecat 1.16's 5.0s `user_turn_stop_timeout` so slow STT never
+    # triggers duplicate LLM invocations against an early recovery frame.
     AGGREGATOR_SAFETY_SECS = 5.2
 
     def __init__(
         self,
         evaluator: BackgroundSpeechEvaluator,
         *,
+        emotion_observer: Any = None,
         get_recent_audio: Callable[[], tuple[bytes | None, int]] | None = None,
         get_current_utterance_id: Callable[[], int] | None = None,
         on_decision: Callable[[BackgroundSpeechDecision], None] | None = None,
@@ -878,14 +901,16 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
     ) -> None:
         super().__init__(**kwargs)
         self._evaluator = evaluator
+        bound_obs = getattr(get_recent_audio, "__self__", None)
+        self._emotion_observer = emotion_observer if emotion_observer is not None else bound_obs
         self._get_recent_audio = get_recent_audio
         self._get_current_utterance_id = get_current_utterance_id
         self._on_decision = on_decision
         self._on_ignored_turn = on_ignored_turn
         self._seen_user_speech = False
         self._turn_open_in_aggregator = False
-        self._open_vad_snapshot: TurnSnapshot | None = None
-        self._closed_turn_snapshots: deque[TurnSnapshot] = deque(maxlen=16)
+        self._open_vad_segments: list[TurnSnapshot] = []
+        self._closed_turn_segments: deque[list[TurnSnapshot]] = deque(maxlen=16)
         self._committed_msgs: deque[dict[str, Any]] = deque(maxlen=128)
         self._inflight_entries: list[_InflightCascadeTurn] = []
         self._commit_lock = asyncio.Lock()
@@ -939,8 +964,8 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
         self._inflight_entries.clear()
-        self._closed_turn_snapshots.clear()
-        self._open_vad_snapshot = None
+        self._closed_turn_segments.clear()
+        self._open_vad_segments.clear()
         await self._evaluator.cleanup()
         await super().cleanup()
 
@@ -1036,37 +1061,75 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 audio_pcm = None
         return (utt_id, audio_pcm, sample_rate)
 
+    def _seal_emotion_utterance_id(self) -> None:
+        seal_fn = getattr(self._emotion_observer, "seal_completed_utterance_id", None)
+        if callable(seal_fn):
+            try:
+                seal_fn()
+            except Exception:
+                pass
+
     def _capture_vad_stop_snapshot(self, frame: Frame) -> None:
         origin = frame.metadata.get(ORIGIN_KEY)
         utt_id, audio_pcm, sample_rate = self._sample_live_utterance_context()
-        if self._open_vad_snapshot is not None:
-            prev_origin, prev_utt, prev_pcm, _ = self._open_vad_snapshot
-            # Prefer the newest VAD segment's utterance_id & PCM so an earlier
-            # empty-STT cough never stamps a subsequent spoken utterance with stale metadata.
-            self._open_vad_snapshot = (
-                origin or prev_origin,
-                utt_id or prev_utt,
-                audio_pcm if audio_pcm is not None else prev_pcm,
-                sample_rate,
-            )
-        else:
-            self._open_vad_snapshot = (origin, utt_id, audio_pcm, sample_rate)
+        self._open_vad_segments.append((origin, utt_id, audio_pcm, sample_rate))
 
-    def _pop_turn_snapshot(self, frame: Frame, uncommitted_remaining: int = 0) -> TurnSnapshot:
+    def _collapse_segments(
+        self, segments: list[TurnSnapshot], frame: Frame
+    ) -> CollapsedTurnSnapshot:
+        origin = frame.metadata.get(ORIGIN_KEY) or next(
+            (seg[0] for seg in segments if seg[0] is not None), None
+        )
+        obs = self._emotion_observer
+        has_tx_records = bool(getattr(obs, "has_transcription_records", False))
+        was_tx_fn = getattr(obs, "was_utterance_transcribed", None)
+        spoken: list[TurnSnapshot] = []
+        if has_tx_records and callable(was_tx_fn):
+            spoken = [
+                seg for seg in segments if seg[1] is not None and bool(was_tx_fn(seg[1]))
+            ]
+        chosen = spoken if spoken else segments
+        if not chosen:
+            utt_id, audio_pcm, sample_rate = self._sample_live_utterance_context()
+            utt_ids = (utt_id,) if utt_id and utt_id > 0 else ()
+            return (origin, utt_id, utt_ids, audio_pcm, sample_rate)
+
+        sample_rate = chosen[-1][3] or 16000
+        utt_ids = tuple(
+            dict.fromkeys(seg[1] for seg in chosen if seg[1] is not None and seg[1] > 0)
+        )
+        utt_id = utt_ids[-1] if utt_ids else None
+        pcm_chunks = [seg[2] for seg in chosen if seg[2]]
+        if not pcm_chunks:
+            audio_pcm = None
+        elif len(pcm_chunks) == 1:
+            audio_pcm = pcm_chunks[0]
+        else:
+            joined = b"".join(pcm_chunks)
+            max_bytes = int(round(MAX_BUFFER_SECS * sample_rate * 2))
+            max_bytes -= max_bytes % 2
+            audio_pcm = joined[-max_bytes:] if len(joined) > max_bytes else joined
+        return (origin, utt_id, utt_ids, audio_pcm, sample_rate)
+
+    def _pop_turn_snapshot(
+        self, frame: Frame, uncommitted_remaining: int = 0
+    ) -> CollapsedTurnSnapshot:
         # Discard any orphan snapshots left behind by earlier empty-STT cough turns
         # that emitted `UserStoppedSpeakingFrame` without appending a user message.
-        while len(self._closed_turn_snapshots) > uncommitted_remaining + 1:
-            orphan_origin, _, _, _ = self._closed_turn_snapshots.popleft()
+        while len(self._closed_turn_segments) > uncommitted_remaining + 1:
+            orphan_segs = self._closed_turn_segments.popleft()
+            orphan_origin = next((s[0] for s in orphan_segs if s[0] is not None), None)
             self._finish_ignored_turn(orphan_origin)
-        if self._closed_turn_snapshots:
-            origin, utt_id, audio_pcm, sample_rate = self._closed_turn_snapshots.popleft()
-            return (frame.metadata.get(ORIGIN_KEY) or origin, utt_id, audio_pcm, sample_rate)
-        if self._open_vad_snapshot is not None:
-            origin, utt_id, audio_pcm, sample_rate = self._open_vad_snapshot
-            self._open_vad_snapshot = None
-            return (frame.metadata.get(ORIGIN_KEY) or origin, utt_id, audio_pcm, sample_rate)
+        if self._closed_turn_segments:
+            segs = self._closed_turn_segments.popleft()
+            return self._collapse_segments(segs, frame)
+        if self._open_vad_segments:
+            segs = list(self._open_vad_segments)
+            self._open_vad_segments.clear()
+            return self._collapse_segments(segs, frame)
         utt_id, audio_pcm, sample_rate = self._sample_live_utterance_context()
-        return (frame.metadata.get(ORIGIN_KEY), utt_id, audio_pcm, sample_rate)
+        utt_ids = (utt_id,) if utt_id and utt_id > 0 else ()
+        return (frame.metadata.get(ORIGIN_KEY), utt_id, utt_ids, audio_pcm, sample_rate)
 
     async def _drain_commits(self) -> None:
         """Commit completed evaluations strictly in FIFO arrival order."""
@@ -1075,7 +1138,9 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 head = self._inflight_entries.pop(0)
                 try:
                     raw_decision = await head.eval_task
-                    decision = raw_decision.with_utterance_id(head.utterance_id)
+                    decision = raw_decision.with_utterance_ids(
+                        head.utterance_id, head.utterance_ids
+                    )
                 except asyncio.CancelledError:
                     head.committed = True
                     head.should_respond = False
@@ -1093,6 +1158,7 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                         reason="fail_open_error",
                         transcript=head.user_text,
                         utterance_id=head.utterance_id,
+                        utterance_ids=head.utterance_ids,
                     )
 
                 await self._emit_decision(decision)
@@ -1136,6 +1202,12 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
 
+        if isinstance(frame, BotStartedSpeakingFrame):
+            # Output transport broadcasts `BotStartedSpeakingFrame` UPSTREAM, so clear
+            # any pending recovery state before the `DOWNSTREAM`-only fast return.
+            self._unanswered_addressed_turn = False
+            self._cancel_recovery_task()
+
         if not self._evaluator.enabled or direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             return
@@ -1147,12 +1219,6 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                     task.cancel()
             self._inflight_entries.clear()
             self._unanswered_addressed_turn = False
-            await self.push_frame(frame, direction)
-            return
-
-        if isinstance(frame, BotStartedSpeakingFrame):
-            self._unanswered_addressed_turn = False
-            self._cancel_recovery_task()
             await self.push_frame(frame, direction)
             return
 
@@ -1175,14 +1241,15 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         if isinstance(frame, UserStoppedSpeakingFrame):
             self._seen_user_speech = True
             self._turn_open_in_aggregator = False
-            if self._open_vad_snapshot is not None:
-                self._closed_turn_snapshots.append(self._open_vad_snapshot)
-                self._open_vad_snapshot = None
+            self._seal_emotion_utterance_id()
+            if self._open_vad_segments:
+                self._closed_turn_segments.append(list(self._open_vad_segments))
+                self._open_vad_segments.clear()
             elif frame.metadata.get(ORIGIN_KEY) is not None:
                 self._capture_vad_stop_snapshot(frame)
-                if self._open_vad_snapshot is not None:
-                    self._closed_turn_snapshots.append(self._open_vad_snapshot)
-                    self._open_vad_snapshot = None
+                if self._open_vad_segments:
+                    self._closed_turn_segments.append(list(self._open_vad_segments))
+                    self._open_vad_segments.clear()
             await self.push_frame(frame, direction)
             if self._unanswered_addressed_turn and not self._inflight_entries:
                 self._schedule_recovery(self.POST_STOP_RECOVERY_SECS)
@@ -1205,7 +1272,10 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                     # subsequent turns stay aligned, and only forward if a prior addressed
                     # user turn is still awaiting an answer.
                     messages.pop()
-                    cough_origin, _, _, _ = self._pop_turn_snapshot(frame, uncommitted_remaining=0)
+                    self._seal_emotion_utterance_id()
+                    cough_origin, _, _, _, _ = self._pop_turn_snapshot(
+                        frame, uncommitted_remaining=0
+                    )
                     self._finish_ignored_turn(cough_origin)
                     if self._unanswered_addressed_turn and not self._inflight_entries:
                         self._unanswered_addressed_turn = False
@@ -1237,9 +1307,10 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 messages
             )
             self._turn_open_in_aggregator = False
+            self._seal_emotion_utterance_id()
             user_text = _extract_message_text(candidate_msg)
             last_bot = self._last_assistant_text(messages)
-            turn_origin, utt_id, audio_pcm, sample_rate = self._pop_turn_snapshot(
+            turn_origin, utt_id, utt_ids, audio_pcm, sample_rate = self._pop_turn_snapshot(
                 frame, uncommitted_remaining=uncommitted_remaining
             )
 
@@ -1258,6 +1329,7 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 message=candidate_msg,
                 user_text=user_text,
                 utterance_id=utt_id,
+                utterance_ids=utt_ids,
                 turn_origin=turn_origin,
                 eval_task=eval_task,
             )

@@ -198,6 +198,9 @@ class AudioAccumulator(FrameProcessor):
                 )
                 if utt_id > 0:
                     tx_payload['utterance_id'] = utt_id
+                    record_fn = getattr(emo_obs, "record_transcribed_utterance", None)
+                    if callable(record_fn):
+                        record_fn(utt_id)
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
                     "type": "server-message",

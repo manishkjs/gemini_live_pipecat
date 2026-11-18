@@ -208,3 +208,36 @@ test("parseBackgroundGatePayload preserves >160-character transcripts and accumu
   assert.equal(stats.lastLatencyMs, 190);
   assert.equal(stats.lastDecision, "ignore");
 });
+
+test("attachCascadeGateToTurn dims and badges multi-VAD-segment SmartTurn clauses when matchedByUtteranceId holds only the final clause ID", () => {
+  const parsed = parseBackgroundGatePayload({
+    decision: "ignore",
+    mode: "cascade",
+    addressed_probability: 0.04,
+    background_probability: 0.96,
+    latency_ms: 280,
+    transcript: "Hey mom pass the water. I am on a call right now.",
+    utterance_id: 2,
+    utterance_ids: [1, 2],
+  });
+  assert.deepEqual(parsed.reading.utteranceIds, [1, 2]);
+
+  const items = [
+    { id: "a0", role: "assistant", text: "How can I help?" },
+    { id: "m1", role: "user", text: "Hey mom pass the water.", metrics: { utteranceId: 1 } },
+    { id: "m2", role: "user", text: "I am on a call right now.", metrics: { utteranceId: 2 } },
+  ];
+  // Even when a caller passes only ["m2"] (utteranceId=2) with matchedByUtteranceId=true,
+  // both clauses of the merged SmartTurn utterance are dimmed and m2 gets the chip!
+  const updated = attachCascadeGateToTurn(
+    items,
+    ["m2"],
+    parsed.reading,
+    parsed.transcript,
+    true,
+  );
+  assert.equal(updated[1].metrics?.backgroundGate?.decision, "ignore");
+  assert.equal(updated[1].metrics?.backgroundGate?.continuation, true);
+  assert.equal(updated[2].metrics?.backgroundGate?.decision, "ignore");
+  assert.equal(updated[2].metrics?.backgroundGate?.continuation, undefined);
+});
