@@ -32,11 +32,31 @@ function TurnMetricChips({
   if (message.role === "user") {
     const hasStt = metrics?.sttLatency !== undefined;
     const emotion = metrics?.userEmotion;
-    if (!hasStt && !emotion) return null;
+    const gate = metrics?.backgroundGate;
+    if (!hasStt && !emotion && !gate) return null;
     const sttMs = hasStt && metrics?.sttLatency !== undefined ? Math.round(metrics.sttLatency * 1000) : null;
+    const addressedPct = gate ? Math.round(gate.addressedProbability * 100) : null;
     return (
       <div className="chips">
-        {emotion && (
+        {gate && (
+          <>
+            <span
+              className={`chip bg-gate ${gate.decision === "respond" ? "respond" : "quiet"}`}
+              title={
+                gate.decision === "respond"
+                  ? `Addressed to assistant (${addressedPct}% confidence, ${gate.latencyMs}ms via gemini-decision-1)`
+                  : `Ignored background speech / side-talk (${addressedPct}% addressed, ${Math.round(gate.backgroundProbability * 100)}% background, ${gate.latencyMs}ms)`
+              }
+            >
+              <span className="bg-gate-dot" aria-hidden="true" />
+              {gate.decision === "respond"
+                ? `RESPONDING · ${addressedPct}% ADDRESSED`
+                : `STAYED QUIET · ${addressedPct}%`}
+            </span>
+            <span className="chip bg-gate-ms">Decisions {gate.latencyMs} ms</span>
+          </>
+        )}
+        {emotion && gate?.decision !== "ignore" && (
           <span
             className="chip emotion"
             title={`Caller vocal tone (${emotion.model}): ${emotion.title} · ${Math.round(emotion.confidence * 100)}% (${emotion.latencyMs}ms)`}
@@ -294,9 +314,13 @@ export default function LiveCallStage({ studio }: LiveCallStageProps) {
 
           {messages.map((msg, idx) => {
             const isUser = msg.role === "user";
+            const isIgnoredBg = isUser && msg.metrics?.backgroundGate?.decision === "ignore";
             const isStreamingAssistant = !isUser && idx === streamingAssistantIndex;
             return (
-              <div key={msg.id} className={`turn${isUser ? " user" : ""}`}>
+              <div
+                key={msg.id}
+                className={`turn${isUser ? " user" : ""}${isIgnoredBg ? " is-ignored-bg" : ""}`}
+              >
                 <div className="turn-who">
                   <b>{isUser ? "You" : persona.agentName}</b>
                   <span>{msg.offsetLabel ?? msg.time}</span>

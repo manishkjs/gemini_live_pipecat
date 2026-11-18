@@ -18,6 +18,7 @@ import {
 import { getPersona, type PersonaId } from "@/lib/personas";
 import {
   createLiveSession,
+  type BackgroundGateReading,
   type LiveSession,
   type MessageMetrics,
   type UserEmotionReading,
@@ -158,6 +159,7 @@ export function useVoiceSession() {
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
   const pendingCallerEmotion = useRef<PendingCallerEmotion | null>(null);
+  const pendingBackgroundGate = useRef<{ reading: BackgroundGateReading; recordedAt: number } | null>(null);
   const openCallerTurn = useRef<OpenCallerTurn | null>(null);
   const utteranceMessageIds = useRef(new Map<number, string>());
   const utteranceReadings = useRef(new Map<number, PendingCallerEmotion>());
@@ -392,6 +394,7 @@ export function useVoiceSession() {
     setMuted(false);
     setPartialUser("");
     pendingCallerEmotion.current = null;
+    pendingBackgroundGate.current = null;
     openCallerTurn.current = null;
     turnSettledBeforeBotReply.current = false;
     clearDockEmotion();
@@ -431,6 +434,7 @@ export function useVoiceSession() {
     responseMetrics.current.clear();
     lastAssistantMetrics.current = null;
     pendingCallerEmotion.current = null;
+    pendingBackgroundGate.current = null;
     openCallerTurn.current = null;
     utteranceMessageIds.current.clear();
     utteranceReadings.current.clear();
@@ -634,6 +638,13 @@ export function useVoiceSession() {
 
             if (attachedEmotion) {
               metrics = { ...metrics, userEmotion: attachedEmotion };
+            }
+            const pendingGate = pendingBackgroundGate.current;
+            if (pendingGate && now - pendingGate.recordedAt <= 10000) {
+              metrics = { ...metrics, backgroundGate: pendingGate.reading };
+              pendingBackgroundGate.current = null;
+            } else if (pendingGate) {
+              pendingBackgroundGate.current = null;
             }
             const entry = transcriptMessage("user", text, metrics, callStartedAt.current);
             const effectiveUttId = uttId ?? attachedEmotion?.utteranceId;
@@ -1007,6 +1018,80 @@ export function useVoiceSession() {
               }
               pendingCallerEmotion.current = { reading, recordedAt: now };
             }
+          } else if (type === "background_gate") {
+            const now = performance.now();
+            const decision = val?.decision === "ignore" ? "ignore" : "respond";
+            const mode = val?.mode === "live" ? "live" : "cascade";
+            const addressedProbability = Number.isFinite(val?.addressed_probability)
+              ? Math.max(0, Math.min(1, Number(val.addressed_probability)))
+              : decision === "respond"
+                ? 1
+                : 0;
+            const backgroundProbability = Number.isFinite(val?.background_probability)
+              ? Math.max(0, Math.min(1, Number(val.background_probability)))
+              : Math.max(0, 1 - addressedProbability);
+            const latencyMs = Number.isFinite(val?.latency_ms)
+              ? Math.max(0, Math.round(Number(val.latency_ms)))
+              : 0;
+            const audioDurationSecs = Number.isFinite(val?.audio_duration_secs)
+              ? Math.max(0, Number(val.audio_duration_secs))
+              : undefined;
+            const gateReading: BackgroundGateReading = {
+              decision,
+              addressedProbability,
+              backgroundProbability,
+              latencyMs,
+              mode,
+              reason: typeof val?.reason === "string" ? val.reason : "",
+              audioDurationSecs,
+            };
+
+            if (mode === "live" && decision === "ignore") {
+              // In Gemini Live Silero mode, ignored audio is dropped before the model,
+              // so we emit a compact muted transcript entry showing the STAYED QUIET score.
+              setPartialUser("");
+              const durText =
+                audioDurationSecs && audioDurationSecs > 0
+                  ? ` (${audioDurationSecs.toFixed(1)}s)`
+                  : "";
+              const label =
+                typeof val?.transcript === "string" && val.transcript.trim()
+                  ? val.transcript.trim()
+                  : `🔇 Background speech${durText}`;
+              const ignoredEntry = transcriptMessage(
+                "user",
+                label,
+                { backgroundGate: gateReading },
+                callStartedAt.current,
+              );
+              setMessages((items) => [...items, ignoredEntry]);
+              return;
+            }
+
+            // Attach to the most recent unbadged user bubble if already present (Cascade),
+            // otherwise hold briefly for the upcoming user transcript (Gemini Live respond).
+            setMessages((items) => {
+              const nowEpoch = Date.now();
+              for (let i = items.length - 1; i >= 0; i--) {
+                const candidate = items[i];
+                if (candidate.role === "assistant") break;
+                if (
+                  candidate.role === "user" &&
+                  !candidate.metrics?.backgroundGate &&
+                  (!candidate.createdAt || nowEpoch - candidate.createdAt <= 12000)
+                ) {
+                  const next = [...items];
+                  next[i] = {
+                    ...candidate,
+                    metrics: { ...candidate.metrics, backgroundGate: gateReading },
+                  };
+                  pendingBackgroundGate.current = null;
+                  return next;
+                }
+              }
+              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+              return items;
+            });
           }
         },
         onPartialUser: (text) => {

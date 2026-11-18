@@ -19,6 +19,16 @@ export type UserEmotionReading = {
   readonly utteranceId?: number;
 };
 
+export type BackgroundGateReading = {
+  readonly decision: "respond" | "ignore";
+  readonly addressedProbability: number;
+  readonly backgroundProbability: number;
+  readonly latencyMs: number;
+  readonly mode: "live" | "cascade";
+  readonly reason: string;
+  readonly audioDurationSecs?: number;
+};
+
 export type MessageMetrics = {
   responseId?: string;
   utteranceId?: number;
@@ -33,6 +43,7 @@ export type MessageMetrics = {
   turnCostUSD?: number;
   usage?: UsageTokenData;
   userEmotion?: UserEmotionReading;
+  backgroundGate?: BackgroundGateReading;
 };
 
 export type SessionEvents = {

@@ -110,6 +110,7 @@ class BackgroundSpeechDecision:
     latency_ms: int
     reason: str
     transcript: str = ""
+    audio_duration_secs: float = 0.0
 
     def to_rtvi_payload(self, mode: str) -> dict[str, Any]:
         """Serialize the decision for RTVI server-message telemetry."""
@@ -122,6 +123,7 @@ class BackgroundSpeechDecision:
             "mode": mode,
             "reason": self.reason,
             "transcript": self.transcript[:160] if self.transcript else "",
+            "audio_duration_secs": round(self.audio_duration_secs, 1),
         }
 
 
@@ -273,10 +275,11 @@ class BackgroundSpeechEvaluator:
             )
 
         has_usable_audio = False
+        audio_dur_secs = 0.0
         classify_audio: bytes | None = None
         if audio_pcm and sample_rate > 0:
-            dur_secs = len(audio_pcm) / (sample_rate * 2.0)
-            if dur_secs >= MIN_AUDIO_SECS:
+            audio_dur_secs = len(audio_pcm) / (sample_rate * 2.0)
+            if audio_dur_secs >= MIN_AUDIO_SECS:
                 has_usable_audio = True
                 max_bytes = int(MAX_CLASSIFY_AUDIO_SECS * sample_rate * 2)
                 max_bytes -= max_bytes % 2
@@ -290,6 +293,7 @@ class BackgroundSpeechEvaluator:
                 latency_ms=0,
                 reason="short_audio_bypass",
                 transcript=clean_tx,
+                audio_duration_secs=audio_dur_secs,
             )
 
         inputs = (
@@ -329,6 +333,7 @@ class BackgroundSpeechEvaluator:
                 latency_ms=elapsed_ms,
                 reason="addressed" if should_respond else "background_speech",
                 transcript=clean_tx,
+                audio_duration_secs=audio_dur_secs,
             )
         except asyncio.TimeoutError:
             elapsed_ms = int(round((time.monotonic() - t0) * 1000))
@@ -340,6 +345,7 @@ class BackgroundSpeechEvaluator:
                 latency_ms=elapsed_ms,
                 reason="fail_open_timeout",
                 transcript=clean_tx,
+                audio_duration_secs=audio_dur_secs,
             )
         except Exception as exc:
             elapsed_ms = int(round((time.monotonic() - t0) * 1000))
@@ -351,6 +357,7 @@ class BackgroundSpeechEvaluator:
                 latency_ms=elapsed_ms,
                 reason="fail_open_error",
                 transcript=clean_tx,
+                audio_duration_secs=audio_dur_secs,
             )
 
     def _record_failure(self, detail: str) -> None:
