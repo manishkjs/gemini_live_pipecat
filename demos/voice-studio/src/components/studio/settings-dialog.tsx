@@ -1423,6 +1423,31 @@ export default function SettingsDialog({ studio }: SettingsDialogProps) {
               </button>
             </div>
 
+            <div className="cfg-switch-row">
+              <div>
+                <div className="cfg-switch-label" id="lbl-ignore-background">
+                  Ignore Background Speech (Gemini Decision 1)
+                </div>
+                <div className="cfg-help">
+                  Filters out TV, announcements, and side-talk before the assistant replies, while keeping immediate barge-in when you speak. In Gemini Live, automatically uses local Silero VAD.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                id="cfg-ignore-background"
+                className="switch-btn"
+                aria-checked={Boolean(settings.ignoreBackground)}
+                aria-labelledby="lbl-ignore-background"
+                disabled={active}
+                onClick={() => updateBool("ignoreBackground", !settings.ignoreBackground)}
+              >
+                <span className="switch-track" aria-hidden="true">
+                  <span className="switch-thumb" />
+                </span>
+              </button>
+            </div>
+
             {isLive && (
               <>
                 <div className="cfg-switch-row">

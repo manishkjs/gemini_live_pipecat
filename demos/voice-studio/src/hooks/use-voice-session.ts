@@ -22,6 +22,17 @@ import {
   type MessageMetrics,
   type UserEmotionReading,
 } from "@/lib/pipecat-session";
+import {
+  accumulateBackgroundGateStats,
+  attachCascadeGateToTurn,
+  consumePendingBackgroundGate,
+  EMPTY_BACKGROUND_GATE_STATS,
+  formatIgnoredBackgroundLabel,
+  parseBackgroundGatePayload,
+  type BackgroundGateReading,
+  type BackgroundGateStats,
+  type PendingBackgroundGate,
+} from "@/lib/background-gate";
 import { calculateTurnCost, EMPTY_TOKEN_SPLIT, type TokenSplit } from "@/lib/pricing";
 import { UsageLedger } from "@/lib/usage-ledger";
 import { readCascadeCost, type CascadeCost } from "@/lib/cascade-cost";
@@ -158,6 +169,13 @@ export function useVoiceSession() {
   const responseMetrics = useRef(new Map<string, MessageMetrics>());
   const lastAssistantMetrics = useRef<MessageMetrics | null>(null);
   const pendingCallerEmotion = useRef<PendingCallerEmotion | null>(null);
+  const pendingBackgroundGate = useRef<PendingBackgroundGate | null>(null);
+  const activeCascadeUserTurnIds = useRef<string[]>([]);
+  const utteranceGateBubbleIds = useRef(new Map<number, string[]>());
+  const ignoredUtteranceIds = useRef(new Set<number>());
+  const ignoredUtteranceReadings = useRef(new Map<number, BackgroundGateReading>());
+  const ignoredFallbackBubbleIds = useRef(new Map<number, string>());
+  const latestUserUtteranceId = useRef<number | null>(null);
   const openCallerTurn = useRef<OpenCallerTurn | null>(null);
   const utteranceMessageIds = useRef(new Map<number, string>());
   const utteranceReadings = useRef(new Map<number, PendingCallerEmotion>());
@@ -172,6 +190,7 @@ export function useVoiceSession() {
     readonly totalOutputTokens: number;
     readonly lastLatencyMs: number | null;
   }>({ count: 0, totalInputTokens: 0, totalOutputTokens: 0, lastLatencyMs: null });
+  const [gateStats, setGateStats] = useState<BackgroundGateStats>(EMPTY_BACKGROUND_GATE_STATS);
 
   const clearDockEmotion = useCallback(() => {
     if (dockEmotionTimer.current) {
@@ -392,6 +411,13 @@ export function useVoiceSession() {
     setMuted(false);
     setPartialUser("");
     pendingCallerEmotion.current = null;
+    pendingBackgroundGate.current = null;
+    activeCascadeUserTurnIds.current = [];
+    utteranceGateBubbleIds.current.clear();
+    ignoredUtteranceIds.current.clear();
+    ignoredUtteranceReadings.current.clear();
+    ignoredFallbackBubbleIds.current.clear();
+    latestUserUtteranceId.current = null;
     openCallerTurn.current = null;
     turnSettledBeforeBotReply.current = false;
     clearDockEmotion();
@@ -431,6 +457,13 @@ export function useVoiceSession() {
     responseMetrics.current.clear();
     lastAssistantMetrics.current = null;
     pendingCallerEmotion.current = null;
+    pendingBackgroundGate.current = null;
+    activeCascadeUserTurnIds.current = [];
+    utteranceGateBubbleIds.current.clear();
+    ignoredUtteranceIds.current.clear();
+    ignoredUtteranceReadings.current.clear();
+    ignoredFallbackBubbleIds.current.clear();
+    latestUserUtteranceId.current = null;
     openCallerTurn.current = null;
     utteranceMessageIds.current.clear();
     utteranceReadings.current.clear();
@@ -438,6 +471,7 @@ export function useVoiceSession() {
     clearDockEmotion();
     setLiveEmotion(null);
     setEmotionStats({ count: 0, totalInputTokens: 0, totalOutputTokens: 0, lastLatencyMs: null });
+    setGateStats(EMPTY_BACKGROUND_GATE_STATS);
     seenEvents.current.clear();
     setSessionCostBounds({ minUSD: 0, maxUSD: 0, estimated: false, complete: true, incomplete: false });
     starting.current = false;
@@ -591,6 +625,30 @@ export function useVoiceSession() {
               setLastSTT(Math.round(metrics.sttLatency * 1000));
             }
             const uttId = metrics?.utteranceId;
+            if (uttId !== undefined && ignoredUtteranceIds.current.has(uttId)) {
+              // Late/trailing STT transcript chunk for an utterance already ignored by
+              // BackgroundSpeechGate: merge into fallback bubble or dim as continuation,
+              // never creating an unbadged bubble or stranding phase in "thinking".
+              const fallbackId = ignoredFallbackBubbleIds.current.get(uttId);
+              if (fallbackId !== undefined) {
+                ignoredFallbackBubbleIds.current.delete(uttId);
+                setMessages((items) =>
+                  items.map((m) => (m.id === fallbackId ? { ...m, text } : m)),
+                );
+                return;
+              }
+              const ignoredReading = ignoredUtteranceReadings.current.get(uttId);
+              if (ignoredReading) {
+                const contEntry = transcriptMessage(
+                  "user",
+                  text,
+                  { ...metrics, backgroundGate: { ...ignoredReading, continuation: true } },
+                  callStartedAt.current,
+                );
+                setMessages((items) => [...items, contEntry]);
+              }
+              return;
+            }
             let attachedEmotion: UserEmotionReading | undefined;
             const pending = pendingCallerEmotion.current;
             if (pending && now - pending.recordedAt > UTTERANCE_EMOTION_WINDOW_MS) {
@@ -635,7 +693,27 @@ export function useVoiceSession() {
             if (attachedEmotion) {
               metrics = { ...metrics, userEmotion: attachedEmotion };
             }
+            if (uttId !== undefined) {
+              latestUserUtteranceId.current = Math.max(latestUserUtteranceId.current ?? 0, uttId);
+            }
+            const consumedGate = consumePendingBackgroundGate(
+              pendingBackgroundGate.current,
+              now,
+              uttId,
+            );
+            pendingBackgroundGate.current = consumedGate.nextPending;
+            if (consumedGate.attached) {
+              metrics = { ...metrics, backgroundGate: consumedGate.attached };
+            }
             const entry = transcriptMessage("user", text, metrics, callStartedAt.current);
+            if (targetEngine === "cascade" && !consumedGate.attached) {
+              if (uttId !== undefined) {
+                const prevIds = utteranceGateBubbleIds.current.get(uttId) ?? [];
+                utteranceGateBubbleIds.current.set(uttId, [...prevIds, entry.id]);
+              } else {
+                activeCascadeUserTurnIds.current.push(entry.id);
+              }
+            }
             const effectiveUttId = uttId ?? attachedEmotion?.utteranceId;
             const alreadyClaimedUtterance =
               effectiveUttId !== undefined && utteranceMessageIds.current.has(effectiveUttId);
@@ -657,6 +735,7 @@ export function useVoiceSession() {
             setMessages((items) => [...items, entry]);
             return;
           } else {
+            activeCascadeUserTurnIds.current = [];
             turnSettledBeforeBotReply.current = false;
             if (openCallerTurn.current) {
               openCallerTurn.current.botReplied = true;
@@ -877,6 +956,28 @@ export function useVoiceSession() {
               seq: typeof val.seq === "number" ? val.seq : undefined,
               utteranceId: typeof val.utterance_id === "number" ? val.utterance_id : undefined,
             };
+            setEmotionStats((prev) => {
+              const nextIn = Number.isFinite(val.total_input_tokens)
+                ? Math.max(prev.totalInputTokens, Math.round(Number(val.total_input_tokens)))
+                : prev.totalInputTokens + reading.inputTokens;
+              const nextOut = Number.isFinite(val.total_output_tokens)
+                ? Math.max(prev.totalOutputTokens, Math.round(Number(val.total_output_tokens)))
+                : prev.totalOutputTokens + (reading.outputTokens ?? 0);
+              return {
+                count: prev.count + 1,
+                totalInputTokens: nextIn,
+                totalOutputTokens: nextOut,
+                lastLatencyMs: reading.latencyMs,
+              };
+            });
+            // Never overwrite liveEmotion/dockEmotion or attach emotion for an utterance
+            // already classified as background speech / side-talk.
+            if (
+              reading.utteranceId !== undefined &&
+              ignoredUtteranceIds.current.has(reading.utteranceId)
+            ) {
+              return;
+            }
             setLiveEmotion((prev) => {
               if (
                 prev &&
@@ -899,20 +1000,6 @@ export function useVoiceSession() {
             if (shouldUpdateDock) {
               publishDockEmotion(reading, DOCK_EMOTION_TTL_MS);
             }
-            setEmotionStats((prev) => {
-              const nextIn = Number.isFinite(val.total_input_tokens)
-                ? Math.max(prev.totalInputTokens, Math.round(Number(val.total_input_tokens)))
-                : prev.totalInputTokens + reading.inputTokens;
-              const nextOut = Number.isFinite(val.total_output_tokens)
-                ? Math.max(prev.totalOutputTokens, Math.round(Number(val.total_output_tokens)))
-                : prev.totalOutputTokens + (reading.outputTokens ?? 0);
-              return {
-                count: prev.count + 1,
-                totalInputTokens: nextIn,
-                totalOutputTokens: nextOut,
-                lastLatencyMs: reading.latencyMs,
-              };
-            });
 
             if (reading.utteranceId !== undefined) {
               const prevUttEntry = utteranceReadings.current.get(reading.utteranceId);
@@ -1006,6 +1093,147 @@ export function useVoiceSession() {
                 openCallerTurn.current = null;
               }
               pendingCallerEmotion.current = { reading, recordedAt: now };
+            }
+          } else if (type === "background_gate") {
+            const now = performance.now();
+            const { reading: gateReading, transcript: gateTranscript } =
+              parseBackgroundGatePayload(val);
+            setGateStats((prev) => accumulateBackgroundGateStats(prev, gateReading));
+
+            const turnUtteranceIds =
+              gateReading.utteranceIds && gateReading.utteranceIds.length > 0
+                ? [...gateReading.utteranceIds]
+                : gateReading.utteranceId !== undefined
+                  ? [gateReading.utteranceId]
+                  : [];
+            const turnUtteranceIdSet = new Set(turnUtteranceIds);
+
+            if (gateReading.decision === "ignore") {
+              for (const uid of turnUtteranceIds) {
+                ignoredUtteranceIds.current.add(uid);
+                ignoredUtteranceReadings.current.set(uid, gateReading);
+              }
+              if (gateReading.mode === "live") {
+                // Ignored Live audio never reaches Gemini and never emits input_transcription,
+                // so preserve any pending `respond` badge from an earlier Live turn!
+                setPartialUser("");
+                if (pendingBackgroundGate.current === null) {
+                  setPhase((p) => (p === "thinking" ? "listening" : p));
+                }
+                const ignoredEntry = transcriptMessage(
+                  "user",
+                  formatIgnoredBackgroundLabel(gateTranscript, gateReading.audioDurationSecs),
+                  { backgroundGate: gateReading },
+                  callStartedAt.current,
+                );
+                setMessages((items) => [...items, ignoredEntry]);
+                return;
+              }
+
+              const supersededByNewerTurn =
+                gateReading.utteranceId !== undefined &&
+                latestUserUtteranceId.current !== null &&
+                gateReading.utteranceId < latestUserUtteranceId.current;
+              if (!supersededByNewerTurn) {
+                setPartialUser("");
+                setPhase((p) => (p === "thinking" ? "listening" : p));
+                if (
+                  !dockEmotionRef.current?.utteranceId ||
+                  turnUtteranceIdSet.has(dockEmotionRef.current.utteranceId)
+                ) {
+                  clearDockEmotion();
+                  setLiveEmotion(null);
+                }
+                if (
+                  !openCallerTurn.current?.utteranceId ||
+                  turnUtteranceIdSet.has(openCallerTurn.current.utteranceId)
+                ) {
+                  openCallerTurn.current = null;
+                }
+                if (
+                  !pendingCallerEmotion.current?.reading.utteranceId ||
+                  turnUtteranceIdSet.has(pendingCallerEmotion.current.reading.utteranceId)
+                ) {
+                  pendingCallerEmotion.current = null;
+                }
+              }
+
+              let turnIds: string[] = [];
+              let matchedByUttId = false;
+              if (turnUtteranceIds.length > 0) {
+                for (const uid of turnUtteranceIds) {
+                  const bucket = utteranceGateBubbleIds.current.get(uid);
+                  if (bucket) {
+                    turnIds.push(...bucket);
+                    utteranceGateBubbleIds.current.delete(uid);
+                  }
+                }
+                matchedByUttId = true;
+              } else {
+                turnIds = [...activeCascadeUserTurnIds.current];
+                activeCascadeUserTurnIds.current = [];
+              }
+
+              if (turnIds.length > 0) {
+                setMessages((items) =>
+                  attachCascadeGateToTurn(
+                    items,
+                    turnIds,
+                    gateReading,
+                    gateTranscript,
+                    matchedByUttId,
+                  ),
+                );
+              } else if (!supersededByNewerTurn) {
+                const ignoredEntry = transcriptMessage(
+                  "user",
+                  formatIgnoredBackgroundLabel(gateTranscript, gateReading.audioDurationSecs),
+                  { backgroundGate: gateReading },
+                  callStartedAt.current,
+                );
+                if (gateReading.utteranceId !== undefined) {
+                  ignoredFallbackBubbleIds.current.set(gateReading.utteranceId, ignoredEntry.id);
+                }
+                setMessages((items) => [...items, ignoredEntry]);
+              }
+              return;
+            }
+
+            // Decision === "respond":
+            if (gateReading.mode === "live") {
+              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
+              return;
+            }
+
+            let turnIds: string[] = [];
+            let matchedByUttId = false;
+            if (turnUtteranceIds.length > 0) {
+              for (const uid of turnUtteranceIds) {
+                const bucket = utteranceGateBubbleIds.current.get(uid);
+                if (bucket) {
+                  turnIds.push(...bucket);
+                  utteranceGateBubbleIds.current.delete(uid);
+                }
+              }
+              matchedByUttId = true;
+            } else {
+              turnIds = [...activeCascadeUserTurnIds.current];
+              activeCascadeUserTurnIds.current = [];
+            }
+
+            if (turnIds.length > 0) {
+              pendingBackgroundGate.current = null;
+              setMessages((items) =>
+                attachCascadeGateToTurn(
+                  items,
+                  turnIds,
+                  gateReading,
+                  gateTranscript,
+                  matchedByUttId,
+                ),
+              );
+            } else {
+              pendingBackgroundGate.current = { reading: gateReading, recordedAt: now };
             }
           }
         },
@@ -1151,7 +1379,7 @@ export function useVoiceSession() {
     latency, track, partialUser, settingsOpen, showInlineEditor,
     playingSample, subscribeAudioLevel, getAudioLevel,
     turnCount, lastSTT, lastTTFB, lastTTS, tokenCount, tokenSplit, sessionCostUSD, sessionCostBounds, cascadeCost, interruptCount,
-    liveEmotion, dockEmotion, emotionStats,
+    liveEmotion, dockEmotion, emotionStats, gateStats,
     compressionEvent, dismissCompressionToast, triggerCompressionToast,
     toolInjection, dismissToolInjection,
     avatarStream, avatarFallbackNotice, setAvatarFallbackNotice, voiceFallbackNotice, setVoiceFallbackNotice,

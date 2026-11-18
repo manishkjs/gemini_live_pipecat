@@ -798,6 +798,38 @@ class TestCascadePromptAndToolParity(unittest.TestCase):
                 self.assertEqual(msg["type"], "websocket.close")
         self.assertIs(captured_kwargs.get("emotion_enabled"), False)
 
+    def test_connect_and_ws_propagate_and_validate_ignore_background(self):
+        bad = self.client.post(
+            "/connect?session_id=bg_bad",
+            json={"ignore_background": "not-a-bool"},
+        )
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("Invalid ignore_background", bad.json()["detail"])
+
+        for bot_type in ("gemini-live", "tts-llm-stt"):
+            ok_on = self.client.post(
+                f"/connect?session_id=bg_on_{bot_type}&bot_type={bot_type}",
+                json={"ignore_background": True},
+            )
+            self.assertEqual(ok_on.status_code, 200)
+            ws_url = ok_on.json()["ws_url"]
+            self.assertIn("ignore_background=true", ws_url)
+            ws_path = "/ws?" + ws_url.split("/ws?", 1)[1]
+
+            captured_kwargs: dict = {}
+
+            async def fake_runner(websocket, **kwargs):
+                captured_kwargs.update(kwargs)
+                await websocket.close()
+
+            from unittest.mock import patch
+
+            with patch("server.load_pipeline", return_value=fake_runner):
+                with self.client.websocket_connect(ws_path) as ws:
+                    msg = ws.receive()
+                    self.assertEqual(msg["type"], "websocket.close")
+            self.assertIs(captured_kwargs.get("ignore_background"), True)
+
 
 if __name__ == "__main__":
     unittest.main()

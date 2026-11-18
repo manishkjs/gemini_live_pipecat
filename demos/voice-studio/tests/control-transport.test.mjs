@@ -75,6 +75,9 @@ const TRANSPORT = {
   // Pipecat 1.16 Google Decisions (`gemini-decision-1`) caller vocal emotion perception (default ON)
   emotionPerception:        { live: 'query:emotion_enabled',      cascade: 'query:emotion_enabled',       probe: false },
 
+  // Pipecat 1.16 Google Decisions (`gemini-decision-1`) background speech & side-talk gate (default OFF)
+  ignoreBackground:         { live: 'query:ignore_background',    cascade: 'query:ignore_background',     probe: true },
+
   // Cloned-voice credentials must never ride in a URL. Once the server-side
   // voice registry lands this becomes `voiceProfileId`.
   customVoiceKey:           { live: 'body:custom_voice_key',      cascade: 'body:custom_voice_key',       probe: 'secret-voice-key-abc123', requires: { voice: 'Custom-Key', customVoiceKey: 'old-dummy-key', ttsModel: 'google-tts' } },

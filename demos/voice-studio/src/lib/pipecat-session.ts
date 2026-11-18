@@ -19,6 +19,9 @@ export type UserEmotionReading = {
   readonly utteranceId?: number;
 };
 
+import type { BackgroundGateReading } from "./background-gate.ts";
+export type { BackgroundGateReading } from "./background-gate.ts";
+
 export type MessageMetrics = {
   responseId?: string;
   utteranceId?: number;
@@ -33,6 +36,7 @@ export type MessageMetrics = {
   turnCostUSD?: number;
   usage?: UsageTokenData;
   userEmotion?: UserEmotionReading;
+  backgroundGate?: BackgroundGateReading;
 };
 
 export type SessionEvents = {
@@ -157,6 +161,8 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let turnStarted = false;
   let avatarSpeechInTurn = false;
   let lastUserAt: number | null = null;
+  let latestUserUtteranceId = 0;
+  const ignoredUtteranceIds = new Set<number>();
 
   // Latency buffers according to canonical protocol invariants
   let pendingSTTLatency: number | null = null;
@@ -515,7 +521,10 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       input_tokens?: number;
       model?: string;
       utterance_id?: number;
+      utterance_ids?: number[];
       session_id?: string;
+      decision?: string;
+      mode?: string;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
@@ -565,18 +574,29 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         return;
       }
       if (data.participant?.toLowerCase() === "user") {
+        const isAlreadyIgnored =
+          typeof data.utterance_id === "number" && ignoredUtteranceIds.has(data.utterance_id);
         turnStarted = false;
         avatarSpeechInTurn = false;
-        lastUserAt = performance.now();
+        if (!isAlreadyIgnored) {
+          lastUserAt = performance.now();
+          if (typeof data.utterance_id === "number" && data.utterance_id > latestUserUtteranceId) {
+            latestUserUtteranceId = data.utterance_id;
+          }
+        }
         events.onPartialUser("");
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
         pendingSTTLatency = null;
-        lastTurnSTTLatency = effStt ?? null;
+        if (!isAlreadyIgnored) {
+          lastTurnSTTLatency = effStt ?? null;
+        }
         events.onMessage("user", data.text, false, {
           sttLatency: effStt,
           utteranceId: typeof data.utterance_id === "number" ? data.utterance_id : undefined,
         });
-        events.onPhase("thinking");
+        if (!isAlreadyIgnored) {
+          events.onPhase("thinking");
+        }
       } else {
         const effLlm = data.ttft !== undefined ? data.ttft : (!data.response_id && pendingLLMLatency !== null ? pendingLLMLatency : undefined);
         pendingLLMLatency = null;
@@ -673,6 +693,32 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       typeof data.title === "string"
     ) {
       events.onMetricUpdate?.("user_emotion", data);
+    } else if (data.type === "background_gate") {
+      if (data.decision === "ignore") {
+        if (typeof data.utterance_id === "number") {
+          ignoredUtteranceIds.add(data.utterance_id);
+        }
+        if (Array.isArray(data.utterance_ids)) {
+          for (const uid of data.utterance_ids) {
+            if (typeof uid === "number" && uid > 0) {
+              ignoredUtteranceIds.add(uid);
+            }
+          }
+        }
+        const isLiveWithActiveTurn = data.mode === "live" && lastUserAt !== null;
+        const isSupersededCascade =
+          typeof data.utterance_id === "number" &&
+          latestUserUtteranceId > 0 &&
+          data.utterance_id < latestUserUtteranceId;
+        if (!isLiveWithActiveTurn && !isSupersededCascade) {
+          lastUserAt = null;
+          pendingSTTLatency = null;
+          lastTurnSTTLatency = null;
+          events.onPartialUser("");
+          events.onPhase("listening");
+        }
+      }
+      events.onMetricUpdate?.("background_gate", data);
     } else if (data.type === "error" || message.type === "error") {
       events.onError("Your backend reported an error. Check its logs and selected model.");
     }

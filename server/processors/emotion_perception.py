@@ -376,6 +376,7 @@ class AudioEmotionObserver(FrameProcessor):
         model: str = DEFAULT_DECISION_MODEL,
         timeout: float = DEFAULT_TIMEOUT_SECS,
         classifier: BaseClassifier | None = None,
+        record_utterance_audio: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -383,6 +384,7 @@ class AudioEmotionObserver(FrameProcessor):
         self._sample_rate = 16000
         self._model_name = model
         self._timeout_secs = timeout
+        self._record_utterance_audio = bool(record_utterance_audio)
         self._owns_classifier = False
         self._classifier: BaseClassifier | None = None
         self._deferred_project_id = ""
@@ -455,7 +457,12 @@ class AudioEmotionObserver(FrameProcessor):
         self._utterance_id = 0
         self._utterance_started_at = 0.0
         self._utterance_has_interim = False
+        self._utterance_had_transcript = False
         self._last_completed_utterance_id = 0
+        self._completed_utterance_had_transcript = False
+        self._transcribed_utterance_ids: deque[int] = deque(maxlen=64)
+        self._last_raw_utterance_audio: bytes | None = None
+        self._last_raw_utterance_id: int = 0
         self._request_seq = 0
         self._latest_emitted_seq = 0
         self._prev_client_in_tokens = 0
@@ -482,18 +489,47 @@ class AudioEmotionObserver(FrameProcessor):
         """Utterance ID to stamp onto an outgoing caller transcript.
 
         When a cough or fresh speech onset began within NEW_ONSET_TRANSCRIPT_GRACE_SECS
-        and has not yet emitted an interim read, prefer the just-completed utterance ID
-        so Turn N's slightly delayed STT transcript is not stamped N+1.
+        and the just-completed utterance has not yet emitted any transcript or interim
+        read, prefer `_last_completed_utterance_id` so delayed batch STT for Turn N is
+        not stamped N+1. Once Turn N has already emitted a transcript (or been sealed on
+        turn close), fresh speech onsets immediately receive their own `_utterance_id`.
         """
         if (
             self._speaking
             and self._last_completed_utterance_id > 0
+            and not self._completed_utterance_had_transcript
             and not self._utterance_has_interim
             and (time.monotonic() - self._utterance_started_at)
             < NEW_ONSET_TRANSCRIPT_GRACE_SECS
         ):
             return self._last_completed_utterance_id
         return self._utterance_id
+
+    @property
+    def has_transcription_records(self) -> bool:
+        """True once any caller utterance in this session has recorded an STT transcript."""
+        return bool(self._transcribed_utterance_ids)
+
+    def record_transcribed_utterance(self, utterance_id: int) -> None:
+        """Record that `utterance_id` produced a non-empty caller transcript."""
+        uid = int(utterance_id or 0)
+        if uid <= 0:
+            return
+        if uid not in self._transcribed_utterance_ids:
+            self._transcribed_utterance_ids.append(uid)
+        if uid == self._utterance_id:
+            self._utterance_had_transcript = True
+        if uid == self._last_completed_utterance_id:
+            self._completed_utterance_had_transcript = True
+
+    def was_utterance_transcribed(self, utterance_id: int) -> bool:
+        """Return whether `utterance_id` produced a non-empty caller transcript."""
+        return int(utterance_id or 0) in self._transcribed_utterance_ids
+
+    def seal_completed_utterance_id(self) -> None:
+        """Clear `_last_completed_utterance_id` once an aggregator turn closes."""
+        self._last_completed_utterance_id = 0
+        self._completed_utterance_had_transcript = False
 
     def _spawn_background_task(
         self,
@@ -606,7 +642,7 @@ class AudioEmotionObserver(FrameProcessor):
             await self.push_frame(frame, direction)
             return
 
-        if not self._usable:
+        if not self._usable and not self._record_utterance_audio:
             await self.push_frame(frame, direction)
             return
 
@@ -634,6 +670,20 @@ class AudioEmotionObserver(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
+    def get_last_utterance_audio(self) -> tuple[bytes | None, int]:
+        """Return strictly the current completed utterance's unpadded PCM clip.
+
+        Returns ``(None, sample_rate)`` if the current utterance has not
+        completed or was too short, so a new short reply (e.g. "haan") can
+        never be paired with a previous turn's audio clip.
+        """
+        if (
+            self._last_raw_utterance_audio is not None
+            and self._last_raw_utterance_id == self._utterance_id
+        ):
+            return (self._last_raw_utterance_audio, self._sample_rate)
+        return (None, self._sample_rate)
+
     def _bytes_for_secs(self, secs: float, sample_rate: int | None = None) -> int:
         rate = sample_rate or self._sample_rate or 16000
         even_bytes = int(round(secs * rate * 2))
@@ -650,8 +700,10 @@ class AudioEmotionObserver(FrameProcessor):
     def _begin_utterance(self) -> None:
         now = time.monotonic()
         self._utterance_id += 1
+        self._last_raw_utterance_audio = None
         self._utterance_started_at = now
         self._utterance_has_interim = False
+        self._utterance_had_transcript = False
         self._speaking = True
         self._onset_secs = 0.0
         self._silence_secs = 0.0
@@ -686,6 +738,11 @@ class AudioEmotionObserver(FrameProcessor):
             return
 
         self._last_completed_utterance_id = self._utterance_id
+        self._completed_utterance_had_transcript = self._utterance_had_transcript
+        self._last_raw_utterance_audio = raw
+        self._last_raw_utterance_id = self._utterance_id
+        if not self._usable:
+            return
         preferred_bytes = self._bytes_for_secs(PREFERRED_FINAL_SECS)
         window_bytes = self._bytes_for_secs(FINAL_WINDOW_SECS)
         clip = raw[-window_bytes:] if len(raw) > window_bytes else raw
@@ -749,6 +806,9 @@ class AudioEmotionObserver(FrameProcessor):
             self._append_bounded_speech(pcm)
         else:
             self._pre_roll.append(pcm, self._bytes_for_secs(PRE_ROLL_SECS, frame_rate))
+            return
+
+        if not self._usable:
             return
 
         now = time.monotonic()

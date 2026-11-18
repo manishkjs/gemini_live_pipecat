@@ -1176,6 +1176,59 @@ button, input, select, textarea {
   font-weight: 500;
 }
 
+.chip.bg-gate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 5px;
+}
+
+.chip.bg-gate .bg-gate-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+  flex-shrink: 0;
+}
+
+.chip.bg-gate.respond {
+  background: var(--live-soft);
+  border: 1px solid var(--live-line);
+  color: var(--live-ink);
+}
+
+.chip.bg-gate.respond .bg-gate-dot {
+  background: var(--live-ink);
+}
+
+.chip.bg-gate.quiet {
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  color: var(--ink-3);
+}
+
+.chip.bg-gate.quiet .bg-gate-dot {
+  background: var(--ink-3);
+}
+
+.chip.bg-gate-ms {
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 2px 4px;
+}
+
+.turn.is-ignored-bg .bubble {
+  opacity: 0.68;
+  border-style: dashed;
+}
+
 .chip.barge {
   background: var(--danger-soft);
   color: var(--danger-ink);

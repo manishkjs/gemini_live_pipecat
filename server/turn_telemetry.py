@@ -73,5 +73,8 @@ class TurnTracker:
     def interrupt(self):
         self.current.finish("interrupted")
 
+    def mark_ignored(self):
+        self.current.finish("ignored")
+
     def close(self):
         self.current.finish("abandoned")

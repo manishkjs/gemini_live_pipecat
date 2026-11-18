@@ -158,6 +158,8 @@ export type SessionSettings = {
   avatarCustomImage?: string;
   /** Whether non-blocking user vocal emotion perception (`gemini-decision-1`) is active. Defaults to true. */
   emotionPerception?: boolean;
+  /** Whether background speech & side-talk gating (`gemini-decision-1`) is active. Defaults to false. */
+  ignoreBackground?: boolean;
   /**
    * Identifies this browser's session to the backend diagnostics buffer.
    *
@@ -222,6 +224,7 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   avatarName: "auto",
   avatarCustomImage: "",
   emotionPerception: true,
+  ignoreBackground: false,
   sessionId: "",
 };
 
@@ -816,10 +819,13 @@ export function buildConnectUrl(settings: SessionSettings): URL {
   const url = validatedBackendUrl(targetUrl);
   url.pathname = `${url.pathname.replace(/\/$/, "")}/connect`;
   const effectiveVadMode: VadMode =
-    settings.vad === false && (!settings.vadMode || settings.vadMode === "both")
-      ? "gemini"
-      : (settings.vadMode ?? "both");
+    settings.engine === "live" && settings.ignoreBackground
+      ? "silero"
+      : settings.vad === false && (!settings.vadMode || settings.vadMode === "both")
+        ? "gemini"
+        : (settings.vadMode ?? "both");
   const effectiveVadStr = effectiveVadMode === "gemini" ? "false" : "true";
+  const ignoreBackgroundStr = settings.ignoreBackground ? "true" : "false";
   if (settings.engine === "live") {
     const requiresGemini38Live =
       isAvatarActive(settings) || isGeminiClonedVoice(settings.voice) || isLiveCustomVoice(settings.voice);
@@ -833,6 +839,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       vad_mode: effectiveVadMode,
       context_compression: settings.contextCompression ? "true" : "false",
       emotion_enabled: settings.emotionPerception === false ? "false" : "true",
+      ignore_background: ignoreBackgroundStr,
       // Selects the persona's execution architecture server-side. The backend
       // routes on this id alone and never inspects prompt text, so editing a
       // prompt can no longer silently disable a persona's engine.
@@ -866,6 +873,7 @@ export function buildConnectUrl(settings: SessionSettings): URL {
       vad: effectiveVadStr,
       vad_mode: effectiveVadMode,
       emotion_enabled: settings.emotionPerception === false ? "false" : "true",
+      ignore_background: ignoreBackgroundStr,
       skip_stt: settings.skipStt && supportsCascadeAudioInput(settings.llmModel) ? "true" : "false",
       persona_id: settings.personaId,
     };

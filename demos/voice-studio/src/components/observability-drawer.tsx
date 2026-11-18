@@ -22,6 +22,7 @@ import { getLiveRateCard, totalIn, totalOut, type TokenSplit } from "@/lib/prici
 import { diagnosticHeaders } from "@/lib/session-diagnostics";
 import type { Message } from "@/lib/studio-types";
 import type { UserEmotionReading } from "@/lib/pipecat-session";
+import type { BackgroundGateStats } from "@/lib/background-gate";
 import type { SessionSettings } from "@/lib/voice-session";
 
 interface SessionCostBoundsView {
@@ -94,6 +95,7 @@ export interface ObservabilityDrawerProps {
     readonly totalOutputTokens?: number;
     readonly lastLatencyMs: number | null;
   };
+  readonly gateStats?: BackgroundGateStats;
 }
 
 function computeClientPercentiles(values: readonly number[]): LatencyStat {
@@ -165,6 +167,7 @@ export default function ObservabilityDrawer({
   visitCount = null,
   liveEmotion = null,
   emotionStats,
+  gateStats,
 }: ObservabilityDrawerProps) {
   const scope = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : "";
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
@@ -734,6 +737,45 @@ export default function ObservabilityDrawer({
                   ) : (
                     <p className="cs-empty">
                       Streaming caller vocal tone reads appear as you speak.
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {settings?.ignoreBackground && (
+                <section className="cs-sec" id="obs-bg-gate-sec">
+                  <h3>
+                    <span>Background speech gate</span>
+                    <span className="mono-pill">gemini-decision-1</span>
+                  </h3>
+                  {gateStats && gateStats.count > 0 ? (
+                    <>
+                      <div className="kv">
+                        <span className="k">Latest decision</span>
+                        <span className="v">
+                          {gateStats.lastDecision === "ignore" ? "Stayed quiet" : "Responding"} (
+                          {Math.round((gateStats.lastAddressedProbability ?? 1) * 100)}% addressed)
+                        </span>
+                      </div>
+                      <div className="kv">
+                        <span className="k">Classifier</span>
+                        <span className="v">
+                          {gateStats.lastLatencyMs ?? 0}ms ·{" "}
+                          {gateStats.totalInputTokens.toLocaleString()} in ·{" "}
+                          {gateStats.totalOutputTokens.toLocaleString()} out tok
+                        </span>
+                      </div>
+                      <div className="kv">
+                        <span className="k">Turns gated</span>
+                        <span className="v">
+                          {gateStats.count.toLocaleString()} total ·{" "}
+                          {gateStats.ignoredCount.toLocaleString()} ignored
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="cs-empty">
+                      Per-utterance background &amp; side-talk decisions appear as you speak.
                     </p>
                   )}
                 </section>

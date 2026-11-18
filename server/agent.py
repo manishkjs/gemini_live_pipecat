@@ -1559,6 +1559,9 @@ class TranscriptionBroadcaster(FrameProcessor):
             )
             if utt_id > 0:
                 data['utterance_id'] = utt_id
+                record_fn = getattr(self._emotion_observer, "record_transcribed_utterance", None)
+                if callable(record_fn):
+                    record_fn(utt_id)
         await self.push_frame(OutputTransportMessageFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
@@ -1729,6 +1732,7 @@ async def run_agent(
     custom_voice_key: Optional[str] = None,
     persona_id: Optional[str] = None,
     emotion_enabled: bool = True,
+    ignore_background: bool = False,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -1768,7 +1772,7 @@ async def run_agent(
     logger.info(f"Client-side VAD: {'enabled' if vad else 'disabled (STT endpointing only)'} (vad_mode={vad_mode or 'default'}, skip_stt={skip_stt})")
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
-            confidence=0.55 if skip_stt else 0.7,
+            confidence=0.55 if skip_stt else (0.75 if ignore_background else 0.7),
             start_secs=0.15 if skip_stt else 0.2,
             stop_secs=0.7 if skip_stt else 0.4,
             min_volume=0.45 if skip_stt else 0.6,
@@ -2008,12 +2012,27 @@ async def run_agent(
     if stt is not None:
         stt._cascade_meter = cost_meter
 
+    from diagnostic_buffer import append_diagnostic_log
+    from processors.background_speech_gate import (
+        BackgroundSpeechEvaluator,
+        CascadeBackgroundSpeechGate,
+    )
     from processors.emotion_perception import AudioEmotionObserver
 
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
+        record_utterance_audio=bool(ignore_background),
         session_id=current_session_id(),
         project_id=project_id,
+    )
+    bg_evaluator = (
+        BackgroundSpeechEvaluator(
+            enabled=True,
+            project_id=project_id,
+            persona_hint=persona_id or "",
+        )
+        if ignore_background
+        else None
     )
     initial_greeting = cascade_greeting_text(persona_architecture, stt_language)
 
@@ -2040,6 +2059,29 @@ async def run_agent(
             enable_parallel_stt=False,
         )
         accumulator._emotion_observer = emotion_observer
+        bg_gate = (
+            CascadeBackgroundSpeechGate(
+                bg_evaluator,
+                emotion_observer=emotion_observer,
+                get_recent_audio=lambda: (
+                    accumulator._last_turn_audio,
+                    accumulator._last_turn_sample_rate,
+                ),
+                get_current_utterance_id=lambda: (
+                    emotion_observer.transcript_utterance_id
+                    or emotion_observer.current_utterance_id
+                ),
+                on_ignored_turn=turn_tracker.mark_ignored,
+                on_decision=lambda dec: append_diagnostic_log(
+                    "Background Gate (Cascade/SkipSTT)",
+                    f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
+                    f"(addressed={dec.addressed_probability:.0%}, "
+                    f"bg={dec.background_probability:.0%}, {dec.latency_ms}ms, {dec.reason})",
+                ),
+            )
+            if bg_evaluator is not None
+            else None
+        )
         context_aggregator = LLMContextAggregatorPair(context)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=True)
 
@@ -2050,6 +2092,7 @@ async def run_agent(
             TurnBoundaryProcessor(turn_tracker),
             emotion_observer,
             accumulator,
+            *([bg_gate] if bg_gate else []),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,
@@ -2065,9 +2108,30 @@ async def run_agent(
             # VADProcessor above owns audio analysis and broadcasts VAD frames.
             # Feeding the same analyzer here again would process each PCM twice.
             vad_analyzer=None,
+            **({"empty_user_turn": None} if ignore_background else {}),
         )
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)
+        bg_gate = (
+            CascadeBackgroundSpeechGate(
+                bg_evaluator,
+                emotion_observer=emotion_observer,
+                get_recent_audio=emotion_observer.get_last_utterance_audio,
+                get_current_utterance_id=lambda: (
+                    emotion_observer.transcript_utterance_id
+                    or emotion_observer.current_utterance_id
+                ),
+                on_ignored_turn=turn_tracker.mark_ignored,
+                on_decision=lambda dec: append_diagnostic_log(
+                    "Background Gate (Cascade)",
+                    f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
+                    f"(addressed={dec.addressed_probability:.0%}, "
+                    f"bg={dec.background_probability:.0%}, {dec.latency_ms}ms, {dec.reason})",
+                ),
+            )
+            if bg_evaluator is not None
+            else None
+        )
 
         pipeline_elements = [
             transport.input(),
@@ -2078,6 +2142,7 @@ async def run_agent(
             stt,
             TranscriptionBroadcaster(participant="User", emotion_observer=emotion_observer),
             context_aggregator.user(),
+            *([bg_gate] if bg_gate else []),
             llm,
             TranscriptionBroadcaster(participant="Bot"),
             tts,

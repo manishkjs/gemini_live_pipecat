@@ -17,7 +17,16 @@ from cascade_metering import billed_duration, publish_cost
 
 
 class AudioAccumulator(FrameProcessor):
-    def __init__(self, context, *, project_id, stt_languages=None, cost_meter=None, enable_parallel_stt=False, **kwargs):
+    def __init__(
+        self,
+        context,
+        *,
+        project_id,
+        stt_languages=None,
+        cost_meter=None,
+        enable_parallel_stt=False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._context = context
         self._audio_frames = []
@@ -29,6 +38,8 @@ class AudioAccumulator(FrameProcessor):
         self._stt_task = None
         self._cascade_meter = cost_meter
         self._enable_parallel_stt = bool(enable_parallel_stt)
+        self._last_turn_audio: bytes | None = None
+        self._last_turn_sample_rate: int = 16000
         self._push_lock = asyncio.Lock()
         logger.info(
             f"AudioAccumulator initialized (parallel_stt={self._enable_parallel_stt}, languages={self._stt_languages})"
@@ -153,6 +164,8 @@ class AudioAccumulator(FrameProcessor):
                 logger.info(f"AudioAccumulator: Sending {len(self._audio_frames)} audio frames to LLM")
 
                 audio_data = b''.join([f.audio for f in self._audio_frames])
+                self._last_turn_audio = audio_data
+                self._last_turn_sample_rate = getattr(self._audio_frames[0], "sample_rate", 16000) or 16000
 
                 maybe_coro = self._context.add_audio_frames_message(
                     audio_frames=self._audio_frames,
@@ -185,6 +198,9 @@ class AudioAccumulator(FrameProcessor):
                 )
                 if utt_id > 0:
                     tx_payload['utterance_id'] = utt_id
+                    record_fn = getattr(emo_obs, "record_transcribed_utterance", None)
+                    if callable(record_fn):
+                        record_fn(utt_id)
                 await self.push_frame(OutputTransportMessageUrgentFrame(message={
                     "label": "rtvi-ai",
                     "type": "server-message",

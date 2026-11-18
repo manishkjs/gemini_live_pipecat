@@ -76,7 +76,7 @@ def record_metric(session_id, turn_id, bot_type, stage, value_ms=None, status="o
     valid_turn = isinstance(turn_id, int) and not isinstance(turn_id, bool) and turn_id >= 0
     if bot_type not in BOT_TYPES or not (uncorrelated or valid_turn):
         raise ValueError("Explicit bot_type and pipeline turn_id are required")
-    if status not in {"ok", "interrupted", "abandoned"}:
+    if status not in {"ok", "interrupted", "abandoned", "ignored"}:
         raise ValueError("Unknown turn status")
     if value_ms is not None and (isinstance(value_ms, bool) or not isinstance(value_ms, (int, float)) or not math.isfinite(value_ms) or value_ms < 0):
         raise ValueError("value_ms must be finite and nonnegative")

@@ -404,16 +404,55 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             self._response_identity = ResponseIdentity(current_session_id())
         return self._response_identity
 
+    def _is_server_turn_open(self) -> bool:
+        return bool(
+            getattr(self, "_mixin_bot_responding", False)
+            or getattr(self, "_bot_is_responding", False)
+            or getattr(self, "_bot_turn_text_buffer", "").strip()
+        )
+
+    def clear_pending_filler_after_ignored_turn(self) -> None:
+        """Disarm RepeatOnFiller when an interrupting sound was classified as background noise."""
+        self._repeat_on_filler_pending = False
+        self._post_interruption_buffer = ""
+        self._suppress_delayed_server_interrupted = False
+
     async def broadcast_interruption(self, *args, **kwargs):
+        # If local Silero VAD already interrupted Turn 1 before ActivityStart reached
+        # Gemini (e.g. LiveBackgroundSpeechGate held audio while classifying), Gemini
+        # emits a delayed server_content.interrupted once ActivityStart arrives.
+        # Swallow that echo and clear _awaiting_interrupted_turn_complete (Gemini has
+        # now aborted Turn 1 on the server, even when turn_complete is omitted or deferred
+        # as IN_PROGRESS on extended-thinking models) so Turn 2 is never muted.
+        if getattr(self, "_suppress_delayed_server_interrupted", False):
+            self._suppress_delayed_server_interrupted = False
+            self._awaiting_interrupted_turn_complete = False
+            if hasattr(super(), "_handle_interruption"):
+                await super()._handle_interruption()
+            return
         # Pipecat calls this on Gemini's own barge-in (server_content.interrupted),
         # WITHOUT running our process_frame(InterruptionFrame) or _handle_interruption().
         # Gemini then sends turn_complete a few ms later, so record the interruption
         # and clear Pipecat's _bot_is_responding via _handle_interruption() now.
-        self._awaiting_interrupted_turn_complete = True
+        if self._is_server_turn_open():
+            self._awaiting_interrupted_turn_complete = True
         await self._record_bot_interruption()
         if hasattr(super(), "_handle_interruption"):
             await super()._handle_interruption()
         await super().broadcast_interruption(*args, **kwargs)
+
+    def _defer_turn_complete_until_idle(self, message):
+        sc = getattr(message, "server_content", None)
+        if (
+            getattr(sc, "interrupted", False)
+            or getattr(self, "_awaiting_interrupted_turn_complete", False)
+            or not self._is_server_turn_open()
+        ):
+            # An aborted turn's IN_PROGRESS turn_complete is moot; holding it open
+            # would close Turn 2 prematurely when interaction_status later hits IDLE.
+            self._awaiting_interrupted_turn_complete = False
+            return
+        super()._defer_turn_complete_until_idle(message)
 
     def _begin_output(self):
         """Mark our response as active and bind it to its input turn.
@@ -442,6 +481,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             origin.audio()
         if not getattr(self, "_avatar_speaking", False):
             self._avatar_speaking = True
+            self._bot_playback_active = True
+            if getattr(self, "_playback_started_at", None) is None:
+                self._playback_started_at = time.monotonic()
             await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     async def _end_avatar_output(self):
@@ -453,6 +495,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             user_idle.last_activity = time.monotonic()
         if getattr(self, "_avatar_speaking", False):
             self._avatar_speaking = False
+            self._bot_playback_active = False
+            self._playback_started_at = None
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     # Guard against Gemini Live voice-clone trailing 0x0000 digital silence without <eos>/turnComplete:
@@ -625,7 +669,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         await super()._handle_msg_model_turn(message)
 
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
-        if isinstance(frame, OutputTransportMessageFrame) and isinstance(frame.message, dict):
+        urgent_cls = globals().get("OutputTransportMessageUrgentFrame", OutputTransportMessageFrame)
+        if isinstance(frame, (OutputTransportMessageFrame, urgent_cls)) and isinstance(frame.message, dict):
             data = frame.message.get("data", {})
             if data.get("type") == "transcription" and data.get("participant", "").lower() != "user":
                 data = {**data, "response_id": self.response_identity.begin()}
@@ -700,14 +745,17 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             getattr(self, "_mixin_bot_responding", False)
             or getattr(self, "_bot_turn_text_buffer", "").strip()
         )
+        was_playing_tail = bool(getattr(self, "_bot_playback_active", False))
         self._mixin_bot_responding = False
+        self._bot_playback_active = False
         self._ttft_reported_for_response = False
         origin = getattr(self, "_live_output_turn", None)
-        if origin is not None:
+        if origin is not None and was_responding:
             origin.finish("interrupted")
-        self._live_output_turn = None
+        if was_responding:
+            self._live_output_turn = None
         await self._end_avatar_output()
-        if not was_responding:
+        if not was_responding and not was_playing_tail:
             return
         if getattr(self, "_avatar_enabled", False):
             try:
@@ -718,30 +766,34 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 }))
             except Exception:
                 pass
-        self._repeat_on_filler_pending = True
-        logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
+        if was_responding:
+            self._repeat_on_filler_pending = True
+            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
 
-        interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
-        if interrupted_text:
-            append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
-            if not hasattr(self, "_dialogue_history"):
-                self._dialogue_history = []
-            self._dialogue_history.append({
-                "role": "Assistant",
-                "text": f"{interrupted_text} [interrupted]",
-                "timestamp": time.time()
-            })
-            logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
-        self._bot_turn_text_buffer = ""
+            interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
+            if interrupted_text:
+                append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                if not hasattr(self, "_dialogue_history"):
+                    self._dialogue_history = []
+                self._dialogue_history.append({
+                    "role": "Assistant",
+                    "text": f"{interrupted_text} [interrupted]",
+                    "timestamp": time.time()
+                })
+                logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
+            self._bot_turn_text_buffer = ""
 
         metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
-        started = getattr(self, "_response_started_at", None)
+        started = getattr(self, "_response_started_at", None) or getattr(self, "_playback_started_at", None)
         self._response_started_at = None
+        self._playback_started_at = None
         if started:
             elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
             metric_payload['elapsed_ms'] = elapsed_ms
             append_diagnostic_log("⚡ Interruption", f"Bot interrupted {elapsed_ms} ms into its reply")
-        await self.push_frame(OutputTransportMessageFrame(message={
+        # Must be UrgentFrame (SystemFrame) so a trailing InterruptionFrame never wipes it
+        # from Pipecat 1.16's output transport queue before the browser flushes WebAudio.
+        await self.push_frame(OutputTransportMessageUrgentFrame(message={
             "label": "rtvi-ai",
             "type": "server-message",
             "data": {'type': 'metrics', 'payload': metric_payload}
@@ -840,11 +892,29 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 )
                 return
 
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_playback_active = True
+            if getattr(self, "_playback_started_at", None) is None:
+                self._playback_started_at = time.monotonic()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_playback_active = False
+            self._playback_started_at = None
+
         if isinstance(frame, InterruptionFrame):
+            if self._is_server_turn_open():
+                self._awaiting_interrupted_turn_complete = True
+                if getattr(self, "_vad_disabled", False) and not getattr(self, "_activity_start_sent_for_turn", False):
+                    self._suppress_delayed_server_interrupted = True
             await self._record_bot_interruption()
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
-            self._awaiting_interrupted_turn_complete = False
+            if getattr(self, "_awaiting_interrupted_turn_complete", False) and getattr(self, "_vad_disabled", False):
+                # Turn 1 was interrupted locally before ActivityStart reached Gemini and
+                # has not sent turn_complete yet. Keep muting in-flight Turn-1 chunks until
+                # Turn 1's turn_complete arrives, and suppress Gemini's delayed interrupted echo.
+                self._suppress_delayed_server_interrupted = True
+            else:
+                self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._user_is_speaking = True
             self._activity_end_sent_for_turn = False
@@ -858,7 +928,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 await self._handle_user_started_speaking(frame)
         elif isinstance(frame, UserStartedSpeakingFrame):
             self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
-            self._awaiting_interrupted_turn_complete = False
+            if not getattr(self, "_suppress_delayed_server_interrupted", False):
+                self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._activity_end_sent_for_turn = False
             if not getattr(self, "_mixin_bot_responding", False):
@@ -963,7 +1034,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         it = getattr(sc, "input_transcription", None) if sc else None
         if it and getattr(it, "text", None):
             self.__dict__.update(_turn_had_audible_pcm=False, _trailing_silent_pcm_bytes=0, _suppressing_trailing_silence=False, _watchdog_closed_current_turn=False)
-            self._awaiting_interrupted_turn_complete = False
+            if not getattr(self, "_suppress_delayed_server_interrupted", False):
+                self._awaiting_interrupted_turn_complete = False
             self._avatar_post_turn_decay = False
             self._last_user_speech_activity_at = time.monotonic()
         if getattr(getattr(self, "persona_architecture", None), "model_controls_conversation", False):
@@ -1078,6 +1150,7 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             or getattr(self, "_avatar_speaking", False)
         )
         self._awaiting_interrupted_turn_complete = False
+        self._suppress_delayed_server_interrupted = False
         self._ttft_reported_for_response = False
         self.response_identity.begin()
         # super() must see Pipecat's own _bot_is_responding intact, or it skips
@@ -2115,7 +2188,11 @@ def resolve_tts_voice_and_language(
     return f"{locale}-Chirp3-HD-{base_voice}", LIVE_LANGUAGE_MAP[locale]
 
 
-def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> tuple[str, bool, bool]:
+def resolve_live_vad_mode(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> tuple[str, bool, bool]:
     """Resolve VAD mode into (mode_name, use_silero_vad, disable_gemini_internal_vad).
 
     Supported modes:
@@ -2123,7 +2200,12 @@ def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> t
     - "gemini": Local Silero VAD disabled; Gemini Live internal server-side VAD enabled.
     - "silero": Local Silero VAD on WebSocket transport; Gemini Live internal server-side VAD disabled
       (AutomaticActivityDetection(disabled=True) so Pipecat sends explicit ActivityStart/ActivityEnd).
+
+    When ``ignore_background=True``, forces ``"silero"`` so Pipecat owns turn
+    boundaries and can gate background speech before Gemini Live receives it.
     """
+    if ignore_background:
+        return ("silero", True, True)
     normalized = (vad_mode or "").strip().lower()
     if normalized == "silero":
         return ("silero", True, True)
@@ -2132,32 +2214,50 @@ def resolve_live_vad_mode(vad: bool = True, vad_mode: Optional[str] = None) -> t
     return ("both", True, False)
 
 
-def build_live_vad_analyzer(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[SileroVADAnalyzer]:
+def build_live_vad_analyzer(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[SileroVADAnalyzer]:
     """Client-side turn detection for the Live pipeline.
 
     Returning ``None`` hands endpointing to Gemini's own server-side turn
     detection. That is a legitimate configuration for native audio, not a
     degraded one, but it changes interruption behaviour — so it stays opt-in.
     """
-    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode)
+    _, use_silero, _ = resolve_live_vad_mode(vad, vad_mode, ignore_background=ignore_background)
     if not use_silero:
         return None
+    if ignore_background:
+        return SileroVADAnalyzer(
+            params=VADParams(confidence=0.75, start_secs=0.2, stop_secs=0.4, min_volume=0.6)
+        )
     return SileroVADAnalyzer(params=VADParams(stop_secs=0.4))
 
 
-def build_live_vad_processor(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[VADProcessor]:
+def build_live_vad_processor(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[VADProcessor]:
     """Silero must run as a pipeline processor.
 
     Pipecat 1.2.1 ``FastAPIWebsocketParams`` has no ``vad_analyzer`` field and
     Pydantic drops it silently, so passing it to the transport never ran VAD.
     """
-    analyzer = build_live_vad_analyzer(vad, vad_mode)
+    analyzer = build_live_vad_analyzer(vad, vad_mode, ignore_background=ignore_background)
     return VADProcessor(vad_analyzer=analyzer) if analyzer is not None else None
 
 
-def build_gemini_live_vad_params(vad: bool = True, vad_mode: Optional[str] = None) -> Optional[GeminiVADParams]:
+def build_gemini_live_vad_params(
+    vad: bool = True,
+    vad_mode: Optional[str] = None,
+    ignore_background: bool = False,
+) -> Optional[GeminiVADParams]:
     """Server-side AutomaticActivityDetection configuration for Gemini Live."""
-    _, _, disable_gemini_internal = resolve_live_vad_mode(vad, vad_mode)
+    _, _, disable_gemini_internal = resolve_live_vad_mode(
+        vad, vad_mode, ignore_background=ignore_background
+    )
     if disable_gemini_internal:
         return GeminiVADParams(disabled=True)
     return None
@@ -2404,6 +2504,7 @@ async def run_agent_live(
     avatar_custom_image: Optional[str] = None,
     custom_voice_audio: Optional[str] = None,
     emotion_enabled: bool = True,
+    ignore_background: bool = False,
 ):
     project_id = os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT") or "deep-clock-339817"
     location = os.getenv("GCP_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION") or "us-central1"
@@ -2443,11 +2544,14 @@ async def run_agent_live(
     # Option B: Path 1 pre-loading disabled - force live deep recall tool execution for every memory query
     preloaded_facts = []
 
-    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(vad, vad_mode)
+    effective_vad_mode, use_silero, disable_gemini_vad = resolve_live_vad_mode(
+        vad, vad_mode, ignore_background=ignore_background
+    )
     logger.info(
         f"Live VAD mode: {effective_vad_mode} "
         f"(Silero={'enabled' if use_silero else 'disabled'}, "
-        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'})"
+        f"GeminiInternalVAD={'disabled' if disable_gemini_vad else 'enabled'}, "
+        f"ignore_background={ignore_background})"
     )
     transport = FastAPIWebsocketTransport(
         websocket,
@@ -2584,7 +2688,9 @@ async def run_agent_live(
                 logger.debug(f"[SecretManager] Dynamic GEMINI_API_KEY retrieval note: {sm_err}")
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
-        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+        gemini_vad_params = build_gemini_live_vad_params(
+            vad, vad_mode, ignore_background=ignore_background
+        )
 
         settings = GeminiLiveLLMService.Settings(
             model=f"models/{clean_model}",
@@ -2611,7 +2717,9 @@ async def run_agent_live(
             vertex_model_name = "gemini-3.5-flash-live-preview"
 
         thinking_config = build_thinking_config(clean_model, thinking, thinking_level)
-        gemini_vad_params = build_gemini_live_vad_params(vad, vad_mode)
+        gemini_vad_params = build_gemini_live_vad_params(
+            vad, vad_mode, ignore_background=ignore_background
+        )
 
         settings = GeminiLiveVertexLLMService.Settings(
             model=f"google/{vertex_model_name}",
@@ -2728,15 +2836,54 @@ async def run_agent_live(
     if tts_service is not None:
         tts_service._turn_tracker = turn_tracker
 
+    from processors.background_speech_gate import (
+        BackgroundSpeechEvaluator,
+        LIVE_DEFAULT_TIMEOUT_SECS,
+        LiveBackgroundSpeechGate,
+    )
     from processors.emotion_perception import AudioEmotionObserver
 
-    live_vad = build_live_vad_processor(vad, vad_mode)
+    live_vad = build_live_vad_processor(vad, vad_mode, ignore_background=ignore_background)
     emotion_observer = AudioEmotionObserver(
         enabled=emotion_enabled,
         session_id=current_session_id(),
         project_id=project_id,
     )
     llm._emotion_observer = emotion_observer
+
+    bg_gate = None
+    if ignore_background:
+        def _last_live_bot_utterance() -> str:
+            history = getattr(llm, "_dialogue_history", None) or []
+            for entry in reversed(history):
+                if isinstance(entry, dict) and str(entry.get("role", "")).lower() in (
+                    "assistant",
+                    "bot",
+                    "model",
+                ):
+                    text = str(entry.get("text") or "").strip()
+                    if text:
+                        return text
+            return ""
+
+        bg_evaluator = BackgroundSpeechEvaluator(
+            enabled=True,
+            timeout_secs=LIVE_DEFAULT_TIMEOUT_SECS,
+            project_id=project_id,
+            persona_hint=persona_id or "",
+        )
+        bg_gate = LiveBackgroundSpeechGate(
+            bg_evaluator,
+            get_last_bot_utterance=_last_live_bot_utterance,
+            on_ignored_barge_in=llm.clear_pending_filler_after_ignored_turn,
+            on_decision=lambda dec: append_diagnostic_log(
+                "Background Gate (Live)",
+                f"{'RESPOND' if dec.should_respond else 'IGNORE'} "
+                f"(addressed={dec.addressed_probability:.0%}, "
+                f"bg={dec.background_probability:.0%}, {dec.latency_ms}ms, {dec.reason})",
+            ),
+        )
+
     user_idle = UserIdleProcessor(callback=handle_user_idle, timeout=30.0)
     llm.user_idle_processor = user_idle
 
@@ -2744,6 +2891,7 @@ async def run_agent_live(
         transport.input(),
         start_trigger,
         *([live_vad] if live_vad else []),
+        *([bg_gate] if bg_gate else []),
         TurnBoundaryProcessor(turn_tracker),
         emotion_observer,
         user_idle,
