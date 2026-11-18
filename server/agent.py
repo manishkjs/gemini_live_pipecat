@@ -2063,6 +2063,10 @@ async def run_agent(
                     accumulator._last_turn_audio,
                     accumulator._last_turn_sample_rate,
                 ),
+                get_current_utterance_id=lambda: (
+                    emotion_observer.transcript_utterance_id
+                    or emotion_observer.current_utterance_id
+                ),
                 on_ignored_turn=turn_tracker.mark_ignored,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade/SkipSTT)",
@@ -2107,6 +2111,10 @@ async def run_agent(
             CascadeBackgroundSpeechGate(
                 bg_evaluator,
                 get_recent_audio=emotion_observer.get_last_utterance_audio,
+                get_current_utterance_id=lambda: (
+                    emotion_observer.transcript_utterance_id
+                    or emotion_observer.current_utterance_id
+                ),
                 on_ignored_turn=turn_tracker.mark_ignored,
                 on_decision=lambda dec: append_diagnostic_log(
                     "Background Gate (Cascade)",

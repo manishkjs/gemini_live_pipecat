@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  accumulateBackgroundGateStats,
   attachCascadeGateToTurn,
   consumePendingBackgroundGate,
+  EMPTY_BACKGROUND_GATE_STATS,
   formatIgnoredBackgroundLabel,
   parseBackgroundGatePayload,
 } from "../src/lib/background-gate.ts";
 
 test("Live multi-sentence Turn N never steals Turn N+1 respond badge", () => {
-  // Turn 1: Gate responds -> first sentence consumes pending -> second sentence stays unbadged.
   const { reading: gate1 } = parseBackgroundGatePayload({
     decision: "respond",
     mode: "live",
@@ -34,9 +35,6 @@ test("Live multi-sentence Turn N never steals Turn N+1 respond badge", () => {
     { id: "a1", role: "assistant", text: "Sure, let me check." },
   ];
 
-  // Turn 2: Live gate emits "respond" BEFORE Gemini emits Turn 2's user transcription.
-  // Because Live "respond" holds in `pending` instead of scanning `turn1Messages`,
-  // `u1-s2` is untouched and Turn 2's first sentence receives `gate2`.
   const { reading: gate2 } = parseBackgroundGatePayload({
     decision: "respond",
     mode: "live",
@@ -60,6 +58,7 @@ test("Cascade multi-sentence ignored turn dims every sentence bubble and renders
     background_probability: 0.95,
     latency_ms: 340,
     transcript: "Mummy ek minute. TV band karo.",
+    utterance_id: 4,
   });
 
   const initial = Object.freeze([
@@ -68,15 +67,67 @@ test("Cascade multi-sentence ignored turn dims every sentence bubble and renders
     Object.freeze({ id: "u2", role: "user", text: "TV band karo." }),
   ]);
 
-  // StrictMode double-invocation check: pure output, zero input mutation.
-  const firstRun = attachCascadeGateToTurn(initial, ["u1", "u2"], reading, "Mummy ek minute. TV band karo.");
-  const secondRun = attachCascadeGateToTurn(initial, ["u1", "u2"], reading, "Mummy ek minute. TV band karo.");
+  const firstRun = attachCascadeGateToTurn(
+    initial,
+    ["u1", "u2"],
+    reading,
+    "Mummy ek minute. TV band karo.",
+    true,
+  );
+  const secondRun = attachCascadeGateToTurn(
+    initial,
+    ["u1", "u2"],
+    reading,
+    "Mummy ek minute. TV band karo.",
+    true,
+  );
   assert.deepEqual(firstRun, secondRun);
 
   assert.equal(firstRun[1].metrics?.backgroundGate?.decision, "ignore");
   assert.equal(firstRun[1].metrics?.backgroundGate?.continuation, true);
   assert.equal(firstRun[2].metrics?.backgroundGate?.decision, "ignore");
   assert.equal(firstRun[2].metrics?.backgroundGate?.continuation, undefined);
+});
+
+test("Overlapping Cascade Turn 1 (ignore) + Turn 2 (respond) never mis-badges Turn 2", () => {
+  const { reading: ignoreT1, transcript: tx1 } = parseBackgroundGatePayload({
+    decision: "ignore",
+    mode: "cascade",
+    addressed_probability: 0.03,
+    background_probability: 0.97,
+    latency_ms: 320,
+    transcript: "Breaking news on Channel 9!",
+    utterance_id: 1,
+  });
+  const { reading: respondT2, transcript: tx2 } = parseBackgroundGatePayload({
+    decision: "respond",
+    mode: "cascade",
+    addressed_probability: 0.96,
+    background_probability: 0.04,
+    latency_ms: 210,
+    transcript: "What is my account balance?",
+    utterance_id: 2,
+  });
+
+  const initial = [
+    { id: "a0", role: "assistant", text: "How can I help?" },
+    { id: "m1", role: "user", text: "Breaking news on Channel 9!" },
+    { id: "m2", role: "user", text: "What is my account balance?" },
+  ];
+
+  // Keyed by utterance_id: m1 gets ignore, m2 gets respond.
+  const afterT1Keyed = attachCascadeGateToTurn(initial, ["m1"], ignoreT1, tx1, true);
+  const afterT2Keyed = attachCascadeGateToTurn(afterT1Keyed, ["m2"], respondT2, tx2, true);
+  assert.equal(afterT2Keyed[1].metrics?.backgroundGate?.decision, "ignore");
+  assert.equal(afterT2Keyed[2].metrics?.backgroundGate?.decision, "respond");
+  assert.equal(afterT2Keyed[2].metrics?.backgroundGate?.addressedProbability, 0.96);
+
+  // Unkeyed fallback with both IDs present: transcript slice matching STILL isolates m1 from m2!
+  const afterT1Unkeyed = attachCascadeGateToTurn(initial, ["m1", "m2"], ignoreT1, tx1, false);
+  assert.equal(afterT1Unkeyed[1].metrics?.backgroundGate?.decision, "ignore");
+  assert.equal(afterT1Unkeyed[2].metrics, undefined);
+  const afterT2Unkeyed = attachCascadeGateToTurn(afterT1Unkeyed, ["m1", "m2"], respondT2, tx2, false);
+  assert.equal(afterT2Unkeyed[2].metrics?.backgroundGate?.decision, "respond");
 });
 
 test("Cascade skip_stt attaches badge to audio placeholder bubble and formats empty fallback", () => {
@@ -88,19 +139,20 @@ test("Cascade skip_stt attaches badge to audio placeholder bubble and formats em
     latency_ms: 295,
     audio_duration_secs: 1.6,
     transcript: "",
+    utterance_id: 3,
   });
 
   const items = [
     { id: "a0", role: "assistant", text: "Welcome!" },
     { id: "u-audio", role: "user", text: "🎤 Audio Message (1.6s)" },
   ];
-  const updated = attachCascadeGateToTurn(items, ["u-audio"], reading, "");
+  const updated = attachCascadeGateToTurn(items, ["u-audio"], reading, "", true);
   assert.equal(updated[1].metrics?.backgroundGate?.decision, "ignore");
   assert.equal(updated[1].metrics?.backgroundGate?.latencyMs, 295);
   assert.equal(formatIgnoredBackgroundLabel("", 1.6), "🔇 Background speech (1.6s)");
 });
 
-test("parseBackgroundGatePayload preserves >160-character transcripts and token counts", () => {
+test("parseBackgroundGatePayload preserves >160-character transcripts and accumulates gate token stats", () => {
   const longText = "Please transfer five thousand rupees from my savings account ".repeat(5).trim();
   assert.ok(longText.length > 250);
   const parsed = parseBackgroundGatePayload({
@@ -112,8 +164,27 @@ test("parseBackgroundGatePayload preserves >160-character transcripts and token 
     transcript: longText,
     input_tokens: 84,
     output_tokens: 2,
+    utterance_id: 7,
   });
   assert.equal(parsed.transcript, longText);
   assert.equal(parsed.reading.inputTokens, 84);
   assert.equal(parsed.reading.outputTokens, 2);
+  assert.equal(parsed.reading.utteranceId, 7);
+
+  let stats = accumulateBackgroundGateStats(EMPTY_BACKGROUND_GATE_STATS, parsed.reading);
+  const ignored = parseBackgroundGatePayload({
+    decision: "ignore",
+    mode: "live",
+    addressed_probability: 0.04,
+    latency_ms: 190,
+    input_tokens: 60,
+    output_tokens: 2,
+  });
+  stats = accumulateBackgroundGateStats(stats, ignored.reading);
+  assert.equal(stats.count, 2);
+  assert.equal(stats.ignoredCount, 1);
+  assert.equal(stats.totalInputTokens, 144);
+  assert.equal(stats.totalOutputTokens, 4);
+  assert.equal(stats.lastLatencyMs, 190);
+  assert.equal(stats.lastDecision, "ignore");
 });

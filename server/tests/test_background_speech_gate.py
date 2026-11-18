@@ -492,14 +492,15 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         class _ScriptedClassifier(_StubDecisionsClassifier):
             def __init__(self) -> None:
                 super().__init__()
-                self.entered = asyncio.Event()
-                self.probs = [0.03, 0.96]  # 1st = TV noise (ignore), 2nd = real caller (respond)
+                self.entered_interrupted = asyncio.Event()
+                # 1st = normal ignored TV turn, 2nd = interrupted TV turn, 3rd = real caller
+                self.probs = [0.04, 0.03, 0.96]
 
             async def _ask(self, state, questions, inputs=()):
                 idx = len(self.calls)
                 self.calls.append({"state": state})
-                if idx == 0:
-                    self.entered.set()
+                if idx == 1:
+                    self.entered_interrupted.set()
                     await asyncio.sleep(0.12)
                 prob = self.probs[min(idx, len(self.probs) - 1)]
                 return (
@@ -507,16 +508,22 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
                     LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
                 )
 
+        from diagnostic_buffer import DIAGNOSTIC_LOG_BUFFER, TURN_LATENCY_RECORDS
+        from processors.turn_telemetry import TurnBoundaryProcessor
+
+        DIAGNOSTIC_LOG_BUFFER.clear()
+        TURN_LATENCY_RECORDS.clear()
         tracker = TurnTracker("s-cancel", "tts-llm-stt", vad_stop_padding_ms=400)
-        tracker.current.vad_start = 1.0
-        tracker.current.vad_stop = 1.5
+        boundary = TurnBoundaryProcessor(tracker)
         stub = _ScriptedClassifier()
+        utt_counter = [0]
         gate = CascadeBackgroundSpeechGate(
             BackgroundSpeechEvaluator(enabled=True, classifier=stub),
+            get_current_utterance_id=lambda: utt_counter[0],
             on_ignored_turn=tracker.mark_ignored,
         )
         sink = _Sink()
-        pipeline = Pipeline([gate, sink])
+        pipeline = Pipeline([boundary, gate, sink])
         task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True))
 
         ctx = LLMContext(
@@ -526,27 +533,59 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         )
 
         async def _drive() -> None:
-            await asyncio.sleep(0.05)
-            await task.queue_frame(VADUserStoppedSpeakingFrame())
-            # Turn 1: TV speech enters gate.process_frame(LLMContextFrame) and blocks in evaluate().
-            ctx.messages.append({"role": "user", "content": "Buy crispy chips on Channel 5!"})
-            await task.queue_frame(LLMContextFrame(context=ctx))
-            await asyncio.wait_for(stub.entered.wait(), timeout=2.0)
-            # Mid-evaluation InterruptionFrame cancels Pipecat's __process_frame_task!
-            await task.queue_frame(InterruptionFrame())
-            await asyncio.sleep(0.18)
-            # Ignored TV message MUST NOT remain in ctx.messages, and Turn 1 is marked ignored.
-            self.assertEqual(
-                [(m["role"], m["content"]) for m in ctx.messages],
-                [("assistant", "How can I help you today?")],
-            )
-            self.assertEqual(tracker.current.status, "ignored")
+            try:
+                await asyncio.sleep(0.05)
+                # Turn 1 (normal un-interrupted ignored TV speech) -> status="ignored" with 0 ERROR logs.
+                utt_counter[0] = 1
+                await task.queue_frame(VADUserStartedSpeakingFrame())
+                await task.queue_frame(VADUserStoppedSpeakingFrame())
+                await asyncio.sleep(0.02)
+                turn1 = tracker.current
+                ctx.messages.append({"role": "user", "content": "Weather report on radio."})
+                await task.queue_frame(LLMContextFrame(context=ctx))
+                await asyncio.sleep(0.06)
+                self.assertEqual(turn1.status, "ignored")
 
-            # Turn 2: Real caller utterance passes cleanly through the same gate.
-            ctx.messages.append({"role": "user", "content": "Book a car service for Friday."})
-            await task.queue_frame(LLMContextFrame(context=ctx))
-            await asyncio.sleep(0.08)
-            await task.queue_frame(EndFrame())
+                # Turn 2 (TV speech interrupted mid-evaluate by Turn 3) -> must NOT clobber Turn 3!
+                utt_counter[0] = 2
+                await task.queue_frame(VADUserStartedSpeakingFrame())
+                await task.queue_frame(VADUserStoppedSpeakingFrame())
+                await asyncio.sleep(0.02)
+                turn2 = tracker.current
+                ctx.messages.append({"role": "user", "content": "Buy crispy chips on Channel 5!"})
+                await task.queue_frame(LLMContextFrame(context=ctx))
+                await asyncio.wait_for(stub.entered_interrupted.wait(), timeout=2.0)
+
+                await task.queue_frame(InterruptionFrame())
+                utt_counter[0] = 3
+                await task.queue_frame(VADUserStartedSpeakingFrame())
+                await task.queue_frame(VADUserStoppedSpeakingFrame())
+                await asyncio.sleep(0.02)
+                turn3 = tracker.current
+
+                await asyncio.sleep(0.18)
+                self.assertEqual(
+                    [(m["role"], m["content"]) for m in ctx.messages],
+                    [("assistant", "How can I help you today?")],
+                )
+                self.assertEqual(turn2.status, "interrupted")
+                self.assertIsNone(turn3.status, "Async Turn 2 ignore must NOT clobber Turn 3!")
+                error_logs = [r for r in DIAGNOSTIC_LOG_BUFFER if r.get("level") == "ERROR"]
+                self.assertEqual(error_logs, [])
+                ignored_records = [
+                    r for r in TURN_LATENCY_RECORDS if r["session_id"] == "s-cancel" and r["status"] == "ignored"
+                ]
+                self.assertEqual(len(ignored_records), 1)
+                self.assertEqual(ignored_records[0]["turn_id"], 1)
+
+                # Turn 3: Real caller utterance passes cleanly through the same gate.
+                ctx.messages.append({"role": "user", "content": "Book a car service for Friday."})
+                await task.queue_frame(LLMContextFrame(context=ctx))
+                await asyncio.sleep(0.08)
+                await task.queue_frame(EndFrame())
+            except Exception:
+                await task.cancel()
+                raise
 
         runner = PipelineRunner(handle_sigint=False)
         await asyncio.gather(runner.run(task), _drive())
@@ -559,6 +598,109 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
                 ("user", "Book a car service for Friday."),
             ],
         )
+
+    async def test_cascade_overlapping_cancelled_turns_preserve_order_and_never_hang(self) -> None:
+        """Verifies both overlapping addressed orderings (T1 slow/fast) and addressed-T1 + ignored-T2."""
+        from pipecat.frames.frames import InterruptionFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.runner import PipelineRunner
+        from pipecat.pipeline.task import PipelineParams, PipelineTask
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.frame_processor import FrameProcessor
+
+        class _SnapshotSink(FrameProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.snapshots: list[list[tuple[str, str]]] = []
+
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                if isinstance(frame, LLMContextFrame):
+                    self.snapshots.append([(m["role"], m["content"]) for m in frame.context.messages])
+                await self.push_frame(frame, direction)
+
+        class _StepClassifier(_StubDecisionsClassifier):
+            def __init__(self, steps: list[tuple[float, float]]) -> None:
+                super().__init__()
+                self.steps = steps  # [(prob, delay_secs), ...]
+                self.first_started = asyncio.Event()
+
+            async def _ask(self, state, questions, inputs=()):
+                idx = len(self.calls)
+                self.calls.append({"state": state})
+                if idx == 0:
+                    self.first_started.set()
+                prob, delay = self.steps[min(idx, len(self.steps) - 1)]
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                return (
+                    {name: YesNoResult(probability=prob) for name in questions},
+                    LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12),
+                )
+
+        async def _run_overlap_case(
+            steps: list[tuple[float, float]],
+            t1_text: str,
+            t2_text: str,
+        ) -> tuple[list[list[tuple[str, str]]], list[tuple[str, str]]]:
+            clf = _StepClassifier(steps)
+            gate = CascadeBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=clf))
+            sink = _SnapshotSink()
+            task = PipelineTask(Pipeline([gate, sink]), params=PipelineParams(allow_interruptions=True))
+            ctx = LLMContext(messages=[{"role": "assistant", "content": "Where would you like to fly?"}])
+
+            async def _drive() -> None:
+                await asyncio.sleep(0.03)
+                await task.queue_frame(VADUserStoppedSpeakingFrame())
+                ctx.messages.append({"role": "user", "content": t1_text})
+                await task.queue_frame(LLMContextFrame(context=ctx))
+                await asyncio.wait_for(clf.first_started.wait(), timeout=2.0)
+                await task.queue_frame(InterruptionFrame())
+                await asyncio.sleep(0.01)
+                ctx.messages.append({"role": "user", "content": t2_text})
+                await task.queue_frame(LLMContextFrame(context=ctx))
+                await asyncio.sleep(0.30)
+                await task.queue_frame(EndFrame())
+
+            await asyncio.gather(PipelineRunner(handle_sigint=False).run(task), _drive())
+            return sink.snapshots, [(m["role"], m["content"]) for m in ctx.messages]
+
+        # 1. Slow T1 (0.15s) + Fast T2 (0.02s), both addressed -> [assistant, T1, T2]
+        snaps_slow_t1, final_slow_t1 = await _run_overlap_case(
+            [(0.95, 0.15), (0.95, 0.02)],
+            "Book me a flight to Mumbai",
+            "for tomorrow morning",
+        )
+        expected_both = [
+            ("assistant", "Where would you like to fly?"),
+            ("user", "Book me a flight to Mumbai"),
+            ("user", "for tomorrow morning"),
+        ]
+        self.assertEqual(final_slow_t1, expected_both)
+        self.assertEqual(snaps_slow_t1[-1], expected_both)
+
+        # 2. Fast T1 (0.04s) + Slow T2 (0.15s), both addressed -> [assistant, T1, T2]
+        snaps_fast_t1, final_fast_t1 = await _run_overlap_case(
+            [(0.95, 0.04), (0.95, 0.15)],
+            "Book me a flight to Mumbai",
+            "for tomorrow morning",
+        )
+        self.assertEqual(final_fast_t1, expected_both)
+        self.assertEqual(snaps_fast_t1[-1], expected_both)
+
+        # 3. Addressed T1 interrupted mid-eval by Ignored T2 -> LLM still receives [assistant, T1]!
+        snaps_t1_ok_t2_bg, final_t1_ok_t2_bg = await _run_overlap_case(
+            [(0.96, 0.12), (0.02, 0.02)],
+            "What is my account balance?",
+            "Breaking news on Channel 9!",
+        )
+        expected_t1_only = [
+            ("assistant", "Where would you like to fly?"),
+            ("user", "What is my account balance?"),
+        ]
+        self.assertGreaterEqual(len(snaps_t1_ok_t2_bg), 1, "Addressed Turn 1 must reach LLM!")
+        self.assertEqual(snaps_t1_ok_t2_bg[-1], expected_t1_only)
+        self.assertEqual(final_t1_ok_t2_bg, expected_t1_only)
 
     async def test_live_barge_in_delayed_server_interrupted_and_filler_races(self) -> None:
         """Verifies all 3 Gemini Live Silero-VAD barge-in invariants on CustomGeminiLiveLLMService."""
@@ -605,14 +747,27 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             boundary = TurnBoundaryProcessor(tracker)
             llm._turn_tracker = tracker
 
-            # --- Race A: Post-turn_complete tail barge-in must NOT stick _awaiting_interrupted_turn_complete ---
+            # --- Race A: Post-turn_complete WebAudio tail barge-in flushes browser & keeps flag False ---
+            from pipecat.frames.frames import BotStartedSpeakingFrame, OutputTransportMessageFrame
+
+            with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
+                await llm.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
             await llm._handle_msg_output_transcription(_live_msg(transcript="Hello!"))
             await llm._handle_msg_model_turn(_live_msg(audio=b"\x01\x00" * 240))
             await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
             self.assertFalse(llm._mixin_bot_responding)
+            self.assertTrue(llm._bot_playback_active)
+            pushed.clear()
             with patch.object(GeminiLiveLLMService, "process_frame", new=AsyncMock()):
                 await llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
             self.assertFalse(llm._awaiting_interrupted_turn_complete)
+            tail_interrupts = [
+                f
+                for f, _ in pushed
+                if isinstance(f, OutputTransportMessageFrame)
+                and f.message.get("data", {}).get("payload", {}).get("type") == "interruption"
+            ]
+            self.assertEqual(len(tail_interrupts), 1, "Playback tail barge-in must flush browser WebAudio!")
 
             # --- Race B: Ignored mid-turn side-talk must disarm RepeatOnFiller ---
             await llm._handle_msg_output_transcription(_live_msg(transcript="Your balance is"))
@@ -668,13 +823,15 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
             await llm._handle_msg_model_turn(_live_msg(audio=b"\x02\x00" * 240))
             self.assertEqual(len(pushed), pushed_before_stale, "Stale Turn-1 chunks must not leak!")
 
-            # 3. Gemini processes ActivityStart and sends delayed server_content.interrupted + Turn-1 turn_complete.
+            # 3. Gemini processes ActivityStart and sends delayed server_content.interrupted
+            # WITHOUT turn_complete (or with deferred IN_PROGRESS turn_complete on 3.8 extended thinking).
             await llm.broadcast_interruption()
-            await llm._handle_msg_turn_complete(_live_msg(turn_complete=True))
+            llm._defer_turn_complete_until_idle(_live_msg(turn_complete=True, interrupted=True))
+            self.assertIsNone(llm._turn_complete_pending_idle)
             self.assertFalse(llm._awaiting_interrupted_turn_complete)
             self.assertIsNone(turn2.status, "Delayed Turn-1 interrupted echo must NOT abort Turn 2!")
 
-            # 4. Turn 2 output arrives and completes cleanly.
+            # 4. Turn 2 output arrives immediately (even without Turn-1 turn_complete) and completes cleanly.
             await llm._handle_msg_input_transcription(_live_msg(user_transcript="Switch to Friday."))
             await llm._handle_msg_output_transcription(_live_msg(transcript="Switched to Friday."))
             await llm._handle_msg_model_turn(_live_msg(audio=b"\x03\x00" * 240))

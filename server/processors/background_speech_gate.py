@@ -59,6 +59,7 @@ from pipecat.frames.frames import (
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
     UserSpeakingFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -70,6 +71,7 @@ from pipecat.processors.frame_processor import (
 )
 
 from processors.emotion_perception import resolve_decision_api_key_async
+from processors.turn_telemetry import ORIGIN_KEY
 
 DEFAULT_DECISION_MODEL = "gemini-decision-1"
 DEFAULT_TIMEOUT_SECS = 2.5
@@ -135,10 +137,27 @@ class BackgroundSpeechDecision:
     audio_duration_secs: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    utterance_id: int | None = None
+
+    def with_utterance_id(self, utterance_id: int | None) -> BackgroundSpeechDecision:
+        if not utterance_id or utterance_id <= 0:
+            return self
+        return BackgroundSpeechDecision(
+            should_respond=self.should_respond,
+            addressed_probability=self.addressed_probability,
+            background_probability=self.background_probability,
+            latency_ms=self.latency_ms,
+            reason=self.reason,
+            transcript=self.transcript,
+            audio_duration_secs=self.audio_duration_secs,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            utterance_id=int(utterance_id),
+        )
 
     def to_rtvi_payload(self, mode: str) -> dict[str, Any]:
         """Serialize the decision for RTVI server-message telemetry."""
-        return {
+        payload: dict[str, Any] = {
             "type": "background_gate",
             "decision": "respond" if self.should_respond else "ignore",
             "addressed_probability": round(self.addressed_probability, 3),
@@ -151,6 +170,9 @@ class BackgroundSpeechDecision:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
         }
+        if self.utterance_id is not None and self.utterance_id > 0:
+            payload["utterance_id"] = self.utterance_id
+        return payload
 
 
 class BackgroundSpeechEvaluator:
@@ -804,6 +826,21 @@ class LiveBackgroundSpeechGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+@dataclass
+class _InflightCascadeTurn:
+    """Single queued Cascade user utterance awaiting FIFO commit."""
+
+    seq: int
+    context: Any
+    message: dict[str, Any]
+    user_text: str
+    utterance_id: int | None
+    turn_origin: Any
+    eval_task: asyncio.Task[BackgroundSpeechDecision]
+    committed: bool = False
+    should_respond: bool = True
+
+
 class CascadeBackgroundSpeechGate(FrameProcessor):
     """Turn-level background speech gate for Cascade (`STT -> LLM -> TTS` and `skip_stt`).
 
@@ -812,19 +849,26 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
     assistant's last message. Opening greetings and tool-call follow-up turns
     pass straight through without classification.
 
-    Cancellation safety: Pipecat 1.16 cancels `__process_frame_task` on any
-    incoming `InterruptionFrame` (`LLMContextFrame` is `interruptible=True`). To
-    prevent a mid-evaluation cancellation from stranding ignored background
-    speech in `LLMContext.messages`, the candidate user message is removed from
-    `messages` *before* awaiting `evaluate()`, and restored at its original
-    position only if the evaluation approves the turn.
+    Concurrency & cancellation invariants:
+    1. Each candidate user message is synchronously popped from `LLMContext.messages`
+       before any `await`, so Pipecat 1.16's `InterruptionFrame` task cancellation
+       can never strand ignored background speech in `messages`.
+    2. All overlapping evaluations commit strictly in FIFO arrival order via
+       `_inflight_entries` + `_commit_lock`, preserving exact chronological order
+       even when a fast Turn 2 finishes before a slower interrupted Turn 1.
+    3. If an addressed Turn 1 is interrupted mid-evaluation by an ignored Turn 2
+       (or an empty-STT cough), the gate still forwards `LLMContextFrame` once
+       the pending queue drains so the caller's real turn is never left unanswered.
     """
+
+    EMPTY_STT_RECOVERY_DELAY_SECS = 0.85
 
     def __init__(
         self,
         evaluator: BackgroundSpeechEvaluator,
         *,
         get_recent_audio: Callable[[], tuple[bytes | None, int]] | None = None,
+        get_current_utterance_id: Callable[[], int] | None = None,
         on_decision: Callable[[BackgroundSpeechDecision], None] | None = None,
         on_ignored_turn: Callable[[], None] | None = None,
         **kwargs: Any,
@@ -832,14 +876,27 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         super().__init__(**kwargs)
         self._evaluator = evaluator
         self._get_recent_audio = get_recent_audio
+        self._get_current_utterance_id = get_current_utterance_id
         self._on_decision = on_decision
         self._on_ignored_turn = on_ignored_turn
         self._seen_user_speech = False
+        self._user_speaking = False
+        self._seq_counter = 0
+        self._latest_turn_origin: Any = None
+        self._inflight_entries: list[_InflightCascadeTurn] = []
+        self._commit_lock = asyncio.Lock()
+        self._unanswered_addressed_turn = False
+        self._last_addressed_context: Any = None
         self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         await super().setup(setup)
         await self._evaluator.setup(setup.task_manager)
+
+    def _track_bg_task(self, task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return task
 
     async def cleanup(self) -> None:
         for task in list(self._bg_tasks):
@@ -848,6 +905,7 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
         if self._bg_tasks:
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
+        self._inflight_entries.clear()
         await self._evaluator.cleanup()
         await super().cleanup()
 
@@ -867,7 +925,13 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             )
         )
 
-    def _notify_ignored_turn(self) -> None:
+    def _finish_ignored_turn(self, turn_origin: Any) -> None:
+        if turn_origin is not None and hasattr(turn_origin, "finish"):
+            try:
+                turn_origin.finish("ignored")
+                return
+            except Exception:
+                logger.exception("[CascadeBackgroundGate] turn_origin.finish('ignored') failed")
         if self._on_ignored_turn is not None:
             try:
                 self._on_ignored_turn()
@@ -883,36 +947,88 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                     return text
         return ""
 
-    async def _finish_cancelled_evaluation(
-        self,
-        eval_task: asyncio.Task[BackgroundSpeechDecision],
-        messages: list[Any],
-        candidate_msg: dict[str, Any],
-        insert_index: int,
-        user_text: str,
-    ) -> None:
-        """Reconcile a turn whose `process_frame` was interrupted mid-classification."""
+    async def _drain_commits(self) -> None:
+        """Commit completed evaluations strictly in FIFO arrival order."""
+        async with self._commit_lock:
+            while self._inflight_entries and self._inflight_entries[0].eval_task.done():
+                head = self._inflight_entries.pop(0)
+                try:
+                    raw_decision = await head.eval_task
+                    decision = raw_decision.with_utterance_id(head.utterance_id)
+                except asyncio.CancelledError:
+                    head.committed = True
+                    head.should_respond = False
+                    continue
+                except Exception as exc:
+                    logger.warning(
+                        "[CascadeBackgroundGate] Unexpected evaluation error ({}); failing open.",
+                        exc,
+                    )
+                    decision = BackgroundSpeechDecision(
+                        should_respond=True,
+                        addressed_probability=1.0,
+                        background_probability=0.0,
+                        latency_ms=0,
+                        reason="fail_open_error",
+                        transcript=head.user_text,
+                        utterance_id=head.utterance_id,
+                    )
+
+                await self._emit_decision(decision)
+                head.should_respond = decision.should_respond
+                head.committed = True
+                if decision.should_respond:
+                    head.context.messages.append(head.message)
+                    self._unanswered_addressed_turn = True
+                    self._last_addressed_context = head.context
+                else:
+                    self._finish_ignored_turn(head.turn_origin)
+                    logger.info(
+                        "[CascadeBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms, text={!r}).",
+                        decision.background_probability,
+                        decision.latency_ms,
+                        head.user_text[:80],
+                    )
+
+    async def _await_through(self, target: _InflightCascadeTurn) -> None:
+        """Wait until `target` and all earlier queued turns have committed in order."""
+        while not target.committed and target in self._inflight_entries:
+            oldest = self._inflight_entries[0]
+            if not oldest.eval_task.done():
+                await asyncio.shield(oldest.eval_task)
+            await self._drain_commits()
+
+    async def _flush_unanswered_if_idle(self, delay_secs: float = 0.0) -> None:
+        """Forward a stranded addressed turn if an interrupting sound produced no LLM turn."""
         try:
-            decision = await eval_task
-            await self._emit_decision(decision)
-            if decision.should_respond:
-                # Restore the caller's interrupted Turn-1 message in chronological
-                # order so Turn 2's upcoming LLMContextFrame retains full context.
-                bounded_idx = max(0, min(insert_index, len(messages)))
-                messages.insert(bounded_idx, candidate_msg)
-            else:
-                self._notify_ignored_turn()
-                logger.info(
-                    "[CascadeBackgroundGate] Ignored interrupted background turn (p_bg={:.2f}, text={!r}).",
-                    decision.background_probability,
-                    user_text[:80],
-                )
+            if delay_secs > 0:
+                await asyncio.sleep(delay_secs)
+            if (
+                self._unanswered_addressed_turn
+                and not self._inflight_entries
+                and not self._user_speaking
+                and self._last_addressed_context is not None
+            ):
+                ctx = self._last_addressed_context
+                self._unanswered_addressed_turn = False
+                await self.push_frame(LLMContextFrame(context=ctx), FrameDirection.DOWNSTREAM)
         except asyncio.CancelledError:
             pass
-        except Exception:
-            # Fail open on unexpected reconciliation error: restore user message.
-            bounded_idx = max(0, min(insert_index, len(messages)))
-            messages.insert(bounded_idx, candidate_msg)
+
+    async def _settle_cancelled_turn(self, entry: _InflightCascadeTurn) -> None:
+        """Ensure an interrupted `process_frame` still commits in FIFO order."""
+        try:
+            await self._await_through(entry)
+            if (
+                self._unanswered_addressed_turn
+                and not self._inflight_entries
+                and not self._user_speaking
+            ):
+                # Yield briefly so an immediately queued Turn-2 LLMContextFrame can enter
+                # process_frame first; if none arrives, flush the addressed Turn 1 now.
+                await self._flush_unanswered_if_idle(delay_secs=0.05)
+        except asyncio.CancelledError:
+            pass
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -925,12 +1041,32 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
             for task in list(self._bg_tasks):
                 if not task.done():
                     task.cancel()
+            self._inflight_entries.clear()
+            self._unanswered_addressed_turn = False
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            self._user_speaking = True
+            origin = frame.metadata.get(ORIGIN_KEY)
+            if origin is not None:
+                self._latest_turn_origin = origin
             await self.push_frame(frame, direction)
             return
 
         if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             self._seen_user_speech = True
+            self._user_speaking = False
+            origin = frame.metadata.get(ORIGIN_KEY)
+            if origin is not None:
+                self._latest_turn_origin = origin
             await self.push_frame(frame, direction)
+            if self._unanswered_addressed_turn:
+                self._track_bg_task(
+                    asyncio.create_task(
+                        self._flush_unanswered_if_idle(delay_secs=self.EMPTY_STT_RECOVERY_DELAY_SECS)
+                    )
+                )
             return
 
         if isinstance(frame, LLMContextFrame):
@@ -954,12 +1090,21 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 await self.push_frame(frame, direction)
                 return
 
-            user_text = _extract_message_text(last_msg)
-            # Pop `last_msg` up front so an incoming InterruptionFrame cancelling
-            # `__process_frame_task` can never leave ignored background speech in `messages`.
-            pop_index = len(messages) - 1
-            messages.pop()
+            # Synchronously pop `last_msg` and snapshot turn metadata BEFORE any await.
+            candidate_msg = messages.pop()
+            user_text = _extract_message_text(candidate_msg)
             last_bot = self._last_assistant_text(messages)
+            turn_origin = frame.metadata.get(ORIGIN_KEY) or self._latest_turn_origin
+            self._latest_turn_origin = None
+
+            utt_id: int | None = None
+            if self._get_current_utterance_id is not None:
+                try:
+                    raw_utt = int(self._get_current_utterance_id() or 0)
+                    if raw_utt > 0:
+                        utt_id = raw_utt
+                except Exception:
+                    utt_id = None
 
             audio_pcm: bytes | None = None
             sample_rate = 16000
@@ -969,42 +1114,39 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                 except Exception:
                     audio_pcm = None
 
-            eval_task = asyncio.create_task(
-                self._evaluator.evaluate(
-                    transcript=user_text,
-                    audio_pcm=audio_pcm,
-                    sample_rate=sample_rate,
-                    last_bot_utterance=last_bot,
-                )
-            )
-            self._bg_tasks.add(eval_task)
-            eval_task.add_done_callback(self._bg_tasks.discard)
-
-            try:
-                decision = await asyncio.shield(eval_task)
-            except asyncio.CancelledError:
-                reconcile_task = asyncio.create_task(
-                    self._finish_cancelled_evaluation(
-                        eval_task, messages, last_msg, pop_index, user_text
+            self._seq_counter += 1
+            eval_task = self._track_bg_task(
+                asyncio.create_task(
+                    self._evaluator.evaluate(
+                        transcript=user_text,
+                        audio_pcm=audio_pcm,
+                        sample_rate=sample_rate,
+                        last_bot_utterance=last_bot,
                     )
                 )
-                self._bg_tasks.add(reconcile_task)
-                reconcile_task.add_done_callback(self._bg_tasks.discard)
+            )
+            entry = _InflightCascadeTurn(
+                seq=self._seq_counter,
+                context=context,
+                message=candidate_msg,
+                user_text=user_text,
+                utterance_id=utt_id,
+                turn_origin=turn_origin,
+                eval_task=eval_task,
+            )
+            self._inflight_entries.append(entry)
+
+            try:
+                await self._await_through(entry)
+            except asyncio.CancelledError:
+                self._track_bg_task(asyncio.create_task(self._settle_cancelled_turn(entry)))
                 raise
 
-            await self._emit_decision(decision)
-            if decision.should_respond:
-                bounded_idx = max(0, min(pop_index, len(messages)))
-                messages.insert(bounded_idx, last_msg)
+            if entry.should_respond or (
+                self._unanswered_addressed_turn and not self._inflight_entries
+            ):
+                self._unanswered_addressed_turn = False
                 await self.push_frame(frame, direction)
-            else:
-                self._notify_ignored_turn()
-                logger.info(
-                    "[CascadeBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms, text={!r}).",
-                    decision.background_probability,
-                    decision.latency_ms,
-                    user_text[:80],
-                )
             return
 
         await self.push_frame(frame, direction)

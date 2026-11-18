@@ -478,6 +478,7 @@ export default function VoiceStudio({ sourceDownload = false }: { sourceDownload
           visitCount={visitCount}
           liveEmotion={studio.liveEmotion}
           emotionStats={studio.emotionStats}
+          gateStats={studio.gateStats}
         />
       </div>
 

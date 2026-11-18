@@ -161,6 +161,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
   let turnStarted = false;
   let avatarSpeechInTurn = false;
   let lastUserAt: number | null = null;
+  let latestUserUtteranceId = 0;
 
   // Latency buffers according to canonical protocol invariants
   let pendingSTTLatency: number | null = null;
@@ -521,6 +522,7 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       utterance_id?: number;
       session_id?: string;
       decision?: string;
+      mode?: string;
       payload?: { response_id?: string; event_id?: string; session_id?: string; type?: string; value?: number; elapsed_ms?: number; count?: number; usage?: any; tool?: any };
     };
 
@@ -573,6 +575,9 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
         turnStarted = false;
         avatarSpeechInTurn = false;
         lastUserAt = performance.now();
+        if (typeof data.utterance_id === "number" && data.utterance_id > latestUserUtteranceId) {
+          latestUserUtteranceId = data.utterance_id;
+        }
         events.onPartialUser("");
         const effStt = data.stt_latency !== undefined ? data.stt_latency : (pendingSTTLatency !== null ? pendingSTTLatency : undefined);
         pendingSTTLatency = null;
@@ -680,11 +685,18 @@ export async function createLiveSession(settings: SessionSettings, events: Sessi
       events.onMetricUpdate?.("user_emotion", data);
     } else if (data.type === "background_gate") {
       if (data.decision === "ignore") {
-        lastUserAt = null;
-        pendingSTTLatency = null;
-        lastTurnSTTLatency = null;
-        events.onPartialUser("");
-        events.onPhase("listening");
+        const isLiveWithActiveTurn = data.mode === "live" && lastUserAt !== null;
+        const isSupersededCascade =
+          typeof data.utterance_id === "number" &&
+          latestUserUtteranceId > 0 &&
+          data.utterance_id < latestUserUtteranceId;
+        if (!isLiveWithActiveTurn && !isSupersededCascade) {
+          lastUserAt = null;
+          pendingSTTLatency = null;
+          lastTurnSTTLatency = null;
+          events.onPartialUser("");
+          events.onPhase("listening");
+        }
       }
       events.onMetricUpdate?.("background_gate", data);
     } else if (data.type === "error" || message.type === "error") {

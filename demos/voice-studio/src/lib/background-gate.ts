@@ -4,7 +4,7 @@
  *
  * Keeping all ref/queue transitions outside React `setMessages` updaters makes
  * badge pairing deterministic under React 19 StrictMode double-invocation,
- * multi-sentence turns, and `skip_stt` audio-only Cascade turns.
+ * overlapping Cascade turns, multi-sentence turns, and `skip_stt` audio turns.
  */
 
 export type BackgroundGateReading = {
@@ -17,6 +17,7 @@ export type BackgroundGateReading = {
   readonly audioDurationSecs?: number;
   readonly inputTokens?: number;
   readonly outputTokens?: number;
+  readonly utteranceId?: number;
   /** True on earlier bubbles of a multi-sentence ignored turn so the chip renders once. */
   readonly continuation?: boolean;
 };
@@ -25,6 +26,26 @@ export interface PendingBackgroundGate {
   readonly reading: BackgroundGateReading;
   readonly recordedAt: number;
 }
+
+export interface BackgroundGateStats {
+  readonly count: number;
+  readonly ignoredCount: number;
+  readonly totalInputTokens: number;
+  readonly totalOutputTokens: number;
+  readonly lastLatencyMs: number | null;
+  readonly lastDecision: "respond" | "ignore" | null;
+  readonly lastAddressedProbability: number | null;
+}
+
+export const EMPTY_BACKGROUND_GATE_STATS: BackgroundGateStats = {
+  count: 0,
+  ignoredCount: 0,
+  totalInputTokens: 0,
+  totalOutputTokens: 0,
+  lastLatencyMs: null,
+  lastDecision: null,
+  lastAddressedProbability: null,
+};
 
 export interface GateBubbleShape {
   readonly id: string;
@@ -60,6 +81,8 @@ export function parseBackgroundGatePayload(val: Record<string, unknown> | null |
   const inputTokens = Number.isFinite(rawIn) && rawIn >= 0 ? Math.round(rawIn) : undefined;
   const rawOut = Number(val?.output_tokens);
   const outputTokens = Number.isFinite(rawOut) && rawOut >= 0 ? Math.round(rawOut) : undefined;
+  const rawUtt = Number(val?.utterance_id);
+  const utteranceId = Number.isSafeInteger(rawUtt) && rawUtt > 0 ? rawUtt : undefined;
   const transcript = typeof val?.transcript === "string" ? val.transcript.trim() : "";
 
   return {
@@ -73,8 +96,24 @@ export function parseBackgroundGatePayload(val: Record<string, unknown> | null |
       audioDurationSecs,
       inputTokens,
       outputTokens,
+      utteranceId,
     },
     transcript,
+  };
+}
+
+export function accumulateBackgroundGateStats(
+  prev: BackgroundGateStats,
+  reading: BackgroundGateReading,
+): BackgroundGateStats {
+  return {
+    count: prev.count + 1,
+    ignoredCount: prev.ignoredCount + (reading.decision === "ignore" ? 1 : 0),
+    totalInputTokens: prev.totalInputTokens + (reading.inputTokens ?? 0),
+    totalOutputTokens: prev.totalOutputTokens + (reading.outputTokens ?? 0),
+    lastLatencyMs: reading.latencyMs,
+    lastDecision: reading.decision,
+    lastAddressedProbability: reading.addressedProbability,
   };
 }
 
@@ -95,32 +134,78 @@ export function formatIgnoredBackgroundLabel(
 export function consumePendingBackgroundGate(
   pending: PendingBackgroundGate | null,
   nowMs: number,
+  utteranceId?: number,
   ttlMs = PENDING_BACKGROUND_GATE_TTL_MS,
 ): { attached?: BackgroundGateReading; nextPending: PendingBackgroundGate | null } {
   if (!pending) {
     return { nextPending: null };
   }
-  if (nowMs - pending.recordedAt <= ttlMs) {
-    return { attached: pending.reading, nextPending: null };
+  if (nowMs - pending.recordedAt > ttlMs) {
+    return { nextPending: null };
   }
-  return { nextPending: null };
+  if (
+    pending.reading.utteranceId !== undefined &&
+    utteranceId !== undefined &&
+    pending.reading.utteranceId !== utteranceId
+  ) {
+    // Keep pending if a newer utterance has not superseded it, else drop stale.
+    return pending.reading.utteranceId > utteranceId
+      ? { nextPending: pending }
+      : { nextPending: null };
+  }
+  return { attached: pending.reading, nextPending: null };
+}
+
+function normalizeWhitespace(s: string): string {
+  return s.trim().replace(/\s+/g, " ");
+}
+
+function matchTranscriptSlice<T extends GateBubbleShape>(
+  items: readonly T[],
+  candidateIndices: readonly number[],
+  cleanTranscript: string,
+): number[] | null {
+  if (!cleanTranscript) {
+    return null;
+  }
+  const targetNorm = normalizeWhitespace(cleanTranscript);
+  for (let start = 0; start < candidateIndices.length; start++) {
+    const parts: string[] = [];
+    const matched: number[] = [];
+    for (let end = start; end < candidateIndices.length; end++) {
+      const idx = candidateIndices[end];
+      parts.push(items[idx].text.trim());
+      matched.push(idx);
+      const joined = normalizeWhitespace(parts.join(" "));
+      if (joined === targetNorm) {
+        return matched;
+      }
+      if (joined.length > targetNorm.length) {
+        break;
+      }
+    }
+  }
+  return null;
 }
 
 /**
  * Pure `setMessages` helper that attaches a Cascade `BackgroundGateReading` to
- * the user bubble IDs belonging to the current post-assistant user turn.
+ * the user bubble IDs belonging to that utterance.
  *
- * - For `decision === "ignore"`, marks *every* bubble in `turnIds` so multi-sentence
- *   ignored turns dim uniformly and hide caller-emotion chips, setting
- *   `continuation: true` on all bubbles except the last so `STAYED QUIET` renders once.
- * - For `decision === "respond"`, attaches the badge to the exact-transcript bubble
- *   (if matched) or the first bubble in `turnIds`.
+ * - When `matchedByUtteranceId` is false (unkeyed fallback) and `transcript` is
+ *   present, narrows candidates to the exact single or multi-sentence bubble
+ *   slice matching `transcript`, so an overlapping Turn 2 bubble is never
+ *   accidentally marked `STAYED QUIET`.
+ * - For `decision === "ignore"`, dims every bubble in the matched utterance and
+ *   sets `continuation: true` on all bubbles except the last so `STAYED QUIET`
+ *   renders once.
  */
 export function attachCascadeGateToTurn<T extends GateBubbleShape>(
   items: readonly T[],
   turnIds: readonly string[],
   reading: BackgroundGateReading,
   transcript = "",
+  matchedByUtteranceId = false,
 ): T[] {
   if (turnIds.length === 0) {
     return [...items];
@@ -137,10 +222,20 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
     return [...items];
   }
 
+  const cleanTx = transcript.trim();
+  const txMatchedIndices = !matchedByUtteranceId
+    ? matchTranscriptSlice(items, candidateIndices, cleanTx)
+    : null;
+  if (!matchedByUtteranceId && cleanTx && txMatchedIndices === null && candidateIndices.length > 1) {
+    // Multiple unkeyed bubbles exist and none match this transcript: leave untouched.
+    return [...items];
+  }
+  const effectiveIndices = txMatchedIndices ?? candidateIndices;
+
   const next = [...items];
   if (reading.decision === "ignore") {
-    const primaryIdx = candidateIndices[candidateIndices.length - 1];
-    for (const idx of candidateIndices) {
+    const primaryIdx = effectiveIndices[effectiveIndices.length - 1];
+    for (const idx of effectiveIndices) {
       const target = items[idx];
       const gateForBubble: BackgroundGateReading =
         idx === primaryIdx ? reading : { ...reading, continuation: true };
@@ -152,11 +247,10 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
     return next;
   }
 
-  let chosenIdx = candidateIndices[0];
-  const cleanTx = transcript.trim();
+  let chosenIdx = effectiveIndices[0];
   if (cleanTx) {
-    for (const idx of candidateIndices) {
-      if (items[idx].text.trim() === cleanTx) {
+    for (const idx of effectiveIndices) {
+      if (normalizeWhitespace(items[idx].text) === normalizeWhitespace(cleanTx)) {
         chosenIdx = idx;
         break;
       }

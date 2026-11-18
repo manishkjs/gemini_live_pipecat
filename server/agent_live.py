@@ -421,9 +421,12 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         # If local Silero VAD already interrupted Turn 1 before ActivityStart reached
         # Gemini (e.g. LiveBackgroundSpeechGate held audio while classifying), Gemini
         # emits a delayed server_content.interrupted once ActivityStart arrives.
-        # Swallow that echo so it cannot re-interrupt Turn 2 or double-count metrics.
+        # Swallow that echo and clear _awaiting_interrupted_turn_complete (Gemini has
+        # now aborted Turn 1 on the server, even when turn_complete is omitted or deferred
+        # as IN_PROGRESS on extended-thinking models) so Turn 2 is never muted.
         if getattr(self, "_suppress_delayed_server_interrupted", False):
             self._suppress_delayed_server_interrupted = False
+            self._awaiting_interrupted_turn_complete = False
             if hasattr(super(), "_handle_interruption"):
                 await super()._handle_interruption()
             return
@@ -437,6 +440,19 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
         if hasattr(super(), "_handle_interruption"):
             await super()._handle_interruption()
         await super().broadcast_interruption(*args, **kwargs)
+
+    def _defer_turn_complete_until_idle(self, message):
+        sc = getattr(message, "server_content", None)
+        if (
+            getattr(sc, "interrupted", False)
+            or getattr(self, "_awaiting_interrupted_turn_complete", False)
+            or not self._is_server_turn_open()
+        ):
+            # An aborted turn's IN_PROGRESS turn_complete is moot; holding it open
+            # would close Turn 2 prematurely when interaction_status later hits IDLE.
+            self._awaiting_interrupted_turn_complete = False
+            return
+        super()._defer_turn_complete_until_idle(message)
 
     def _begin_output(self):
         """Mark our response as active and bind it to its input turn.
@@ -465,6 +481,9 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             origin.audio()
         if not getattr(self, "_avatar_speaking", False):
             self._avatar_speaking = True
+            self._bot_playback_active = True
+            if getattr(self, "_playback_started_at", None) is None:
+                self._playback_started_at = time.monotonic()
             await self.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     async def _end_avatar_output(self):
@@ -476,6 +495,8 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             user_idle.last_activity = time.monotonic()
         if getattr(self, "_avatar_speaking", False):
             self._avatar_speaking = False
+            self._bot_playback_active = False
+            self._playback_started_at = None
             await self.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     # Guard against Gemini Live voice-clone trailing 0x0000 digital silence without <eos>/turnComplete:
@@ -723,14 +744,17 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             getattr(self, "_mixin_bot_responding", False)
             or getattr(self, "_bot_turn_text_buffer", "").strip()
         )
+        was_playing_tail = bool(getattr(self, "_bot_playback_active", False))
         self._mixin_bot_responding = False
+        self._bot_playback_active = False
         self._ttft_reported_for_response = False
         origin = getattr(self, "_live_output_turn", None)
-        if origin is not None:
+        if origin is not None and was_responding:
             origin.finish("interrupted")
-        self._live_output_turn = None
+        if was_responding:
+            self._live_output_turn = None
         await self._end_avatar_output()
-        if not was_responding:
+        if not was_responding and not was_playing_tail:
             return
         if getattr(self, "_avatar_enabled", False):
             try:
@@ -741,25 +765,27 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                 }))
             except Exception:
                 pass
-        self._repeat_on_filler_pending = True
-        logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
+        if was_responding:
+            self._repeat_on_filler_pending = True
+            logger.info("[RepeatOnFiller] Interruption detected. Watching for filler.")
 
-        interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
-        if interrupted_text:
-            append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
-            if not hasattr(self, "_dialogue_history"):
-                self._dialogue_history = []
-            self._dialogue_history.append({
-                "role": "Assistant",
-                "text": f"{interrupted_text} [interrupted]",
-                "timestamp": time.time()
-            })
-            logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
-        self._bot_turn_text_buffer = ""
+            interrupted_text = getattr(self, "_bot_turn_text_buffer", "").strip()
+            if interrupted_text:
+                append_diagnostic_log("🤖 Bot Response (Interrupted)", f'"{interrupted_text}..."')
+                if not hasattr(self, "_dialogue_history"):
+                    self._dialogue_history = []
+                self._dialogue_history.append({
+                    "role": "Assistant",
+                    "text": f"{interrupted_text} [interrupted]",
+                    "timestamp": time.time()
+                })
+                logger.info(f"🤖 [Transcript Assistant (Interrupted Turn {len(self._dialogue_history)})]: {interrupted_text}")
+            self._bot_turn_text_buffer = ""
 
         metric_payload: Dict[str, Any] = {'type': 'interruption', 'count': 1}
-        started = getattr(self, "_response_started_at", None)
+        started = getattr(self, "_response_started_at", None) or getattr(self, "_playback_started_at", None)
         self._response_started_at = None
+        self._playback_started_at = None
         if started:
             elapsed_ms = round((time.monotonic() - started) * 1000.0, 1)
             metric_payload['elapsed_ms'] = elapsed_ms
@@ -862,6 +888,14 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
                     f"({self._active_tools_in_flight} in flight)."
                 )
                 return
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_playback_active = True
+            if getattr(self, "_playback_started_at", None) is None:
+                self._playback_started_at = time.monotonic()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_playback_active = False
+            self._playback_started_at = None
 
         if isinstance(frame, InterruptionFrame):
             if self._is_server_turn_open():
