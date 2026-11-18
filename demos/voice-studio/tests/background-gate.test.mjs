@@ -133,6 +133,21 @@ test("Overlapping Cascade Turn 1 (ignore) + Turn 2 (respond) never mis-badges Tu
   // non-empty transcript refuses to corrupt m2 with Turn 1's ignore badge.
   const skewedAttempt = attachCascadeGateToTurn(initial, ["m2"], ignoreT1, tx1, true);
   assert.equal(skewedAttempt[2].metrics, undefined);
+
+  // Bracketed STT tags (`[music]`, `[noise]`) stripped by TranscriptionBroadcaster in UI bubbles
+  // still match raw LLMContext transcripts cleanly!
+  const bracketedBubble = [
+    { id: "a0", role: "assistant", text: "How can I help?" },
+    { id: "m-music", role: "user", text: "Breaking news on Channel 9!" },
+  ];
+  const afterBracketed = attachCascadeGateToTurn(
+    bracketedBubble,
+    ["m-music"],
+    ignoreT1,
+    "[music] Breaking news on Channel 9! [noise]",
+    true,
+  );
+  assert.equal(afterBracketed[1].metrics?.backgroundGate?.decision, "ignore");
 });
 
 test("Cascade skip_stt attaches badge to audio placeholder bubble and formats empty fallback", () => {

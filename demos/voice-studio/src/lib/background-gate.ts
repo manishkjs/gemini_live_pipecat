@@ -156,8 +156,8 @@ export function consumePendingBackgroundGate(
   return { attached: pending.reading, nextPending: null };
 }
 
-function normalizeWhitespace(s: string): string {
-  return s.trim().replace(/\s+/g, " ");
+function normalizeGateTranscript(s: string): string {
+  return s.replace(/\[.*?\]/g, "").trim().replace(/\s+/g, " ");
 }
 
 function matchTranscriptSlice<T extends GateBubbleShape>(
@@ -165,10 +165,10 @@ function matchTranscriptSlice<T extends GateBubbleShape>(
   candidateIndices: readonly number[],
   cleanTranscript: string,
 ): number[] | null {
-  if (!cleanTranscript) {
+  const targetNorm = normalizeGateTranscript(cleanTranscript);
+  if (!targetNorm) {
     return null;
   }
-  const targetNorm = normalizeWhitespace(cleanTranscript);
   for (let start = 0; start < candidateIndices.length; start++) {
     const parts: string[] = [];
     const matched: number[] = [];
@@ -176,7 +176,7 @@ function matchTranscriptSlice<T extends GateBubbleShape>(
       const idx = candidateIndices[end];
       parts.push(items[idx].text.trim());
       matched.push(idx);
-      const joined = normalizeWhitespace(parts.join(" "));
+      const joined = normalizeGateTranscript(parts.join(" "));
       if (joined === targetNorm) {
         return matched;
       }
@@ -222,7 +222,7 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
     return [...items];
   }
 
-  const cleanTx = transcript.trim();
+  const cleanTx = normalizeGateTranscript(transcript);
   const txMatchedIndices = cleanTx
     ? matchTranscriptSlice(items, candidateIndices, cleanTx)
     : null;
@@ -256,7 +256,7 @@ export function attachCascadeGateToTurn<T extends GateBubbleShape>(
   let chosenIdx = effectiveIndices[0];
   if (cleanTx) {
     for (const idx of effectiveIndices) {
-      if (normalizeWhitespace(items[idx].text) === normalizeWhitespace(cleanTx)) {
+      if (normalizeGateTranscript(items[idx].text) === cleanTx) {
         chosenIdx = idx;
         break;
       }

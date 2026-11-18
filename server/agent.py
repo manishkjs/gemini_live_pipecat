@@ -2104,6 +2104,7 @@ async def run_agent(
             # VADProcessor above owns audio analysis and broadcasts VAD frames.
             # Feeding the same analyzer here again would process each PCM twice.
             vad_analyzer=None,
+            **({"empty_user_turn": None} if ignore_background else {}),
         )
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
         start_trigger = StartTriggerProcessor(context, context_aggregator, skip_stt=False)

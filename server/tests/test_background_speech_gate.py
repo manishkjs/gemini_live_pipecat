@@ -1117,6 +1117,145 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         self.assertLess(tracker.current.vad_stop, t_after_stop - 0.10)
         self.assertGreaterEqual(tracker.current.vad_stop, t_before_stop - 0.05)
 
+    async def test_r4_cough_recovery_developer_prompt_alignment_and_gc_id_safety(self) -> None:
+        """Covers Round 4 probes: cough VADStop before T1 commit, developer prompt, & set_messages GC."""
+        import gc
+        from pipecat.frames.frames import InterruptionFrame
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.runner import PipelineRunner
+        from pipecat.pipeline.task import PipelineParams, PipelineTask
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from pipecat.processors.frame_processor import FrameProcessor
+
+        class _Sink(FrameProcessor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.llm_calls: list[list[tuple[str, str]]] = []
+                self.gate_events: list[dict[str, Any]] = []
+
+            async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                await super().process_frame(frame, direction)
+                if isinstance(frame, LLMContextFrame):
+                    self.llm_calls.append([(m["role"], m["content"]) for m in frame.context.messages])
+                elif isinstance(frame, OutputTransportMessageUrgentFrame):
+                    data = frame.message.get("data", {})
+                    if data.get("type") == "background_gate":
+                        self.gate_events.append(data)
+                await self.push_frame(frame, direction)
+
+        # 1. Cough VADStop arrives BEFORE T1's eval_task commits -> AGGREGATOR_SAFETY_SECS recovers T1!
+        class _SlowEntered(_StubDecisionsClassifier):
+            def __init__(self) -> None:
+                super().__init__(probability=0.95, delay_secs=0.18)
+                self.entered = asyncio.Event()
+
+            async def _ask(self, state, questions, inputs=()):
+                self.entered.set()
+                return await super()._ask(state, questions, inputs=inputs)
+
+        clf1 = _SlowEntered()
+        gate1 = CascadeBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=clf1))
+        gate1.AGGREGATOR_SAFETY_SECS = 0.25
+        sink1 = _Sink()
+        task1 = PipelineTask(Pipeline([gate1, sink1]), params=PipelineParams(allow_interruptions=True))
+        ctx1 = LLMContext(messages=[{"role": "assistant", "content": "A0"}])
+
+        async def _drive1() -> None:
+            try:
+                await asyncio.sleep(0.02)
+                await task1.queue_frame(VADUserStartedSpeakingFrame())
+                await task1.queue_frame(VADUserStoppedSpeakingFrame())
+                await task1.queue_frame(UserStoppedSpeakingFrame())
+                ctx1.messages.append({"role": "user", "content": "What is my balance?"})
+                await task1.queue_frame(LLMContextFrame(context=ctx1))
+                await asyncio.wait_for(clf1.entered.wait(), timeout=2.0)
+                # Cough cancels T1 AND cough's VADStop arrives at 0.03s (BEFORE T1 commits at 0.18s)!
+                await task1.queue_frame(InterruptionFrame())
+                await task1.queue_frame(VADUserStartedSpeakingFrame())
+                await asyncio.sleep(0.03)
+                await task1.queue_frame(VADUserStoppedSpeakingFrame())
+                await asyncio.sleep(0.55)
+                await task1.queue_frame(EndFrame())
+            except Exception:
+                await task1.cancel()
+                raise
+
+        await asyncio.gather(PipelineRunner(handle_sigint=False).run(task1), _drive1())
+        self.assertEqual(sink1.llm_calls, [[("assistant", "A0"), ("user", "What is my balance?")]])
+
+        # 2. Empty-STT cough (`>=5s` developer prompt AND `<5s` orphan) keeps utterance_id & PCM aligned!
+        audio_state = [b"\x01\x01" * 4000]
+        utt_state = [1]
+        clf2 = _StubDecisionsClassifier(probability=0.04)
+        gate2 = CascadeBackgroundSpeechGate(
+            BackgroundSpeechEvaluator(enabled=True, classifier=clf2),
+            get_recent_audio=lambda: (audio_state[0], 16000),
+            get_current_utterance_id=lambda: utt_state[0],
+        )
+        emitted2 = await self._run_cascade_capture(
+            gate2,
+            [
+                # Utterance 1: empty-STT cough -> developer prompt dropped + cough snapshot consumed!
+                VADUserStartedSpeakingFrame(),
+                VADUserStoppedSpeakingFrame(),
+                UserStoppedSpeakingFrame(),
+                LLMContextFrame(
+                    context=SimpleNamespace(
+                        messages=[
+                            {"role": "assistant", "content": "Welcome!"},
+                            {
+                                "role": "developer",
+                                "content": "The user may have said something while you were responding, but it was not recognized.",
+                            },
+                        ]
+                    )
+                ),
+            ],
+        )
+        self.assertEqual([f for f in emitted2 if isinstance(f, LLMContextFrame)], [])
+        # Utterance 2: real TV ad (`utt_id=2`, `audio=0x0202`) must receive utt_id=2 and 0x0202!
+        audio_state[0] = b"\x02\x02" * 4000
+        utt_state[0] = 2
+        ctx2 = SimpleNamespace(
+            messages=[
+                {"role": "assistant", "content": "Welcome!"},
+                {"role": "user", "content": "Buy crispy chips!"},
+            ]
+        )
+        emitted2b = await self._run_cascade_capture(
+            gate2,
+            [
+                VADUserStartedSpeakingFrame(),
+                VADUserStoppedSpeakingFrame(),
+                UserStoppedSpeakingFrame(),
+                LLMContextFrame(context=ctx2),
+            ],
+        )
+        gate_msgs = [f for f in emitted2b if isinstance(f, OutputTransportMessageUrgentFrame)]
+        self.assertEqual(gate_msgs[-1].message["data"]["utterance_id"], 2)
+        self.assertEqual(clf2.calls[-1]["inputs"][0].audio[:4], b"\x02\x02\x02\x02")
+
+        # 3. Context rewrite (`set_messages`) + GC never causes `id(dict)` reuse to bypass gate!
+        clf3 = _StubDecisionsClassifier(probability=0.95)
+        gate3 = CascadeBackgroundSpeechGate(BackgroundSpeechEvaluator(enabled=True, classifier=clf3))
+        ctx3 = LLMContext(
+            messages=[
+                {"role": "assistant", "content": "Hello"},
+                {"role": "user", "content": "Approved turn"},
+            ]
+        )
+        await self._run_cascade_capture(gate3, [VADUserStoppedSpeakingFrame(), LLMContextFrame(context=ctx3)])
+        clf3.probability = 0.02
+        bypassed = 0
+        for i in range(200):
+            ctx3.set_messages([{"role": "assistant", "content": "Summary"}])
+            gc.collect()
+            ctx3.messages.append({"role": "user", "content": f"TV ad #{i}"})
+            out = await self._run_cascade_capture(gate3, [LLMContextFrame(context=ctx3)])
+            if any(isinstance(f, LLMContextFrame) for f in out):
+                bypassed += 1
+        self.assertEqual(bypassed, 0)
+
     def test_coalesce_audio_frames_merges_small_chunks(self) -> None:
         frames = [
             InputAudioRawFrame(audio=_pcm_chunk(0.02), sample_rate=16000, num_channels=1)
