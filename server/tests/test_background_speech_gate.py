@@ -1386,6 +1386,85 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classified_pcm[:4], b"\x33\x33\x33\x33")
         self.assertEqual(classified_pcm[-4:], b"\x44\x44\x44\x44")
 
+    async def test_choice_result_side_talk_and_background_media_with_calibrated_threshold(
+        self,
+    ) -> None:
+        from unittest.mock import AsyncMock
+        from pipecat.classifiers.base_classifier import ChoiceResult
+        from processors.background_speech_gate import (
+            ADDRESSED_TO_ASSISTANT_QUESTION,
+            DEFAULT_IGNORE_THRESHOLD,
+            PRE_ROLL_SECS,
+        )
+
+        self.assertEqual(DEFAULT_IGNORE_THRESHOLD, 0.55)
+        self.assertEqual(PRE_ROLL_SECS, 0.25)
+        self.assertIn("side_talk", ADDRESSED_TO_ASSISTANT_QUESTION.options)
+        self.assertIn("background_media", ADDRESSED_TO_ASSISTANT_QUESTION.options)
+        self.assertIn("assistant", ADDRESSED_TO_ASSISTANT_QUESTION.options)
+
+        class _ChoiceStub(BaseClassifier):
+            def __init__(self, result: ChoiceResult):
+                super().__init__()
+                self.result = result
+                self.calls = []
+
+            @property
+            def supports_audio(self) -> bool:
+                return True
+
+            async def _ask(self, state, questions, inputs=()):
+                self.calls.append({"state": state, "questions": questions, "inputs": list(inputs)})
+                return (
+                    {name: self.result for name in questions},
+                    LLMTokenUsage(prompt_tokens=80, completion_tokens=1, total_tokens=81),
+                )
+
+        # Side-talk ("Okay, ek glass pani leke aana.") with 28% addressed / 72% side_talk -> IGNORED
+        side_stub = _ChoiceStub(
+            ChoiceResult(
+                choice="side_talk",
+                probabilities={"assistant": 0.28, "side_talk": 0.70, "background_media": 0.02},
+                confidence=0.70,
+            )
+        )
+        ev_side = BackgroundSpeechEvaluator(
+            enabled=True,
+            classifier=side_stub,
+            persona_hint="You are Meera, collections officer for an overdue INR 8,500 balance.",
+        )
+        dec_side = await ev_side.evaluate(audio_pcm=_pcm_chunk(1.5), sample_rate=16000)
+        self.assertFalse(dec_side.should_respond)
+        self.assertAlmostEqual(dec_side.addressed_probability, 0.28, places=2)
+        self.assertEqual(dec_side.reason, "side_talk")
+        self.assertIn("not physically in the room", side_stub.calls[0]["state"])
+
+        # Short valid reply ("Haan.") with 62% addressed -> RESPONDING
+        asst_stub = _ChoiceStub(
+            ChoiceResult(
+                choice="assistant",
+                probabilities={"assistant": 0.62, "side_talk": 0.30, "background_media": 0.08},
+                confidence=0.62,
+            )
+        )
+        ev_asst = BackgroundSpeechEvaluator(enabled=True, classifier=asst_stub)
+        dec_asst = await ev_asst.evaluate(audio_pcm=_pcm_chunk(0.8), sample_rate=16000)
+        self.assertTrue(dec_asst.should_respond)
+        self.assertEqual(dec_asst.reason, "addressed")
+
+        # LiveBackgroundSpeechGate must NOT chop stop_secs off the end of classify_pcm
+        tail_pcm = b"\x01\x01" * 8000 + b"\x77\x77" * 6400  # 0.5s start + 0.4s final noun
+        gate = LiveBackgroundSpeechGate(ev_side)
+        gate.push_frame = AsyncMock()
+        await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await gate.process_frame(
+            InputAudioRawFrame(audio=tail_pcm, sample_rate=16000, num_channels=1),
+            FrameDirection.DOWNSTREAM,
+        )
+        await gate.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.4), FrameDirection.DOWNSTREAM)
+        sent_audio = side_stub.calls[-1]["inputs"][0].audio
+        self.assertEqual(sent_audio[-4:], b"\x77\x77\x77\x77")
+
     def test_coalesce_audio_frames_merges_small_chunks(self) -> None:
         frames = [
             InputAudioRawFrame(audio=_pcm_chunk(0.02), sample_rate=16000, num_channels=1)

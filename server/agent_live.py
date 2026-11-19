@@ -2866,11 +2866,12 @@ async def run_agent_live(
                         return text
             return ""
 
+        persona_summary = " ".join((effective_instruction or persona_id or "").split())[:280]
         bg_evaluator = BackgroundSpeechEvaluator(
             enabled=True,
             timeout_secs=LIVE_DEFAULT_TIMEOUT_SECS,
             project_id=project_id,
-            persona_hint=persona_id or "",
+            persona_hint=persona_summary,
         )
         bg_gate = LiveBackgroundSpeechGate(
             bg_evaluator,

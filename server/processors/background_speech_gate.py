@@ -40,9 +40,10 @@ import numpy as np
 
 from pipecat.classifiers.base_classifier import (
     BaseClassifier,
+    ChoiceQuestion,
+    ChoiceResult,
     ClassifierAudio,
     ClassifierError,
-    YesNoQuestion,
     YesNoResult,
 )
 from pipecat.classifiers.google.decisions.classifier import GoogleDecisionsClassifier
@@ -76,35 +77,49 @@ from processors.turn_telemetry import ORIGIN_KEY
 DEFAULT_DECISION_MODEL = "gemini-decision-1"
 DEFAULT_TIMEOUT_SECS = 2.5
 LIVE_DEFAULT_TIMEOUT_SECS = 1.5
-DEFAULT_IGNORE_THRESHOLD = 0.85
+DEFAULT_IGNORE_THRESHOLD = 0.55
 MIN_AUDIO_SECS = 0.18
-PRE_ROLL_SECS = 0.50
+PRE_ROLL_SECS = 0.25
 MAX_BUFFER_SECS = 8.0
 MAX_CLASSIFY_AUDIO_SECS = 5.0
 FLUSH_CHUNK_MS = 100
 MAX_CONSECUTIVE_FAILURES = 3
 CIRCUIT_OPEN_COOLDOWN_SECS = 30.0
 
-ADDRESSED_TO_ASSISTANT_QUESTION = YesNoQuestion(
+ADDRESSED_TO_ASSISTANT_QUESTION = ChoiceQuestion(
     instructions=(
-        "Decide whether the caller's latest utterance is directed to the voice "
-        "assistant on this call, or whether it is background audio / side-talk "
-        "not meant for the assistant. When uncertain or for short replies "
-        "(yes, no, okay, haan, numbers, OTPs), prefer 'yes'."
+        "Listen carefully to every word spoken in the audio clip or transcript "
+        "(including Hindi, Hinglish, or English). The caller is on a remote phone "
+        "call with an AI voice assistant who is NOT physically in the room. "
+        "Classify who the utterance is directed to based on its meaning, even if "
+        "the voice is loud and close to the microphone."
     ),
-    yes=(
-        "The caller is speaking to the voice assistant: answering the "
-        "assistant's question, asking a question, making a request, providing "
-        "details (names, numbers, OTPs, dates, amounts), confirming or "
-        "acknowledging ('yes', 'okay', 'haan', 'theek hai', 'sure', 'hello'), "
-        "or interrupting to redirect the call."
-    ),
-    no=(
-        "The speech is clearly NOT meant for the assistant: background TV, "
-        "radio, or video dialogue, public announcements, or the caller talking "
-        "to another person in the room ('mummy ek minute', 'hold on I am on a "
-        "call', 'pass the water', 'turn off the TV') unrelated to the call."
-    ),
+    options={
+        "assistant": (
+            "Speaking directly to the remote AI phone assistant: answering its "
+            "question, discussing the call topic, asking something the assistant "
+            "can answer over the phone, asking the assistant to hold/wait/repeat/"
+            "switch language, checking the line ('hello? are you there?'), OR "
+            "giving a standalone short reply or confirmation ('yes', 'no', 'okay', "
+            "'haan', 'ji', 'nahi', 'theek hai', numbers, dates, OTPs) with no "
+            "household or physical-room request attached."
+        ),
+        "side_talk": (
+            "Caller speaking to another human physically in the room (not the "
+            "remote phone assistant): asking someone nearby for a physical favor "
+            "or chore (bring water / 'ek glass pani leke aana', water the plants, "
+            "pass an item, open/lock the door, lower the TV), greeting someone "
+            "nearby while giving them a physical task ('hey hello, can you please "
+            "water the plants?'), calling someone else's name in the room, or "
+            "telling a nearby person 'ek minute, I am on a call'. Choose this "
+            "even if the utterance begins with 'okay', 'hey', or 'hello'."
+        ),
+        "background_media": (
+            "Background audio not addressed to the assistant: TV, movie, "
+            "YouTube/video, commercials, radio, music, public announcements, or "
+            "distant unrelated voices talking to each other."
+        ),
+    },
 )
 
 
@@ -321,15 +336,17 @@ class BackgroundSpeechEvaluator:
         last_bot_utterance: str = "",
         has_audio: bool = False,
     ) -> str:
-        lines = ["Voice call turn classification."]
+        lines = [
+            "Remote phone call between a human caller and an AI phone assistant (not physically in the room)."
+        ]
         if self._persona_hint:
-            lines.append(f"Assistant role: {self._persona_hint[:200]}")
+            lines.append(f"Assistant role: {self._persona_hint[:280]}")
         if last_bot_utterance.strip():
             lines.append(f"Assistant's last message: {last_bot_utterance.strip()[:300]}")
         if transcript.strip():
             lines.append(f"Latest captured speech transcript: {transcript.strip()[:400]}")
         elif has_audio:
-            lines.append("Latest captured speech is provided in the attached audio clip.")
+            lines.append("Listen to the attached audio clip of what was just spoken.")
         return "\n".join(lines)
 
     async def evaluate(
@@ -437,21 +454,39 @@ class BackgroundSpeechEvaluator:
             elapsed_ms = int(round((time.monotonic() - t0) * 1000))
             in_tok, out_tok = self._consume_call_tokens()
             addressed_result = results.get("addressed")
-            if not isinstance(addressed_result, YesNoResult):
+            if isinstance(addressed_result, ChoiceResult):
+                raw_asst = addressed_result.probabilities.get("assistant")
+                if raw_asst is None:
+                    raw_asst = (
+                        addressed_result.confidence
+                        if addressed_result.choice == "assistant"
+                        else 1.0 - addressed_result.confidence
+                    )
+                addressed_prob = max(0.0, min(1.0, float(raw_asst)))
+                background_prob = max(0.0, min(1.0, 1.0 - addressed_prob))
+                should_respond = background_prob < self._ignore_threshold
+                ignore_reason = (
+                    addressed_result.choice
+                    if addressed_result.choice in ("side_talk", "background_media")
+                    else "background_speech"
+                )
+            elif isinstance(addressed_result, YesNoResult):
+                addressed_prob = max(0.0, min(1.0, float(addressed_result.probability)))
+                background_prob = max(0.0, min(1.0, 1.0 - addressed_prob))
+                should_respond = background_prob < self._ignore_threshold
+                ignore_reason = "background_speech"
+            else:
                 raise ClassifierError(
                     f"Unexpected Decisions result type: {type(addressed_result).__name__}"
                 )
 
-            addressed_prob = max(0.0, min(1.0, float(addressed_result.probability)))
-            background_prob = max(0.0, min(1.0, 1.0 - addressed_prob))
-            should_respond = background_prob < self._ignore_threshold
             self._consecutive_failures = 0
             return BackgroundSpeechDecision(
                 should_respond=should_respond,
                 addressed_probability=addressed_prob,
                 background_probability=background_prob,
                 latency_ms=elapsed_ms,
-                reason="addressed" if should_respond else "background_speech",
+                reason="addressed" if should_respond else ignore_reason,
                 transcript=clean_tx,
                 audio_duration_secs=audio_dur_secs,
                 input_tokens=in_tok,
@@ -825,17 +860,35 @@ class LiveBackgroundSpeechGate(FrameProcessor):
 
             stop_ts = time.monotonic()
             frame.metadata["_vad_stop_monotonic"] = stop_ts
-            trim_tail = float(getattr(frame, "stop_secs", 0.0) or 0.0)
-            decision = await self._evaluate_buffered_audio(trim_tail_secs=trim_tail)
+            # Do NOT chop `stop_secs` off the tail before classification: strict
+            # Silero min_volume/confidence can begin the silence window on a
+            # softly spoken final noun ("plants", "leke aana"), and 0.4s of
+            # trailing silence costs ~10 audio tokens without hurting Decisions.
+            decision = await self._evaluate_buffered_audio(trim_tail_secs=0.0)
             await self._emit_decision(decision)
             if decision.should_respond:
+                logger.info(
+                    "[LiveBackgroundGate] Responding (p_asst={:.2f}, p_bg={:.2f}, dur={:.2f}s, latency={}ms, reason={}, tok={}/{}).",
+                    decision.addressed_probability,
+                    decision.background_probability,
+                    decision.audio_duration_secs,
+                    decision.latency_ms,
+                    decision.reason,
+                    decision.input_tokens,
+                    decision.output_tokens,
+                )
                 await self._flush_held_turn(direction, stop_frame=frame)
             else:
                 await self._notify_ignored_barge_in()
                 logger.info(
-                    "[LiveBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms).",
+                    "[LiveBackgroundGate] Ignored background turn (p_asst={:.2f}, p_bg={:.2f}, dur={:.2f}s, latency={}ms, reason={}, tok={}/{}).",
+                    decision.addressed_probability,
                     decision.background_probability,
+                    decision.audio_duration_secs,
                     decision.latency_ms,
+                    decision.reason,
+                    decision.input_tokens,
+                    decision.output_tokens,
                 )
             self._reset_turn_state()
             return
@@ -1168,12 +1221,22 @@ class CascadeBackgroundSpeechGate(FrameProcessor):
                     self._insert_committed_message(head.context.messages, head.message)
                     self._unanswered_addressed_turn = True
                     self._last_addressed_context = head.context
+                    logger.info(
+                        "[CascadeBackgroundGate] Responding (p_asst={:.2f}, p_bg={:.2f}, latency={}ms, reason={}, text={!r}).",
+                        decision.addressed_probability,
+                        decision.background_probability,
+                        decision.latency_ms,
+                        decision.reason,
+                        head.user_text[:80],
+                    )
                 else:
                     self._finish_ignored_turn(head.turn_origin)
                     logger.info(
-                        "[CascadeBackgroundGate] Ignored background turn (p_bg={:.2f}, latency={}ms, text={!r}).",
+                        "[CascadeBackgroundGate] Ignored background turn (p_asst={:.2f}, p_bg={:.2f}, latency={}ms, reason={}, text={!r}).",
+                        decision.addressed_probability,
                         decision.background_probability,
                         decision.latency_ms,
+                        decision.reason,
                         head.user_text[:80],
                     )
 

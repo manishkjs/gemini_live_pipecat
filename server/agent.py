@@ -2025,11 +2025,12 @@ async def run_agent(
         session_id=current_session_id(),
         project_id=project_id,
     )
+    persona_summary = " ".join((final_system_instruction or persona_id or "").split())[:280]
     bg_evaluator = (
         BackgroundSpeechEvaluator(
             enabled=True,
             project_id=project_id,
-            persona_hint=persona_id or "",
+            persona_hint=persona_summary,
         )
         if ignore_background
         else None
