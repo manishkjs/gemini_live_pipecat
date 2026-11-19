@@ -706,6 +706,21 @@ class GeminiSessionLoggerMixin(TurnOriginMixin):
             self._ttft_anchored_to_speech_end = False
         await super().start_ttfb_metrics(**kwargs)
 
+    async def stop_all_metrics(self) -> None:
+        """Cancels pending TTFB on interruption without reporting bogus latency.
+
+        Pipecat's FrameProcessor.process_frame(InterruptionFrame) and
+        _disconnect() call stop_all_metrics(), whose default invokes
+        stop_ttfb_metrics(). Without this override, LLMUserAggregator's
+        InterruptionFrame (~2ms after VADStart or VADStop) emits a fake
+        0.002s llm_latency and locks out the real TTFT. Calling
+        cancel_ttfb_metrics() directly avoids any async race with incoming
+        model_turn frames while keeping _my_ttfb_start intact.
+        """
+        await self.cancel_ttfb_metrics()
+        await self.stop_processing_metrics()
+        await self.stop_text_aggregation_metrics()
+
     async def stop_ttfb_metrics(self, **kwargs):
         await super().stop_ttfb_metrics(**kwargs)
         await self._report_ttft()
