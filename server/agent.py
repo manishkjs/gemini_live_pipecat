@@ -701,7 +701,14 @@ class CustomVertexGeminiTTSService(TurnOriginMixin, GeminiTTSService):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics(**kwargs)
-        
+
+    async def stop_all_metrics(self) -> None:
+        """Cancels pending TTS TTFB on interruption without bogus latency."""
+        self._my_ttfb_start = None
+        await self.cancel_ttfb_metrics()
+        await self.stop_processing_metrics()
+        await self.stop_text_aggregation_metrics()
+
     async def stop_ttfb_metrics(self, **kwargs):
         await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):
@@ -1080,7 +1087,14 @@ class CustomGoogleTTSService(TurnOriginMixin, GoogleTTSService):
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics(**kwargs)
-        
+
+    async def stop_all_metrics(self) -> None:
+        """Cancels pending TTS TTFB on interruption without bogus latency."""
+        self._my_ttfb_start = None
+        await self.cancel_ttfb_metrics()
+        await self.stop_processing_metrics()
+        await self.stop_text_aggregation_metrics()
+
     async def stop_ttfb_metrics(self, **kwargs):
         await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):
@@ -1446,7 +1460,14 @@ class _MeteredGeminiLLMMixin:
         if not getattr(self, '_my_ttfb_start', None):
             self._my_ttfb_start = time.monotonic()
         await super().start_ttfb_metrics(**kwargs)
-        
+
+    async def stop_all_metrics(self) -> None:
+        """Cancels pending LLM TTFB on interruption without bogus latency."""
+        self._my_ttfb_start = None
+        await self.cancel_ttfb_metrics()
+        await self.stop_processing_metrics()
+        await self.stop_text_aggregation_metrics()
+
     async def stop_ttfb_metrics(self, **kwargs):
         await super().stop_ttfb_metrics(**kwargs)
         if getattr(self, '_my_ttfb_start', None):

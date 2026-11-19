@@ -1465,6 +1465,145 @@ class TestCascadeBackgroundSpeechGate(unittest.IsolatedAsyncioTestCase):
         sent_audio = side_stub.calls[-1]["inputs"][0].audio
         self.assertEqual(sent_audio[-4:], b"\x77\x77\x77\x77")
 
+    async def test_interruption_stop_all_metrics_never_reports_bogus_002s_ttfb(
+        self,
+    ) -> None:
+        from collections.abc import Mapping, Sequence
+        import time
+        from typing import Any
+        import agent
+        import agent_live
+        from pipecat.frames.frames import InterruptionFrame
+        from pipecat.frames.frames import MetricsFrame
+        from pipecat.frames.frames import OutputTransportMessageFrame
+        from pipecat.processors.frame_processor import FrameProcessor
+
+        def _latency_payloads(
+            frames: Sequence[Frame], metric_type: str
+        ) -> Sequence[Mapping[str, Any]]:
+            return [
+                frame.message["data"]["payload"]
+                for frame in frames
+                if isinstance(frame, OutputTransportMessageFrame)
+                and isinstance(getattr(frame, "message", None), dict)
+                and frame.message.get("data", {}).get("type") == "metrics"
+                and frame.message.get("data", {}).get("payload", {}).get("type")
+                == metric_type
+            ]
+
+        class _MetricsEnabledProcessor(FrameProcessor):
+            def __init__(self) -> None:
+                FrameProcessor.__init__(self)
+                self.emitted: list[Frame] = []
+
+            def can_generate_metrics(self) -> bool:
+                return True
+
+            @property
+            def metrics_enabled(self) -> bool:
+                return True
+
+            async def _start_interruption(self) -> None:
+                return
+
+            async def push_frame(
+                self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
+            ) -> None:
+                self.emitted.append(frame)
+
+        class _FakeLiveService(
+            agent_live.GeminiSessionLoggerMixin, _MetricsEnabledProcessor
+        ):
+            def __init__(self) -> None:
+                _MetricsEnabledProcessor.__init__(self)
+                self._vad_disabled = True
+                self._mixin_bot_responding = False
+                self._bot_is_responding = False
+                self._bot_turn_text_buffer = ""
+                self._activity_start_sent_for_turn = False
+                self._activity_end_sent_for_turn = False
+
+            async def _handle_user_started_speaking(self, frame: Frame) -> None:
+                return
+
+            async def _handle_user_stopped_speaking(self, frame: Frame) -> None:
+                await self.start_ttfb_metrics()
+
+        # 1. Live with Background Gate ON: VADStop -> 2ms -> InterruptionFrame -> 60ms -> model_turn.
+        live_service = _FakeLiveService()
+        await live_service.process_frame(
+            VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.002)
+        await live_service.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+
+        self.assertEqual(
+            _latency_payloads(live_service.emitted, "llm_latency"),
+            [],
+            "InterruptionFrame after VADStop must not emit fake 0.002s TTFB",
+        )
+        self.assertEqual(
+            [frame for frame in live_service.emitted if isinstance(frame, MetricsFrame)],
+            [],
+            "cancel_ttfb_metrics() must prevent Pipecat from pushing a bogus TTFB MetricsFrame",
+        )
+        self.assertIsNotNone(live_service._my_ttfb_start)
+        self.assertFalse(live_service._ttft_reported_for_response)
+
+        await asyncio.sleep(0.06)
+        await live_service.stop_ttfb_metrics()
+        live_latencies = _latency_payloads(live_service.emitted, "llm_latency")
+        self.assertEqual(len(live_latencies), 1)
+        self.assertGreaterEqual(live_latencies[0]["value"], 0.05)
+
+        # 2. Live with Background Gate OFF: VADStart sets _last_user_speech_activity_at,
+        # then InterruptionFrame arrives 2ms later -> must not lock out TTFT.
+        ungated_live_service = _FakeLiveService()
+        ungated_live_service._vad_disabled = False
+        await ungated_live_service.process_frame(
+            VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM
+        )
+        await asyncio.sleep(0.002)
+        await ungated_live_service.process_frame(
+            InterruptionFrame(), FrameDirection.DOWNSTREAM
+        )
+        self.assertEqual(_latency_payloads(ungated_live_service.emitted, "llm_latency"), [])
+        self.assertFalse(ungated_live_service._ttft_reported_for_response)
+
+        # 3. Cascade LLM & TTS: InterruptionFrame clears _my_ttfb_start without emitting.
+        class _FakeCascadeLLM(agent._MeteredGeminiLLMMixin, _MetricsEnabledProcessor):
+            pass
+
+        cascade_llm = _FakeCascadeLLM()
+        await cascade_llm.start_ttfb_metrics()
+        await asyncio.sleep(0.002)
+        await cascade_llm.process_frame(InterruptionFrame(), FrameDirection.DOWNSTREAM)
+        self.assertEqual(_latency_payloads(cascade_llm.emitted, "llm_latency"), [])
+        self.assertEqual(
+            [frame for frame in cascade_llm.emitted if isinstance(frame, MetricsFrame)],
+            [],
+        )
+        self.assertIsNone(cascade_llm._my_ttfb_start)
+
+        for tts_cls in (
+            agent.CustomVertexGeminiTTSService,
+            agent.CustomGoogleTTSService,
+        ):
+            tts_service = _MetricsEnabledProcessor()
+            tts_service._my_ttfb_start = time.monotonic()
+            await tts_service.start_ttfb_metrics()
+            await tts_cls.stop_all_metrics(tts_service)
+            self.assertEqual(_latency_payloads(tts_service.emitted, "tts_latency"), [])
+            self.assertEqual(
+                [
+                    frame
+                    for frame in tts_service.emitted
+                    if isinstance(frame, MetricsFrame)
+                ],
+                [],
+            )
+            self.assertIsNone(tts_service._my_ttfb_start)
+
     def test_coalesce_audio_frames_merges_small_chunks(self) -> None:
         frames = [
             InputAudioRawFrame(audio=_pcm_chunk(0.02), sample_rate=16000, num_channels=1)
